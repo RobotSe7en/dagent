@@ -961,11 +961,13 @@ def test_api_resume_capability_review_forwards_reviewer_feedback(tmp_path) -> No
         for event in stream_events
         if event["type"] == "review.required"
     )
+    run_id = _result_run_id(_stream_result(stream_events[-1]))
 
     resume_response = client.post(
         "/messages/resume",
         json={
             "review_id": review_id,
+            "run_id": run_id,
             "approved": False,
             "feedback": "Read README.md instead.",
         },
@@ -975,6 +977,28 @@ def test_api_resume_capability_review_forwards_reviewer_feedback(tmp_path) -> No
     resume_result = _stream_result(_sse_events(resume_response.text)[-1])
     assert resume_result["output_text"] == "I will read the allowed README instead."
     assert "Reviewer feedback: Read README.md instead." in provider.requests[1]["messages"][-1]["content"]
+
+
+def test_api_message_stream_rejects_removed_messages_and_state_contract() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "legacy input"}],
+            "state": None,
+            "target": "tool",
+        },
+    )
+
+    assert response.status_code == 422
+    errors = response.json()["detail"]
+    assert {tuple(error["loc"]) for error in errors} >= {
+        ("input",),
+        ("messages",),
+        ("state",),
+    }
 
 
 def test_api_run_trace_endpoint_reads_tool_mode_run_trace() -> None:
@@ -1185,7 +1209,7 @@ def test_api_resume_executes_reviewed_dag_and_run_trace_endpoint_reads_run_trace
 
     resume_response = client.post(
         "/messages/resume",
-        json={"review_id": review_id, "dag": dag},
+        json={"review_id": review_id, "run_id": run_id, "dag": dag},
     )
 
     assert resume_response.status_code == 200
@@ -1242,12 +1266,13 @@ def test_api_resume_review_delivers_dag_answer_only_in_run_finished() -> None:
     )
     stream_events = _sse_events(stream_response.text)
     stream_result = _stream_result(stream_events[-1])
+    run_id = _result_run_id(stream_result)
     review_id = _result_review(stream_result)["review_id"]
     dag = _result_dag(stream_result)
 
     resume_response = client.post(
         "/messages/resume",
-        json={"review_id": review_id, "dag": dag},
+        json={"review_id": review_id, "run_id": run_id, "dag": dag},
     )
 
     assert resume_response.status_code == 200
@@ -4093,7 +4118,7 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "model": "qwen3-coder",
                 "api_key": "session-secret",
                 "timeout_seconds": 42,
-                "strip_thinking": True,
+                "reasoning": {"capture": "field_and_tags"},
                 "extra_request_args": {"headers": {"Authorization": "Bearer nested-secret"}, "timeout": 7},
                 "extra_body": {"temperature": 0.2, "metadata": {"api_key": "nested-body-secret"}},
             },
@@ -4124,7 +4149,10 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
         assert state.get_runner().runtime.provider.config.base_url == "http://localhost:8000/v1"
         assert state.get_runner().runtime.provider.config.model == "qwen3-coder"
         assert state.get_runner().runtime.provider.config.timeout_seconds == 42
-        assert state.get_runner().runtime.provider.config.strip_thinking is True
+        assert (
+            state.get_runner().runtime.provider.config.reasoning.capture
+            == "field_and_tags"
+        )
         assert state.get_runner().runtime.provider.config.extra_request_args == {
             "headers": {"Authorization": "Bearer nested-secret"},
             "timeout": 7,
@@ -4143,7 +4171,7 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "model": "qwen3-coder",
                 "api_key_action": "preserve",
                 "timeout_seconds": 42,
-                "strip_thinking": True,
+                "reasoning": {"capture": "field_and_tags"},
                 "extra_body": {"temperature": 0.2, "metadata": {"api_key": "[redacted]"}},
             },
         )
@@ -4163,7 +4191,7 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "model": "qwen3-coder",
                 "api_key_action": "preserve",
                 "timeout_seconds": 30,
-                "strip_thinking": True,
+                "reasoning": {"capture": "field_and_tags"},
                 "extra_body": {"temperature": 0.4},
             },
         )
@@ -4182,7 +4210,7 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "model": "qwen3-coder",
                 "api_key_action": "clear",
                 "timeout_seconds": 30,
-                "strip_thinking": True,
+                "reasoning": {"capture": "field_and_tags"},
             },
         )
 
@@ -4286,7 +4314,8 @@ def test_api_model_management_persists_user_models_to_user_config(monkeypatch, t
             "model": "qwen3-coder",
             "api_key_env": "LOCAL_QWEN_API_KEY",
             "timeout_seconds": 60,
-            "strip_thinking": False,
+            "context_window_tokens": 32768,
+            "output_reserve_tokens": 4096,
         }
         assert listed.status_code == 200
         assert listed.json()["active_model_id"] == "local-qwen"
@@ -4543,7 +4572,7 @@ def _dag_agent_dsl() -> str:
 
 def _message_request(message: str, **fields) -> dict:
     return {
-        "messages": [{"role": "user", "content": message}],
+        "input": message,
         **fields,
     }
 
@@ -4598,7 +4627,7 @@ def _stream_result(event: dict) -> dict:
 
 
 def _assert_result_shape(result: dict) -> None:
-    assert set(result) == {"output_text", "state"}
+    assert set(result) == {"new_items", "output_text", "state", "usage"}
 
 
 def _result_review(result: dict) -> dict | None:

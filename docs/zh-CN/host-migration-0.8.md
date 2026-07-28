@@ -1,6 +1,7 @@
 # SDK 0.8 Host 迁移
 
-本文是基于 dagent 的 host 实施规范。SDK 变更不会自动修改内置 API 或 enterprise host。
+本文是基于 dagent 的 host 实施规范。内置 API 是一份参考实现；enterprise 和第三方
+host 仍需在自己的持久化与鉴权层落实这些边界。
 
 ## 持久化边界
 
@@ -74,9 +75,11 @@ usage。产品需要完整回放时，应把它写入 host 的审计/事件系�
 
 ## 外置结果
 
-`ContentReference.path` 相对于 run workspace，并带有大小和 SHA-256。删除 run workspace
-前，host 应把引用文件上传到长期存储，并更新 host 自己的 artifact metadata。SDK 不生成
-公开 URL，也不实现 host 的保留策略。
+`ContentReference.path` 是 workspace 相对路径，并带有大小和 SHA-256。SDK 会把
+conversation 保留的资源复制到 Runner workspace 下的 content-addressed store，再为下一
+个 run workspace materialize 并改写路径，因此 Runner workspace 必须持久保存。替换本地
+存储的 host 必须上传引用字节并保留其类型化 provenance。SDK 不生成公开 URL，也不实现
+host 的保留策略。
 
 不要信任客户端提交的 reference path。只能在记录的 run workspace 内解析，并校验
 checksum。

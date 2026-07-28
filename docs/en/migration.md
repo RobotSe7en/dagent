@@ -9,6 +9,16 @@ The current package version is `0.8.0`.
 
 ## Unreleased
 
+### Fixed
+
+- The bundled API and WebUI now use the 0.8 `input`/`ConversationState`
+  contract and persist complete review checkpoints with atomic resume claims.
+- Attachments and externalized tool/MCP results retained by a conversation
+  remain reachable when the next turn uses a fresh run workspace.
+- Compactor output now obeys its token budget, reviewed tool failures retain
+  failed status, and only typed externalization provenance is interpreted as a
+  `ContentReference`.
+
 ## 0.8.0
 
 ### Breaking changes

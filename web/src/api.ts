@@ -903,8 +903,6 @@ export interface ApiRunState {
   run_id?: string | null;
   kind: 'tool' | 'dynamic_dag' | 'static_dag';
   status: string;
-  internal_messages: Array<Record<string, unknown>>;
-  input_message_count?: number;
   user_request?: string;
   dynamic_adjust?: boolean;
   dag?: Dag | null;
@@ -984,13 +982,8 @@ interface StreamRequestOptions {
   visibleMessage?: string;
 }
 
-export interface ChatStreamMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
-
-export async function streamMessagesTask(
-  messages: ChatStreamMessage[],
+export async function streamTask(
+  message: string,
   target: 'auto' | 'tool' | 'dag',
   reviewLevel: ReviewLevel,
   handlers: StreamHandlers,
@@ -999,7 +992,7 @@ export async function streamMessagesTask(
   options: StreamRequestOptions = {},
 ): Promise<void> {
   const body: Record<string, unknown> = {
-    messages,
+    input: message,
     target,
     review_level: reviewLevel,
   };
@@ -1008,39 +1001,6 @@ export async function streamMessagesTask(
   }
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
   if (typeof options.visibleMessage === 'string') body.visible_message = options.visibleMessage;
-  appendConversationContext(body, options.conversation);
-  const response = await fetch(`${API_BASE}/messages/stream`, {
-    method: 'POST',
-    ...messageStreamRequest(body, options),
-    signal: options.signal,
-  });
-  if (!response.ok || !response.body) {
-    throw new Error(await errorMessage(response));
-  }
-
-  await readStream(response, handlers);
-}
-
-export async function streamTask(
-  message: string,
-  target: 'auto' | 'tool' | 'dag',
-  reviewLevel: ReviewLevel,
-  handlers: StreamHandlers,
-  capabilityScope?: ChatCapabilityScopePayload,
-  state?: ApiRunState | null,
-  dynamicAdjust?: boolean,
-  options: StreamRequestOptions = {},
-): Promise<void> {
-  const body: Record<string, unknown> = {
-    messages: [{ role: 'user', content: message }],
-    target,
-    review_level: reviewLevel,
-  };
-  if (capabilityScope) {
-    Object.assign(body, chatScopeRequestFields(capabilityScope));
-  }
-  if (state) body.state = state;
-  if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
   appendConversationContext(body, options.conversation);
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
@@ -1113,7 +1073,7 @@ export async function resumeDagReview(
   reviewLevel: ReviewLevel,
   approved: boolean,
   handlers: StreamHandlers,
-  state?: ApiRunState | null,
+  runId?: string | null,
   feedback?: string,
   options: StreamRequestOptions = {},
 ): Promise<void> {
@@ -1135,10 +1095,10 @@ export async function resumeDagReview(
       }
     : {
         review_id: reviewId,
+        run_id: runId,
         dag: approved ? dag : null,
         approved,
         review_level: reviewLevel,
-        state,
         ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
       };
   const response = await fetch(url, {
@@ -1417,7 +1377,7 @@ export async function resumeCapabilityReview(
   reviewId: string,
   approved: boolean,
   handlers: StreamHandlers,
-  state?: ApiRunState | null,
+  runId?: string | null,
   feedback?: string,
   options: StreamRequestOptions = {},
 ): Promise<void> {
@@ -1437,8 +1397,8 @@ export async function resumeCapabilityReview(
       }
     : {
         review_id: reviewId,
+        run_id: runId,
         approved,
-        state,
         ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
       };
   const response = await fetch(url, {

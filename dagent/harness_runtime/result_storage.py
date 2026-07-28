@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -16,12 +17,22 @@ from dagent.schemas.context import ResultStoragePolicy
 from dagent.schemas.conversation import ContentReference, InlineContent, StoredContent
 
 
+@dataclass(frozen=True)
+class NormalizedCapabilityResult:
+    """Bounded capability result plus typed externalization provenance."""
+
+    result: CapabilityResult
+    content: StoredContent
+    references: tuple[ContentReference, ...]
+    value_reference: ContentReference | None = None
+
+
 def normalize_capability_result(
     result: CapabilityResult,
     *,
     workspace_path: str | Path,
     policy: ResultStoragePolicy,
-) -> tuple[CapabilityResult, StoredContent, tuple[ContentReference, ...]]:
+) -> NormalizedCapabilityResult:
     """Return a checkpoint-safe result plus model/audit content references."""
 
     workspace = Path(workspace_path).expanduser().resolve()
@@ -69,8 +80,10 @@ def normalize_capability_result(
             references.append(reference)
 
     normalized_value = result.value
+    value_reference: ContentReference | None = None
     if result.value is None and content_reference is not None:
         normalized_value = content_reference.model_dump(mode="json")
+        value_reference = content_reference
     value_media_type = "application/json"
     value_extension = ".json"
     if result.value is None:
@@ -156,7 +169,12 @@ def normalize_capability_result(
             **normalized_text_fields,
         }
     )
-    return normalized_result, stored_content, tuple(references)
+    return NormalizedCapabilityResult(
+        result=normalized_result,
+        content=stored_content,
+        references=tuple(references),
+        value_reference=value_reference,
+    )
 
 
 def _display_content(result: CapabilityResult) -> str:
@@ -286,4 +304,4 @@ def _head_tail_preview(text: str, *, limit: int = 8192) -> str:
     return text[:head] + "\n...[EXTERNALIZED]...\n" + text[-tail:]
 
 
-__all__ = ["normalize_capability_result"]
+__all__ = ["NormalizedCapabilityResult", "normalize_capability_result"]

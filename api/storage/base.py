@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from dagent import RunState
+from dagent import ConversationState, RunCheckpoint, RunState
 
 from api.storage.models import (
     Conversation,
@@ -112,6 +112,17 @@ class Store(Protocol):
     ) -> ConversationLock: ...
 
     def touch_conversation(self, conversation_id: str, *, updated_at: int | None = None) -> None: ...
+
+    def save_conversation_state(
+        self,
+        conversation_id: str,
+        state_json: str,
+        *,
+        revision: int,
+        expected_revision: int,
+    ) -> None: ...
+
+    def get_conversation_state(self, conversation_id: str) -> ConversationState | None: ...
 
     def create_run(
         self,
@@ -245,6 +256,10 @@ class Store(Protocol):
 
     def get_run_state(self, run_id: str) -> RunState | None: ...
 
+    def save_run_checkpoint(self, run_id: str, checkpoint_json: str | None) -> None: ...
+
+    def get_run_checkpoint(self, run_id: str) -> RunCheckpoint | None: ...
+
     def save_run_error(self, run_id: str, error_json: str) -> None: ...
 
     def upsert_review(
@@ -258,6 +273,8 @@ class Store(Protocol):
     ) -> Review: ...
 
     def get_review(self, review_id: str, *, org_id: str | None = None) -> Review | None: ...
+
+    def claim_review(self, review_id: str, decision_json: str) -> bool: ...
 
     def resolve_review(self, review_id: str, decision_json: str) -> None: ...
 

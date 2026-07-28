@@ -598,13 +598,19 @@ export interface ModelProvider {
   api_key_configured: boolean;
   api_key_saved: boolean;
   timeout_seconds: number;
-  strip_thinking: boolean;
-  reasoning?: Record<string, unknown> | null;
+  reasoning?: ModelReasoningConfig | null;
   extra_request_args: Record<string, unknown>;
   extra_body: Record<string, unknown>;
 }
 
 export type ModelApiKeyAction = 'preserve' | 'replace' | 'clear';
+
+export interface ModelReasoningConfig {
+  enabled?: boolean | null;
+  effort?: string | null;
+  budget_tokens?: number | null;
+  capture?: 'field' | 'field_and_tags';
+}
 
 export interface ModelProviderInput {
   id: string;
@@ -615,8 +621,7 @@ export interface ModelProviderInput {
   api_key_action: ModelApiKeyAction;
   api_key_env?: string | null;
   timeout_seconds: number;
-  strip_thinking: boolean;
-  reasoning?: Record<string, unknown> | null;
+  reasoning?: ModelReasoningConfig | null;
   extra_request_args: Record<string, unknown>;
   extra_body: Record<string, unknown>;
 }

@@ -806,8 +806,8 @@ test('mcp sidebar selection distinguishes servers from child tools', () => {
   assert.equal(resolveSelectedMcpToolId('mcp.docs.lookup', ['mcp.docs.search']), '');
 });
 
-test('api helpers send agent preset and chat scope request bodies', async () => {
-  const { createAgent, listRunEvents, streamMessagesTask, streamTask, updateAgent } = await importTypeScriptModule('../src/api.ts', [
+test('api helpers send agent preset and single-input chat request bodies', async () => {
+  const { createAgent, listRunEvents, streamTask, updateAgent } = await importTypeScriptModule('../src/api.ts', [
     '../src/agentScope.ts',
     '../src/api.ts',
     '../src/dagArtifacts.ts',
@@ -861,8 +861,8 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
       agentScope: 'selected',
       agentIds: ['agent.helper'],
     });
-    await streamMessagesTask(
-      [{ role: 'user', content: 'visible prompt\n\ninternal context' }],
+    await streamTask(
+      'visible prompt\n\ncurrent DAG context',
       'dag',
       'fast',
       {},
@@ -891,7 +891,7 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
   assert.equal(calls[1].url, '/api/agents/helper');
   assert.equal(calls[1].init.method, 'PUT');
   assert.deepEqual(JSON.parse(calls[2].init.body), {
-    messages: [{ role: 'user', content: 'hello' }],
+    input: 'hello',
     target: 'auto',
     review_level: 'fast',
     capability_ids: ['tool.echo'],
@@ -900,7 +900,7 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
     agent_ids: ['agent.helper'],
   });
   assert.deepEqual(JSON.parse(calls[3].init.body), {
-    messages: [{ role: 'user', content: 'visible prompt\n\ninternal context' }],
+    input: 'visible prompt\n\ncurrent DAG context',
     target: 'dag',
     review_level: 'fast',
     dynamic_adjust: true,
@@ -1762,27 +1762,25 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.doesNotMatch(directorySource, /Capability Workbench|Capability Detail|console-grid directory-grid/);
   assert.doesNotMatch(appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '', /dynamicAdjust|onDynamicAdjustChange|动态调整/);
   assert.match(appSource, /function DynamicOrchestrationWorkspace/);
-  assert.match(apiSource, /export interface ChatStreamMessage/);
   assert.match(typesSource, /export interface DagValidationIssue/);
   assert.match(typesSource, /export interface DagValidationResult/);
   assert.match(apiSource, /export async function validateDag/);
-  assert.match(apiSource, /export async function streamMessagesTask/);
-  assert.match(apiSource, /messages,\s*target,\s*review_level: reviewLevel/);
-  assert.match(appSource, /streamMessagesTask/);
-  assert.match(appSource, /type DynamicChatMessage = ChatStreamMessage & \{ timelineOrder: number \};/);
+  assert.match(apiSource, /export async function streamTask/);
+  assert.match(apiSource, /input: message,\s*target,\s*review_level: reviewLevel/);
+  assert.doesNotMatch(apiSource, /streamMessagesTask|messages:/);
+  assert.match(appSource, /type DynamicChatMessage = \{/);
   assert.match(appSource, /type DynamicTraceLogEvent = TraceLogEvent & \{ timelineOrder: number \};/);
   assert.match(appSource, /const nextDynamicTimelineOrder = useCallback/);
   assert.match(appSource, /const appendDynamicMessage = useCallback/);
   assert.match(appSource, /const \[dynamicMessages, setDynamicMessages\] = useState<DynamicChatMessage\[\]>\(\[\]\);/);
   assert.match(appSource, /const \[dynamicTrace, setDynamicTrace\] = useState<DynamicTraceLogEvent\[\]>\(\[\]\);/);
-  assert.match(appSource, /function buildDynamicDagMessages\(history: DynamicChatMessage\[\], prompt: string, dag: Dag\): ChatStreamMessage\[\]/);
   assert.match(appSource, /当前可编辑 DAG 快照/);
   assert.match(appSource, /JSON\.stringify\(dynamicDagForPrompt\(dag\), null, 2\)/);
-  assert.match(appSource, /const dynamicRequestMessages = buildDynamicDagMessages\(dynamicMessages, prompt, dynamicDag\);/);
+  assert.match(appSource, /const dynamicRequestInput = dynamicPromptWithDagContext\(prompt, dynamicDag\);/);
   assert.match(appSource, /ensureOrchestrationContext\(\s*'dynamic_dag'/);
   assert.match(appSource, /targetProjectId:\s*null,\s*[\s\S]*draftDag: dynamicDag as unknown as Record<string, unknown>/);
   assert.doesNotMatch(appSource, /targetProjectId:\s*selectedProjectId \|\| null,[\s\S]*draftDag: dynamicDag as unknown as Record<string, unknown>/);
-  assert.match(appSource, /streamMessagesTask\([\s\S]*dynamicRequestMessages,[\s\S]*'dag',[\s\S]*dynamicReviewLevel\(\),[\s\S]*dynamicHandlers\(context\.request, context\.session\.id\),[\s\S]*undefined,[\s\S]*dynamicAdjust,[\s\S]*\{ conversation: context\.request \}/);
+  assert.match(appSource, /streamTask\([\s\S]*dynamicRequestInput,[\s\S]*'dag',[\s\S]*dynamicReviewLevel\(\),[\s\S]*dynamicHandlers\(context\.request, context\.session\.id\),[\s\S]*undefined,[\s\S]*dynamicAdjust,[\s\S]*\{ conversation: context\.request \}/);
   assert.match(appSource, /function dynamicReviewLevel/);
   assert.doesNotMatch(dynamicSource, /<select[\s\S]*reviewLevels|onReviewLevelChange|reviewLevel: ReviewLevel/);
   assert.match(appSource, /activeWorkspace === 'chat' && reviewOpen && dag\.nodes\.length/);
@@ -1793,7 +1791,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /生成 DAG/);
   assert.match(appSource, /运行/);
   assert.match(appSource, /targetProjectId:\s*null,\s*[\s\S]*draftDag: dag as unknown as Record<string, unknown>/);
-  assert.match(appSource, /resumeDagReview\([\s\S]*reviewId,[\s\S]*dag,[\s\S]*dynamicReviewLevel\(\),[\s\S]*true,[\s\S]*dynamicHandlers\(context\.request, context\.session\.id\),[\s\S]*dynamicRunState,[\s\S]*undefined,[\s\S]*\{ conversation: context\.request \}/);
+  assert.match(appSource, /resumeDagReview\([\s\S]*reviewId,[\s\S]*dag,[\s\S]*dynamicReviewLevel\(\),[\s\S]*true,[\s\S]*dynamicHandlers\(context\.request, context\.session\.id\),[\s\S]*dynamicRunState\?\.run_id,[\s\S]*undefined,[\s\S]*\{ conversation: context\.request \}/);
   assert.doesNotMatch(appSource, /resumeDagReview\(reviewId, null, dynamicReviewLevel\(\), false/);
   assert.match(appSource, /const dynamicDagRef = useRef<Dag>\(emptyDag\);/);
   assert.match(appSource, /function preserveDynamicDagEdges\(nextDag: Dag\): Dag/);
@@ -2348,7 +2346,8 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(modelSource, /modelAdvancedOpen \? \(/);
   assert.match(modelSource, /API Key Env/);
   assert.match(modelSource, /Timeout/);
-  assert.match(modelSource, /移除 <think> 推理块/);
+  assert.match(modelSource, /"capture": "field_and_tags"/);
+  assert.doesNotMatch(modelSource, /strip_thinking|移除 <think> 推理块/);
   assert.doesNotMatch(typesSource, /StructuredOutputMode|structured_output_mode/);
   assert.doesNotMatch(modelSource, /结构化输出模式|structured_output_mode/);
   assert.match(onlyOfficeSource, /文档配置/);
@@ -2861,11 +2860,12 @@ test('persisted chat streams and reviews use conversation context without requir
   assert.match(apiSource, /const persistedResume = conversationContext !== undefined;/);
   assert.match(apiSource, /projectId\s*\? `\$\{API_BASE\}\/projects\/\$\{encodeURIComponent\(projectId\)\}\/reviews\/\$\{encodeURIComponent\(reviewId\)\}\/resume`[\s\S]*: `\$\{API_BASE\}\/reviews\/\$\{encodeURIComponent\(reviewId\)\}\/resume`/);
   assert.match(apiSource, /persistedResume[\s\S]*approved/);
-  assert.match(apiSource, /persistedResume[\s\S]*state/);
+  assert.match(apiSource, /review_id: reviewId,[\s\S]*run_id: runId/);
+  assert.doesNotMatch(apiSource, /internal_messages|input_message_count|body\.state/);
   assert.match(runStreamSource, /const conversation = await ensureChatConversation\(prompt, target\);/);
   assert.match(runStreamSource, /const conversationContext = \{ projectId: conversation\.project_id, conversationId: conversation\.id \};/);
   assert.match(runStreamSource, /const streamOptions = \{ signal, uploads: uploadsForRequest, conversation: conversationContext \};/);
-  assert.match(runStreamSource, /\}, capabilityScope, null, undefined, streamOptions\);/);
+  assert.match(runStreamSource, /\}, capabilityScope, undefined, streamOptions\);/);
   assert.match(resumeDagSource, /conversation: activeConversationContext/);
   assert.match(resumeCapabilitySource, /conversation: activeConversationContext/);
 });
@@ -2945,11 +2945,7 @@ test('persisted conversation hydration rebuilds one assistant turn with capabili
     run_id: 'run_1',
     kind: 'tool',
     status: 'completed',
-    internal_messages: [
-      { role: 'user', content: 'echo hi' },
-      { role: 'assistant', content: '我会调用工具。' },
-      { role: 'assistant', content: '完成：echo:hi' },
-    ],
+    user_request: 'echo hi',
     trace,
   };
   const events = [
@@ -3000,10 +2996,7 @@ test('persisted conversation hydration appends run finished answer after replaye
     run_id: 'run_1',
     kind: 'dynamic_dag',
     status: 'completed',
-    internal_messages: [
-      { role: 'user', content: 'run dag' },
-      { role: 'assistant', content: 'Final answer from run.finished.' },
-    ],
+    user_request: 'run dag',
   };
   const events = [
     runEvent(1, 'response.content.delta', { delta: '我先说明阶段性情况。' }),
@@ -3040,7 +3033,7 @@ test('persisted conversation hydration appends run finished answer after replaye
   assert.equal(shouldCollapseProcessTimeline(assistant, false), true);
 });
 
-test('persisted dynamic DAG hydration hides internal observation prompts', async () => {
+test('persisted dynamic DAG hydration uses the explicit user request', async () => {
   const {
     chatMessagesFromPersistedRunEvents,
     finishedRunResultFromEvents,
@@ -3056,28 +3049,7 @@ test('persisted dynamic DAG hydration hides internal observation prompts', async
     run_id: 'task_73fb137e847e45c7b71ee950b4e94107',
     kind: 'dynamic_dag',
     status: 'completed',
-    input_message_count: 1,
     user_request: '查找数睿通智库系统白皮书',
-    internal_messages: [
-      {
-        role: 'user',
-        content: 'Task id: task_73fb137e847e45c7b71ee950b4e94107\n查找数睿通智库系统白皮书',
-      },
-      { role: 'assistant', content: '{"nodes":[{"id":"find_white_paper"}]}' },
-      {
-        role: 'user',
-        content: [
-          'Task id: task_73fb137e847e45c7b71ee950b4e94107',
-          'DAG observation: layer_completed',
-          'Task id: task_73fb137e847e45c7b71ee950b4e94107',
-          'Completed node outputs:',
-          '- find_white_paper: /workspace/数睿通智库系统白皮书.pdf',
-          'Node executions:',
-          '- node: find_white_paper tool: tool.list_files status: completed',
-        ].join('\n'),
-      },
-      { role: 'assistant', content: 'NO_CHANGE' },
-    ],
   };
   const events = [
     runEvent(1, 'run.finished', {
@@ -3098,8 +3070,6 @@ test('persisted dynamic DAG hydration hides internal observation prompts', async
       ['assistant', '已找到白皮书：/workspace/数睿通智库系统白皮书.pdf'],
     ],
   );
-  assert.equal(messages.some((message) => message.content.includes('DAG observation')), false);
-  assert.equal(messages.some((message) => message.content.includes('NO_CHANGE')), false);
 });
 
 test('persisted dynamic DAG hydration rebuilds visible turns from stream events', async () => {
@@ -3118,27 +3088,13 @@ test('persisted dynamic DAG hydration rebuilds visible turns from stream events'
     run_id: 'task_dynamic',
     kind: 'dynamic_dag',
     status: 'completed',
-    input_message_count: 1,
     user_request: 'first request',
-    internal_messages: [
-      { role: 'user', content: 'Task id: task_dynamic\nfirst request' },
-      { role: 'assistant', content: '{"nodes":[{"id":"first"}]}' },
-    ],
   };
   const secondState = {
     run_id: 'task_dynamic',
     kind: 'dynamic_dag',
     status: 'completed',
-    input_message_count: 5,
     user_request: 'second request',
-    internal_messages: [
-      { role: 'user', content: 'Task id: task_dynamic\nfirst request' },
-      { role: 'assistant', content: '{"nodes":[{"id":"first"}]}' },
-      { role: 'user', content: 'Task id: task_dynamic\nDAG observation: layer_completed\nNode executions:\n- first' },
-      { role: 'assistant', content: 'NO_CHANGE' },
-      { role: 'user', content: 'second request' },
-      { role: 'assistant', content: '{"nodes":[{"id":"second"}]}' },
-    ],
   };
   const events = [
     runEventInStream(1, 'stream_first', 1, 'run.finished', {
@@ -3162,9 +3118,6 @@ test('persisted dynamic DAG hydration rebuilds visible turns from stream events'
       ['assistant', 'second progress. second answer'],
     ],
   );
-  assert.equal(messages.some((message) => message.content.includes('DAG observation')), false);
-  assert.equal(messages.some((message) => message.content.includes('NO_CHANGE')), false);
-  assert.equal(messages.some((message) => message.content.includes('{"nodes"')), false);
 });
 
 test('persisted dynamic DAG hydration merges approved review resume into the original assistant turn', async () => {
@@ -3195,7 +3148,6 @@ test('persisted dynamic DAG hydration merges approved review resume into the ori
     run_id: 'task_dynamic_review',
     kind: 'dynamic_dag',
     status: 'awaiting_review',
-    input_message_count: 1,
     user_request: 'run the reviewed dag',
     dag: reviewDag,
     pending_review: {
@@ -3204,10 +3156,6 @@ test('persisted dynamic DAG hydration merges approved review resume into the ori
       message: 'Review proposed DAG before execution.',
       proposed_dag: reviewDag,
     },
-    internal_messages: [
-      { role: 'user', content: 'Task id: task_dynamic_review\nrun the reviewed dag' },
-      { role: 'assistant', content: '{"nodes":[]}' },
-    ],
   };
   const completedState = {
     ...reviewState,
@@ -3604,7 +3552,6 @@ test('chat stop button cancels the backend run and aborts the stream request', a
   const resumeCapabilitySource = appSource.match(/const confirmCapabilityReview = async[\s\S]*?\n  const newChat/)?.[0] ?? '';
 
   assert.match(apiSource, /interface StreamRequestOptions \{[\s\S]*signal\?: AbortSignal;[\s\S]*\}/);
-  assert.match(apiSource, /streamMessagesTask\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);
   assert.match(apiSource, /streamTask\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);
   assert.match(apiSource, /resumeDagReview\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);
   assert.match(apiSource, /resumeCapabilityReview\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);

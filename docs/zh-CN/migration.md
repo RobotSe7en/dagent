@@ -8,6 +8,15 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
+### 修复
+
+- 内置 API 和 WebUI 已使用 0.8 `input`/`ConversationState` contract，完整持久化
+  review checkpoint，并通过原子 claim 防止重复 resume。
+- conversation 保留的附件以及外置 tool/MCP 结果，在下一轮使用新的 run workspace
+  时仍然可访问。
+- compactor 输出严格遵守 token budget；审核后的工具失败保持 failed 状态；只有带类型
+  provenance 的外置结果才会被解释为 `ContentReference`。
+
 ## 0.8.0
 
 ### 破坏性变更

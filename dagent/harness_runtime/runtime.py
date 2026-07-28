@@ -32,6 +32,7 @@ from dagent.harness_runtime.capability_scope import (
 )
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.dag_executor import DAGExecutor
+from dagent.harness_runtime.conversation_resources import ConversationResourceStore
 from dagent.harness_runtime.execution_budget import (
     ExecutionLimitExceeded,
     reserve_model_turn,
@@ -113,6 +114,9 @@ class HarnessRuntime:
         if capability_catalog is None and capability_executor is not None:
             capability_catalog = capability_executor.catalog
         self.capability_catalog = capability_catalog or CapabilityCatalog()
+        self.conversation_resources = ConversationResourceStore(
+            self.capability_catalog.workspace_root
+        )
         if capability_executor is not None and capability_executor.catalog is not self.capability_catalog:
             raise ValueError("HarnessRuntime capability_catalog must match capability_executor.catalog.")
         self.capability_executor = capability_executor or CapabilityExecutor(self.capability_catalog)
@@ -361,6 +365,10 @@ class HarnessRuntime:
             resolved_run_id,
             workspace_path=workspace_path,
         )
+        base_conversation = self.conversation_resources.materialize(
+            conversation or ConversationState(),
+            workspace_path=resolved_workspace_path,
+        )
         materialized_uploads = materialize_workbench_uploads(
             input_uploads or [],
             workspace_path=resolved_workspace_path,
@@ -374,7 +382,7 @@ class HarnessRuntime:
             ),
         )
         run_conversation = _append_conversation_item(
-            conversation or ConversationState(),
+            base_conversation,
             input_item,
         )
         _emit_run_started(on_event, run_id=resolved_run_id, kind=_state_kind_for_mode(resolved_mode))
@@ -792,6 +800,11 @@ class HarnessRuntime:
             )
             conversation = _append_conversation_item(conversation, answer)
             new_items.append(answer)
+        if conversation is not None and outcome.state.workspace_path:
+            self.conversation_resources.persist(
+                conversation,
+                workspace_path=outcome.state.workspace_path,
+            )
         update: dict[str, Any] = {
             "kind": _state_kind_for_mode(mode),
             "status": outcome.state.status,

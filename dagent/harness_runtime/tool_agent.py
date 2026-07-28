@@ -75,6 +75,7 @@ from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import normalize_capability_result
 from dagent.schemas.conversation import (
     StoredContent,
+    ToolResultStatus,
     inline_content,
     stored_content_text,
 )
@@ -232,6 +233,7 @@ class ToolAgent:
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
         result: CapabilityResult | None = None
         stored_content: StoredContent | None = None
+        value_reference: ContentReference | None = None
         attachments: tuple[Any, ...] = ()
         if approved:
             boundary_review_approved = (
@@ -249,12 +251,16 @@ class ToolAgent:
                         ),
                     ),
                 )
-                result, stored_content, attachments = normalize_capability_result(
+                normalized = normalize_capability_result(
                     result,
                     workspace_path=state.workspace_path
                     or current_workspace_root(self.loop.capability_executor.workspace_root),
                     policy=self.result_storage_policy,
                 )
+                result = normalized.result
+                stored_content = normalized.content
+                value_reference = normalized.value_reference
+                attachments = normalized.references
                 feed_content = _tool_content(result)
                 self.loop._emit_capability_event(
                     on_event,
@@ -296,9 +302,19 @@ class ToolAgent:
             conversation,
             tool_call_id=invocation.invocation_id,
             tool_name=capability_call.tool_name,
+            status=(
+                "denied"
+                if not approved
+                else (
+                    "completed"
+                    if result is not None and result.status == "completed"
+                    else "failed"
+                )
+            ),
             content=feed_content,
             stored_content=stored_content,
             value=None if result is None else result.value,
+            value_reference=value_reference,
             artifacts=attachments,
         )
         reviewed_item = next(
@@ -679,12 +695,15 @@ class ToolAgentLoop:
                     stored_content: Any = None
                     attachments: tuple[Any, ...] = ()
                     if recorded_result is not None:
-                        recorded_result, stored_content, attachments = normalize_capability_result(
+                        normalized = normalize_capability_result(
                             recorded_result,
                             workspace_path=execution_context.workspace_path
                             or current_workspace_root(self.capability_executor.workspace_root),
                             policy=result_storage_policy,
                         )
+                        recorded_result = normalized.result
+                        stored_content = normalized.content
+                        attachments = normalized.references
                     bounded_content = (
                         control_result.content
                         if stored_content is None
@@ -706,6 +725,11 @@ class ToolAgentLoop:
                         capability_id=invocation.capability_id,
                         stored_content=stored_content,
                         value=None if recorded_result is None else recorded_result.value,
+                        value_reference=(
+                            None
+                            if recorded_result is None
+                            else normalized.value_reference
+                        ),
                         artifacts=attachments,
                     )
                     loop_conversation = _append_item(loop_conversation, tool_item)
@@ -831,12 +855,15 @@ class ToolAgentLoop:
                         )
                     )
                     continue
-                capability_result, stored_content, attachments = normalize_capability_result(
+                normalized = normalize_capability_result(
                     capability_result,
                     workspace_path=execution_context.workspace_path
                     or current_workspace_root(self.capability_executor.workspace_root),
                     policy=result_storage_policy,
                 )
+                capability_result = normalized.result
+                stored_content = normalized.content
+                attachments = normalized.references
                 bounded_content = stored_content_text(stored_content)
                 tool_item = _tool_result_item(
                     tool_call=tool_call,
@@ -850,6 +877,7 @@ class ToolAgentLoop:
                     capability_id=invocation.capability_id,
                     stored_content=stored_content,
                     value=capability_result.value,
+                    value_reference=normalized.value_reference,
                     artifacts=attachments,
                 )
                 loop_conversation = _append_item(loop_conversation, tool_item)
@@ -946,15 +974,19 @@ class ToolAgentLoop:
         response = normalize_chat_response(
             await self.provider.chat(prepared.messages)
         )
-        content = response.content.strip()
-        if not content:
+        raw_content = response.content.strip()
+        if not raw_content:
             raise ValueError("Context compactor returned an empty summary.")
-        content = content[: max_tokens * 6]
+        content, output_truncated = context_assembler.truncate_text(
+            raw_content,
+            max_tokens=max_tokens,
+        )
         summary = ContextSummary(
             content=content,
             source_item_count=(previous.source_item_count if previous else 0) + len(items),
             method="model",
             source_truncated=source_truncated,
+            output_truncated=output_truncated,
             reasoning=response.reasoning_content,
             usage=response.usage,
             context_usage=prepared.usage,
@@ -1129,6 +1161,7 @@ def _tool_result_item(
     capability_id: str | None = None,
     stored_content: StoredContent | None = None,
     value: Any = None,
+    value_reference: ContentReference | None = None,
     artifacts: tuple[Any, ...] = (),
 ) -> ToolResultMessage:
     return ToolResultMessage(
@@ -1139,6 +1172,7 @@ def _tool_result_item(
         status=status,  # type: ignore[arg-type]
         content=stored_content or inline_content(content),
         value=value,
+        value_reference=value_reference,
         artifacts=artifacts,
     )
 
@@ -1168,17 +1202,20 @@ def _replace_tool_result(
     *,
     tool_call_id: str,
     tool_name: str,
+    status: ToolResultStatus,
     content: str,
     stored_content: StoredContent | None = None,
     value: Any = None,
+    value_reference: ContentReference | None = None,
     artifacts: tuple[Any, ...] = (),
 ) -> ConversationState:
     replacement = ToolResultMessage(
         call_id=tool_call_id,
         name=tool_name,
-        status="completed" if not content.startswith("[DENIED]") else "denied",
+        status=status,
         content=stored_content or inline_content(content),
         value=value,
+        value_reference=value_reference,
         artifacts=artifacts,
     )
     items = list(conversation.items)

@@ -1,7 +1,8 @@
 # Host migration for SDK 0.8
 
-This page is an implementation specification for hosts built on dagent. The SDK
-change does not modify the bundled API or enterprise host automatically.
+This page is an implementation specification for hosts built on dagent. The
+bundled API is an example implementation; enterprise and third-party hosts
+must apply these boundaries to their own persistence and authorization layers.
 
 ## Persistence boundaries
 
@@ -85,10 +86,13 @@ Consume these additional stream events:
 
 ## Externalized results
 
-`ContentReference.path` is relative to the run workspace and includes size and
-SHA-256 metadata. Before deleting a run workspace, upload referenced files to
-durable storage and rewrite host-owned artifact metadata. The SDK does not
-create public URLs or enforce host retention.
+`ContentReference.path` is workspace-relative and includes size and SHA-256
+metadata. The SDK copies resources retained by a conversation into a
+content-addressed store under the Runner workspace, then materializes and
+rebases them for the next run workspace. Keep that Runner workspace durable.
+Hosts that replace local storage must upload the referenced bytes and preserve
+their typed provenance. The SDK does not create public URLs or enforce host
+retention.
 
 Never accept a client-supplied reference path as trusted. Resolve references
 inside the recorded run workspace and verify their checksum.

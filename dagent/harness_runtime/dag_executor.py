@@ -386,11 +386,13 @@ class DAGExecutor:
                     on_event=node_event_emitter,
                 ),
             )
-            capability_result, stored_content, _references = normalize_capability_result(
+            normalized = normalize_capability_result(
                 capability_result,
                 workspace_path=self.workspace_path or self.capability_workspace_root,
                 policy=self.result_storage_policy,
             )
+            capability_result = normalized.result
+            stored_content = normalized.content
         except Exception as exc:
             node.status = "failed"
             failed_result = CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__)
@@ -447,11 +449,15 @@ class DAGExecutor:
             if isinstance(stored_content, InlineContent)
             else stored_content.model_dump(mode="json")
         )
+        dag_node.output_reference = (
+            stored_content if isinstance(stored_content, ContentReference) else None
+        )
         dag_node.value = (
             capability_result.value
             if capability_result.value is not None
             else dag_node.output
         )
+        dag_node.value_reference = normalized.value_reference
         dag_node.step_count = 1
         dag_node.ended_at = _now()
         return dag_node
@@ -480,7 +486,10 @@ class DAGExecutor:
             )
         semaphore = asyncio.Semaphore(payload.max_concurrency)
 
-        async def run_item(index: int, item: Any) -> tuple[CapabilityInvocation, CapabilityResult]:
+        async def run_item(
+            index: int,
+            item: Any,
+        ) -> tuple[CapabilityInvocation, CapabilityResult, ContentReference | None]:
             invocation = payload.invocation.model_copy(
                 deep=True,
                 update={"invocation_id": f"{node.id}_item{index}_{uuid4().hex[:8]}"},
@@ -519,15 +528,16 @@ class DAGExecutor:
                             on_event=emitter,
                         ),
                     )
-                    result, _stored_content, _references = normalize_capability_result(
+                    normalized = normalize_capability_result(
                         result,
                         workspace_path=self.workspace_path or self.capability_workspace_root,
                         policy=self.result_storage_policy,
                     )
+                    result = normalized.result
             finally:
                 if token_stream is not None:
                     token_stream.finish()
-            return invocation, result
+            return invocation, result, normalized.value_reference
 
         outcomes = await asyncio.gather(
             *[run_item(index, item) for index, item in enumerate(items)],
@@ -541,7 +551,7 @@ class DAGExecutor:
             if isinstance(outcome, BaseException):
                 failure = failure or str(outcome)
                 continue
-            invocation, result = outcome
+            invocation, result, value_reference = outcome
             item_node = RunTraceNode.capability_call(
                 parent_id=dag_node.id,
                 invocation=invocation,
@@ -556,6 +566,7 @@ class DAGExecutor:
                 values.append(
                     _load_content_reference(
                         result.value if result.value is not None else result.content,
+                        value_reference,
                         self.workspace_path or self.capability_workspace_root,
                     )
                 )
@@ -906,34 +917,33 @@ def _node_output_value(expr: NodeOutputExpr, scope: _ValueScope) -> Any:
         return "skipped" if expr.field == "status" else None
     if expr.field == "value":
         value = trace.value if trace.value is not None else trace.output
+        reference = trace.value_reference
     elif expr.field == "content":
         value = trace.output
+        reference = trace.output_reference
     elif expr.field == "status":
         value = trace.status
+        reference = None
     elif expr.field == "steps":
         value = trace.step_count
+        reference = None
     else:
         raise DAGExecutionError(f"Unknown node output field '{expr.field}'.")
-    value = _load_content_reference(value, scope.workspace_path)
+    value = _load_content_reference(value, reference, scope.workspace_path)
     return _extract_path(value, expr.path)
 
 
 def _load_content_reference(
     value: Any,
+    reference: ContentReference | None,
     workspace_path: Path | None,
 ) -> Any:
-    if not isinstance(value, dict) or value.get("type") != "artifact":
+    if reference is None:
         return value
     if workspace_path is None:
         raise DAGExecutionError(
             "Cannot resolve an externalized capability result without a run workspace."
         )
-    try:
-        reference = ContentReference.model_validate(value)
-    except ValueError as exc:
-        raise DAGExecutionError(
-            "Externalized capability result reference is malformed."
-        ) from exc
     root = workspace_path.expanduser().resolve()
     target = (root / reference.path).resolve()
     try:

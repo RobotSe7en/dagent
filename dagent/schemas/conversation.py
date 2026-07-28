@@ -36,7 +36,7 @@ class ContentReference(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    type: Literal["artifact"] = "artifact"
+    type: Literal["dagent_content_reference"] = "dagent_content_reference"
     path: str = Field(min_length=1)
     media_type: str = "application/octet-stream"
     byte_length: int = Field(ge=0)
@@ -129,6 +129,7 @@ class ToolResultMessage(BaseModel):
     status: ToolResultStatus
     content: StoredContent = Field(default_factory=InlineContent)
     value: Any = None
+    value_reference: ContentReference | None = None
     artifacts: tuple[ContentReference, ...] = ()
     scope: ModelScope = "conversation"
     visibility: ItemVisibility = "internal"
@@ -150,6 +151,7 @@ class ContextSummary(BaseModel):
     method: Literal["model", "deterministic_fallback"] = "model"
     fallback_reason: str | None = None
     source_truncated: bool = False
+    output_truncated: bool = False
     reasoning: str = ""
     usage: ModelTokenUsage | None = None
     context_usage: ContextUsage | None = None

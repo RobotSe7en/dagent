@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from dagent import RunState
+from dagent import ConversationState, RunCheckpoint, RunState
 
 from api.storage.base import ConversationBusyError, StorageConflictError
 from api.storage.models import (
@@ -101,8 +101,25 @@ class SQLiteStore:
             if self._needs_schema_rebuild():
                 self._rebuild_database()
             self._conn.executescript(schema)
+            self._add_v08_columns()
             self._conn.execute("DELETE FROM conversation_locks WHERE expires_at <= ?", (_now(),))
             self._conn.commit()
+
+    def _add_v08_columns(self) -> None:
+        conversation_columns = self._table_columns("conversations")
+        if "conversation_state_json" not in conversation_columns:
+            self._conn.execute(
+                "ALTER TABLE conversations ADD COLUMN conversation_state_json TEXT"
+            )
+        if "conversation_revision" not in conversation_columns:
+            self._conn.execute(
+                "ALTER TABLE conversations "
+                "ADD COLUMN conversation_revision INTEGER NOT NULL DEFAULT 0"
+            )
+        if "checkpoint_json" not in self._table_columns("runs"):
+            self._conn.execute(
+                "ALTER TABLE runs ADD COLUMN checkpoint_json TEXT"
+            )
 
     def _needs_schema_rebuild(self) -> bool:
         tables = {
@@ -389,6 +406,54 @@ class SQLiteStore:
         with self._lock:
             self._touch_conversation_locked(conversation_id, now)
             self._conn.commit()
+
+    def save_conversation_state(
+        self,
+        conversation_id: str,
+        state_json: str,
+        *,
+        revision: int,
+        expected_revision: int,
+    ) -> None:
+        now = _now()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE conversations
+                SET conversation_state_json = ?,
+                    conversation_revision = ?,
+                    updated_at = ?
+                WHERE id = ? AND conversation_revision = ?
+                """,
+                (
+                    state_json,
+                    revision,
+                    now,
+                    conversation_id,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount == 0:
+                self._conn.rollback()
+                raise StorageConflictError(
+                    "Conversation state revision changed while the run was active."
+                )
+            self._conn.commit()
+
+    def get_conversation_state(
+        self,
+        conversation_id: str,
+    ) -> ConversationState | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT conversation_state_json FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+        if row is None or row["conversation_state_json"] is None:
+            return None
+        return ConversationState.model_validate_json(
+            row["conversation_state_json"]
+        )
 
     def _release_conversation_lock(self, conversation_id: str, owner: str) -> None:
         with self._lock:
@@ -898,6 +963,37 @@ class SQLiteStore:
             return None
         return RunState.model_validate_json(row["state_json"])
 
+    def save_run_checkpoint(
+        self,
+        run_id: str,
+        checkpoint_json: str | None,
+    ) -> None:
+        now = _now()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE runs
+                SET checkpoint_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (checkpoint_json, now, run_id),
+            )
+            if cursor.rowcount == 0:
+                self._conn.rollback()
+                raise KeyError(f"Run '{run_id}' not found.")
+            self._touch_run_conversation_locked(run_id, now)
+            self._conn.commit()
+
+    def get_run_checkpoint(self, run_id: str) -> RunCheckpoint | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT checkpoint_json FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None or row["checkpoint_json"] is None:
+            return None
+        return RunCheckpoint.model_validate_json(row["checkpoint_json"])
+
     def save_run_error(self, run_id: str, error_json: str) -> None:
         now = _now()
         with self._lock:
@@ -946,6 +1042,19 @@ class SQLiteStore:
         with self._lock:
             row = self._conn.execute(query, params).fetchone()
         return None if row is None else _review_from_row(row)
+
+    def claim_review(self, review_id: str, decision_json: str) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE reviews
+                SET status = 'resuming', decision_json = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (decision_json, review_id),
+            )
+            self._conn.commit()
+        return cursor.rowcount == 1
 
     def resolve_review(self, review_id: str, decision_json: str) -> None:
         now = _now()
@@ -1222,6 +1331,8 @@ def _conversation_from_row(row: sqlite3.Row) -> Conversation:
         status=row["status"],
         workspace_uri=row["workspace_uri"],
         last_run_id=row["last_run_id"],
+        conversation_state_json=row["conversation_state_json"],
+        conversation_revision=row["conversation_revision"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         archived_at=row["archived_at"],
@@ -1241,6 +1352,7 @@ def _run_from_row(row: sqlite3.Row) -> Run:
         workspace_uri=row["workspace_uri"],
         saved_dag_id=row["saved_dag_id"],
         state_json=row["state_json"],
+        checkpoint_json=row["checkpoint_json"],
         output_text=row["output_text"],
         error_json=row["error_json"],
         lease_owner=row["lease_owner"],

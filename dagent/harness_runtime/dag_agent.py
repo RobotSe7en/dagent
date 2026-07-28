@@ -646,14 +646,19 @@ class DAGAgentLoop:
         response = normalize_chat_response(
             await self.provider.chat(prepared.messages)
         )
-        content = response.content.strip()
-        if not content:
+        raw_content = response.content.strip()
+        if not raw_content:
             raise ValueError("Planner context compactor returned an empty summary.")
+        content, output_truncated = self.context_assembler.truncate_text(
+            raw_content,
+            max_tokens=max_tokens,
+        )
         summary = ContextSummary(
-            content=content[: max_tokens * 6],
+            content=content,
             source_item_count=(previous.source_item_count if previous else 0) + len(items),
             method="model",
             source_truncated=source_truncated,
+            output_truncated=output_truncated,
             reasoning=response.reasoning_content,
             usage=response.usage,
             context_usage=prepared.usage,
