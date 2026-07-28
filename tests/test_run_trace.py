@@ -65,7 +65,7 @@ def test_run_trace_node_wraps_capability_execution() -> None:
 
 
 def test_dag_executor_returns_run_trace_tree_for_ready_layer() -> None:
-    executor = DAGExecutor(capability_executor=_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -102,7 +102,7 @@ def test_dag_executor_returns_run_trace_tree_for_ready_layer() -> None:
 
 def test_tool_agent_loop_returns_run_trace_for_capability_call() -> None:
     executor = _capability_executor()
-    loop = ToolAgentLoop(
+    loop = ToolAgentLoop(runtime_directory=".runtime",
         provider=MockProvider([
             ChatResponse(tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "hi"})]),
             ChatResponse(content="done"),
@@ -142,7 +142,7 @@ def test_agent_capability_trace_contains_inner_loop_children(tmp_path) -> None:
     catalog = CapabilityCatalog(workspace_root=tmp_path)
     ToolCapabilityProvider(_echo_registry()).register_into(catalog)
     capability_executor = CapabilityExecutor(catalog)
-    AgentCapabilityProvider(
+    AgentCapabilityProvider(runtime_directory=".runtime",
         agents={
             "helper": {
                 "provider": provider,
@@ -173,7 +173,7 @@ def test_agent_capability_trace_contains_inner_loop_children(tmp_path) -> None:
         ],
     )
 
-    trace = run(DAGExecutor(capability_executor=capability_executor).execute_next_ready_layer(dag))
+    trace = run(DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor).execute_next_ready_layer(dag))
 
     capability = trace.root.children[0].children[0]
     assert capability.kind == "capability_call"
@@ -200,7 +200,7 @@ def test_agent_capability_inherits_parent_workspace_without_rewriting_boundary(t
     catalog = CapabilityCatalog(workspace_root=tmp_path)
     ToolCapabilityProvider(create_file_tool_registry()).register_into(catalog)
     capability_executor = CapabilityExecutor(catalog)
-    AgentCapabilityProvider(
+    AgentCapabilityProvider(runtime_directory=".runtime",
         agents={
             "helper": {
                 "provider": provider,
@@ -231,7 +231,7 @@ def test_agent_capability_inherits_parent_workspace_without_rewriting_boundary(t
         ],
     )
 
-    trace = run(DAGExecutor(
+    trace = run(DAGExecutor(runtime_directory=".runtime",
         capability_executor=capability_executor,
         workspace_path=run_workspace,
         capability_workspace_root=tmp_path,

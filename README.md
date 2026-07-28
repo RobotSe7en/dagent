@@ -108,7 +108,12 @@ async def main():
         model="your-model",
         api_key_env="OPENAI_API_KEY",
     )
-    runner = dagent.Runner(workspace=".dagent", provider=provider, capabilities=[echo])
+    runner = dagent.Runner(
+        workspace="agent-workspace",
+        runtime_directory=".runtime",
+        provider=provider,
+        capabilities=[echo],
+    )
     agent = dagent.ToolAgent(profile="conversation", capabilities=["tool.echo"])
 
     result = await runner.run(

@@ -115,13 +115,18 @@ bounded preview plus the workspace-relative reference.
 
 ```python
 runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     provider=provider,
     result_storage_policy=dagent.ResultStoragePolicy(
         max_inline_bytes=256 * 1024,
-        internal_directory=".dagent/results",
     ),
 )
 ```
+
+The result directory is `<run-workspace>/.runtime/results` for this runner.
+`ResultStoragePolicy` controls only the inline-size threshold; the runner owns
+the location.
 
 The SDK owns only run-workspace normalization. A host is responsible for durable
 upload, retention, access control, and URL generation.

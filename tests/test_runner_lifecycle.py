@@ -14,6 +14,7 @@ async def test_stream_cancellation_waits_for_sdk_task_cleanup(
     monkeypatch,
 ) -> None:
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([]),
     )
@@ -59,6 +60,7 @@ async def test_stream_cancellation_waits_for_sdk_task_cleanup(
 def test_runner_close_is_idempotent_and_post_close_calls_fail(tmp_path) -> None:
     closed: list[str] = []
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([]),
     )

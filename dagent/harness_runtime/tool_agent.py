@@ -79,6 +79,7 @@ from dagent.schemas.conversation import (
     inline_content,
     stored_content_text,
 )
+from dagent.schemas.common import validate_runtime_directory
 
 
 MAX_TOOL_RESULT_CONTEXT_CHARS = 4000
@@ -255,6 +256,7 @@ class ToolAgent:
                     result,
                     workspace_path=state.workspace_path
                     or current_workspace_root(self.loop.capability_executor.workspace_root),
+                    runtime_directory=self.loop.runtime_directory,
                     policy=self.result_storage_policy,
                 )
                 result = normalized.result
@@ -420,6 +422,7 @@ class ToolAgentLoop:
         provider: ChatProvider,
         capability_executor: CapabilityExecutor,
         tool_adapter: CapabilityToolAdapter,
+        runtime_directory: str,
         enabled_toolsets: Sequence[str] = ("builtin",),
         _llm_retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
         _llm_retry_sleep: LLMRetrySleep = asyncio.sleep,
@@ -427,6 +430,7 @@ class ToolAgentLoop:
         self.provider = provider
         self.capability_executor = capability_executor
         self.tool_adapter = tool_adapter
+        self.runtime_directory = validate_runtime_directory(runtime_directory)
         self.enabled_toolsets = tuple(enabled_toolsets)
         self.llm_retry_policy = _llm_retry_policy
         self.llm_retry_sleep = _llm_retry_sleep
@@ -705,6 +709,7 @@ class ToolAgentLoop:
                             recorded_result,
                             workspace_path=execution_context.workspace_path
                             or current_workspace_root(self.capability_executor.workspace_root),
+                            runtime_directory=self.runtime_directory,
                             policy=result_storage_policy,
                         )
                         recorded_result = normalized.result
@@ -870,6 +875,7 @@ class ToolAgentLoop:
                     capability_result,
                     workspace_path=execution_context.workspace_path
                     or current_workspace_root(self.capability_executor.workspace_root),
+                    runtime_directory=self.runtime_directory,
                     policy=result_storage_policy,
                 )
                 capability_result = normalized.result

@@ -81,6 +81,7 @@ def test_load_config_parses_sdk_builder_planner_frontend(tmp_path: Path) -> None
     runner = dagent.Runner.from_config(
         config_path,
         workspace=tmp_path / "workspace",
+        runtime_directory=".runtime",
         mcp_stdio_stderr="inherit",
     )
     try:

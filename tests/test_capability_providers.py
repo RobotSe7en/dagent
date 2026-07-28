@@ -295,7 +295,7 @@ def test_mcp_skill_and_agent_providers_register_and_execute(tmp_path) -> None:
         manager=FakeMCPManager(),
     ).register_into(registry)
     SkillsCapabilityProvider(skill_roots=[tmp_path / "skills"]).register_into(registry)
-    AgentCapabilityProvider(
+    AgentCapabilityProvider(runtime_directory=".runtime",
         agents={
             "helper": {
                 "system": "You are a helper.",
@@ -346,7 +346,7 @@ def test_agent_provider_rejects_nested_agent_capability_adapter(tmp_path) -> Non
         toolsets=[CapabilityToolset("builtin", ("agent.child",))],
     )
     with pytest.raises(ValueError, match="cannot expose subagents"):
-        AgentCapabilityProvider(
+        AgentCapabilityProvider(runtime_directory=".runtime",
             agents={
                 "helper": {
                     "provider": provider,
@@ -375,7 +375,7 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
         name="helper",
         content="You are a helper agent.",
     )
-    AgentCapabilityProvider(
+    AgentCapabilityProvider(runtime_directory=".runtime",
         agents={
             "helper": {
                 "provider": provider,
@@ -482,7 +482,7 @@ def test_agent_provider_resets_node_session_when_invocation_arguments_change(tmp
         registry,
         toolsets=[CapabilityToolset("builtin", ())],
     )
-    AgentCapabilityProvider(
+    AgentCapabilityProvider(runtime_directory=".runtime",
         agents={
             "helper": {
                 "provider": provider,

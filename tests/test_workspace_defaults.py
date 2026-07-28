@@ -15,13 +15,77 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_runner_defaults_to_managed_dagent_workspace(tmp_path: Path, monkeypatch) -> None:
+def test_runner_uses_explicit_workspace_without_creating_runtime_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     monkeypatch.chdir(tmp_path)
 
-    runner = dagent.Runner(provider=MockProvider([]))
+    runner = dagent.Runner(
+        workspace="sdk-workspace",
+        runtime_directory=".runtime",
+        provider=MockProvider([]),
+    )
 
-    assert runner.workspace == Path(".dagent")
-    assert runner.runtime.capability_catalog.workspace_root == tmp_path / ".dagent"
+    assert runner.workspace == Path("sdk-workspace")
+    assert runner.runtime.capability_catalog.workspace_root == tmp_path / "sdk-workspace"
+    assert not (tmp_path / "sdk-workspace" / ".runtime").exists()
+
+
+def test_runner_requires_explicit_workspace_and_runtime_directory() -> None:
+    with pytest.raises(TypeError, match="workspace"):
+        dagent.Runner(runtime_directory=".runtime", provider=MockProvider([]))
+    with pytest.raises(TypeError, match="runtime_directory"):
+        dagent.Runner(workspace="sdk-workspace", provider=MockProvider([]))
+
+
+@pytest.mark.parametrize(
+    "runtime_directory",
+    (
+        "",
+        ".",
+        "..",
+        "../runtime",
+        "/tmp/runtime",
+        r"C:\runtime",
+        "runtime//state",
+        "runtime/./state",
+        r"runtime\..\state",
+        None,
+        123,
+    ),
+)
+def test_runner_rejects_unsafe_runtime_directory(runtime_directory: object) -> None:
+    with pytest.raises(ValueError, match="runtime_directory"):
+        dagent.Runner(
+            workspace="sdk-workspace",
+            runtime_directory=runtime_directory,
+            provider=MockProvider([]),
+        )
+
+
+def test_text_only_run_does_not_create_private_runtime_directory(
+    tmp_path: Path,
+) -> None:
+    run_workspace = tmp_path / "run"
+    runner = dagent.Runner(
+        workspace=tmp_path / "runner",
+        runtime_directory=".runtime",
+        provider=MockProvider([ChatResponse(content="done")]),
+    )
+
+    result = run(
+        runner.run(
+            dagent.ToolAgent(profile="conversation"),
+            input="hello",
+            workspace_path=run_workspace,
+        )
+    )
+
+    assert result.output_text == "done"
+    assert not (tmp_path / "runner" / ".runtime").exists()
+    assert not (run_workspace / ".runtime").exists()
+    runner.close()
 
 
 def test_tool_agent_uses_run_workspace_for_relative_tool_paths(
@@ -41,7 +105,7 @@ def test_tool_agent_uses_run_workspace_for_relative_tool_paths(
         ),
         ChatResponse(content="done"),
     ])
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=provider)
 
     result = run(
         runner.run(
@@ -52,9 +116,9 @@ def test_tool_agent_uses_run_workspace_for_relative_tool_paths(
 
     assert result.workspace_path is not None
     workspace_path = Path(result.workspace_path)
-    assert workspace_path.parent == tmp_path / ".dagent" / "runs"
+    assert workspace_path.parent == tmp_path / "sdk-workspace" / "runs"
     assert (workspace_path / "shared" / "tool.txt").read_text(encoding="utf-8") == "hi"
-    assert not (tmp_path / ".dagent" / "shared" / "tool.txt").exists()
+    assert not (tmp_path / "sdk-workspace" / "shared" / "tool.txt").exists()
 
 
 def test_runner_uses_resolved_workspace_after_cwd_changes(
@@ -78,7 +142,7 @@ def test_runner_uses_resolved_workspace_after_cwd_changes(
         ),
         ChatResponse(content="done"),
     ])
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=provider)
 
     monkeypatch.chdir(other)
     result = run(
@@ -88,12 +152,12 @@ def test_runner_uses_resolved_workspace_after_cwd_changes(
         )
     )
 
-    assert not (other / ".dagent").exists()
+    assert not (other / "sdk-workspace").exists()
     assert result.workspace_path is not None
     workspace_path = Path(result.workspace_path)
-    assert workspace_path.parent == project / ".dagent" / "runs"
+    assert workspace_path.parent == project / "sdk-workspace" / "runs"
     assert (workspace_path / "shared" / "chdir.txt").read_text(encoding="utf-8") == "hi"
-    assert not (project / ".dagent" / "shared" / "chdir.txt").exists()
+    assert not (project / "sdk-workspace" / "shared" / "chdir.txt").exists()
 
 
 def test_dag_agent_uses_run_workspace_for_relative_tool_paths(
@@ -109,7 +173,7 @@ def test_dag_agent_uses_run_workspace_for_relative_tool_paths(
         )),
         ChatResponse(content=final_answer_response("done")),
     ])
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=provider)
 
     result = run(
         runner.run(
@@ -120,12 +184,12 @@ def test_dag_agent_uses_run_workspace_for_relative_tool_paths(
 
     assert result.workspace_path is not None
     workspace_path = Path(result.workspace_path)
-    assert workspace_path.parent == tmp_path / ".dagent" / "runs"
+    assert workspace_path.parent == tmp_path / "sdk-workspace" / "runs"
     system_prompt = provider.requests[0]["messages"][0]["content"]
     assert "## Runtime Context" in system_prompt
     assert f"- Workspace root: {workspace_path.resolve()}" in system_prompt
     assert (workspace_path / "shared" / "dag.txt").read_text(encoding="utf-8") == "hi"
-    assert not (tmp_path / ".dagent" / "shared" / "dag.txt").exists()
+    assert not (tmp_path / "sdk-workspace" / "shared" / "dag.txt").exists()
 
 
 def test_tool_agent_conversation_continuation_uses_a_new_run_workspace(
@@ -155,7 +219,7 @@ def test_tool_agent_conversation_continuation_uses_a_new_run_workspace(
         ),
         ChatResponse(content="second done"),
     ])
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=provider)
     agent = dagent.ToolAgent(profile="conversation")
 
     first = run(
@@ -180,8 +244,8 @@ def test_tool_agent_conversation_continuation_uses_a_new_run_workspace(
     assert not (first_workspace / "shared" / "second.txt").exists()
     assert not (second_workspace / "shared" / "first.txt").exists()
     assert (second_workspace / "shared" / "second.txt").read_text(encoding="utf-8") == "two"
-    assert not (tmp_path / ".dagent" / "shared" / "first.txt").exists()
-    assert not (tmp_path / ".dagent" / "shared" / "second.txt").exists()
+    assert not (tmp_path / "sdk-workspace" / "shared" / "first.txt").exists()
+    assert not (tmp_path / "sdk-workspace" / "shared" / "second.txt").exists()
 
 
 def test_tool_agent_can_use_exact_workspace_path_without_run_subdirectory(
@@ -202,7 +266,7 @@ def test_tool_agent_can_use_exact_workspace_path_without_run_subdirectory(
         ),
         ChatResponse(content="done"),
     ])
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=provider)
 
     result = run(
         runner.run(
@@ -232,7 +296,7 @@ def test_conversation_continuation_can_choose_a_new_exact_workspace(
         ChatResponse(content="first done"),
         ChatResponse(content="second done"),
     ])
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=provider)
     agent = dagent.ToolAgent(profile="conversation")
 
     first = run(
@@ -276,7 +340,7 @@ def test_dag_agent_conversation_continuation_uses_a_new_run_workspace(
         )),
         ChatResponse(content=final_answer_response("second done")),
     ])
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=provider)
     agent = dagent.DagAgent()
 
     first = run(
@@ -301,8 +365,8 @@ def test_dag_agent_conversation_continuation_uses_a_new_run_workspace(
     assert not (first_workspace / "shared" / "dag_second.txt").exists()
     assert not (second_workspace / "shared" / "dag_first.txt").exists()
     assert (second_workspace / "shared" / "dag_second.txt").read_text(encoding="utf-8") == "two"
-    assert not (tmp_path / ".dagent" / "shared" / "dag_first.txt").exists()
-    assert not (tmp_path / ".dagent" / "shared" / "dag_second.txt").exists()
+    assert not (tmp_path / "sdk-workspace" / "shared" / "dag_first.txt").exists()
+    assert not (tmp_path / "sdk-workspace" / "shared" / "dag_second.txt").exists()
 
 
 def test_static_dag_artifacts_live_under_dagent_runs(
@@ -321,17 +385,17 @@ def test_static_dag_artifacts_live_under_dagent_runs(
             boundary=dagent.Boundary(allowed_paths=[note.path.as_expr()]),
         )
     )
-    runner = dagent.Runner(provider=MockProvider([]))
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=MockProvider([]))
 
     result = run(runner.run(dag))
 
     assert result.workspace_path is not None
     workspace_path = Path(result.workspace_path)
-    assert workspace_path.parent == tmp_path / ".dagent" / "runs"
+    assert workspace_path.parent == tmp_path / "sdk-workspace" / "runs"
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
     invocation = result.trace.root.children[0].children[0].capability_execution.invocation
     assert invocation.arguments["path"] == "notes/output.txt"
-    assert not (tmp_path / ".dagent" / "notes" / "output.txt").exists()
+    assert not (tmp_path / "sdk-workspace" / "notes" / "output.txt").exists()
 
 
 def test_static_dag_can_use_exact_workspace_path_without_run_subdirectory(
@@ -351,7 +415,7 @@ def test_static_dag_can_use_exact_workspace_path_without_run_subdirectory(
             boundary=dagent.Boundary(allowed_paths=[note.path.as_expr()]),
         )
     )
-    runner = dagent.Runner(provider=MockProvider([]))
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=MockProvider([]))
 
     result = run(runner.run(dag, workspace_path=workspace))
 
@@ -370,7 +434,7 @@ def test_static_dag_uses_resolved_workspace_after_cwd_changes(
     project.mkdir()
     other.mkdir()
     monkeypatch.chdir(project)
-    runner = dagent.Runner(provider=MockProvider([]))
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=MockProvider([]))
     dag = dagent.Dag("write_note")
     note = dag.artifact("note", "notes/output.txt")
     dag.add_node(
@@ -388,9 +452,9 @@ def test_static_dag_uses_resolved_workspace_after_cwd_changes(
 
     assert result.workspace_path is not None
     workspace_path = Path(result.workspace_path)
-    assert workspace_path.parent == project / ".dagent" / "runs"
+    assert workspace_path.parent == project / "sdk-workspace" / "runs"
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
-    assert not (other / ".dagent").exists()
+    assert not (other / "sdk-workspace").exists()
 
 
 def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
@@ -434,7 +498,7 @@ def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
         ),
         ChatResponse(content="done"),
     ])
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=provider)
     other = tmp_path / "other"
     other.mkdir()
     monkeypatch.chdir(other)
@@ -447,14 +511,14 @@ def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
         )
     )
 
-    assert FakeSandboxSession.instances[0].workspace_root == tmp_path / ".dagent"
+    assert FakeSandboxSession.instances[0].workspace_root == tmp_path / "sdk-workspace"
     assert FakeSandboxSession.instances[0].closed is True
     assert result.workspace_path is not None
     workspace_path = Path(result.workspace_path)
-    assert workspace_path.parent == tmp_path / ".dagent" / "runs"
+    assert workspace_path.parent == tmp_path / "sdk-workspace" / "runs"
     assert workspace_path.name == result.run_id
     assert (workspace_path / "shared" / "sandbox.txt").read_text(encoding="utf-8") == "hi"
-    assert not (tmp_path / ".dagent" / "shared" / "sandbox.txt").exists()
+    assert not (tmp_path / "sdk-workspace" / "shared" / "sandbox.txt").exists()
 
 
 def test_sandbox_rejects_exact_workspace_path_outside_runner_workspace(
@@ -477,7 +541,7 @@ def test_sandbox_rejects_exact_workspace_path_outside_runner_workspace(
             return ToolOutput(content="unused")
 
     monkeypatch.setattr(runner_module, "SandboxSession", FakeSandboxSession)
-    runner = dagent.Runner(provider=MockProvider([ChatResponse(content="done")]))
+    runner = dagent.Runner(workspace="sdk-workspace", runtime_directory=".runtime", provider=MockProvider([ChatResponse(content="done")]))
 
     with pytest.raises(runner_module.SandboxExecutionError, match="workspace_path"):
         run(

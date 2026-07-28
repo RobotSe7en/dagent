@@ -18,7 +18,8 @@ provider = dagent.Provider(
     api_key_env="OPENAI_API_KEY",
 )
 runner = dagent.Runner(
-    workspace=".dagent",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     provider=provider,
     capabilities=[],
     skill_roots=["team-skills"],
@@ -33,14 +34,25 @@ control. Process commands, health, credentials, persistence, scheduling, and
 container lifecycle are host responsibilities; the SDK intentionally exposes
 no worker or service loop.
 
-`Runner(...)` does not read `config.yaml` implicitly.
+`Runner(...)` does not read `config.yaml` implicitly. Both `workspace` and
+`runtime_directory` are required SDK inputs. `runtime_directory` must be a
+non-empty, traversal-free relative path; the host chooses the name and may put
+the workspace on tmpfs when runtime data should remain memory-backed.
 
-The runner workspace defaults to `.dagent`, and each run records its own
-directory under `.dagent/runs/<run_id>`. In ToolAgent and DagAgent message runs,
-built-in file and shell tool relative paths resolve from the current run
-workspace. Passing `workspace=...` uses that exact directory as the dagent
-runtime workspace, so run workspaces live under `<workspace>/runs/<run_id>` by
-default.
+Each run records its own directory under `<workspace>/runs/<run_id>`. In
+ToolAgent and DagAgent message runs, built-in file and shell tool relative paths
+resolve from the current run workspace. SDK-private data is isolated under the
+chosen relative directory:
+
+- `<workspace>/<runtime_directory>/conversations` stores content-addressed
+  resources needed by later conversation turns.
+- `<run-workspace>/<runtime_directory>/results` stores externalized tool and MCP
+  output.
+- `<run-workspace>/<runtime_directory>/history` holds resources restored into a
+  new run workspace.
+
+These directories are lazy. Constructing a runner, running text-only turns, and
+keeping small results inline do not create them.
 
 When an application already owns the execution directory, pass
 `workspace_path=...` to `Runner.run(...)` or `Runner.stream(...)`. This uses that
@@ -59,6 +71,12 @@ profile Markdown remains unchanged; runtime paths are never written into or
 substituted into profile content. Lower-level profile-backed helpers such as
 `FeedbackLearnerAgent` use the same section when their call receives
 `workspace_path`.
+
+The model receives the resolved run workspace in that system section. Uploaded
+attachments and externalized results are represented in conversation input by
+workspace-relative paths, media type, byte count, and digest, so file tools can
+open them without exposing absolute paths or the runner-level conversation
+backing store.
 
 ## Provider Options
 
@@ -120,7 +138,8 @@ or profile directories should come from YAML:
 ```python
 runner = dagent.Runner.from_config(
     "config.yaml",
-    workspace=".dagent",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     capabilities=[search],
 )
 ```
@@ -161,7 +180,7 @@ default `typed_spec` asks the provider for a typed planner graph.
 executing Python, and immediately normalizes it to canonical `DAGSpec`:
 
 ```python
-runner = dagent.Runner(provider=provider, planner_frontend="sdk_builder")
+runner = dagent.Runner(workspace="agent-workspace", runtime_directory=".runtime", provider=provider, planner_frontend="sdk_builder")
 ```
 
 The Builder frontend packages and explicitly injects a version-locked
@@ -283,7 +302,8 @@ Register tools, skill roots, and MCP servers when the runner is constructed:
 
 ```python
 runner = dagent.Runner(
-    workspace=".dagent",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     provider=provider,
     capabilities=[search],
     skill_roots=["team-skills"],
@@ -425,7 +445,8 @@ provider = dagent.Provider(
     api_key_env="OPENAI_API_KEY",
 )
 runner = dagent.Runner(
-    workspace=".dagent",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     provider=provider,
     skill_roots=skill_roots,
     mcp_servers=mcp_servers,
@@ -438,7 +459,7 @@ If the new runtime is an overlay of an existing runner, use
 
 ```python
 derived = runner.derive(
-    workspace=".dagent/effective",
+    workspace="effective-workspace",
     provider=provider,
     capabilities=python_tool_bindings,
     inherit_local_tools=True,
@@ -448,6 +469,9 @@ derived = runner.derive(
     profile_root=profile_root,
 )
 ```
+
+Derived runners inherit `runtime_directory`; pass a different safe relative
+value only when the derived runtime deliberately uses another private layout.
 
 The derived runner has its own catalog, MCP registrations, skill roots, agent
 registrations, sandbox config, and validation settings. It reuses the base
@@ -478,7 +502,7 @@ Plain chat-only responses are not validated.
 Built-in profiles are packaged resources. User profile directories are explicit:
 
 ```python
-runner = dagent.Runner(provider=provider, profile_root="profiles")
+runner = dagent.Runner(workspace="agent-workspace", runtime_directory=".runtime", provider=provider, profile_root="profiles")
 agent = dagent.ToolAgent(profile="reviewer")
 ```
 

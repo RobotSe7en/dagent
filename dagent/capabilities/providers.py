@@ -27,6 +27,7 @@ from dagent.schemas import (
     ResultStoragePolicy,
     UserMessage,
 )
+from dagent.schemas.common import validate_runtime_directory
 from dagent.capabilities.tools.boundary import (
     enforce_command_allowed,
     enforce_command_paths_allowed,
@@ -169,10 +170,12 @@ class AgentCapabilityProvider:
         self,
         agents: dict[str, dict[str, Any]],
         *,
+        runtime_directory: str,
         session_store: AgentNodeSessionStore | None = None,
         prompt_builder: PromptBuilder | None = None,
     ) -> None:
         self.agents = agents
+        self.runtime_directory = validate_runtime_directory(runtime_directory)
         self.session_store = session_store or AgentNodeSessionStore()
         self.prompt_builder = prompt_builder or PromptBuilder()
 
@@ -247,6 +250,7 @@ class AgentCapabilityProvider:
             provider=provider,
             capability_executor=capability_executor,
             tool_adapter=tool_adapter,
+            runtime_directory=self.runtime_directory,
             enabled_toolsets=enabled_toolsets,
         )
         fingerprint = _agent_invocation_fingerprint(invocation)

@@ -59,7 +59,7 @@ MCP tools、skill capabilities、memory capabilities、agent capabilities、DAG�
 closed，而不会回退到 host 执行。对这些 capabilities 请使用 `execution="local"`。
 
 `Runner.test_capability(..., execution="sandbox")` 使用 runner workspace 作为 sandbox
-workspace。默认 runner workspace 是 `.dagent`；`Runner(workspace=...)` 下已有的文件
+workspace。runner workspace 由 `Runner(workspace=...)` 显式指定；该目录下已有的文件
 对受支持的内置工具可见。
 
 ## Python Function Tools
@@ -88,7 +88,7 @@ def search(q: str) -> SearchResult:
 可以在构造时或之后注册 tools：
 
 ```python
-runner = dagent.Runner(provider=provider, capabilities=[search])
+runner = dagent.Runner(workspace="agent-workspace", runtime_directory=".runtime", provider=provider, capabilities=[search])
 runner.add_tool(search)
 ```
 

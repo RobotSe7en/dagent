@@ -42,7 +42,6 @@ from dagent.capabilities.workspace import workspace_context
 from dagent.dag_builder import Dag
 from dagent.config import (
     DEFAULT_RUNS_DIR,
-    DEFAULT_WORKSPACE,
     UserPythonToolConfig,
     load_config,
     resolve_config_path,
@@ -127,6 +126,7 @@ from dagent.schemas import (
     iter_dag_invocations,
 )
 from dagent.schemas.run_id import validate_run_id
+from dagent.schemas.common import validate_runtime_directory
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
@@ -145,7 +145,8 @@ class Runner:
     def __init__(
         self,
         *,
-        workspace: str | Path = DEFAULT_WORKSPACE,
+        workspace: str | Path,
+        runtime_directory: str | Path,
         provider: ChatProvider | None = None,
         capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
@@ -158,6 +159,7 @@ class Runner:
         result_storage_policy: ResultStoragePolicy | None = None,
     ) -> None:
         self.workspace = Path(workspace)
+        self.runtime_directory = validate_runtime_directory(runtime_directory)
         self.profile_root = Path(profile_root) if profile_root is not None else None
         self.sandbox = sandbox or SandboxConfig()
         self._mcp_stdio_stderr = validate_mcp_stdio_stderr(mcp_stdio_stderr)
@@ -185,6 +187,7 @@ class Runner:
         self._local_tool_binding_ids: set[str] = set()
         self._runtime = _create_runtime(
             workspace=self.workspace,
+            runtime_directory=self.runtime_directory,
             provider=provider,
             capabilities=initial_capabilities,
             validator=validator,
@@ -210,7 +213,8 @@ class Runner:
         cls,
         path: str | Path | None = None,
         *,
-        workspace: str | Path = DEFAULT_WORKSPACE,
+        workspace: str | Path,
+        runtime_directory: str | Path,
         capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
         skill_roots: list[str | Path] | None = None,
@@ -236,6 +240,7 @@ class Runner:
         )
         return cls(
             workspace=workspace,
+            runtime_directory=runtime_directory,
             provider=OpenAICompatibleProvider(config.provider),
             capabilities=capabilities,
             validator=resolved_validator,
@@ -276,6 +281,7 @@ class Runner:
         self,
         *,
         workspace: str | Path | None = None,
+        runtime_directory: str | Path | None = None,
         provider: ChatProvider | None = None,
         capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
@@ -321,6 +327,11 @@ class Runner:
             )
         derived = Runner(
             workspace=self._runtime.capability_catalog.workspace_root if workspace is None else workspace,
+            runtime_directory=(
+                self.runtime_directory
+                if runtime_directory is None
+                else runtime_directory
+            ),
             provider=resolved_provider,
             capabilities=overlay_capabilities,
             validator=resolved_validator,
@@ -1444,7 +1455,7 @@ class Runner:
             else None
         )
         plan = ResolvedRunPlan(
-            schema_version=3,
+            schema_version=4,
             runtime_kind=state.kind,
             tool_profile=runtime.tool_agent.profile.model_copy(deep=True),
             planner_profile=runtime.dag_agent.profile.model_copy(deep=True),
@@ -1470,6 +1481,7 @@ class Runner:
             planner_skill=runtime.dag_agent.loop.planner_skill,
             context_policy=runtime.tool_agent.context_policy,
             result_storage_policy=runtime.tool_agent.result_storage_policy,
+            runtime_directory=runtime.runtime_directory,
             context_window_tokens=(
                 runtime.tool_agent.context_assembler.context_window_tokens
             ),
@@ -1852,6 +1864,7 @@ class Runner:
             planner_skill=plan.planner_skill,
             context_policy=plan.context_policy,
             result_storage_policy=plan.result_storage_policy,
+            runtime_directory=plan.runtime_directory,
             context_window_tokens=plan.context_window_tokens,
             output_reserve_tokens=plan.output_reserve_tokens,
         )
@@ -2032,7 +2045,10 @@ class Runner:
             return definition
 
         config = self._registered_agent_runtime_config(agent)
-        AgentCapabilityProvider({name: config}).register_into(self._runtime.capability_catalog)
+        AgentCapabilityProvider(
+            {name: config},
+            runtime_directory=self.runtime_directory,
+        ).register_into(self._runtime.capability_catalog)
         self._registered_agent_configs[name] = agent
         self._registered_agent_runtime_configs[name] = config
         self._runtime.refresh_toolsets()
@@ -2146,6 +2162,7 @@ def _assemble_runtime(
     enable_validation: bool,
     max_validation_retries: int,
     profile_root: str | Path | None,
+    runtime_directory: str,
     planner_frontend: PlannerFrontend = "typed_spec",
     planner_skill: PlannerSkillSnapshot | None = None,
     context_policy: ContextPolicy | None = None,
@@ -2168,6 +2185,7 @@ def _assemble_runtime(
             provider=provider,
             capability_executor=capability_executor,
             tool_adapter=tool_adapter,
+            runtime_directory=runtime_directory,
         ),
         profile=_resolve_profile(tool_profile, profile_root=profile_root),
         max_steps=tool_max_steps,
@@ -2184,6 +2202,7 @@ def _assemble_runtime(
             dag_executor=DAGExecutor(
                 capability_executor=capability_executor,
                 capability_workspace_root=catalog.workspace_root,
+                runtime_directory=runtime_directory,
                 result_storage_policy=resolved_result_storage_policy,
             ),
             tool_adapter=tool_adapter,
@@ -2208,12 +2227,14 @@ def _assemble_runtime(
         max_validation_retries=max_validation_retries,
         capability_catalog=catalog,
         capability_executor=capability_executor,
+        runtime_directory=runtime_directory,
     )
 
 
 def _create_runtime(
     *,
     workspace: str | Path,
+    runtime_directory: str,
     provider: ChatProvider | None,
     capabilities: Iterable[CapabilityBinding],
     tool_profile: str | AgentProfile = "conversation",
@@ -2252,6 +2273,7 @@ def _create_runtime(
         enable_validation=resolved_validator is not None,
         max_validation_retries=1,
         profile_root=profile_root,
+        runtime_directory=runtime_directory,
         planner_frontend=planner_frontend,
         planner_skill=planner_skill,
         result_storage_policy=result_storage_policy,
@@ -2282,6 +2304,7 @@ def _runtime_from_existing(
         enable_validation=base.enable_validation,
         max_validation_retries=base.max_validation_retries,
         profile_root=profile_root,
+        runtime_directory=base.runtime_directory,
         planner_frontend=base.dag_agent.loop.planner_frontend,
         planner_skill=base.dag_agent.loop.planner_skill,
         context_policy=context_policy,

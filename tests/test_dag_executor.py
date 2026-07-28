@@ -69,7 +69,7 @@ def node(
 
 
 def test_executor_runs_ordered_dag_and_records_trace() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -92,7 +92,7 @@ def test_executor_runs_ordered_dag_and_records_trace() -> None:
 
 
 def test_executor_skips_trace_snapshot_when_layer_makes_no_progress() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(dag_id="dag_1", task_id="task_1", nodes=[node("a")])
     events: list[dict] = []
 
@@ -123,7 +123,7 @@ def test_dag_event_emitter_skips_identical_consecutive_dags() -> None:
 
 
 def test_risk_override_promotes_write_file_to_medium() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -147,7 +147,7 @@ def test_risk_override_promotes_write_file_to_medium() -> None:
 
 
 def test_medium_risk_dag_requires_approval() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -160,7 +160,7 @@ def test_medium_risk_dag_requires_approval() -> None:
 
 
 def test_high_risk_dag_requires_approval() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -173,7 +173,7 @@ def test_high_risk_dag_requires_approval() -> None:
 
 
 def test_low_risk_broad_paths_do_not_require_approval() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -294,7 +294,7 @@ def _tool_capability_id(tool_name: str) -> str:
 
 
 def test_executor_treats_unapproved_boundary_violation_as_node_failure() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -318,7 +318,7 @@ def test_executor_treats_unapproved_boundary_violation_as_node_failure() -> None
 
 
 def test_executor_approved_status_does_not_authorize_boundary_override() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -339,7 +339,7 @@ def test_executor_approved_status_does_not_authorize_boundary_override() -> None
 
 
 def test_executor_explicit_boundary_authorization_allows_path_outside_node_allowed_paths() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -362,7 +362,7 @@ def test_executor_explicit_boundary_authorization_allows_path_outside_node_allow
 
 
 def test_approved_dag_still_blocks_hard_boundary_command() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -383,7 +383,7 @@ def test_approved_dag_still_blocks_hard_boundary_command() -> None:
 
 
 def test_executor_embedded_approved_status_does_not_authorize_boundary_override() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     child_spec = DAGSpec(
         id="child",
         name="Child",
@@ -413,7 +413,7 @@ def test_executor_embedded_approved_status_does_not_authorize_boundary_override(
 
 
 def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -447,7 +447,7 @@ def test_executor_passes_node_context_to_agent_capability(tmp_path) -> None:
         catalog,
         toolsets=[CapabilityToolset("builtin", ())],
     )
-    AgentCapabilityProvider(
+    AgentCapabilityProvider(runtime_directory=".runtime",
         agents={
             "helper": {
                 "provider": provider,
@@ -463,7 +463,7 @@ def test_executor_passes_node_context_to_agent_capability(tmp_path) -> None:
     ).register_into(catalog)
     workspace = tmp_path / "run"
     workspace.mkdir()
-    executor = DAGExecutor(
+    executor = DAGExecutor(runtime_directory=".runtime",
         capability_executor=capability_executor,
         workspace_path=workspace,
         artifacts={
@@ -530,7 +530,7 @@ def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> No
         catalog,
         toolsets=[CapabilityToolset("builtin", ("tool.echo",))],
     )
-    AgentCapabilityProvider(
+    AgentCapabilityProvider(runtime_directory=".runtime",
         agents={
             "helper": {
                 "provider": provider,
@@ -544,7 +544,7 @@ def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> No
             }
         }
     ).register_into(catalog)
-    executor = DAGExecutor(
+    executor = DAGExecutor(runtime_directory=".runtime",
         capability_executor=capability_executor,
         workspace_path=tmp_path,
     )
@@ -590,7 +590,7 @@ def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> No
 
 
 def test_executor_can_run_one_ready_layer_at_a_time() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -623,7 +623,7 @@ def test_executor_can_run_one_ready_layer_at_a_time() -> None:
 
 
 def test_executor_resolves_completed_node_value_into_downstream_args() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -655,7 +655,7 @@ def test_executor_resolves_completed_node_value_into_downstream_args() -> None:
 
 
 def test_stepwise_executor_resolves_value_expr_from_initial_results() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -685,7 +685,7 @@ def test_stepwise_executor_resolves_value_expr_from_initial_results() -> None:
 
 
 def test_executor_rejects_node_value_ref_without_completed_dependency() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -712,7 +712,7 @@ def test_executor_rejects_node_value_ref_without_completed_dependency() -> None:
 
 
 def test_tool_node_failure_marks_node_failed() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     failing_node = tool_node(
         "fragile",
         tool="fail_tool",
@@ -731,7 +731,7 @@ def test_tool_node_failure_marks_node_failed() -> None:
 
 
 def test_tool_node_boundary_violation_records_failed_node() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",

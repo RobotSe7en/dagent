@@ -369,7 +369,7 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
     )
     loop = DAGAgentLoop(
         provider=provider,
-        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        dag_executor=DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor),
         tool_adapter=tool_adapter,
     )
     agent = DAGAgent(
@@ -414,7 +414,7 @@ def test_dag_agent_rejects_capability_outside_enabled_toolset() -> None:
     ToolCapabilityProvider(registry).register_into(capability_catalog)
     loop = DAGAgentLoop(
         provider=provider,
-        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        dag_executor=DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor),
         tool_adapter=CapabilityToolAdapter(
             capability_catalog,
             toolsets=[CapabilityToolset("builtin", ("tool.echo",))],
@@ -452,7 +452,7 @@ def test_dag_agent_execute_rejects_capability_outside_enabled_toolset() -> None:
     ToolCapabilityProvider(registry).register_into(capability_catalog)
     loop = DAGAgentLoop(
         provider=provider,
-        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        dag_executor=DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor),
         tool_adapter=CapabilityToolAdapter(
             capability_catalog,
             toolsets=[CapabilityToolset("builtin", ("tool.echo",))],
@@ -497,7 +497,7 @@ def test_dag_agent_execute_rejects_entry_observation_without_replanning() -> Non
     capability_executor = CapabilityExecutor(CapabilityCatalog())
     loop = DAGAgentLoop(
         provider=provider,
-        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        dag_executor=DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor),
         tool_adapter=CapabilityToolAdapter(
             capability_executor.catalog,
             toolsets=[CapabilityToolset("builtin", ())],

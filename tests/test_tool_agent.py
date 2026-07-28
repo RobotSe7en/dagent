@@ -26,7 +26,7 @@ def make_loop(tmp_path: Path, provider: MockProvider) -> ToolAgentLoop:
     capability_catalog = CapabilityCatalog(workspace_root=tmp_path)
     capability_executor = CapabilityExecutor(capability_catalog)
     ToolCapabilityProvider(create_file_tool_registry()).register_into(capability_catalog)
-    return ToolAgentLoop(
+    return ToolAgentLoop(runtime_directory=".runtime",
         provider=provider,
         capability_executor=capability_executor,
         tool_adapter=_tool_adapter(capability_catalog),
@@ -208,7 +208,7 @@ def test_tool_agent_fast_review_guard_preserves_execution_context(tmp_path: Path
         ]
     )
     agent = ToolAgent(
-        loop=ToolAgentLoop(
+        loop=ToolAgentLoop(runtime_directory=".runtime",
             provider=provider,
             capability_executor=CapabilityExecutor(catalog),
             tool_adapter=_tool_adapter(catalog),
@@ -261,7 +261,7 @@ def test_tool_agent_guard_records_handler_exception_as_failed(
         ]
     )
     agent = ToolAgent(
-        loop=ToolAgentLoop(
+        loop=ToolAgentLoop(runtime_directory=".runtime",
             provider=provider,
             capability_executor=CapabilityExecutor(catalog),
             tool_adapter=_tool_adapter(catalog),
@@ -607,7 +607,7 @@ def test_tool_agent_review_resume_reuses_original_tool_call_name(tmp_path: Path)
         ]
     )
     agent = ToolAgent(
-        loop=ToolAgentLoop(
+        loop=ToolAgentLoop(runtime_directory=".runtime",
             provider=provider,
             capability_executor=CapabilityExecutor(catalog),
             tool_adapter=_tool_adapter(catalog),

@@ -11,7 +11,8 @@ Skills 是通过 skill roots 和 managed installs 发现的可读 instruction as
 ```python
 runner = dagent.Runner(
     provider=provider,
-    workspace=".dagent",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     skill_roots=["team-skills"],
 )
 

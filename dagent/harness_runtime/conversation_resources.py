@@ -16,10 +16,7 @@ from dagent.schemas import (
     ToolResultMessage,
     UserMessage,
 )
-
-
-_RESOURCE_DIRECTORY = ".dagent/conversations"
-_MATERIALIZED_DIRECTORY = ".dagent/history"
+from dagent.schemas.common import validate_runtime_directory
 
 
 class ConversationResourceError(RuntimeError):
@@ -29,9 +26,19 @@ class ConversationResourceError(RuntimeError):
 class ConversationResourceStore:
     """Content-addressed local store for attachments and externalized results."""
 
-    def __init__(self, workspace_root: str | Path) -> None:
+    def __init__(
+        self,
+        workspace_root: str | Path,
+        runtime_directory: str,
+    ) -> None:
         root = Path(workspace_root).expanduser().resolve()
-        self.root = (root / _RESOURCE_DIRECTORY).resolve()
+        self.runtime_directory = validate_runtime_directory(runtime_directory)
+        runtime_path = PurePosixPath(self.runtime_directory)
+        self.root = root.joinpath(*runtime_path.parts, "conversations").resolve()
+        try:
+            self.root.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("runtime_directory escapes the runner workspace.") from exc
 
     def persist(
         self,
@@ -75,22 +82,22 @@ class ConversationResourceStore:
             existing = materialized.get(sha256)
             if existing is not None:
                 return existing
+            current = _resolve_workspace_resource(workspace, path)
+            if current.is_file():
+                _read_verified(
+                    current,
+                    byte_length=byte_length,
+                    sha256=sha256,
+                    label=path,
+                )
+                materialized[sha256] = path
+                return path
             object_path = self._object_path(conversation.id, sha256)
             if not object_path.is_file():
-                current = _resolve_workspace_resource(workspace, path)
-                if current.is_file():
-                    data = _read_verified(
-                        current,
-                        byte_length=byte_length,
-                        sha256=sha256,
-                        label=path,
-                    )
-                    self._write_object(conversation.id, sha256, data)
-                else:
-                    raise ConversationResourceError(
-                        "Conversation resource is unavailable: "
-                        f"{path} (sha256={sha256})."
-                    )
+                raise ConversationResourceError(
+                    "Conversation resource is unavailable: "
+                    f"{path} (sha256={sha256})."
+                )
             data = _read_verified(
                 object_path,
                 byte_length=byte_length,
@@ -98,7 +105,11 @@ class ConversationResourceStore:
                 label=sha256,
             )
             suffix = _safe_media_suffix(media_type)
-            relative = f"{_MATERIALIZED_DIRECTORY}/{sha256}{suffix}"
+            relative = (
+                PurePosixPath(self.runtime_directory)
+                / "history"
+                / f"{sha256}{suffix}"
+            ).as_posix()
             destination = _resolve_workspace_resource(workspace, relative)
             _write_verified_file(destination, data)
             materialized[sha256] = relative

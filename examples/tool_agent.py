@@ -36,6 +36,8 @@ async def main() -> None:
         ]
     )
     runner = dagent.Runner(
+        workspace="agent-workspace",
+        runtime_directory=".runtime",
         provider=provider,
         capabilities=[echo],
     )

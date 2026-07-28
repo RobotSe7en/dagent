@@ -98,10 +98,10 @@ def runtime_for(
     max_cycles: int = 6,
 ) -> HarnessRuntime:
     dag_agent_loop.max_cycles = max_cycles
-    return HarnessRuntime(
+    return HarnessRuntime(runtime_directory=".runtime",
         provider=dag_agent_loop.provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(
+            loop=ToolAgentLoop(runtime_directory=".runtime",
                 provider=dag_agent_loop.provider,
                 capability_executor=executor.capability_executor,
                 tool_adapter=_tool_adapter(executor.capability_executor.catalog),
@@ -122,7 +122,7 @@ def runtime_for(
 
 
 def dag_loop_for(provider: MockProvider, executor: DAGExecutor | None = None) -> DAGAgentLoop:
-    dag_executor = executor or DAGExecutor(capability_executor=make_capability_executor())
+    dag_executor = executor or DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     return DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
@@ -429,7 +429,7 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
         ChatResponse(content=no_change_response()),
     ])
     dag_agent = dag_loop_for(provider)
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
 
     loop_outcome = run(runtime.dag_agent.run("Do a safe task", task_id="task_1", review_level="fast"))
@@ -451,7 +451,7 @@ def test_harness_runtime_careful_reviews_initial_dag() -> None:
     )
     provider = MockProvider([ChatResponse(content=typed_response_from_dag(planned))])
     dag_agent = dag_loop_for(provider)
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
 
     loop_outcome = run(runtime.dag_agent.run("Do a reviewed task", task_id="task_1", review_level="careful"))
@@ -468,7 +468,7 @@ def test_harness_runtime_dag_review_approval_authorizes_node_boundaries() -> Non
     provider = MockProvider([ChatResponse(content=final_answer_response(
         "Boundary-approved DAG completed."
     ))])
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     runtime = runtime_for(dag_agent_loop=dag_loop_for(provider, executor), executor=executor)
     record = dag_state(
         task_id="task_boundary_review",
@@ -513,7 +513,7 @@ def test_harness_runtime_dag_review_approval_authorizes_node_boundaries() -> Non
 
 def test_harness_runtime_fast_replan_uses_host_inferred_node_boundaries() -> None:
     provider = MockProvider([])
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     dag_loop = dag_loop_for(provider, executor)
     record = dag_state(
         task_id="task_fast_boundary",
@@ -561,7 +561,7 @@ def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
             ChatResponse(content=no_change_response()),
             ChatResponse(content=final_answer_response("Both nodes completed.")),
         ])),
-        executor=DAGExecutor(capability_executor=make_capability_executor()),
+        executor=DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = dag_state(
@@ -606,7 +606,7 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
             ChatResponse(content=no_change_response()),
             ChatResponse(content=final_answer_response("Adjusted and completed.")),
         ])),
-        executor=DAGExecutor(capability_executor=make_capability_executor()),
+        executor=DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = dag_state(
@@ -655,7 +655,7 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
         dag_agent_loop=dag_loop_for(MockProvider([
             ChatResponse(content=typed_response_from_dag(adjusted))
         ])),
-        executor=DAGExecutor(capability_executor=make_capability_executor()),
+        executor=DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = dag_state(
@@ -736,7 +736,7 @@ def test_harness_runtime_preserves_rerun_nodes_through_review_checkpoint() -> No
         ChatResponse(content=no_change_response()),
         ChatResponse(content=final_answer_response("Rerun completed.")),
     ])
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     loop = dag_loop_for(provider, executor)
     runtime = runtime_for(dag_agent_loop=loop, executor=executor)
     initial = DAG(
@@ -789,7 +789,7 @@ def test_harness_runtime_preserves_rerun_nodes_through_review_checkpoint() -> No
 def test_harness_runtime_replans_after_tool_failure() -> None:
     capability_executor = make_capability_executor()
     tool_adapter = _tool_adapter(capability_executor.catalog)
-    executor = DAGExecutor(capability_executor=capability_executor)
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor)
     initial = DAG(
         dag_id="dag_failure_replan",
         task_id="task_failure_replan",
@@ -844,7 +844,7 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
 def test_harness_runtime_dynamic_adjust_false_does_not_replan_after_tool_failure() -> None:
     capability_executor = make_capability_executor()
     tool_adapter = _tool_adapter(capability_executor.catalog)
-    executor = DAGExecutor(capability_executor=capability_executor)
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor)
     initial = DAG(
         dag_id="dag_failure_locked",
         task_id="task_failure_locked",
@@ -918,7 +918,7 @@ def test_replan_sees_prior_planning_output_in_agent_thread() -> None:
         ChatResponse(content=final_answer_response("All steps completed.")),
     ])
     dag_agent = dag_loop_for(provider)
-    executor = DAGExecutor(capability_executor=make_capability_executor())
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
 
     result = run(runtime.dag_agent.run("Do two steps", task_id="task_dm", review_level="fast"))
@@ -949,7 +949,7 @@ def test_harness_runtime_marks_dag_failed_when_replan_is_unavailable_after_tool_
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([])),
-        executor=DAGExecutor(capability_executor=make_capability_executor()),
+        executor=DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = dag_state(
@@ -987,7 +987,7 @@ def test_harness_runtime_preserves_parallel_successes_when_sibling_fails() -> No
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([])),
-        executor=DAGExecutor(capability_executor=make_capability_executor()),
+        executor=DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = dag_state(
@@ -1022,7 +1022,7 @@ def test_harness_runtime_fails_when_replan_is_unavailable() -> None:
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([])),
-        executor=DAGExecutor(capability_executor=make_capability_executor()),
+        executor=DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = dag_state(
@@ -1051,7 +1051,7 @@ def test_harness_runtime_pauses_when_dag_agent_fails_after_tool_error() -> None:
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([])),
-        executor=DAGExecutor(capability_executor=make_capability_executor()),
+        executor=DAGExecutor(runtime_directory=".runtime", capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = dag_state(
@@ -1072,7 +1072,7 @@ def test_harness_runtime_pauses_when_dag_agent_fails_after_tool_error() -> None:
 def test_harness_runtime_ignores_stale_failed_trace_nodes_after_replan() -> None:
     capability_executor = make_capability_executor()
     tool_adapter = _tool_adapter(capability_executor.catalog)
-    executor = DAGExecutor(capability_executor=capability_executor)
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor)
     initial = DAG(
         dag_id="dag_stale_trace",
         task_id="task_stale_trace",
@@ -1118,7 +1118,7 @@ def test_harness_runtime_patches_failed_node_and_retries() -> None:
     """When a node fails but replan patches its args, execution retries with new args."""
     capability_executor = make_capability_executor()
     tool_adapter = _tool_adapter(capability_executor.catalog)
-    executor = DAGExecutor(capability_executor=capability_executor)
+    executor = DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor)
     initial = DAG(
         dag_id="dag_patch_retry",
         task_id="task_patch_retry",

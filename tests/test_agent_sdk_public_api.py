@@ -182,6 +182,7 @@ def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
         capabilities=["tool.search"],
     )
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         capabilities=[search],
@@ -200,7 +201,7 @@ def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
 
 def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="hello")])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     result = run(runner.run(dagent.ToolAgent(profile="conversation"), input="hi"))
 
@@ -211,7 +212,7 @@ def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
 
 def test_runner_stream_yields_unified_event_protocol(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="<think>checking</think>hello")])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
@@ -244,7 +245,7 @@ def test_runner_stream_yields_unified_event_protocol(tmp_path) -> None:
 
 def test_runner_stream_brackets_each_model_call_with_response_boundaries(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="<think>checking</think>hello")])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
@@ -277,7 +278,7 @@ def test_runner_stream_brackets_each_model_call_with_response_boundaries(tmp_pat
 
 def test_runner_stream_content_deltas_match_output_text(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="<think>checking</think>\n\nhello world")])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
@@ -333,7 +334,7 @@ def test_runner_stream_maps_provider_reasoning_channel(tmp_path) -> None:
                 ),
             )
 
-    runner = dagent.Runner(workspace=tmp_path, provider=ReasoningStreamProvider())
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=ReasoningStreamProvider())
 
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
@@ -363,7 +364,7 @@ def test_runner_stream_brackets_chat_only_provider_response(tmp_path) -> None:
         async def chat(self, messages, tools=None, *, response_format=None):
             return ChatResponse(content="hello")
 
-    runner = dagent.Runner(workspace=tmp_path, provider=ChatOnlyProvider())
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=ChatOnlyProvider())
 
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
@@ -388,7 +389,7 @@ def test_runner_stream_brackets_chat_only_provider_response(tmp_path) -> None:
 
 def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="<think>checking</think>hello")])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
@@ -448,7 +449,7 @@ def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None
 
 def test_run_result_model_validate_round_trips_current_payload_and_rejects_legacy_fields(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="hello")])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     result = run(runner.run(dagent.ToolAgent(profile="conversation"), input="hi"))
     restored = dagent.RunResult.model_validate(result.model_dump(mode="json"))
@@ -471,7 +472,7 @@ def test_run_result_model_validate_round_trips_current_payload_and_rejects_legac
 
 def test_runner_stream_does_not_poll_queue_with_timeout(tmp_path, monkeypatch) -> None:
     provider = MockProvider([ChatResponse(content="hello")])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     async def fail_wait_for(*args, **kwargs):
         raise AssertionError("streaming should not use timeout polling")
@@ -494,7 +495,7 @@ def test_runner_stream_does_not_poll_queue_with_timeout(tmp_path, monkeypatch) -
 
 
 def test_runner_stream_failed_event_is_terminal(tmp_path) -> None:
-    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=MockProvider([]))
     events: list[dagent.RunStreamEvent] = []
 
     async def collect() -> None:
@@ -514,7 +515,7 @@ def test_runner_auto_agent_routes_to_tool_result(tmp_path) -> None:
         ChatResponse(content="hello from tool"),
     ])
     agent = dagent.AutoAgent(capabilities=[], skills=[])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     result = run(runner.run(agent, input="hi"))
 
@@ -539,7 +540,7 @@ def test_runner_auto_agent_tool_mode_can_delegate_to_registered_agent(tmp_path) 
     ])
     helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
     agent = dagent.AutoAgent(capabilities=[], skills=[], agents=[helper])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     result = run(runner.run(agent, input="delegate"))
 
@@ -562,7 +563,7 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
         ChatResponse(content=final_answer_response("Report: found:X")),
     ])
     agent = dagent.AutoAgent(capabilities=[search], skills=[])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     result = run(runner.run(agent, input="research X"))
 
@@ -582,7 +583,7 @@ def test_runner_dag_agent_can_plan_registered_agent_node(tmp_path) -> None:
     ])
     helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
     agent = dagent.DagAgent(capabilities=[], skills=[], agents=[helper])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     result = run(runner.run(agent, input="delegate"))
 
@@ -617,6 +618,7 @@ def test_runner_dag_agent_dynamic_adjust_false_keeps_initial_dag_fixed(tmp_path)
         dynamic_adjust=False,
     )
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         profile_root=tmp_path / "profiles",
@@ -647,7 +649,7 @@ def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
         ChatResponse(content="<think>checking</think>done"),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     first = run(runner.run(agent, input="write hello"))
     assert first.requires_review
@@ -696,7 +698,7 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
         ),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     async def collect() -> list[dagent.RunStreamEvent]:
         return [event async for event in runner.stream(agent, input="write hello")]
@@ -727,7 +729,7 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
 
 def test_run_result_public_surface_uses_single_names(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="hello")])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     result = run(runner.run(dagent.ToolAgent(profile="conversation"), input="hi"))
 
@@ -768,7 +770,7 @@ def test_tool_agent_capability_stream_events_include_run_id(tmp_path) -> None:
         ChatResponse(tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "ok"})]),
         ChatResponse(content="done"),
     ])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
@@ -826,6 +828,7 @@ def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) ->
         capabilities=["tool.search"],
     )
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         capabilities=[search],
@@ -849,7 +852,7 @@ def test_runner_auto_registers_agent_capability_bindings(tmp_path) -> None:
         profile="conversation",
         capabilities=[search],
     )
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     result = run(runner.run(agent, input="hi"))
 
@@ -864,7 +867,7 @@ def test_runner_rejects_unknown_agent_capability_id(tmp_path) -> None:
         profile="conversation",
         capabilities=["tool.missing"],
     )
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     with pytest.raises(KeyError, match="tool.missing"):
         run(runner.run(agent, input="hi"))
@@ -886,6 +889,7 @@ def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
         capabilities=["tool.search"],
     )
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         capabilities=[search, write],
@@ -915,7 +919,7 @@ def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_pat
         ChatResponse(content="done"),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=["writing/brief"])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, skill_roots=[skill_root])
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, skill_roots=[skill_root])
 
     result = run(runner.run(agent, input="list skills"))
 
@@ -934,7 +938,7 @@ def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_pat
 def test_runner_agent_empty_skills_disables_skill_tools(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="done")])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=[])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     run(runner.run(agent, input="no tools"))
 
@@ -951,7 +955,7 @@ def test_runner_default_agent_capabilities_exclude_registered_agent_capabilities
     writer = dagent.ToolAgent(profile="writer")
     dag = dagent.Dag("agent_flow")
     dag.add_node(dagent.Node("draft", target=writer, inputs={"prompt": "Draft the report."}))
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     run(runner.run(dag, workspace_root=tmp_path / "runs"))
     result = run(runner.run(dagent.ToolAgent(profile="conversation"), input="hi"))
@@ -974,7 +978,7 @@ def test_runner_resume_continues_pending_tool_agent_runtime(tmp_path) -> None:
         ChatResponse(content="done"),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     first = run(runner.run(agent, input="write hello"))
     assert first.requires_review
@@ -1002,7 +1006,7 @@ def test_runner_resume_can_restore_pending_capability_gate_from_checkpoint(tmp_p
         ChatResponse(content="done"),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
-    first_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
+    first_runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, capabilities=[write])
 
     first = run(first_runner.run(agent, input="write hello"))
     assert first.checkpoint is not None
@@ -1011,7 +1015,7 @@ def test_runner_resume_can_restore_pending_capability_gate_from_checkpoint(tmp_p
     )
     first_runner.close()
 
-    second_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
+    second_runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, capabilities=[write])
     resumed = run(
         second_runner.resume(
             first.review.approve(),
@@ -1046,7 +1050,7 @@ def test_runner_run_does_not_accept_runtime_state(tmp_path) -> None:
         ),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, capabilities=[write])
 
     assert "state" not in inspect.signature(runner.run).parameters
     with pytest.raises(TypeError, match="unexpected keyword argument 'state'"):
@@ -1067,7 +1071,7 @@ def test_runner_resume_can_restore_pending_dag_review_from_checkpoint(tmp_path) 
         return f"found:{q}"
 
     agent = dagent.DagAgent(planner_profile="planner", capabilities=[search], review="careful")
-    first_runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+    first_runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     first = run(first_runner.run(agent, input="research X"))
     assert first.requires_review
@@ -1078,7 +1082,7 @@ def test_runner_resume_can_restore_pending_dag_review_from_checkpoint(tmp_path) 
     )
     first_runner.close()
 
-    second_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[search])
+    second_runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, capabilities=[search])
     decision = dagent.ReviewDecision(review_id=first.review.review_id, approved=True)
     resumed = run(second_runner.resume(decision, checkpoint=saved_checkpoint))
 
@@ -1098,7 +1102,7 @@ def test_runner_resume_rejects_mismatched_serialized_review_state(tmp_path) -> N
         ),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, capabilities=[write])
 
     first = run(runner.run(agent, input="write hello"))
     decision = dagent.ReviewDecision(review_id="review_other", approved=True)
@@ -1114,7 +1118,7 @@ def test_runner_run_continues_from_serialized_conversation(tmp_path) -> None:
         ChatResponse(content="It is blue."),
     ])
     agent = dagent.ToolAgent(profile="conversation")
-    first_runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    first_runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     first = run(
         first_runner.run(
@@ -1131,7 +1135,7 @@ def test_runner_run_continues_from_serialized_conversation(tmp_path) -> None:
     assert [item.type for item in first.new_items] == ["user", "assistant"]
     assert first.new_items[-1].content == "The project color is blue."
 
-    second_runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    second_runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     second = run(
         second_runner.run(
             agent,
@@ -1167,7 +1171,7 @@ def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> No
         return f"found:{q}"
 
     agent = dagent.DagAgent(planner_profile="planner", capabilities=[search], review="careful")
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     first = run(runner.run(agent, input="research X"))
     assert first.requires_review
@@ -1191,7 +1195,7 @@ def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
     first = make_same_tool("first")
     second = make_same_tool("second")
 
-    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]), capabilities=[first])
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=MockProvider([]), capabilities=[first])
 
     with pytest.raises(ValueError, match="tool.same"):
         runner.add_tool(second)
@@ -1200,7 +1204,7 @@ def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
 def test_runner_close_shuts_down_capability_resources(tmp_path) -> None:
     closed: list[str] = []
     provider = MockProvider([])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     runner.runtime.capability_catalog.add_shutdown_hook(lambda: closed.append("closed"))
 
     runner.close()
@@ -1213,7 +1217,7 @@ def test_runner_with_injected_provider_allows_missing_config(tmp_path, monkeypat
     provider = MockProvider([])
     monkeypatch.setenv("DAGENT_CONFIG", str(tmp_path / "missing.yaml"))
 
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     assert runner.runtime.provider is provider
 
@@ -1224,14 +1228,14 @@ def test_runner_with_injected_provider_ignores_invalid_config(tmp_path, monkeypa
     monkeypatch.setenv("DAGENT_CONFIG", str(bad_config))
 
     provider = MockProvider([])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     assert runner.runtime.provider is provider
 
 
 def test_runner_requires_explicit_provider(tmp_path) -> None:
     with pytest.raises(ValueError, match="No provider configured"):
-        dagent.Runner(workspace=tmp_path)
+        dagent.Runner(runtime_directory=".runtime", workspace=tmp_path)
 
 
 def test_runner_from_config_loads_provider_and_profile_root(tmp_path) -> None:
@@ -1251,7 +1255,7 @@ def test_runner_from_config_loads_provider_and_profile_root(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    runner = dagent.Runner.from_config(config, workspace=tmp_path)
+    runner = dagent.Runner.from_config(config, runtime_directory=".runtime", workspace=tmp_path)
 
     assert runner.profile_root == profiles
     assert runner.runtime.provider.config.model == "cfg-model"
@@ -1270,13 +1274,13 @@ def test_runner_from_config_uses_builtin_profiles_without_profile_directory(tmp_
         encoding="utf-8",
     )
 
-    runner = dagent.Runner.from_config(config, workspace=tmp_path)
+    runner = dagent.Runner.from_config(config, runtime_directory=".runtime", workspace=tmp_path)
 
     assert runner.runtime.tool_agent.profile.name == "conversation"
 
 
 def test_runner_enable_validation_prepares_default_validator(tmp_path) -> None:
-    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=MockProvider([]))
 
     assert runner.enable_validation is False
     assert runner.runtime.validator is None

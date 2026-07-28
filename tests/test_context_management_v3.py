@@ -14,12 +14,14 @@ from dagent.harness_runtime.result_storage import normalize_capability_result
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import (
     AssistantMessage,
+    Attachment,
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityResult,
     ContextPolicy,
     ContextWindowExceeded,
     ConversationState,
+    ContentReference,
     ResultStoragePolicy,
     ToolCallItem,
     ToolResultMessage,
@@ -77,6 +79,62 @@ def test_context_projection_never_replays_reasoning_and_preserves_tool_protocol(
     assert prepared.messages[3]["tool_call_id"] == "call_1"
     assert "[TRUNCATED]" in prepared.messages[3]["content"]
     assert prepared.usage.truncated_tool_results == 1
+
+
+def test_context_projection_deduplicates_and_budgets_all_stored_references() -> None:
+    shared = ContentReference(
+        path=".runtime/results/content.txt",
+        media_type="text/plain",
+        byte_length=5000,
+        sha256="a" * 64,
+        preview="preview",
+    )
+    artifact = ContentReference(
+        path=".runtime/results/image.png",
+        media_type="image/png",
+        byte_length=2000,
+        sha256="b" * 64,
+    )
+    conversation = ConversationState(
+        items=(
+            AssistantMessage(
+                tool_calls=(ToolCallItem(id="call_1", name="mcp_read"),)
+            ),
+            ToolResultMessage(
+                call_id="call_1",
+                name="mcp_read",
+                status="completed",
+                content=shared,
+                value=shared.model_dump(mode="json"),
+                value_reference=shared,
+                artifacts=(shared, artifact),
+            ),
+        )
+    )
+    assembler = ContextAssembler(
+        context_window_tokens=4096,
+        output_reserve_tokens=512,
+    )
+
+    prepared = run(
+        assembler.prepare(
+            system_message={"role": "system", "content": "Be useful."},
+            conversation=conversation,
+            policy=ContextPolicy(
+                max_tool_result_tokens=256,
+                max_total_tool_result_tokens=256,
+            ),
+        )
+    )
+
+    projected = prepared.messages[-1]["content"]
+    assert projected.count(shared.path) == 1
+    assert projected.count(artifact.path) == 1
+    assert "media_type=image/png" in projected
+    assert "bytes=2000" in projected
+    assert str(Path.cwd()) not in projected
+    assert "/conversations/" not in projected
+    assert prepared.usage.tool_result_tokens <= 256
 
 
 def test_context_compaction_has_explicit_deterministic_fallback() -> None:
@@ -167,7 +225,7 @@ def test_dag_context_window_error_is_not_retried_as_planner_feedback(
     )
     provider.context_window_tokens = 1024
     provider.output_reserve_tokens = 256
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     with pytest.raises(ContextWindowExceeded):
         run(runner.run(dagent.DagAgent(capabilities=[]), input="plan"))
@@ -195,10 +253,8 @@ def test_large_capability_results_are_externalized_to_run_workspace(
     normalized = normalize_capability_result(
         result,
         workspace_path=tmp_path,
-        policy=ResultStoragePolicy(
-            max_inline_bytes=1024,
-            internal_directory=".dagent/results",
-        ),
+        runtime_directory=".runtime",
+        policy=ResultStoragePolicy(max_inline_bytes=1024),
     )
 
     assert normalized.content.type == "dagent_content_reference"
@@ -206,6 +262,10 @@ def test_large_capability_results_are_externalized_to_run_workspace(
     assert normalized.result.value["type"] == "dagent_content_reference"
     assert normalized.value_reference is not None
     assert len(normalized.references) == 3
+    assert all(
+        reference.path.startswith(".runtime/results/")
+        for reference in normalized.references
+    )
     assert all(
         (tmp_path / reference.path).is_file()
         for reference in normalized.references
@@ -225,6 +285,7 @@ def test_externalized_result_paths_do_not_trust_tool_call_ids(
     normalized = normalize_capability_result(
         result,
         workspace_path=tmp_path,
+        runtime_directory=".runtime",
         policy=ResultStoragePolicy(max_inline_bytes=1024),
     )
 
@@ -243,7 +304,7 @@ def test_runner_uses_input_plus_conversation_and_does_not_replay_reasoning(
             ChatResponse(content="Second answer.", reasoning_content="secret two"),
         ]
     )
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     agent = dagent.ToolAgent(profile="conversation", capabilities=[])
 
     first = run(runner.run(agent, input="first"))
@@ -269,6 +330,51 @@ def test_runner_uses_input_plus_conversation_and_does_not_replay_reasoning(
     runner.close()
 
 
+def test_conversation_reuses_a_reachable_resource_without_history_copy(
+    tmp_path: Path,
+) -> None:
+    run_workspace = tmp_path / "run"
+    upload = run_workspace / "uploads" / "note.txt"
+    upload.parent.mkdir(parents=True)
+    content = b"reachable"
+    upload.write_bytes(content)
+    conversation = ConversationState(
+        items=(
+            UserMessage(
+                content="Use the existing upload.",
+                attachments=(
+                    Attachment(
+                        path="uploads/note.txt",
+                        media_type="text/plain",
+                        byte_length=len(content),
+                        sha256=hashlib.sha256(content).hexdigest(),
+                    ),
+                ),
+            ),
+        )
+    )
+    provider = MockProvider([ChatResponse(content="done")])
+    runner = dagent.Runner(
+        workspace=tmp_path / "runner",
+        runtime_directory=".runtime",
+        provider=provider,
+    )
+
+    result = run(
+        runner.run(
+            dagent.ToolAgent(profile="conversation"),
+            input="Continue.",
+            conversation=conversation,
+            workspace_path=run_workspace,
+        )
+    )
+
+    assert result.conversation.items[0].attachments[0].path == "uploads/note.txt"
+    assert not (run_workspace / ".runtime" / "history").exists()
+    assert "uploads/note.txt" in str(provider.requests[0]["messages"])
+    runner.close()
+
+
 def test_review_resume_requires_checkpoint(tmp_path: Path) -> None:
     @dagent.tool(risk="medium")
     def write_note(text: str) -> str:
@@ -288,7 +394,7 @@ def test_review_resume_requires_checkpoint(tmp_path: Path) -> None:
             ChatResponse(content="Done."),
         ]
     )
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     agent = dagent.ToolAgent(
         profile="conversation",
         capabilities=[write_note],
@@ -324,7 +430,7 @@ def test_compaction_is_visible_in_typed_stream_events(tmp_path: Path) -> None:
     )
     provider.context_window_tokens = 2048
     provider.output_reserve_tokens = 256
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     agent = dagent.ToolAgent(
         profile="conversation",
         capabilities=[],
@@ -386,7 +492,7 @@ def test_dag_audit_delta_survives_planner_context_compaction(
     )
     provider.context_window_tokens = 8192
     provider.output_reserve_tokens = 1024
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     agent = dagent.DagAgent(
         capabilities=[],
         context=dagent.ContextPolicy(
@@ -428,7 +534,7 @@ def test_input_uploads_are_typed_attachments_and_projected_as_data(
     tmp_path: Path,
 ) -> None:
     provider = MockProvider([ChatResponse(content="done")])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     agent = dagent.ToolAgent(profile="conversation", capabilities=[])
 
     result = run(
@@ -456,11 +562,11 @@ def test_conversation_attachments_are_materialized_into_each_new_run(
 ) -> None:
     content = b"hello from the previous run"
     sha256 = hashlib.sha256(content).hexdigest()
-    carried_path = f".dagent/history/{sha256}.txt"
+    carried_path = f".runtime/history/{sha256}.txt"
     first_provider = MockProvider(
         [ChatResponse(content="I will remember the upload.")]
     )
-    runner = dagent.Runner(workspace=tmp_path, provider=first_provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=first_provider)
     agent = dagent.ToolAgent(
         profile="conversation",
         capabilities=["tool.read_file"],
@@ -476,6 +582,8 @@ def test_conversation_attachments_are_materialized_into_each_new_run(
         )
     )
     runner.close()
+    assert (tmp_path / ".runtime" / "conversations").is_dir()
+    assert not (tmp_path / ".dagent").exists()
 
     second_provider = MockProvider(
         [
@@ -491,7 +599,7 @@ def test_conversation_attachments_are_materialized_into_each_new_run(
             ChatResponse(content="The carried file is readable."),
         ]
     )
-    runner = dagent.Runner(workspace=tmp_path, provider=second_provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=second_provider)
     second = run(
         runner.run(
             agent,
@@ -537,6 +645,7 @@ def test_reviewed_capability_failure_is_recorded_as_failed(
         ]
     )
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         capabilities=[fail_after_review],
@@ -596,6 +705,7 @@ def test_static_dag_rehydrates_externalized_values_for_downstream_nodes(
     graph.add_edge(produced, consumed)
     graph.output = consumed.output
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider(),
         result_storage_policy=ResultStoragePolicy(max_inline_bytes=1024),
@@ -629,6 +739,7 @@ def test_static_dag_map_keeps_externalized_binary_values_out_of_parent_trace(
     )
     graph.add_node(produced)
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider(),
         result_storage_policy=ResultStoragePolicy(max_inline_bytes=1024),
@@ -681,6 +792,7 @@ def test_static_dag_map_rehydrates_externalized_values_for_downstream_nodes(
     graph.add_edge(produced, consumed)
     graph.output = consumed.output
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider(),
         result_storage_policy=ResultStoragePolicy(max_inline_bytes=1024),
@@ -718,6 +830,7 @@ def test_static_dag_retains_references_for_normalized_result_fields(
     graph = dagent.Dag("normalized_fields")
     graph.add_node(dagent.Node("verbose", target="tool.verbose"))
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider(),
         result_storage_policy=ResultStoragePolicy(max_inline_bytes=1024),
@@ -766,7 +879,7 @@ def test_static_dag_does_not_treat_user_artifact_shaped_json_as_internal_referen
     graph.add_node(consumed)
     graph.add_edge(produced, consumed)
     graph.output = consumed.output
-    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider())
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=MockProvider())
 
     result = run(runner.run(graph))
 

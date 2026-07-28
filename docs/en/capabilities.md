@@ -69,8 +69,9 @@ sandbox-executable yet. They fail closed under `execution="sandbox"` instead of
 falling back to host execution. Use `execution="local"` for those capabilities.
 
 `Runner.test_capability(..., execution="sandbox")` uses the runner workspace as
-the sandbox workspace. The default runner workspace is `.dagent`; files already
-present under `Runner(workspace=...)` are visible to supported built-in tools.
+the sandbox workspace. The runner workspace is an explicit
+`Runner(workspace=...)` input; files already present there are visible to
+supported built-in tools.
 
 ## Python Function Tools
 
@@ -99,7 +100,7 @@ def search(q: str) -> SearchResult:
 Register tools at construction or later:
 
 ```python
-runner = dagent.Runner(provider=provider, capabilities=[search])
+runner = dagent.Runner(workspace="agent-workspace", runtime_directory=".runtime", provider=provider, capabilities=[search])
 runner.add_tool(search)
 ```
 

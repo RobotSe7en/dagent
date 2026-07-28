@@ -117,6 +117,7 @@ from api.stream_gate import gate_chat_display
 MessageTarget = Literal["auto", "tool", "dag"]
 AgentScope = Literal["none", "selected", "registered"]
 CONFIG_MODEL_ID = "config"
+DEFAULT_RUNTIME_DIRECTORY = ".runtime"
 ApiKeyAction = Literal["preserve", "replace", "clear"]
 ModelProviderSource = Literal["config", "user"]
 REDACTED_SECRET_VALUE = "[redacted]"
@@ -1016,6 +1017,7 @@ class ApiState:
         if active_model is None:
             return Runner.from_config(
                 workspace=DEFAULT_WORKSPACE,
+                runtime_directory=DEFAULT_RUNTIME_DIRECTORY,
                 skill_roots=self.get_skill_roots(),
             )
         return _runner_from_model_provider(active_model, skill_roots=self.get_skill_roots())
@@ -3615,6 +3617,7 @@ def _runner_from_model_provider(model: ModelProviderRequest, *, skill_roots: lis
     profile_root = resolve_config_relative_path(config.profiles.directory, config_path)
     return Runner(
         workspace=DEFAULT_WORKSPACE,
+        runtime_directory=DEFAULT_RUNTIME_DIRECTORY,
         provider=Provider(**_provider_kwargs(model)),
         validator=validator,
         skill_roots=skill_roots,

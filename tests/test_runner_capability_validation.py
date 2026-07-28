@@ -10,7 +10,7 @@ def _noop(invocation):
 
 
 def _runner(tmp_path) -> dagent.Runner:
-    return dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
+    return dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=MockProvider([]))
 
 
 def test_validate_capability_refs_reports_unknown_ids_without_raising(tmp_path) -> None:

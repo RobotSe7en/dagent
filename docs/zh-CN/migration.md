@@ -4,9 +4,89 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.8.0`。
+当前包版本是 `0.8.1`。
 
 ## Unreleased
+
+## 0.8.1
+
+### 破坏性变更
+
+- `Runner(...)` 和 `Runner.from_config(...)` 现在必须显式接收 `workspace` 和
+  `runtime_directory` 关键字参数。SDK 不再隐式选择或创建 cwd-relative `.dagent`
+  workspace。
+- `runtime_directory` 是 runner 或 run workspace 内的安全相对路径。绝对路径、带 drive
+  的路径、空路径、`.` 和 `..` 段都会被拒绝。
+- 删除 `ResultStoragePolicy.internal_directory`。该 policy 现在只控制
+  `max_inline_bytes`；所有 SDK 私有路径由 runner 统一拥有。
+- `ResolvedRunPlan` 和 `RunCheckpoint` 升级到 schema version 4，并冻结
+  `runtime_directory`。V3 checkpoint 会直接拒绝，不提供转换。
+  `ConversationState`、`ContentReference` 和 `RunState` 仍为 schema version 3。
+
+### 存储布局与模型上下文
+
+- conversation backing resource 位于
+  `<workspace>/<runtime_directory>/conversations`；
+- 外置 tool/MCP 结果位于 `<run-workspace>/<runtime_directory>/results`；恢复到新 run
+  的资源位于 `<run-workspace>/<runtime_directory>/history`；
+- 这些私有目录按需创建。构造 runner、纯文本轮次和小型内联结果不会创建它们；
+- continuation 会先校验并复用当前 workspace 相对路径下仍可访问的资源，只有路径缺失时
+  才从 conversation backing store 恢复；
+- 模型输入会包含经过预算限制和去重的外置 content、value 与 MCP artifact 引用。引用
+  包含完整相对路径、媒体类型、字节数和摘要，并计入 tool-result token budget；不会暴露
+  绝对路径或 conversation backing-store 路径。
+
+### 迁移
+
+由 host 选择两个位置，并在每个 runner 上显式传入：
+
+```python
+runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
+    provider=provider,
+)
+
+runner = dagent.Runner.from_config(
+    "config.yaml",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
+)
+```
+
+把旧的结果目录选择从 `ResultStoragePolicy` 移到 runner：
+
+```python
+# 0.8.0
+policy = dagent.ResultStoragePolicy(
+    max_inline_bytes=64 * 1024,
+    internal_directory=".dagent/results",
+)
+
+# 0.8.1
+runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory=".dagent",
+    provider=provider,
+    result_storage_policy=dagent.ResultStoragePolicy(
+        max_inline_bytes=64 * 1024,
+    ),
+)
+```
+
+若要精确复现旧 cwd 布局，使用
+`workspace=".dagent", runtime_directory=".dagent"`。目录迁移由 host 负责，SDK 不会
+自动移动文件。升级前应完成、拒绝或取消仍在等待的 V3 review。只要引用文件或 runner 的
+conversation backing resource 仍可访问，V3 conversation 可以继续使用。
+
+如果私有 runtime 数据只需驻留内存，请把所选 workspace 或 runtime 子树挂载到 tmpfs。
+SDK 不会另行维护第二套内存存储实现。
+
+### 验证
+
+- `uv run --extra dev pytest`
+- `uv build`
+- `git diff --check`
 
 ## 0.8.0
 
