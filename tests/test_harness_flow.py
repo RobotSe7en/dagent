@@ -24,9 +24,9 @@ from dagent.profiles import AgentProfile
 from dagent.schemas import (
     Artifact,
     Boundary,
-    CapabilityNodePayload,
     CapabilityDefinition,
     CapabilityInvocation,
+    ConversationState,
     DAG,
     DAGEdge,
     DAGNode,
@@ -34,7 +34,7 @@ from dagent.schemas import (
     RunTrace,
     RunTraceNode,
     RunState,
-    StartNodePayload,
+    UserMessage,
 )
 from dagent.capabilities.tools.registry import ToolRegistry
 from tests.planner_helpers import (
@@ -476,7 +476,9 @@ def test_harness_runtime_dag_review_approval_authorizes_node_boundaries() -> Non
         dag=DAG(dag_id="dag_boundary_review", task_id="task_boundary_review", nodes=[]),
         review_level="careful",
     )
-    record.internal_messages = [{"role": "user", "content": "Write the reviewed file"}]
+    record.model_thread = ConversationState(
+        items=(UserMessage(content="Write the reviewed file"),)
+    )
     proposed_node = _tool_node(
         "write_reviewed",
         "write_file",
@@ -751,7 +753,9 @@ def test_harness_runtime_preserves_rerun_nodes_through_review_checkpoint() -> No
         dag=prepared,
         review_level="careful",
     )
-    record.internal_messages = [{"role": "user", "content": record.user_request}]
+    record.model_thread = ConversationState(
+        items=(UserMessage(content=record.user_request),)
+    )
     record.dag_spec = proposal.spec.model_copy(deep=True)
     record.trace = trace_with_completed_nodes(
         "task_rerun_review",

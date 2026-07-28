@@ -16,10 +16,19 @@ from api.storage import (
     SQLiteStore,
 )
 from api.workspaces import LocalWorkspaceStore
-from dagent import CapabilityInvocation, DAG, PendingReview, RunResult, RunState, RunStreamEvent, Runner
+from dagent import (
+    CapabilityInvocation,
+    ConversationState,
+    DAG,
+    PendingReview,
+    RunResult,
+    RunState,
+    RunStreamEvent,
+    Runner,
+)
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.result import RunFinishedData, RunStartedData
-from dagent.schemas import DAGSpec, PendingCapabilityCall, RunTrace, RunTraceNode
+from dagent.schemas import PendingCapabilityCall, RunTrace, RunTraceNode
 from tests.planner_helpers import capability_plan_response, final_answer_response
 
 
@@ -197,7 +206,7 @@ def test_sqlite_store_persists_standalone_conversation(tmp_path: Path) -> None:
         title="Inbox chat",
         workspace_uri=workspace_uri,
     )
-    run = store.create_run(
+    store.create_run(
         run_id="run_standalone",
         project_id=None,
         conversation_id=conversation.id,
@@ -297,6 +306,58 @@ def test_sqlite_store_recreates_incompatible_api_database(tmp_path: Path) -> Non
     assert "saved_dag_id" in columns
     assert store.get_project("proj_old") is None
     store.close()
+
+
+def test_sqlite_store_marks_pre_v3_conversations_during_migration(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "api.sqlite3"
+    workspace_uri = f"file://{tmp_path / 'workspace'}"
+    store = SQLiteStore(db_path)
+    legacy = store.create_conversation(
+        conversation_id="conv_legacy",
+        project_id=None,
+        title="Legacy",
+        workspace_uri=workspace_uri,
+    )
+    current = store.create_conversation(
+        conversation_id="conv_current",
+        project_id=None,
+        title="Current",
+        workspace_uri=workspace_uri,
+    )
+    current_state = ConversationState(id=current.id, revision=1)
+    store.save_conversation_state(
+        current.id,
+        current_state.model_dump_json(),
+        revision=1,
+        expected_revision=0,
+    )
+    store.close()
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "ALTER TABLE conversations DROP COLUMN conversation_schema_version"
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = SQLiteStore(db_path)
+    migrated_legacy = migrated.get_conversation(legacy.id)
+    migrated_current = migrated.get_conversation(current.id)
+    created_after_migration = migrated.create_conversation(
+        conversation_id="conv_new",
+        project_id=None,
+        title="New",
+        workspace_uri=workspace_uri,
+    )
+
+    assert migrated_legacy is not None
+    assert migrated_legacy.conversation_schema_version == 0
+    assert migrated_current is not None
+    assert migrated_current.conversation_schema_version == 3
+    assert created_after_migration.conversation_schema_version == 3
+    migrated.close()
 
 
 def test_sqlite_store_persists_conversation_kind(tmp_path: Path) -> None:
@@ -1361,7 +1422,7 @@ def test_api_project_message_stream_uses_project_workspace(
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "write project note"}],
+            "input": "write project note",
             "target": "tool",
             "capability_ids": ["tool.write_file"],
             "project_id": project["id"],
@@ -1402,7 +1463,7 @@ def test_api_standalone_message_stream_uses_conversation_workspace(
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "write inbox note"}],
+            "input": "write inbox note",
             "target": "tool",
             "capability_ids": ["tool.write_file"],
             "conversation_id": conversation["id"],
@@ -1628,11 +1689,6 @@ def test_api_deletes_completed_answerless_conversation_with_stale_lock(persisten
         kind="tool",
         status="completed",
         workspace_path=str(conversation_workspace),
-        internal_messages=[
-            {"role": "user", "content": "list files"},
-            {"role": "assistant", "content": ""},
-        ],
-        input_message_count=1,
         user_request="list files",
         trace=RunTrace(
             run_id="tool_run_answerless_delete",
@@ -1760,7 +1816,7 @@ def test_api_project_message_stream_persists_run_events_and_state(
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "write the note"}],
+            "input": "write the note",
             "target": "tool",
             "capability_ids": ["tool.write_file"],
             "project_id": project["id"],
@@ -1911,7 +1967,7 @@ def test_api_message_stream_failure_before_run_started_updates_conversation_mess
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "please fail"}],
+            "input": "please fail",
             "target": "tool",
             "conversation_id": conversation["id"],
         },
@@ -1954,7 +2010,7 @@ def test_api_project_message_stream_rejects_client_workspace_root(persistence_cl
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "hi"}],
+            "input": "hi",
             "project_id": project["id"],
             "conversation_id": conversation["id"],
             "workspace_root": "custom",
@@ -1963,6 +2019,54 @@ def test_api_project_message_stream_rejects_client_workspace_root(persistence_cl
 
     assert response.status_code == 400
     assert "workspace_root" in response.json()["detail"]
+
+
+def test_api_message_stream_rejects_legacy_conversation_before_loading_run_state(
+    persistence_client,
+) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Legacy chat"},
+    ).json()["conversation"]
+    store = state.get_store()
+    run = store.create_run(
+        run_id="run_legacy",
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="tool",
+        status="completed",
+        workspace_uri=conversation["workspace_uri"],
+    )
+    store.save_run_state(
+        run.id,
+        '{"schema_version":2,"run_id":"run_legacy"}',
+        output_text="old",
+    )
+    store._conn.execute(
+        """
+        UPDATE conversations
+        SET conversation_schema_version = 0
+        WHERE id = ?
+        """,
+        (conversation["id"],),
+    )
+    store._conn.commit()
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "input": "continue",
+            "target": "tool",
+            "conversation_id": conversation["id"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Conversation predates the V3 context contract. "
+        "Start a new conversation or migrate it offline."
+    )
 
 
 def test_api_project_message_stream_requires_project_id_for_project_conversation(persistence_client) -> None:
@@ -1978,7 +2082,7 @@ def test_api_project_message_stream_requires_project_id_for_project_conversation
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "hi"}],
+            "input": "hi",
             "target": "tool",
             "conversation_id": conversation["id"],
         },
@@ -1997,7 +2101,7 @@ def test_api_message_stream_rejects_orchestration_conversation(persistence_clien
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "hello"}],
+            "input": "hello",
             "target": "auto",
             "conversation_id": conversation["id"],
         },
@@ -2098,7 +2202,7 @@ def test_api_project_message_stream_locks_only_the_conversation(persistence_clie
         busy = persistence_client.post(
             "/messages/stream",
             json={
-                "messages": [{"role": "user", "content": "hi"}],
+                "input": "hi",
                 "target": "tool",
                 "project_id": project["id"],
                 "conversation_id": first["id"],
@@ -2107,7 +2211,7 @@ def test_api_project_message_stream_locks_only_the_conversation(persistence_clie
         other_conversation = persistence_client.post(
             "/messages/stream",
             json={
-                "messages": [{"role": "user", "content": "hi"}],
+                "input": "hi",
                 "target": "tool",
                 "project_id": project["id"],
                 "conversation_id": second["id"],
@@ -2121,7 +2225,9 @@ def test_api_project_message_stream_locks_only_the_conversation(persistence_clie
     assert _sse_events(other_conversation.text)[-1]["type"] == "run.finished"
 
 
-def test_api_project_message_stream_continues_conversation_from_db_state(persistence_client) -> None:
+def test_api_project_message_stream_continues_from_persisted_conversation(
+    persistence_client,
+) -> None:
     state.runner = Runner(provider=MockProvider([
         ChatResponse(content="first done"),
         ChatResponse(content="second done"),
@@ -2138,7 +2244,7 @@ def test_api_project_message_stream_continues_conversation_from_db_state(persist
     first_response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "first"}],
+            "input": "first",
             "target": "tool",
             "project_id": project["id"],
             "conversation_id": conversation["id"],
@@ -2147,7 +2253,7 @@ def test_api_project_message_stream_continues_conversation_from_db_state(persist
     second_response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "second"}],
+            "input": "second",
             "target": "tool",
             "project_id": project["id"],
             "conversation_id": conversation["id"],
@@ -2158,9 +2264,20 @@ def test_api_project_message_stream_continues_conversation_from_db_state(persist
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
-    assert second_result["state"]["run_id"] == first_result["state"]["run_id"]
+    assert second_result["state"]["run_id"] != first_result["state"]["run_id"]
     assert second_result["output_text"] == "second done"
-    assert state.get_store().get_run(first_result["state"]["run_id"]).output_text == "second done"
+    assert (
+        state.get_store().get_run(first_result["state"]["run_id"]).output_text
+        == "first done"
+    )
+    assert (
+        state.get_store().get_run(second_result["state"]["run_id"]).output_text
+        == "second done"
+    )
+    assert [
+        message["role"]
+        for message in state.get_runner().runtime.provider.requests[1]["messages"]
+    ] == ["system", "user", "assistant", "user"]
 
 
 def test_api_project_review_resume_uses_db_state_after_runner_restart(
@@ -2196,7 +2313,7 @@ def test_api_project_review_resume_uses_db_state_after_runner_restart(
     stream_response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "read outside"}],
+            "input": "read outside",
             "target": "tool",
             "capability_ids": ["tool.read_file"],
             "project_id": project["id"],
@@ -2274,7 +2391,7 @@ def test_api_standalone_review_resume_uses_db_state_after_runner_restart(
     stream_response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "read outside"}],
+            "input": "read outside",
             "target": "tool",
             "capability_ids": ["tool.read_file"],
             "conversation_id": conversation["id"],
@@ -2767,7 +2884,7 @@ def test_api_dynamic_dag_stream_updates_standalone_orchestration_session_draft(
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "echo ok through a DAG"}],
+            "input": "echo ok through a DAG",
             "target": "dag",
             "review_level": "fast",
             "conversation_id": conversation["id"],
@@ -2819,7 +2936,7 @@ def test_api_smart_workbench_dynamic_dag_stream_persists_conversation_messages(
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "echo ok through a smart DAG"}],
+            "input": "echo ok through a smart DAG",
             "target": "dag",
             "review_level": "fast",
             "conversation_id": conversation["id"],
@@ -2868,12 +2985,7 @@ def test_api_orchestration_workspace_dynamic_dag_stream_persists_visible_message
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "visible prompt\n\ninternal DAG context should stay hidden",
-                }
-            ],
+            "input": "visible prompt\n\ninternal DAG context should stay hidden",
             "visible_message": "visible prompt",
             "target": "dag",
             "review_level": "fast",
@@ -2925,7 +3037,7 @@ def test_api_orchestration_workspace_dynamic_dag_stream_creates_distinct_run_his
     first_response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "first"}],
+            "input": "first",
             "target": "dag",
             "review_level": "fast",
             "conversation_id": conversation["id"],
@@ -2934,7 +3046,7 @@ def test_api_orchestration_workspace_dynamic_dag_stream_creates_distinct_run_his
     second_response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "second"}],
+            "input": "second",
             "target": "dag",
             "review_level": "fast",
             "conversation_id": conversation["id"],
@@ -3011,7 +3123,7 @@ def test_api_dynamic_dag_stream_keeps_session_when_finished_state_has_no_dag(
     response = persistence_client.post(
         "/messages/stream",
         json={
-            "messages": [{"role": "user", "content": "finish without a dag"}],
+            "input": "finish without a dag",
             "target": "dag",
             "conversation_id": conversation["id"],
         },
@@ -3027,7 +3139,22 @@ def test_api_dynamic_dag_stream_keeps_session_when_finished_state_has_no_dag(
 def test_api_dynamic_dag_review_resume_updates_orchestration_session_draft(
     persistence_client,
 ) -> None:
-    state.runner = Runner(provider=MockProvider([]))
+    state.runner = Runner(
+        provider=MockProvider(
+            [
+                ChatResponse(
+                    content=capability_plan_response(
+                        "tool.write_file",
+                        {"path": "review.txt", "content": "ok"},
+                        node_id="answer",
+                    )
+                ),
+                ChatResponse(
+                    content=final_answer_response("Reviewed DAG completed.")
+                ),
+            ]
+        )
+    )
     conversation = persistence_client.post(
         "/conversations",
         json={"title": "Dynamic DAG session", "kind": "dynamic_dag"},
@@ -3039,54 +3166,26 @@ def test_api_dynamic_dag_review_resume_updates_orchestration_session_draft(
             "kind": "dynamic_dag",
         },
     ).json()["session"]
-    proposed_dag = _echo_dag(status="review_required")
-    proposed_spec = DAGSpec(
-        id="run_pending_dag_review",
-        name="pending review",
-        nodes=[node.model_copy(deep=True) for node in proposed_dag.nodes],
-        edges=[edge.model_copy(deep=True) for edge in proposed_dag.edges],
+    initial_response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "input": "echo ok through a DAG",
+            "target": "dag",
+            "review_level": "careful",
+            "dynamic_adjust": False,
+            "conversation_id": conversation["id"],
+        },
     )
-    run_state = RunState(
-        run_id="run_pending_dag_review",
-        kind="dynamic_dag",
-        status="awaiting_review",
-        dag=DAG(dag_id="dag_echo", task_id="run_pending_dag_review"),
-        pending_review=PendingReview(
-            review_id="review_pending_dag",
-            kind="initial_dag",
-            message="Review proposed DAG before execution.",
-            proposed_dag=proposed_dag,
-            proposed_dag_spec=proposed_spec,
-        ),
-        user_request="echo ok through a DAG",
-        review_level="careful",
-        runtime_mode="dag",
-        dynamic_adjust=False,
-    )
-    store = state.get_store()
-    store.create_run(
-        run_id=run_state.run_id,
-        project_id=None,
-        conversation_id=conversation["id"],
-        user_id="default",
-        kind="dynamic_dag",
-        status="awaiting_review",
-        workspace_uri=conversation["workspace_uri"],
-    )
-    store.save_run_state(run_state.run_id, run_state.model_dump_json(), output_text="Review proposed DAG before execution.")
-    store.upsert_review(
-        review_id="review_pending_dag",
-        run_id=run_state.run_id,
-        project_id=None,
-        kind="initial_dag",
-    )
+    initial_result = _sse_events(initial_response.text)[-1]["data"]["result"]
+    review_id = initial_result["state"]["pending_review"]["review_id"]
+    proposed_dag = initial_result["state"]["pending_review"]["proposed_dag"]
 
     resume_response = persistence_client.post(
-        "/reviews/review_pending_dag/resume",
+        f"/reviews/{review_id}/resume",
         json={
             "approved": True,
             "review_level": "careful",
-            "dag": proposed_dag.model_dump(mode="json"),
+            "dag": proposed_dag,
         },
     )
     updated = persistence_client.get(f"/orchestration-sessions/{session['id']}").json()["session"]
@@ -3166,6 +3265,8 @@ def test_interrupted_dag_review_rejection_clears_pending_review_and_allows_run_d
         conversation_kind="dynamic_dag",
         workspace_uri=conversation["workspace_uri"],
         workspace_path=workspace_path,
+        conversation_state=ConversationState(id=conversation["id"]),
+        conversation_revision=0,
         orchestration_session_id=session["id"],
         orchestration_surface=api_app.ORCHESTRATION_WORKSPACE_SURFACE,
     )
@@ -3313,6 +3414,8 @@ def test_interrupted_auto_capability_review_rejection_clears_pending_review_and_
         conversation_kind="chat",
         workspace_uri=conversation["workspace_uri"],
         workspace_path=workspace_path,
+        conversation_state=ConversationState(id=conversation["id"]),
+        conversation_revision=0,
     )
     decision = api_app.ReviewDecision(
         review_id="review_interrupted_auto_tool",
@@ -3382,74 +3485,42 @@ def test_interrupted_auto_capability_review_rejection_clears_pending_review_and_
 def test_auto_capability_review_rejection_is_persisted_before_resume_stream_body_starts(
     persistence_client,
 ) -> None:
-    state.runner = Runner(provider=MockProvider([]))
+    state.runner = Runner(
+        provider=MockProvider(
+            [
+                ChatResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_auto_tool_early",
+                            name="tool_read_file",
+                            arguments={"path": "../blocked/secret.txt"},
+                        )
+                    ]
+                )
+            ]
+        )
+    )
     conversation = persistence_client.post(
         "/conversations",
         json={"title": "Early aborted auto tool"},
     ).json()["conversation"]
-    invocation = CapabilityInvocation(
-        invocation_id="call_auto_tool_early",
-        capability_id="tool.read_file",
-        kind="tool",
-        arguments={"path": "../blocked/secret.txt"},
-        risk="medium",
+    initial_response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "input": "read outside",
+            "target": "tool",
+            "capability_ids": ["tool.read_file"],
+            "conversation_id": conversation["id"],
+        },
     )
-    pending_call = PendingCapabilityCall(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        tool_name="tool_read_file",
-        arguments=invocation.arguments,
-    )
-    run_state = RunState(
-        run_id="run_early_auto_tool_rejection",
-        kind="tool",
-        status="awaiting_review",
-        pending_review=PendingReview(
-            review_id="review_early_auto_tool",
-            kind="capability_review",
-            message="Review capability call: tool.read_file",
-            capability_call=pending_call,
-        ),
-        pending_invocation=invocation,
-        user_request="read outside",
-        review_level="careful",
-        runtime_mode="auto",
-    )
+    initial_result = _sse_events(initial_response.text)[-1]["data"]["result"]
+    run_id = initial_result["state"]["run_id"]
+    review_id = initial_result["state"]["pending_review"]["review_id"]
     store = state.get_store()
-    store.create_run(
-        run_id=run_state.run_id,
-        project_id=None,
-        conversation_id=conversation["id"],
-        user_id="default",
-        kind="tool",
-        status="awaiting_review",
-        workspace_uri=conversation["workspace_uri"],
-    )
-    store.save_run_state(
-        run_state.run_id,
-        run_state.model_dump_json(),
-        output_text="Review capability call: tool.read_file",
-    )
-    store.upsert_review(
-        review_id="review_early_auto_tool",
-        run_id=run_state.run_id,
-        project_id=None,
-        kind="capability_review",
-    )
-    store.append_conversation_message(
-        message_id="msg_early_auto_capability_review",
-        conversation_id=conversation["id"],
-        project_id=None,
-        role="assistant",
-        run_id=run_state.run_id,
-        status="awaiting_review",
-        content="Review capability call: tool.read_file",
-        pending_review_json=run_state.pending_review.model_dump_json(),
-    )
 
     async def open_resume_without_reading_body() -> None:
         response = await api_app._resume_persisted_review_stream(
-            "review_early_auto_tool",
+            review_id,
             api_app.ProjectResumeReviewRequest(
                 approved=False,
                 feedback="Do not read that file.",
@@ -3462,14 +3533,15 @@ def test_auto_capability_review_rejection_is_persisted_before_resume_stream_body
 
     asyncio.run(open_resume_without_reading_body())
 
-    stored_run = store.get_run(run_state.run_id)
-    stored_state = store.get_run_state(run_state.run_id)
-    stored_review = store.get_review("review_early_auto_tool")
+    stored_run = store.get_run(run_id)
+    stored_state = store.get_run_state(run_id)
+    stored_review = store.get_review(review_id)
+    stored_checkpoint = store.get_run_checkpoint(run_id)
     messages = persistence_client.get(f"/conversations/{conversation['id']}/messages").json()["messages"]
-    events = persistence_client.get(f"/runs/{run_state.run_id}/events").json()["events"]
-    finished_events = [
+    events = persistence_client.get(f"/runs/{run_id}/events").json()["events"]
+    failed_events = [
         event for event in events
-        if event["event_type"] == "run.finished" or event["payload"]["type"] == "run.finished"
+        if event["event_type"] == "run.failed"
     ]
     lock = store.acquire_conversation_lock(conversation["id"], owner="after_early_close")
     lock.release()
@@ -3482,11 +3554,12 @@ def test_auto_capability_review_rejection_is_persisted_before_resume_stream_body
     assert stored_state.pending_invocation is None
     assert stored_review is not None
     assert stored_review.status == "resolved"
-    assert len(messages) == 1
-    assert messages[0]["pending_review"] is None
-    assert finished_events
-    assert finished_events[-1]["payload"]["data"]["result"]["state"]["status"] == "failed"
-    assert finished_events[-1]["payload"]["data"]["result"]["state"]["pending_review"] is None
+    assert stored_checkpoint is None
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[-1]["pending_review"] is None
+    assert messages[-1]["status"] == "failed"
+    assert failed_events
+    assert failed_events[-1]["payload"]["data"]["error_type"] == "ClientDisconnect"
 
 
 def _sse_events(text: str) -> list[dict[str, object]]:

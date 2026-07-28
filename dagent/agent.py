@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
 from typing import Any, Iterable
@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.profiles import AgentProfile
 from dagent.review import ReviewLevel
+from dagent.schemas.context import ContextPolicy
 
 
 CapabilityRef = CapabilityBinding | str
@@ -30,6 +31,7 @@ class AutoAgent:
     agents: Iterable[ToolAgent | str] | str | None = None
     review: ReviewLevel = "fast"
     dynamic_adjust: bool = True
+    context: ContextPolicy = field(default_factory=ContextPolicy)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", self.name or _default_profile_name(self.profile))
@@ -56,6 +58,7 @@ class ToolAgent:
     agents: Iterable[ToolAgent | str] | str | None = None
     review: ReviewLevel = "fast"
     description: str = ""
+    context: ContextPolicy = field(default_factory=ContextPolicy)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", self.name or _default_profile_name(self.profile))
@@ -80,6 +83,7 @@ class DagAgent:
     agents: Iterable[ToolAgent | str] | str | None = None
     review: ReviewLevel = "fast"
     dynamic_adjust: bool = True
+    context: ContextPolicy = field(default_factory=ContextPolicy)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", self.name or _default_profile_name(self.planner_profile))

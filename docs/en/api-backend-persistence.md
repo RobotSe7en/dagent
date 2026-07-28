@@ -1,5 +1,9 @@
 # API Backend Persistence
 
+> Version note: this page describes the bundled 0.8 host implementation. For
+> the contract required of other hosts, see
+> [Host migration for 0.8](host-migration-0.8.md).
+
 The public Python SDK remains persistence-free. `Runner`, `ToolAgent`,
 `DagAgent`, `Dag`, and `RunState` stay declarative/runtime objects; they do not
 open databases, own users, or manage projects. Persistence belongs to the
@@ -21,10 +25,12 @@ The Web UI and API backend support projects and conversations:
 - Different conversations in the same project can run concurrently and may touch
   the same project files.
 
-Project message streams use the existing `/messages/stream` endpoint with
-`project_id` and `conversation_id`. In project mode the backend rejects client
-`state` and `workspace_root`; it loads the previous `RunState` from the API
-store and passes the project workspace to `Runner.stream(..., workspace_path=...)`.
+Message streams use `/messages/stream` with one `input` string and a
+`conversation_id`; project conversations also include `project_id`. The
+backend rejects the removed client `messages` and `state` fields, loads the
+bounded `ConversationState` from the API store, and passes it to
+`Runner.stream(..., conversation=...)`. It supplies the host-owned conversation
+or project workspace separately.
 
 ## Stored Data
 
@@ -32,18 +38,20 @@ The local backend uses SQLite through `api/storage/`:
 
 - `projects`: tenant-ready project metadata and `workspace_uri`.
 - `conversations`: standalone and project chat sessions, owner metadata,
-  workspace URI, conversation `kind`, and `last_run_id`. Chat, dynamic DAG,
+  workspace URI, conversation `kind`, `last_run_id`, and the complete bounded
+  `ConversationState` plus its compare-and-swap revision. Chat, dynamic DAG,
   and static DAG conversations are separate kinds and are not reused across
   endpoints.
-- `runs`: the current authoritative `RunState` snapshot for a run, with an
-  optional saved DAG reference for static DAG runs.
+- `runs`: the current authoritative `RunState` snapshot for a run, the complete
+  `RunCheckpoint` while review is pending, and an optional saved DAG reference
+  for static DAG runs. Every ordinary turn gets a distinct run id.
 - `run_streams`: one HTTP stream/resume execution attempt.
 - `run_events`: durable SSE event history with database event ids.
 - `conversation_messages`: visible user/assistant message timelines projected
   for chat conversations and dynamic DAG conversations that have an explicit
   `smart_workbench` or `orchestration_workspace` surface.
-- `reviews`: pending/resolved review metadata. Review state lives in
-  `runs.state_json`, not in this table.
+- `reviews`: pending/resuming/resolved review metadata. The review row is
+  claimed atomically; resumable execution state lives in `runs.checkpoint_json`.
 - `saved_dags`: saved static DAG specs, layout metadata, revisions, and project
   ownership.
 - `orchestration_sessions`: dynamic/static orchestration editor state attached
@@ -55,8 +63,9 @@ stored on disk under the API config directory so they survive process restarts
 and can be materialized into future static DAG run workspaces.
 
 The local SQLite schema is treated as an API/WebUI storage schema, not a public
-SDK data contract. Incompatible pre-release local databases are recreated
-instead of migrated with compatibility shims.
+SDK data contract. The 0.8 columns are added with an explicit SQLite schema
+migration; SDK payload versions are still validated strictly rather than
+converted at runtime.
 
 ## Orchestration History
 
@@ -88,20 +97,22 @@ discards the pending review and the visible transcript for that run.
 
 ## Resume And Restart Behavior
 
-For review resume, use:
+For persisted review resume, use:
 
 ```text
 POST /projects/{project_id}/reviews/{review_id}/resume
 ```
 
-The backend reads `runs.state_json`, reconstructs `RunState`, and calls
-`Runner.resume_stream(decision, state=run_state)`. The client does not send
-state in hosted/project mode.
+The backend atomically changes the review from `pending` to `resuming`, loads
+the complete `RunCheckpoint` from the associated run, and calls
+`Runner.resume_stream(decision, checkpoint=checkpoint)`. The client never sends
+conversation state or checkpoint data. A non-persisted `/messages/resume`
+request identifies an in-memory checkpoint by `run_id`.
 
-This is the bundled API's v0.7 persistence format and uses the SDK's deprecated
-state-only compatibility path. New hosts should persist `RunCheckpoint` and use
-`checkpoint=...`; migrating the local SQLite schema is separate from the SDK
-checkpoint contract.
+When a stream reaches another review gate, the replacement checkpoint is
+stored. Completion, rejection, cancellation, and failure clear it. This makes
+duplicate resume attempts conflict instead of executing the reviewed
+capability twice.
 
 Trace and artifact endpoints read the stored `RunState` first and fall back to
 the in-memory runner only when no database state exists. This lets completed and

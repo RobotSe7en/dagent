@@ -125,7 +125,6 @@ import {
   saveSavedDag,
   setCapabilityEnabled,
   setValidationEnabled as apiSetValidation,
-  streamMessagesTask,
   streamTask,
   testCapability,
   uploadSavedDagArtifact,
@@ -148,7 +147,7 @@ import {
   deleteProfile,
   discoverPythonToolNames,
 } from './api';
-import type { ApiConversationMessage, ApiRunEvent, ApiRunResult, ApiRunState, ChatStreamMessage } from './api';
+import type { ApiConversationMessage, ApiRunEvent, ApiRunResult, ApiRunState } from './api';
 import type {
   AgentPreset,
   AgentPresetInput,
@@ -383,8 +382,10 @@ const defaultModelDraft: ModelProviderInput = {
   api_key_action: 'replace',
   api_key_env: '',
   timeout_seconds: 60,
-  strip_thinking: false,
   reasoning: null,
+  stream_include_usage: false,
+  context_window_tokens: 32768,
+  output_reserve_tokens: 4096,
   extra_request_args: {},
   extra_body: {},
 };
@@ -910,7 +911,11 @@ type TextFilePreview = RunArtifactPreview | ProjectFilePreview;
 type AgentManagementSub = 'profiles' | 'presets';
 type SystemManagementSub = 'models' | 'onlyoffice';
 type TokenChannel = 'reasoning' | 'content';
-type DynamicChatMessage = ChatStreamMessage & { timelineOrder: number };
+type DynamicChatMessage = {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timelineOrder: number;
+};
 type DynamicTraceLogEvent = TraceLogEvent & { timelineOrder: number };
 type StaticDagEditorDraft = {
   spec: UserDag;
@@ -1167,13 +1172,6 @@ function dynamicPromptWithDagContext(prompt: string, dag: Dag): string {
     JSON.stringify(dynamicDagForPrompt(dag), null, 2),
     '```',
   ].join('\n');
-}
-
-function buildDynamicDagMessages(history: DynamicChatMessage[], prompt: string, dag: Dag): ChatStreamMessage[] {
-  return [
-    ...history.map((message) => ({ role: message.role, content: message.content })),
-    { role: 'user', content: dynamicPromptWithDagContext(prompt, dag) },
-  ];
 }
 
 function runStatusLabel(status: string): string {
@@ -3941,7 +3939,7 @@ export function App() {
   const generateDynamicDag = async () => {
     if (!dynamicPrompt.trim() || dynamicRunning) return;
     const prompt = dynamicPrompt.trim();
-    const dynamicRequestMessages = buildDynamicDagMessages(dynamicMessages, prompt, dynamicDag);
+    const dynamicRequestInput = dynamicPromptWithDagContext(prompt, dynamicDag);
     appendDynamicMessage('user', prompt);
     setDynamicRunning(true);
     setDynamicRunState(null);
@@ -3960,8 +3958,8 @@ export function App() {
       );
       if (!context) return;
       setDynamicOrchestrationSessionId(context.session.id);
-      await streamMessagesTask(
-        dynamicRequestMessages,
+      await streamTask(
+        dynamicRequestInput,
         'dag',
         dynamicReviewLevel(),
         dynamicHandlers(context.request, context.session.id),
@@ -4005,7 +4003,7 @@ export function App() {
         dynamicReviewLevel(),
         true,
         dynamicHandlers(context.request, context.session.id),
-        dynamicRunState,
+        dynamicRunState?.run_id,
         undefined,
         { conversation: context.request },
       );
@@ -4157,7 +4155,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
-      }, capabilityScope, null, undefined, streamOptions);
+      }, capabilityScope, undefined, streamOptions);
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) return;
       const message = exc instanceof Error ? exc.message : String(exc);
@@ -4259,7 +4257,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'resume_failed', detail: message, status: 'failed' });
         },
-      }, activeConversationContext ? null : runState, feedback, {
+      }, activeConversationContext ? null : runState?.run_id, feedback, {
         signal,
         ...(activeConversationContext ? {
           conversation: activeConversationContext,
@@ -4344,7 +4342,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
         },
-      }, activeConversationContext ? null : runState, feedback, {
+      }, activeConversationContext ? null : runState?.run_id, feedback, {
         signal,
         ...(activeConversationContext ? {
           conversation: activeConversationContext,
@@ -13728,6 +13726,14 @@ function ModelManagementWorkspace({
       setMessage('Reasoning must be a JSON object.');
       return;
     }
+    if (draft.context_window_tokens < 1024) {
+      setMessage('Context window must be at least 1024 tokens.');
+      return;
+    }
+    if (draft.output_reserve_tokens >= draft.context_window_tokens) {
+      setMessage('Output reserve must be smaller than the context window.');
+      return;
+    }
     const payload: ModelProviderInput = {
       ...draft,
       id: creating ? uniqueModelDraftId(draft.name || draft.model, models) : draft.id.trim(),
@@ -13853,11 +13859,13 @@ function ModelManagementWorkspace({
                 <div className="model-config-form model-advanced-content">
                   <label>API Key Env<input disabled={!editable} value={draft.api_key_env ?? ''} onChange={(event) => setDraft((current) => ({ ...current, api_key_env: event.target.value }))} /></label>
                   <label>Timeout<input disabled={!editable} value={draft.timeout_seconds} onChange={(event) => setDraft((current) => ({ ...current, timeout_seconds: Number(event.target.value) || 60 }))} type="number" min="1" /></label>
+                  <label>Context Window<input disabled={!editable} value={draft.context_window_tokens} onChange={(event) => setDraft((current) => ({ ...current, context_window_tokens: Number(event.target.value) || 32768 }))} type="number" min="1024" /></label>
+                  <label>Output Reserve<input disabled={!editable} value={draft.output_reserve_tokens} onChange={(event) => setDraft((current) => ({ ...current, output_reserve_tokens: Math.max(0, Number(event.target.value) || 0) }))} type="number" min="0" /></label>
                   <label className="model-checkbox-row">
-                    <input disabled={!editable} checked={draft.strip_thinking} onChange={(event) => setDraft((current) => ({ ...current, strip_thinking: event.target.checked }))} type="checkbox" />
-                    <span>{'移除 <think> 推理块'}</span>
+                    <input disabled={!editable} checked={draft.stream_include_usage} onChange={(event) => setDraft((current) => ({ ...current, stream_include_usage: event.target.checked }))} type="checkbox" />
+                    <span>请求流式 token usage</span>
                   </label>
-                  <label>Reasoning JSON<textarea disabled={!editable} value={reasoningText} onChange={(event) => setReasoningText(event.target.value)} placeholder='{"enabled": true, "effort": "medium"}' /></label>
+                  <label>Reasoning JSON<textarea disabled={!editable} value={reasoningText} onChange={(event) => setReasoningText(event.target.value)} placeholder='{"enabled": true, "effort": "medium", "capture": "field_and_tags"}' /></label>
                   <label>Extra Request Args<textarea disabled={!editable} value={extraRequestArgsText} onChange={(event) => setExtraRequestArgsText(event.target.value)} /></label>
                   <label>Extra Body<textarea disabled={!editable} value={extraBodyText} onChange={(event) => setExtraBodyText(event.target.value)} /></label>
                 </div>
@@ -13893,8 +13901,10 @@ function modelInputFromProvider(model: ModelProvider): ModelProviderInput {
     api_key_action: 'preserve',
     api_key_env: model.api_key_env ?? '',
     timeout_seconds: model.timeout_seconds,
-    strip_thinking: model.strip_thinking,
     reasoning: model.reasoning ?? null,
+    stream_include_usage: model.stream_include_usage,
+    context_window_tokens: model.context_window_tokens,
+    output_reserve_tokens: model.output_reserve_tokens,
     extra_request_args: model.extra_request_args ?? {},
     extra_body: model.extra_body ?? {},
   };
@@ -13923,7 +13933,7 @@ function slugValue(value: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function formatModelJson(value: Record<string, unknown> | null | undefined, emptyIsBlank = false): string {
+function formatModelJson(value: object | null | undefined, emptyIsBlank = false): string {
   if (!value || !Object.keys(value).length) return emptyIsBlank ? '' : '{}';
   return JSON.stringify(value, null, 2);
 }

@@ -54,7 +54,7 @@ async def main() -> None:
         agent = dagent.ToolAgent(profile="conversation", skills=["terse"])
         result = await runner.run(
             agent,
-            messages=[{"role": "user", "content": "Summarize the text."}],
+            input="Summarize the text.",
         )
 
         store = dagent.SkillStore(

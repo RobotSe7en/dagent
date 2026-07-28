@@ -30,7 +30,7 @@ async def main() -> None:
     )
     async for event in runner.stream(
         agent,
-        messages=[{"role": "user", "content": "当前目录有哪些文件？"}],
+        input="当前目录有哪些文件？",
     ):
         print(event)
     runner.close()

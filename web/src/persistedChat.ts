@@ -69,12 +69,9 @@ export function messagesFromPersistedRunResult(
   const fallbackContent = output || reviewMessage;
   const messages: ChatMessage[] = [];
 
-  for (const message of inputMessagesFromRunState(state)) {
-    const role = message.role;
-    if (role !== 'user' && role !== 'assistant') continue;
-    const content = visibleInputChatContentFromInternalMessage(message).trim();
-    if (!content) continue;
-    appendPersistedChatMessage(messages, role, content);
+  const userRequest = state?.user_request?.trim() ?? '';
+  if (userRequest) {
+    appendPersistedChatMessage(messages, 'user', userRequest);
   }
 
   const assistantIndex = lastAssistantMessageIndex(messages);
@@ -401,63 +398,7 @@ function textContentFromTimeline(timeline: MessageTimelineItem[]): string {
 }
 
 function dynamicDagUserRequest(state: ApiRunState | null): string {
-  if (typeof state?.user_request === 'string' && state.user_request.trim()) {
-    return state.user_request.trim();
-  }
-  for (const message of inputMessagesFromRunState(state)) {
-    if (message.role !== 'user') continue;
-    const content = visibleInputChatContentFromInternalMessage(message).trim();
-    if (content) return content;
-  }
-  return '';
-}
-
-function inputMessagesFromRunState(state: ApiRunState | null): Record<string, unknown>[] {
-  if (!state) return [];
-  const internalMessages = state.internal_messages ?? [];
-  const count = normalizedInputMessageCount(state, internalMessages.length);
-  if (count !== null) return internalMessages.slice(0, count);
-  if (state.kind !== 'tool' && typeof state.user_request === 'string' && state.user_request.trim()) {
-    return [{ role: 'user', content: state.user_request }];
-  }
-  return internalMessages;
-}
-
-function normalizedInputMessageCount(state: ApiRunState, messageCount: number): number | null {
-  const count = state.input_message_count;
-  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) return null;
-  return Math.min(count, messageCount);
-}
-
-function visibleInputChatContentFromInternalMessage(message: Record<string, unknown>): string {
-  const content = visibleChatContentFromInternalMessage(message);
-  return message.role === 'user' ? visibleUserInputContent(content) : content;
-}
-
-function visibleUserInputContent(content: string): string {
-  const withoutTaskId = stripTaskIdHeader(content);
-  if (withoutTaskId.trimStart().startsWith('DAG observation:')) return '';
-  return withoutTaskId;
-}
-
-function stripTaskIdHeader(content: string): string {
-  return content.replace(/^Task id:\s*\S+\s*\n+/, '');
-}
-
-function visibleChatContentFromInternalMessage(message: Record<string, unknown>): string {
-  const content = message.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content.map((item) => {
-      if (typeof item === 'string') return item;
-      const record = recordValue(item);
-      if (!record) return '';
-      if (typeof record.text === 'string') return record.text;
-      if (typeof record.content === 'string') return record.content;
-      return '';
-    }).filter(Boolean).join('\n');
-  }
-  return '';
+  return state?.user_request?.trim() ?? '';
 }
 
 function streamEnvelope(event: ApiRunEvent): StreamEnvelope | null {

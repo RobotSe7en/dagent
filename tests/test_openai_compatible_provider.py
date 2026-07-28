@@ -95,7 +95,6 @@ async def test_openai_compatible_provider_uses_config_and_converts_tool_calls() 
             model="qwen3",
             api_key="local-key",
             timeout_seconds=12,
-            strip_thinking=True,
         ),
         client=client,
     )
@@ -113,13 +112,14 @@ async def test_openai_compatible_provider_uses_config_and_converts_tool_calls() 
         {"type": "function", "function": {"name": "read_file"}}
     ]
     assert response.content == "done"
+    assert response.reasoning_content == "hidden"
     assert response.tool_calls[0].id == "call_1"
     assert response.tool_calls[0].name == "read_file"
     assert response.tool_calls[0].arguments == {"path": "notes.txt"}
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_streams_tokens_without_stripping_think() -> None:
+async def test_openai_compatible_provider_streams_reasoning_separately() -> None:
     client = FakeClient()
     provider = OpenAICompatibleProvider(
         ProviderConfig(
@@ -138,12 +138,99 @@ async def test_openai_compatible_provider_streams_tokens_without_stripping_think
     ]
 
     assert client.completions.kwargs["stream"] is True
+    assert "stream_options" not in client.completions.kwargs
     assert [event.content for event in events if event.type == "token"] == [
-        "<think>visible</think>\n",
+        "visible",
         "done",
     ]
+    assert [event.channel for event in events if event.type == "token"] == [
+        "reasoning",
+        "content",
+    ]
     assert events[-1].response is not None
-    assert events[-1].response.content == "<think>visible</think>\ndone"
+    assert events[-1].response.content == "done"
+    assert events[-1].response.reasoning_content == "visible"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_opts_into_stream_usage() -> None:
+    client = FakeClient()
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            api_key="local-key",
+            stream_include_usage=True,
+        ),
+        client=client,
+    )
+
+    events = [
+        event
+        async for event in provider.stream_chat(
+            [{"role": "user", "content": "hello"}],
+        )
+    ]
+
+    assert client.completions.kwargs["stream_options"] == {"include_usage": True}
+    assert events[-1].type == "done"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_field_capture_discards_tag_reasoning() -> None:
+    client = FakeClient()
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            api_key="local-key",
+            reasoning={"capture": "field"},
+        ),
+        client=client,
+    )
+
+    events = [
+        event
+        async for event in provider.stream_chat(
+            [{"role": "user", "content": "hello"}],
+        )
+    ]
+
+    assert [
+        event.content for event in events if event.type == "token"
+    ] == ["done"]
+    assert events[-1].response is not None
+    assert events[-1].response.content == "done"
+    assert events[-1].response.reasoning_content == ""
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_rejects_invalid_tool_arguments() -> None:
+    client = FakeClient(
+        message=SimpleNamespace(
+            content="",
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1",
+                    function=SimpleNamespace(
+                        name="read_file",
+                        arguments="{invalid",
+                    ),
+                )
+            ],
+        )
+    )
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            api_key="local-key",
+        ),
+        client=client,
+    )
+
+    with pytest.raises(ValueError, match="not valid JSON"):
+        await provider.chat([{"role": "user", "content": "hello"}])
 
 
 @pytest.mark.asyncio

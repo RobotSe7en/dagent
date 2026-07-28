@@ -36,7 +36,7 @@ async def test_stream_cancellation_waits_for_sdk_task_cleanup(
     async def consume() -> None:
         async for _event in runner.stream(
             dagent.ToolAgent(profile="conversation"),
-            messages=[{"role": "user", "content": "wait"}],
+            input="wait",
         ):
             pass
 

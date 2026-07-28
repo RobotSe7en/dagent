@@ -2,8 +2,6 @@ import asyncio
 import inspect
 from pathlib import Path
 
-import pytest
-
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.decorator import tool
@@ -11,8 +9,16 @@ from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.harness_runtime import ToolAgent, ToolAgentLoop
 from dagent.harness_runtime import CapabilityExecutor
 from dagent.harness_runtime.capability_scope import CapabilityScope
+from dagent.harness_runtime.context import ContextAssembler
 from dagent.profiles import AgentProfile
-from dagent.schemas import Boundary
+from dagent.schemas import (
+    Boundary,
+    CapabilityDefinition,
+    ContextPolicy,
+    ConversationState,
+    ResultStoragePolicy,
+    UserMessage,
+)
 from dagent.capabilities.tools.file_tools import create_file_tool_registry
 
 
@@ -29,6 +35,35 @@ def make_loop(tmp_path: Path, provider: MockProvider) -> ToolAgentLoop:
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def run_loop(
+    loop: ToolAgentLoop,
+    message: str,
+    *,
+    boundary: Boundary,
+    **kwargs,
+):
+    return loop.run(
+        ConversationState(items=(UserMessage(content=message),)),
+        boundary=boundary,
+        system_message={"role": "system", "content": "Test agent."},
+        context_policy=ContextPolicy(),
+        result_storage_policy=ResultStoragePolicy(),
+        context_assembler=ContextAssembler(),
+        **kwargs,
+    )
+
+
+def run_agent_message(
+    agent: ToolAgent,
+    message: str,
+    **kwargs,
+):
+    return agent.run_conversation(
+        ConversationState(items=(UserMessage(content=message),)),
+        **kwargs,
+    )
 
 
 class StrictToolMessageProvider(MockProvider):
@@ -75,7 +110,8 @@ def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
     loop = make_loop(tmp_path, provider)
 
     result = run(
-        loop.run(
+        run_loop(
+            loop,
             "Say done",
             boundary=Boundary(allowed_paths=["."]),
         )
@@ -83,7 +119,9 @@ def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
 
     assert result.state.status == "completed"
     assert result.output_text == "Done."
-    assert result.state.internal_messages[-1] == {"role": "assistant", "content": "Done."}
+    assert result.state.model_thread is not None
+    assert result.state.model_thread.items[-1].type == "assistant"
+    assert result.state.model_thread.items[-1].content == "Done."
 
 
 def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
@@ -92,7 +130,8 @@ def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
     tokens: list[str] = []
 
     result = run(
-        loop.run(
+        run_loop(
+            loop,
             "Say done",
             boundary=Boundary(allowed_paths=["."]),
             on_token=tokens.append,
@@ -184,7 +223,69 @@ def test_tool_agent_fast_review_guard_preserves_execution_context(tmp_path: Path
     assert seen_task_ids[0] is not None
     assistant_message = provider.requests[1]["messages"][-2]
     assert assistant_message["role"] == "assistant"
-    assert assistant_message["reasoning_content"] == "need the context-aware tool"
+    assert "reasoning_content" not in assistant_message
+    assert result.state.model_thread is not None
+    assert result.state.model_thread.items[1].reasoning == "need the context-aware tool"
+
+
+def test_tool_agent_guard_records_handler_exception_as_failed(
+    tmp_path: Path,
+) -> None:
+    catalog = CapabilityCatalog(workspace_root=tmp_path)
+    definition = CapabilityDefinition(
+        id="tool.explode",
+        kind="tool",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+
+    def explode(_invocation):
+        raise RuntimeError("handler exploded")
+
+    catalog.register(definition, explode)
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_explode",
+                        name="tool_explode",
+                        arguments={"text": "boom"},
+                    )
+                ]
+            ),
+            ChatResponse(content="Recovered."),
+        ]
+    )
+    agent = ToolAgent(
+        loop=ToolAgentLoop(
+            provider=provider,
+            capability_executor=CapabilityExecutor(catalog),
+            tool_adapter=_tool_adapter(catalog),
+        ),
+        profile=_profile(),
+    )
+
+    result = run(agent.run("Explode", review_level="fast"))
+
+    tool_result = next(
+        item
+        for item in result.new_items
+        if item.type == "tool_result"
+    )
+    assert tool_result.status == "failed"
+    assert "[TOOL_ERROR] handler exploded" in tool_result.content.text
+    capability_trace = next(
+        node
+        for node in result.state.trace.root.children
+        if node.kind == "capability_call"
+    )
+    assert capability_trace.status == "failed"
+    assert capability_trace.error is not None
+    assert capability_trace.error.message == "handler exploded"
 
 
 def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) -> None:
@@ -219,11 +320,15 @@ def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) ->
     ]
     assert result.output_text == "Recovered without writing."
     assert not (tmp_path / "notes.txt").exists()
-    tool_message = next(message for message in result.state.internal_messages if message["role"] == "tool")
-    assert tool_message["role"] == "tool"
-    assert tool_message["name"] == "tool_write_file"
-    assert "[TOOL_ERROR]" in tool_message["content"]
-    assert "tool_write_file" in tool_message["content"]
+    assert result.state.model_thread is not None
+    tool_message = next(
+        item
+        for item in result.state.model_thread.items
+        if item.type == "tool_result"
+    )
+    assert tool_message.name == "tool_write_file"
+    assert "[TOOL_ERROR]" in tool_message.content.text
+    assert "tool_write_file" in tool_message.content.text
 
 
 def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tmp_path: Path) -> None:
@@ -246,8 +351,9 @@ def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tm
     agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
 
     result = run(
-        agent.run_messages(
-            [{"role": "user", "content": "Read the blocked file"}],
+        run_agent_message(
+            agent,
+            "Read the blocked file",
             boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
@@ -287,8 +393,9 @@ def test_tool_agent_approves_boundary_review_for_one_tool_call(tmp_path: Path) -
     )
     agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
     first = run(
-        agent.run_messages(
-            [{"role": "user", "content": "Read the blocked file"}],
+        run_agent_message(
+            agent,
+            "Read the blocked file",
             boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
@@ -298,12 +405,11 @@ def test_tool_agent_approves_boundary_review_for_one_tool_call(tmp_path: Path) -
 
     assert resumed.state.status == "completed"
     assert resumed.output_text == "I read the approved file."
-    assert agent.messages[2] == {
-        "role": "tool",
-        "tool_call_id": "call_1",
-        "name": "tool_read_file",
-        "content": "secret",
-    }
+    reviewed_item = agent.conversation.items[2]
+    assert reviewed_item.type == "tool_result"
+    assert reviewed_item.call_id == "call_1"
+    assert reviewed_item.name == "tool_read_file"
+    assert reviewed_item.content.text == "secret"
 
 
 def test_tool_agent_rejects_boundary_review_without_executing_tool(tmp_path: Path) -> None:
@@ -327,8 +433,9 @@ def test_tool_agent_rejects_boundary_review_without_executing_tool(tmp_path: Pat
     )
     agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
     first = run(
-        agent.run_messages(
-            [{"role": "user", "content": "Write the blocked file"}],
+        run_agent_message(
+            agent,
+            "Write the blocked file",
             boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
@@ -339,7 +446,7 @@ def test_tool_agent_rejects_boundary_review_without_executing_tool(tmp_path: Pat
     assert resumed.state.status == "completed"
     assert resumed.output_text == "I will continue without writing."
     assert target.read_text(encoding="utf-8") == "secret"
-    assert agent.messages[2]["content"] == (
+    assert agent.conversation.items[2].content.text == (
         "[DENIED] Human reviewer denied this tool call. Continue without executing it."
     )
 
@@ -373,8 +480,9 @@ def test_tool_agent_rejects_review_with_sibling_tool_call_keeps_provider_history
     )
     agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
     first = run(
-        agent.run_messages(
-            [{"role": "user", "content": "Write blocked and read allowed"}],
+        run_agent_message(
+            agent,
+            "Write blocked and read allowed",
             boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
@@ -385,9 +493,9 @@ def test_tool_agent_rejects_review_with_sibling_tool_call_keeps_provider_history
     assert resumed.state.status == "completed"
     assert resumed.output_text == "I will continue without writing."
     assert target.read_text(encoding="utf-8") == "secret"
-    assert agent.messages[2]["tool_call_id"] == "call_1"
-    assert agent.messages[3]["tool_call_id"] == "call_2"
-    assert "[TOOL_SKIPPED]" in agent.messages[3]["content"]
+    assert agent.conversation.items[2].call_id == "call_1"
+    assert agent.conversation.items[3].call_id == "call_2"
+    assert "[TOOL_SKIPPED]" in agent.conversation.items[3].content.text
 
 
 def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -> None:
@@ -411,8 +519,9 @@ def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -
     )
     agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
     first = run(
-        agent.run_messages(
-            [{"role": "user", "content": "Write the blocked file"}],
+        run_agent_message(
+            agent,
+            "Write the blocked file",
             boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
@@ -428,7 +537,10 @@ def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -
 
     assert resumed.output_text == "I will use an allowed file instead."
     assert target.read_text(encoding="utf-8") == "secret"
-    assert "Reviewer feedback: Use allowed/notes.txt instead." in agent.messages[2]["content"]
+    assert (
+        "Reviewer feedback: Use allowed/notes.txt instead."
+        in agent.conversation.items[2].content.text
+    )
     assert "Reviewer feedback: Use allowed/notes.txt instead." in provider.requests[1]["messages"][-1]["content"]
 
 
@@ -450,8 +562,9 @@ def test_tool_agent_boundary_review_takes_precedence_over_careful_risk_review(tm
     )
     agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
     first = run(
-        agent.run_messages(
-            [{"role": "user", "content": "Write a file"}],
+        run_agent_message(
+            agent,
+            "Write a file",
             boundary=Boundary(allowed_paths=["allowed"]),
             review_level="careful",
         )
@@ -551,8 +664,9 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
     )
     agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
     first = run(
-        agent.run_messages(
-            [{"role": "user", "content": "Write two files"}],
+        run_agent_message(
+            agent,
+            "Write two files",
                 boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
@@ -598,8 +712,9 @@ def test_tool_agent_shell_cross_boundary_path_requires_review(tmp_path: Path) ->
     agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
 
     result = run(
-        agent.run_messages(
-            [{"role": "user", "content": "Read through shell"}],
+        run_agent_message(
+            agent,
+            "Read through shell",
             boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
@@ -630,8 +745,9 @@ def test_tool_agent_hard_blocked_command_is_not_reviewable(tmp_path: Path) -> No
     agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
 
     result = run(
-        agent.run_messages(
-            [{"role": "user", "content": "Run a dangerous command"}],
+        run_agent_message(
+            agent,
+            "Run a dangerous command",
             boundary=Boundary(allowed_paths=["."]),
             review_level="fast",
         )
@@ -639,9 +755,14 @@ def test_tool_agent_hard_blocked_command_is_not_reviewable(tmp_path: Path) -> No
 
     assert result.state.status == "completed"
     assert result.state.pending_review is None
-    tool_message = next(message for message in result.state.internal_messages if message["role"] == "tool")
-    assert "[TOOL_ERROR]" in tool_message["content"]
-    assert "blocked by shell safety policy" in tool_message["content"]
+    assert result.state.model_thread is not None
+    tool_message = next(
+        item
+        for item in result.state.model_thread.items
+        if item.type == "tool_result"
+    )
+    assert "[TOOL_ERROR]" in tool_message.content.text
+    assert "blocked by shell safety policy" in tool_message.content.text
 
 
 def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
@@ -665,7 +786,8 @@ def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
     loop = make_loop(tmp_path, provider)
 
     result = run(
-        loop.run(
+        run_loop(
+            loop,
             "Read notes",
             boundary=Boundary(allowed_paths=["."]),
         )
@@ -673,17 +795,16 @@ def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
 
     assert result.state.status == "completed"
     assert result.output_text == "I read it."
-    assert result.state.internal_messages[1]["role"] == "assistant"
-    assert result.state.internal_messages[1]["tool_calls"][0]["function"]["name"] == "tool_read_file"
-    assert result.state.internal_messages[1]["tool_calls"][0]["function"]["arguments"] == (
-        '{"path": "notes.txt"}'
-    )
-    assert result.state.internal_messages[2] == {
-        "role": "tool",
-        "tool_call_id": "call_1",
-        "name": "tool_read_file",
-        "content": "hello from file",
-    }
+    assert result.state.model_thread is not None
+    assistant_item = result.state.model_thread.items[1]
+    assert assistant_item.type == "assistant"
+    assert assistant_item.tool_calls[0].name == "tool_read_file"
+    assert assistant_item.tool_calls[0].arguments == {"path": "notes.txt"}
+    tool_item = result.state.model_thread.items[2]
+    assert tool_item.type == "tool_result"
+    assert tool_item.call_id == "call_1"
+    assert tool_item.name == "tool_read_file"
+    assert tool_item.content.text == "hello from file"
     assert provider.requests[1]["messages"][-1]["role"] == "tool"
 
 
@@ -709,7 +830,8 @@ def test_tool_agent_loop_execution_context_keeps_evidence_after_500_chars(
     loop = make_loop(tmp_path, provider)
 
     result = run(
-        loop.run(
+        run_loop(
+            loop,
             "Read notes",
             boundary=Boundary(allowed_paths=["."]),
         )
@@ -738,7 +860,8 @@ def test_tool_agent_loop_marks_truncated_execution_context(tmp_path: Path) -> No
     loop = make_loop(tmp_path, provider)
 
     result = run(
-        loop.run(
+        run_loop(
+            loop,
             "Read notes",
             boundary=Boundary(allowed_paths=["."]),
         )
@@ -767,7 +890,8 @@ def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) ->
     events: list[dict] = []
 
     result = run(
-        loop.run(
+        run_loop(
+            loop,
             "Read notes",
             boundary=Boundary(allowed_paths=["."]),
             on_event=events.append,
@@ -825,7 +949,8 @@ def test_tool_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:
     loop = make_loop(tmp_path, provider)
 
     result = run(
-        loop.run(
+        run_loop(
+            loop,
             "Read notes",
             boundary=Boundary(allowed_paths=["."]),
             max_steps=1,
@@ -855,16 +980,18 @@ def test_tool_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path:
     loop = make_loop(tmp_path, provider)
 
     result = run(
-        loop.run(
+        run_loop(
+            loop,
             "Write notes",
             boundary=Boundary(allowed_paths=["allowed"]),
         )
     )
 
     assert result.state.status == "completed"
-    tool_msg = result.state.internal_messages[2]
-    assert tool_msg["role"] == "tool"
-    assert "[BOUNDARY_VIOLATION]" in tool_msg["content"]
+    assert result.state.model_thread is not None
+    tool_msg = result.state.model_thread.items[2]
+    assert tool_msg.type == "tool_result"
+    assert "[BOUNDARY_VIOLATION]" in tool_msg.content.text
 
 
 def _profile() -> AgentProfile:

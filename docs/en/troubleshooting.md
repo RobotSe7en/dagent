@@ -136,11 +136,10 @@ result = await runner.resume(
 )
 ```
 
-`run(..., state=...)` rejects awaiting-review states so review gates cannot be
-accidentally bypassed. `resume(..., state=...)` is a deprecated legacy path and
-cannot reconstruct target-specific profiles or limits. If checkpoint resume
-reports missing or disabled capability IDs or missing skills, construct a
-compatible `Runner`; the SDK does not silently widen the saved scope.
+`run(..., state=...)` and `resume(..., state=...)` do not exist in 0.8.
+If checkpoint resume reports missing or disabled capability IDs or missing
+skills, construct a compatible `Runner`; the SDK does not silently widen the
+saved scope.
 
 ## Streaming Text Is Interleaved
 

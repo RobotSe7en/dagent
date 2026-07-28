@@ -13,6 +13,8 @@ from dagent.schemas.dag import DAG, DAGSpec
 from dagent.schemas.capability import CapabilityInvocation
 from dagent.schemas.run_trace import RunTrace
 from dagent.schemas.sandbox import RunExecution
+from dagent.schemas.context import ContextPolicy, ContextUsage, ResultStoragePolicy
+from dagent.schemas.conversation import ConversationItem, ConversationState
 
 
 ReviewKind = Literal["initial_dag", "dag_replan", "capability_review"]
@@ -59,7 +61,7 @@ class _FrozenAgentProfile(AgentProfile):
 
 
 class PlannerSkillSnapshot(BaseModel):
-    """Frozen built-in planner skill included in resumable V2 plans."""
+    """Frozen built-in planner skill included in resumable plans."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -81,7 +83,7 @@ class ResolvedRunPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[3] = 3
     runtime_kind: RunStateKind
     tool_profile: AgentProfile
     planner_profile: AgentProfile
@@ -90,6 +92,7 @@ class ResolvedRunPlan(BaseModel):
     review_level: ReviewLevelValue = "fast"
     dynamic_adjust: bool = True
     capability_ids: tuple[str, ...] = ()
+    capability_fingerprints: dict[str, str] = Field(default_factory=dict)
     skill_ids: tuple[str, ...] = ()
     agent_ids: tuple[str, ...] = ()
     validation_enabled: bool = False
@@ -98,6 +101,10 @@ class ResolvedRunPlan(BaseModel):
     limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
     planner_frontend: PlannerFrontend = "typed_spec"
     planner_skill: PlannerSkillSnapshot | None = None
+    context_policy: ContextPolicy = Field(default_factory=ContextPolicy)
+    result_storage_policy: ResultStoragePolicy = Field(default_factory=ResultStoragePolicy)
+    context_window_tokens: int = Field(default=32768, ge=1024)
+    output_reserve_tokens: int = Field(default=4096, ge=0)
     fingerprint: str = ""
 
     @field_validator(
@@ -125,13 +132,14 @@ class ResolvedRunPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_resolved_configuration(self) -> "ResolvedRunPlan":
-        if self.schema_version == 1:
-            if self.planner_frontend != "typed_spec" or self.planner_skill is not None:
-                raise ValueError("Resolved run plan V1 only supports typed_spec planning.")
-        elif self.planner_frontend == "sdk_builder" and self.planner_skill is None:
+        if self.planner_frontend == "sdk_builder" and self.planner_skill is None:
             raise ValueError("sdk_builder plans require a frozen planner skill.")
-        elif self.planner_frontend == "typed_spec" and self.planner_skill is not None:
+        if self.planner_frontend == "typed_spec" and self.planner_skill is not None:
             raise ValueError("typed_spec plans cannot include a builder planner skill.")
+        if self.output_reserve_tokens >= self.context_window_tokens:
+            raise ValueError(
+                "output_reserve_tokens must be smaller than context_window_tokens."
+            )
         if self.validation_enabled and self.validator_profile is None:
             raise ValueError(
                 "validator_profile is required when validation_enabled is true."
@@ -145,6 +153,18 @@ class ResolvedRunPlan(BaseModel):
             raise ValueError(
                 "agent_ids must exactly match agent.* entries in capability_ids."
             )
+        if set(self.capability_fingerprints) != set(self.capability_ids):
+            raise ValueError(
+                "capability_fingerprints must exactly match capability_ids."
+            )
+        if any(
+            len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+            for value in self.capability_fingerprints.values()
+        ):
+            raise ValueError(
+                "capability_fingerprints values must be lowercase SHA-256 digests."
+            )
         expected_fingerprint = self.canonical_fingerprint()
         if self.fingerprint and self.fingerprint != expected_fingerprint:
             raise ValueError("Resolved run plan fingerprint does not match its payload.")
@@ -155,10 +175,7 @@ class ResolvedRunPlan(BaseModel):
     def canonical_fingerprint(self) -> str:
         """Return the SDK-defined SHA-256 fingerprint for this plan payload."""
 
-        excluded = {"fingerprint"}
-        if self.schema_version == 1:
-            excluded.update({"planner_frontend", "planner_skill"})
-        payload = self.model_dump(mode="json", exclude=excluded)
+        payload = self.model_dump(mode="json", exclude={"fingerprint"})
         canonical = json.dumps(
             payload,
             ensure_ascii=False,
@@ -175,6 +192,8 @@ class ResolvedRunPlan(BaseModel):
 class RunCapabilityScope(BaseModel):
     """Serializable capability visibility for a resumable run."""
 
+    model_config = ConfigDict(extra="forbid")
+
     capability_ids: tuple[str, ...] | None = None
     skills: tuple[str, ...] | None = None
 
@@ -189,6 +208,8 @@ class PendingCapabilityCall(BaseModel):
 
 
 class PendingReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     review_id: str
     kind: ReviewKind
     message: str
@@ -210,14 +231,17 @@ class PendingReview(BaseModel):
 
 
 class RunState(BaseModel):
-    """Serializable run state for display and cross-request resume."""
+    """Serializable same-run state embedded in results and checkpoints."""
 
-    schema_version: Literal[1, 2] = 1
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[3] = 3
     run_id: str
     kind: RunStateKind
     status: LoopStatus
-    internal_messages: list[dict[str, Any]] = Field(default_factory=list)
-    input_message_count: int = 0
+    conversation: ConversationState | None = None
+    model_thread: ConversationState | None = None
+    context_usage: list[ContextUsage] = Field(default_factory=list)
     dag: DAG | None = None
     dag_spec: DAGSpec | None = None
     trace: RunTrace | None = None
@@ -240,7 +264,7 @@ class RunCheckpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[3] = 3
     state: RunState
     plan: ResolvedRunPlan
     usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
@@ -250,8 +274,8 @@ class RunCheckpoint(BaseModel):
         self.plan.validate_fingerprint()
         if self.schema_version != self.plan.schema_version:
             raise ValueError("Checkpoint schema version does not match the resolved run plan.")
-        if self.schema_version == 2 and self.state.schema_version != 2:
-            raise ValueError("Checkpoint V2 requires RunState V2.")
+        if self.state.schema_version != 3:
+            raise ValueError("Checkpoint V3 requires RunState V3.")
         if self.state.planner_frontend != self.plan.planner_frontend:
             raise ValueError("Checkpoint planner frontend does not match the resolved run plan.")
         if self.state.kind != self.plan.runtime_kind:
@@ -332,6 +356,7 @@ class LoopOutcome(BaseModel):
     state: RunState
     output_text: str = ""
     execution_context: str = ""
+    new_items: tuple[ConversationItem, ...] = ()
 
 
 class ValidationIssue(BaseModel):

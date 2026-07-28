@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
+from dagent.capabilities import CapabilityCatalog
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.mcp.config import build_http_headers, build_stdio_env
 from dagent.capabilities.mcp.handlers import make_mcp_tool_handler

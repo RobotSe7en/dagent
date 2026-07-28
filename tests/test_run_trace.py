@@ -4,6 +4,7 @@ from dagent.capabilities import CapabilityCatalog
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.harness_runtime import CapabilityExecutor, DAGExecutor
 from dagent.harness_runtime.tool_agent import ToolAgentLoop
+from dagent.harness_runtime.context import ContextAssembler
 from dagent.capabilities.providers import AgentCapabilityProvider
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset
 from dagent.profiles import AgentProfile
@@ -13,10 +14,14 @@ from dagent.schemas import (
     CapabilityInvocation,
     CapabilityResult,
     Boundary,
+    ContextPolicy,
+    ConversationState,
     DAG,
     DAGNode,
     RunTrace,
     RunTraceNode,
+    ResultStoragePolicy,
+    UserMessage,
 )
 from dagent.capabilities.tools.file_tools import create_file_tool_registry
 from dagent.capabilities.tools.registry import ToolRegistry
@@ -106,7 +111,16 @@ def test_tool_agent_loop_returns_run_trace_for_capability_call() -> None:
         tool_adapter=_tool_adapter(executor.catalog),
     )
 
-    outcome = run(loop.run("say hi", boundary=Boundary()))
+    outcome = run(
+        loop.run(
+            ConversationState(items=(UserMessage(content="say hi"),)),
+            boundary=Boundary(),
+            system_message={"role": "system", "content": "Be useful."},
+            context_policy=ContextPolicy(),
+            result_storage_policy=ResultStoragePolicy(),
+            context_assembler=ContextAssembler(),
+        )
+    )
 
     assert outcome.state.trace is not None
     assert outcome.state.trace.root.kind == "run"

@@ -22,6 +22,10 @@ from dagent.schemas import (
     CapabilityInvocation,
     CapabilityPolicy,
     CapabilityResult,
+    ContextPolicy,
+    ConversationState,
+    ResultStoragePolicy,
+    UserMessage,
 )
 from dagent.capabilities.tools.boundary import (
     enforce_command_allowed,
@@ -131,14 +135,31 @@ class MemoryCapabilityProvider:
 class AgentNodeSessionStore:
     """Stores one local thread per DAG run node."""
 
-    _messages: dict[tuple[str, str, str], list[dict[str, Any]]] = field(default_factory=dict)
+    _conversations: dict[tuple[str, str, str], ConversationState] = field(
+        default_factory=dict
+    )
 
-    def get(self, *, task_id: str, node_id: str, fingerprint: str) -> list[dict[str, Any]] | None:
-        messages = self._messages.get((task_id, node_id, fingerprint))
-        return [dict(message) for message in messages] if messages is not None else None
+    def get(
+        self,
+        *,
+        task_id: str,
+        node_id: str,
+        fingerprint: str,
+    ) -> ConversationState | None:
+        conversation = self._conversations.get((task_id, node_id, fingerprint))
+        return None if conversation is None else conversation.model_copy(deep=True)
 
-    def save(self, *, task_id: str, node_id: str, fingerprint: str, messages: list[dict[str, Any]]) -> None:
-        self._messages[(task_id, node_id, fingerprint)] = [dict(message) for message in messages]
+    def save(
+        self,
+        *,
+        task_id: str,
+        node_id: str,
+        fingerprint: str,
+        conversation: ConversationState,
+    ) -> None:
+        self._conversations[(task_id, node_id, fingerprint)] = (
+            conversation.model_copy(deep=True)
+        )
 
 
 class AgentCapabilityProvider:
@@ -207,6 +228,7 @@ class AgentCapabilityProvider:
         callbacks: Any,
     ) -> CapabilityResult:
         from dagent.harness_runtime.capability_executor import CapabilityExecutor
+        from dagent.harness_runtime.context import ContextAssembler
         from dagent.harness_runtime.tool_agent import ToolAgentLoop
 
         profile = _profile_from_config(agent_name, config)
@@ -228,21 +250,43 @@ class AgentCapabilityProvider:
             enabled_toolsets=enabled_toolsets,
         )
         fingerprint = _agent_invocation_fingerprint(invocation)
-        messages = self._messages_for_invocation(
-            profile=profile,
-            loop=loop,
+        conversation = self._conversation_for_invocation(
             invocation=invocation,
             context=context,
             fingerprint=fingerprint,
         )
+        reference_content = _reference_content(invocation)
+        system_message = self.prompt_builder.build_system_message(
+            PromptRequest(
+                profile=profile,
+                task_content="",
+                context=_agent_runtime_context(
+                    context,
+                    has_reference_content=bool(reference_content),
+                ),
+                workspace_path=None if context is None else context.workspace_path,
+            )
+        )
+        context_policy = config.get("context_policy")
+        if not isinstance(context_policy, ContextPolicy):
+            context_policy = ContextPolicy()
+        result_storage_policy = config.get("result_storage_policy")
+        if not isinstance(result_storage_policy, ResultStoragePolicy):
+            result_storage_policy = ResultStoragePolicy()
         workspace_path = None if context is None else context.workspace_path
         with capability_executor.workspace_context(workspace_path):
             outcome = await loop.run(
-                "",
+                conversation,
                 run_id=context.task_id if context is not None else None,
                 boundary=invocation.boundary,
                 max_steps=max_steps,
-                messages=messages,
+                system_message=system_message,
+                context_policy=context_policy,
+                result_storage_policy=result_storage_policy,
+                context_assembler=ContextAssembler(
+                    context_window_tokens=getattr(provider, "context_window_tokens", 32768),
+                    output_reserve_tokens=getattr(provider, "output_reserve_tokens", 4096),
+                ),
                 skills=config.get("skills"),
                 capability_context=_agent_capability_context(context, config.get("skills")),
                 on_token=callbacks.on_token,
@@ -253,7 +297,7 @@ class AgentCapabilityProvider:
                 task_id=context.task_id,
                 node_id=context.node.id,
                 fingerprint=fingerprint,
-                messages=outcome.state.internal_messages,
+                conversation=outcome.state.model_thread or conversation,
             )
         if outcome.state.status == "completed":
             return _agent_result(
@@ -270,15 +314,13 @@ class AgentCapabilityProvider:
             trace=outcome.state.trace.model_dump(mode="json") if outcome.state.trace is not None else None,
         )
 
-    def _messages_for_invocation(
+    def _conversation_for_invocation(
         self,
         *,
-        profile: AgentProfile,
-        loop: Any,
         invocation: CapabilityInvocation,
         context: Any,
         fingerprint: str,
-    ) -> list[dict[str, Any]]:
+    ) -> ConversationState:
         if context is not None and context.node is not None:
             existing = self.session_store.get(
                 task_id=context.task_id,
@@ -288,20 +330,6 @@ class AgentCapabilityProvider:
             if existing is not None:
                 return existing
         reference_content = _reference_content(invocation)
-        system = self.prompt_builder.build_system_message(
-            PromptRequest(
-                profile=profile,
-                task_content="",
-                tools=loop.available_capabilities(),
-                context=_agent_runtime_context(
-                    context,
-                    has_reference_content=bool(reference_content),
-                ),
-                workspace_path=(
-                    None if context is None else context.workspace_path
-                ),
-            )
-        )
         user = self.prompt_builder.build_user_message(
             _agent_node_request(
                 context,
@@ -309,7 +337,16 @@ class AgentCapabilityProvider:
                 reference_content=reference_content,
             ),
         )
-        return [system, user]
+        return ConversationState(
+            items=(
+                UserMessage(
+                    run_id=None if context is None else context.task_id,
+                    content=user["content"],
+                    scope="subagent",
+                    visibility="internal",
+                ),
+            )
+        )
 
 
 def _agent_invocation_fingerprint(invocation: CapabilityInvocation) -> str:

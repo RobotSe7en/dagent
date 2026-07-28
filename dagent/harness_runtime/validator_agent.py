@@ -8,8 +8,8 @@ from pathlib import Path
 
 from dagent.harness_runtime.profiled_agent import ProfiledAgent
 from dagent.profiles import AgentProfile
-from dagent.providers import ChatProvider
-from dagent.schemas import ValidationIssue, ValidationResult
+from dagent.providers import ChatProvider, ChatResponse
+from dagent.schemas import ContextUsage, ValidationIssue, ValidationResult
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,22 @@ class ValidatorAgent:
         execution_context: str = "",
         workspace_path: str | Path | None = None,
     ) -> ValidationResult:
+        result, _response, _usage = await self.validate_with_audit(
+            user_request=user_request,
+            final_answer=final_answer,
+            execution_context=execution_context,
+            workspace_path=workspace_path,
+        )
+        return result
+
+    async def validate_with_audit(
+        self,
+        *,
+        user_request: str,
+        final_answer: str,
+        execution_context: str = "",
+        workspace_path: str | Path | None = None,
+    ) -> tuple[ValidationResult, ChatResponse | None, ContextUsage | None]:
         response_schema = json.dumps(
             {
                 "passed": True,
@@ -53,15 +69,22 @@ class ValidatorAgent:
         )
 
         try:
-            payload = await self.agent.run_json(
+            payload, response, usage = await self.agent.run_json_response(
                 task_content="\n\n".join(sections),
                 workspace_path=workspace_path,
             )
         except ValueError as exc:
             logger.warning("Validator agent returned invalid JSON; skipping validation: %s", exc)
-            return ValidationResult(
-                passed=True,
-                summary="Automated result validation was skipped because the validator agent returned invalid JSON.",
+            return (
+                ValidationResult(
+                    passed=True,
+                    summary=(
+                        "Automated result validation was skipped because the "
+                        "validator agent returned invalid JSON."
+                    ),
+                ),
+                None,
+                None,
             )
         issues = [
             ValidationIssue(
@@ -80,10 +103,14 @@ class ValidatorAgent:
                     message="The answer does not sufficiently address the user's request.",
                 )
             ]
-        return ValidationResult(
-            passed=passed,
-            issues=issues,
-            summary=str(payload.get("summary", "")),
+        return (
+            ValidationResult(
+                passed=passed,
+                issues=issues,
+                summary=str(payload.get("summary", "")),
+            ),
+            response,
+            usage,
         )
 
 

@@ -46,9 +46,10 @@ When an application already owns the execution directory, pass
 `workspace_path=...` to `Runner.run(...)` or `Runner.stream(...)`. This uses that
 exact directory for the run instead of creating a `<run_id>` subdirectory. This
 is a runtime workspace selection feature, not persistence; the caller remains
-responsible for storing any run state outside the SDK. When continuing from a
-`RunState`, dagent reuses `RunState.workspace_path`. Passing a conflicting
-`workspace_path` while also continuing a state raises an error.
+responsible for storing conversation and review state outside the SDK. A
+conversation continuation is a new run and may select a different workspace.
+A review continuation uses the workspace frozen in its `RunCheckpoint`;
+`Runner.resume(...)` does not accept a replacement workspace.
 
 For profile-backed model calls, the SDK also adds a dynamic `Runtime Context`
 section to the system prompt with the resolved workspace root and tells the
@@ -69,8 +70,15 @@ provider = dagent.Provider(
     model="deepseek-v4-pro",
     api_key_env="DEEPSEEK_API_KEY",
     timeout_seconds=60,
-    strip_thinking=False,
-    reasoning={"enabled": True, "effort": "high", "budget_tokens": 1024},
+    reasoning={
+        "enabled": True,
+        "effort": "high",
+        "budget_tokens": 1024,
+        "capture": "field_and_tags",
+    },
+    stream_include_usage=False,
+    context_window_tokens=32768,
+    output_reserve_tokens=4096,
     extra_request_args={},
     extra_body={},
 )
@@ -80,9 +88,20 @@ Use `reasoning` for common reasoning controls. Use `extra_request_args` and
 `extra_body` only for provider-specific parameters supported by the target
 endpoint.
 
-For structured planner calls, dagent injects one compact copy of the complete
-runtime JSON Schema into the system prompt and validates the returned object
-locally. The built-in OpenAI-compatible provider requests
+Reasoning fields and `<think>` tags are captured separately and are not replayed
+into later model input. Context and output-reserve values are required because
+many private OpenAI-compatible endpoints do not report their model limits.
+Streaming usage metadata is disabled by default because some compatible
+endpoints reject `stream_options`. Set `stream_include_usage=True` only when the
+target endpoint supports OpenAI's streamed usage extension; usage remains
+optional in SDK results.
+`capture="field_and_tags"` records both dedicated reasoning fields and tag
+content. `capture="field"` trusts only the dedicated field and discards tag
+content; tags are never left in visible content.
+
+For structured planner calls, dagent counts the runtime JSON Schema in the
+request budget and validates the returned object locally. The built-in
+OpenAI-compatible provider requests
 `{"type": "json_object"}`; it does not send `response_format.type="json_schema"`
 or select behavior from provider or model names.
 

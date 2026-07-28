@@ -3,5 +3,6 @@ provider:
   model: "deepseek-v4-flash"
   api_key_env: "API_KEY"
   timeout_seconds: 60
-  strip_thinking: false
+  reasoning:
+    capture: field_and_tags
 enable_result_validation: false

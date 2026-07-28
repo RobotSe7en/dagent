@@ -32,6 +32,8 @@ Simplified Chinese documentation is available at
   persistence.
 - [API Backend Persistence](api-backend-persistence.md): projects,
   conversations, stored run state, review resume, and enterprise storage paths.
+- [Host migration for 0.8](host-migration-0.8.md): required persistence,
+  request-shape, audit, and externalized-result changes for API/enterprise hosts.
 
 ## Operations
 

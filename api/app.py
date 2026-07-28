@@ -15,6 +15,7 @@ import secrets
 import shutil
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, AsyncIterator, Literal
@@ -26,7 +27,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from api.agent_presets import (
     AgentPreset,
@@ -57,6 +58,7 @@ from dagent import (
     CapabilityInvocation,
     CapabilityPolicy,
     CapabilityResult,
+    ConversationState,
     DAG,
     DAGRun,
     Dag,
@@ -67,6 +69,7 @@ from dagent import (
     ReviewLevel,
     RiskLevel,
     Runner,
+    RunCheckpoint,
     RunState,
     RunStreamEvent,
     SkillAmbiguousError,
@@ -82,13 +85,13 @@ from dagent import (
 from dagent.config import (
     DEFAULT_RUNS_DIR,
     DEFAULT_WORKSPACE,
+    ReasoningConfig,
     UserDagentConfig,
     UserModelProviderConfig,
     UserOnlyOfficeConfig,
     UserPythonToolConfig,
     default_user_config_path,
     load_config,
-    load_user_config,
     load_user_config_with_python_tool_errors,
     resolve_config_path,
     resolve_config_relative_path,
@@ -188,9 +191,8 @@ _TEXT_PREVIEW_KINDS: set[RunArtifactTextPreviewKind] = {"markdown", "code", "tex
 class MessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    messages: list[dict[str, Any]] = Field(min_length=1)
+    input: str = Field(min_length=1)
     visible_message: str | None = None
-    state: RunState | None = None
     target: MessageTarget = "auto"
     review_level: ReviewLevel = "fast"
     dynamic_adjust: bool = True
@@ -204,11 +206,13 @@ class MessageRequest(BaseModel):
 
 
 class ResumeReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     review_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
     dag: DAG | None = None
     approved: bool = True
     review_level: ReviewLevel | None = None
-    state: RunState | None = None
     feedback: str | None = None
 
 
@@ -416,10 +420,20 @@ class ModelProviderRequest(BaseModel):
     api_key_action: ApiKeyAction = "replace"
     api_key_env: str | None = None
     timeout_seconds: float = 60
-    strip_thinking: bool = False
-    reasoning: dict[str, Any] | None = None
+    reasoning: ReasoningConfig | None = None
+    stream_include_usage: bool = False
+    context_window_tokens: int = Field(default=32768, ge=1024)
+    output_reserve_tokens: int = Field(default=4096, ge=0)
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_context_window(self) -> "ModelProviderRequest":
+        if self.output_reserve_tokens >= self.context_window_tokens:
+            raise ValueError(
+                "output_reserve_tokens must be smaller than context_window_tokens."
+            )
+        return self
 
 
 class ModelProviderPayload(BaseModel):
@@ -433,8 +447,10 @@ class ModelProviderPayload(BaseModel):
     api_key_configured: bool
     api_key_saved: bool
     timeout_seconds: float
-    strip_thinking: bool
-    reasoning: dict[str, Any] | None = None
+    reasoning: ReasoningConfig | None = None
+    stream_include_usage: bool
+    context_window_tokens: int
+    output_reserve_tokens: int
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
@@ -585,7 +601,8 @@ class PersistedMessageContext:
     conversation_kind: Literal["chat", "dynamic_dag", "static_dag"]
     workspace_uri: str
     workspace_path: Path
-    run_state: RunState | None = None
+    conversation_state: ConversationState
+    conversation_revision: int
     orchestration_session_id: str | None = None
     orchestration_surface: str | None = None
 
@@ -644,7 +661,7 @@ class ConversationMessageProjection:
         visible_content = (
             request.visible_message
             if request.visible_message is not None
-            else _visible_chat_message_content(request.messages[-1])
+            else request.input
         )
         user_content = visible_content.strip()
         user_message_id = None
@@ -909,27 +926,6 @@ class ConversationMessageProjection:
                 self.timeline[index] = {"type": "dag", "dag": dag}
                 return
         self.timeline.append({"type": "dag", "dag": dag})
-
-
-def _visible_chat_message_content(message: dict[str, Any]) -> str:
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                value = item.get("text")
-                if isinstance(value, str):
-                    parts.append(value)
-                else:
-                    value = item.get("content")
-                    if isinstance(value, str):
-                        parts.append(value)
-        return "\n".join(part for part in parts if part)
-    return ""
 
 
 def _json_array(raw: str | None) -> list[dict[str, Any]]:
@@ -3636,8 +3632,14 @@ def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
         "api_key": model.api_key,
         "api_key_env": model.api_key_env,
         "timeout_seconds": model.timeout_seconds,
-        "strip_thinking": model.strip_thinking,
-        "reasoning": model.reasoning,
+        "stream_include_usage": model.stream_include_usage,
+        "context_window_tokens": model.context_window_tokens,
+        "output_reserve_tokens": model.output_reserve_tokens,
+        "reasoning": (
+            None
+            if model.reasoning is None
+            else model.reasoning.model_dump(mode="python")
+        ),
         "extra_request_args": dict(model.extra_request_args),
         "extra_body": dict(model.extra_body),
     }
@@ -3657,8 +3659,10 @@ def _model_request_from_user_config(model_id: str, model: UserModelProviderConfi
         api_key=api_key,
         api_key_env=model.api_key_env,
         timeout_seconds=model.timeout_seconds,
-        strip_thinking=model.strip_thinking,
-        reasoning=model.reasoning.model_dump(mode="json") if model.reasoning is not None else None,
+        reasoning=model.reasoning,
+        stream_include_usage=model.stream_include_usage,
+        context_window_tokens=model.context_window_tokens,
+        output_reserve_tokens=model.output_reserve_tokens,
         extra_request_args=dict(model.extra_request_args),
         extra_body=dict(model.extra_body),
     )
@@ -3672,8 +3676,10 @@ def _user_model_provider_config(model: ModelProviderRequest) -> UserModelProvide
         api_key=model.api_key,
         api_key_env=model.api_key_env,
         timeout_seconds=model.timeout_seconds,
-        strip_thinking=model.strip_thinking,
         reasoning=model.reasoning,
+        stream_include_usage=model.stream_include_usage,
+        context_window_tokens=model.context_window_tokens,
+        output_reserve_tokens=model.output_reserve_tokens,
         extra_request_args=dict(model.extra_request_args),
         extra_body=dict(model.extra_body),
     )
@@ -3728,8 +3734,10 @@ def _config_model_payload(*, active: bool) -> ModelProviderPayload:
         api_key_configured=_api_key_configured(provider.api_key, provider.api_key_env),
         api_key_saved=bool(provider.api_key),
         timeout_seconds=provider.timeout_seconds,
-        strip_thinking=provider.strip_thinking,
-        reasoning=provider.reasoning.model_dump(mode="json") if provider.reasoning is not None else None,
+        reasoning=provider.reasoning,
+        stream_include_usage=provider.stream_include_usage,
+        context_window_tokens=provider.context_window_tokens,
+        output_reserve_tokens=provider.output_reserve_tokens,
         extra_request_args=_redact_json_secrets(provider.extra_request_args),
         extra_body=_redact_json_secrets(provider.extra_body),
     )
@@ -3747,8 +3755,10 @@ def _user_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelPr
         api_key_configured=_api_key_configured(model.api_key, model.api_key_env),
         api_key_saved=bool(model.api_key),
         timeout_seconds=model.timeout_seconds,
-        strip_thinking=model.strip_thinking,
         reasoning=model.reasoning,
+        stream_include_usage=model.stream_include_usage,
+        context_window_tokens=model.context_window_tokens,
+        output_reserve_tokens=model.output_reserve_tokens,
         extra_request_args=_redact_json_secrets(model.extra_request_args),
         extra_body=_redact_json_secrets(model.extra_body),
     )
@@ -3991,8 +4001,7 @@ async def message_stream(http_request: Request) -> StreamingResponse:
             async for event in gate_chat_display(
                 runner.stream(
                     agent,
-                    messages=request.messages,
-                    state=request.state,
+                    input=request.input,
                     workspace_root=workspace_root,
                     input_uploads=input_uploads,
                 ),
@@ -4061,9 +4070,20 @@ async def _resume_persisted_review_stream(
         raise HTTPException(status_code=404, detail="Conversation not found.")
     if project is not None and conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    run_state = await run_in_threadpool(store.get_run_state, run.id)
-    if run_state is None:
-        raise HTTPException(status_code=404, detail="Run state not found.")
+    _require_v3_conversation(conversation)
+    checkpoint = await run_in_threadpool(store.get_run_checkpoint, run.id)
+    if checkpoint is None:
+        raise HTTPException(status_code=404, detail="Run checkpoint not found.")
+    run_state = checkpoint.state
+    conversation_state = await run_in_threadpool(
+        store.get_conversation_state,
+        conversation.id,
+    )
+    if conversation_state is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Conversation state is unavailable for this review.",
+        )
     workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, run.workspace_uri)
     orchestration_session = None
     if conversation.kind != "chat":
@@ -4077,6 +4097,8 @@ async def _resume_persisted_review_stream(
         conversation_kind=conversation.kind,
         workspace_uri=run.workspace_uri,
         workspace_path=workspace_path,
+        conversation_state=conversation_state,
+        conversation_revision=conversation.conversation_revision,
         orchestration_session_id=None if orchestration_session is None else orchestration_session.id,
         orchestration_surface=_orchestration_session_surface(orchestration_session),
     )
@@ -4099,15 +4121,16 @@ async def _resume_persisted_review_stream(
     try:
         decision_json = _review_decision_json(decision)
         message_projection = await ConversationMessageProjection.resume_for_review(run_state, context, decision)
-        await _persist_review_resume_checkpoint(
-            store,
-            run=run,
-            run_state=run_state,
-            stream_id=stream_id,
-            review_id=review_id,
-            decision_json=decision_json,
-            message_projection=message_projection,
+        claimed = await run_in_threadpool(
+            store.claim_review,
+            review_id,
+            decision_json,
         )
+        if not claimed:
+            raise HTTPException(
+                status_code=409,
+                detail="Review is already being resumed or has been resolved.",
+            )
     except BaseException:
         await run_in_threadpool(lock.release)
         raise
@@ -4115,13 +4138,23 @@ async def _resume_persisted_review_stream(
         _LockReleasingAsyncIterator(
             _persisted_review_resume_stream_events(
                 decision,
-                run_state,
+                checkpoint,
                 context,
                 stream_id,
                 message_projection=message_projection,
                 decision_json=decision_json,
             ),
             lock,
+            on_unstarted_close=lambda: _persist_interrupted_run(
+                store,
+                run_id=run_state.run_id,
+                run_created=True,
+                stream_created=False,
+                stream_id=stream_id,
+                resolve_review_id=review_id,
+                decision_json=decision_json,
+                message_projection=message_projection,
+            ),
         ),
         media_type="text/event-stream",
     )
@@ -4141,8 +4174,8 @@ async def _persisted_message_stream_events(
         event_source = gate_chat_display(
             runner.stream(
                 agent,
-                messages=request.messages,
-                state=context.run_state,
+                input=request.input,
+                conversation=context.conversation_state,
                 workspace_path=context.workspace_path,
                 input_uploads=input_uploads,
             ),
@@ -4153,9 +4186,8 @@ async def _persisted_message_stream_events(
             runner=runner,
             context=context,
             stream_id=stream_id,
-            run_kind=context.run_state.kind if context.run_state is not None else request.target,
-            create_run=context.run_state is None,
-            existing_run_id=None if context.run_state is None else context.run_state.run_id,
+            run_kind=request.target,
+            create_run=True,
             message_projection=message_projection,
         ):
             yield _sse(payload)
@@ -4165,7 +4197,7 @@ async def _persisted_message_stream_events(
 
 async def _persisted_review_resume_stream_events(
     decision: ReviewDecision,
-    run_state: RunState,
+    checkpoint: RunCheckpoint,
     context: PersistedMessageContext,
     stream_id: str,
     *,
@@ -4174,7 +4206,7 @@ async def _persisted_review_resume_stream_events(
 ):
     runner = state.get_runner()
     event_source = gate_chat_display(
-        runner.resume_stream(decision, state=run_state),
+        runner.resume_stream(decision, checkpoint=checkpoint),
         validation_enabled=runner.enable_validation,
     )
     async for payload in _persisted_run_events(
@@ -4182,9 +4214,9 @@ async def _persisted_review_resume_stream_events(
         runner=runner,
         context=context,
         stream_id=stream_id,
-        run_kind=run_state.kind,
+        run_kind=checkpoint.state.kind,
         create_run=False,
-        existing_run_id=run_state.run_id,
+        existing_run_id=checkpoint.state.run_id,
         resolve_review_id=decision.review_id,
         decision_json=decision_json or _review_decision_json(decision),
         message_projection=message_projection,
@@ -4193,15 +4225,24 @@ async def _persisted_review_resume_stream_events(
 
 
 class _LockReleasingAsyncIterator:
-    def __init__(self, source: AsyncIterator[Any], lock: Any) -> None:
+    def __init__(
+        self,
+        source: AsyncIterator[Any],
+        lock: Any,
+        *,
+        on_unstarted_close: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self._source = source
         self._lock = lock
+        self._on_unstarted_close = on_unstarted_close
+        self._started = False
         self._released = False
 
     def __aiter__(self) -> "_LockReleasingAsyncIterator":
         return self
 
     async def __anext__(self) -> Any:
+        self._started = True
         try:
             return await self._source.__anext__()
         except StopAsyncIteration:
@@ -4217,53 +4258,10 @@ class _LockReleasingAsyncIterator:
             await close()
         if self._released:
             return
+        if not self._started and self._on_unstarted_close is not None:
+            await self._on_unstarted_close()
         self._released = True
         await run_in_threadpool(self._lock.release)
-
-
-async def _persist_review_resume_checkpoint(
-    store: Store,
-    *,
-    run: Run,
-    run_state: RunState,
-    stream_id: str,
-    review_id: str,
-    decision_json: str,
-    message_projection: ConversationMessageProjection | None,
-) -> None:
-    checkpoint_state = run_state.model_copy(update={
-        "status": "failed",
-        "pending_review": None,
-        "pending_invocation": None,
-    })
-    payload = {
-        "type": "run.finished",
-        "data": {
-            "result": {
-                "state": checkpoint_state.model_dump(mode="json"),
-                "output_text": run.output_text,
-            },
-        },
-        "sequence": 0,
-        "run_id": run_state.run_id,
-    }
-    if message_projection is not None:
-        await message_projection.handle_payload(payload)
-    await run_in_threadpool(
-        store.append_run_event,
-        run_id=run_state.run_id,
-        stream_id=f"{stream_id}_checkpoint",
-        event_type="run.finished",
-        payload_json=json.dumps(payload, ensure_ascii=False),
-    )
-    await run_in_threadpool(
-        store.save_run_state,
-        run_state.run_id,
-        checkpoint_state.model_dump_json(),
-        run.output_text,
-    )
-    await run_in_threadpool(store.update_run_status, run.id, "failed")
-    await run_in_threadpool(store.resolve_review, review_id, decision_json)
 
 
 async def _persisted_static_dag_stream_events(
@@ -4379,6 +4377,11 @@ async def _persisted_run_events(
                     run_id,
                     error_json,
                 )
+                await run_in_threadpool(
+                    store.save_run_checkpoint,
+                    run_id,
+                    None,
+                )
                 if stream_created:
                     await run_in_threadpool(
                         store.finish_run_stream,
@@ -4388,6 +4391,12 @@ async def _persisted_run_events(
                         completed_at=int(time.time()),
                     )
                 terminal_event_persisted = True
+                if resolve_review_id is not None:
+                    await run_in_threadpool(
+                        store.resolve_review,
+                        resolve_review_id,
+                        decision_json or "{}",
+                    )
             if event.type == "run.finished":
                 result = getattr(event.data, "result", None)
                 if result is not None and run_id is not None:
@@ -4404,6 +4413,36 @@ async def _persisted_run_events(
                         run_id,
                         result.state.model_dump_json(),
                         result.output_text,
+                    )
+                    if result.conversation is not None:
+                        if result.conversation.id != context.conversation_id:
+                            raise StorageConflictError(
+                                "SDK conversation identity does not match the host conversation."
+                            )
+                        await run_in_threadpool(
+                            store.save_conversation_state,
+                            context.conversation_id,
+                            result.conversation.model_dump_json(),
+                            revision=result.conversation.revision,
+                            expected_revision=context.conversation_revision,
+                        )
+                    checkpoint = (
+                        result.checkpoint
+                        if result.requires_review
+                        else None
+                    )
+                    if result.requires_review and checkpoint is None:
+                        raise RuntimeError(
+                            "A reviewable SDK result did not include a checkpoint."
+                        )
+                    await run_in_threadpool(
+                        store.save_run_checkpoint,
+                        run_id,
+                        (
+                            None
+                            if checkpoint is None
+                            else checkpoint.model_dump_json()
+                        ),
                     )
                     await run_in_threadpool(
                         store.update_run_status,
@@ -4470,6 +4509,11 @@ async def _persisted_run_events(
                 run_id,
                 json.dumps(error_payload["data"], ensure_ascii=False),
             )
+            await run_in_threadpool(
+                store.save_run_checkpoint,
+                run_id,
+                None,
+            )
             if stream_created:
                 await run_in_threadpool(
                     store.finish_run_stream,
@@ -4477,6 +4521,12 @@ async def _persisted_run_events(
                     "failed",
                     error_json=json.dumps(error_payload["data"], ensure_ascii=False),
                     completed_at=int(time.time()),
+                )
+            if resolve_review_id is not None:
+                await run_in_threadpool(
+                    store.resolve_review,
+                    resolve_review_id,
+                    decision_json or "{}",
                 )
             if not sent_error:
                 yield error_payload
@@ -4547,6 +4597,7 @@ async def _persist_interrupted_run(
             run.output_text,
         )
     await run_in_threadpool(store.save_run_error, run_id, error_json)
+    await run_in_threadpool(store.save_run_checkpoint, run_id, None)
     await run_in_threadpool(store.update_run_status, run_id, "failed", completed_at=completed_at)
     if stream_created:
         await run_in_threadpool(
@@ -4617,8 +4668,6 @@ async def _persisted_context_from_message(request: MessageRequest) -> PersistedM
             status_code=400,
             detail="conversation_id must be provided for persisted message streams.",
         )
-    if request.state is not None:
-        raise HTTPException(status_code=400, detail="Persisted message streams do not accept client state.")
     if request.workspace_root is not None:
         raise HTTPException(status_code=400, detail="Persisted message streams do not accept workspace_root.")
     expected_kind = "dynamic_dag" if request.target == "dag" else "chat"
@@ -4657,6 +4706,7 @@ async def _persisted_context_from_conversation(
         raise HTTPException(status_code=400, detail="project_id must be provided for project conversations.")
     if project is not None and conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
+    _require_v3_conversation(conversation)
     if conversation.project_id is not None:
         if project is None:
             project = await run_in_threadpool(store.get_project, conversation.project_id)
@@ -4673,7 +4723,6 @@ async def _persisted_context_from_conversation(
             conversation.id,
         )
     orchestration_surface = _orchestration_session_surface(orchestration_session)
-    previous_run_state = None
     if conversation.last_run_id is not None:
         stored_run_state = await run_in_threadpool(store.get_run_state, conversation.last_run_id)
         if stored_run_state is not None and stored_run_state.status == "awaiting_review":
@@ -4681,21 +4730,49 @@ async def _persisted_context_from_conversation(
                 status_code=409,
                 detail="Conversation is awaiting review; resume the pending review before sending a new message.",
             )
-        if not (
-            conversation.kind == "dynamic_dag"
-            and orchestration_surface == ORCHESTRATION_WORKSPACE_SURFACE
-        ):
-            previous_run_state = stored_run_state
+    conversation_state = await run_in_threadpool(
+        store.get_conversation_state,
+        conversation.id,
+    )
+    if conversation_state is None:
+        if conversation.conversation_revision != 0:
+            raise HTTPException(
+                status_code=409,
+                detail="Stored conversation revision has no V3 conversation state.",
+            )
+        conversation_state = ConversationState(id=conversation.id)
+    if conversation_state.id != conversation.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Stored conversation state identity does not match its host record.",
+        )
+    if conversation_state.revision != conversation.conversation_revision:
+        raise HTTPException(
+            status_code=409,
+            detail="Stored conversation state revision is inconsistent.",
+        )
     return PersistedMessageContext(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
         conversation_kind=conversation.kind,
         workspace_uri=workspace_uri,
         workspace_path=workspace_path,
-        run_state=previous_run_state,
+        conversation_state=conversation_state,
+        conversation_revision=conversation.conversation_revision,
         orchestration_session_id=None if orchestration_session is None else orchestration_session.id,
         orchestration_surface=orchestration_surface,
     )
+
+
+def _require_v3_conversation(conversation: Conversation) -> None:
+    if conversation.conversation_schema_version != 3:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Conversation predates the V3 context contract. "
+                "Start a new conversation or migrate it offline."
+            ),
+        )
 
 
 def _clean_workspace_root(value: str) -> str:
@@ -4733,19 +4810,29 @@ def _clean_project_slug(value: str) -> str:
 
 @app.post("/messages/resume")
 async def resume_message_stream(request: ResumeReviewRequest) -> StreamingResponse:
-    async def events():
-        decision = ReviewDecision(
-            review_id=request.review_id,
-            approved=request.approved,
-            dag=request.dag,
-            review_level=request.review_level,
-            feedback=request.feedback,
+    runner = state.get_runner()
+    checkpoint = runner.run_checkpoint(request.run_id)
+    if checkpoint is None:
+        raise HTTPException(status_code=404, detail="Run checkpoint not found.")
+    pending_review = checkpoint.state.pending_review
+    if pending_review is None or pending_review.review_id != request.review_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Run checkpoint does not match the requested review.",
         )
+    decision = ReviewDecision(
+        review_id=request.review_id,
+        approved=request.approved,
+        dag=request.dag,
+        review_level=request.review_level,
+        feedback=request.feedback,
+    )
+
+    async def events():
         sent_error = False
         try:
-            runner = state.get_runner()
             async for event in gate_chat_display(
-                runner.resume_stream(decision, state=request.state),
+                runner.resume_stream(decision, checkpoint=checkpoint),
                 validation_enabled=runner.enable_validation,
             ):
                 if event.type == "run.failed":

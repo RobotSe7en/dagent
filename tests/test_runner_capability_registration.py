@@ -10,7 +10,6 @@ import dagent
 import dagent.runner as runner_module
 import dagent.capabilities.mcp.server_task as server_task_module
 from dagent.capabilities.catalog import CapabilityCatalog
-from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
 from dagent.config import UserPythonToolConfig
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import (
@@ -143,7 +142,7 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
     assert snapshot.tools[0].definition.id == capability_id
     assert [server.name for server in runner.list_mcp_server_snapshots()] == ["mock-server"]
 
-    result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("lookup x")))
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), input="lookup x"))
     assert result.output_text == "done"
     assert any(tool["function"]["name"] == function_name for tool in provider.requests[0]["tools"])
 
@@ -520,7 +519,7 @@ def test_add_agent_registers_capability_and_tool_agent_can_delegate(tmp_path) ->
             skills=[],
             agents=["agent.helper"],
         ),
-        messages=user_messages("delegate"),
+        input="delegate",
     ))
 
     assert definition.id == "agent.helper"
@@ -554,7 +553,7 @@ def test_top_level_agent_can_expose_all_registered_agents(tmp_path) -> None:
             skills=[],
             agents="registered",
         ),
-        messages=user_messages("delegate"),
+        input="delegate",
     ))
 
     assert result.output_text == "done"
@@ -1032,7 +1031,7 @@ def test_tool_agent_delegation_events_include_parent_capability_id(tmp_path) -> 
 
     result = run(runner.run(
         dagent.ToolAgent(profile="conversation", capabilities=[], skills=[], agents=["agent.helper"]),
-        messages=user_messages("delegate"),
+        input="delegate",
         on_event=events.append,
     ))
 

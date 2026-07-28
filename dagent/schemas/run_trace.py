@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from dagent.schemas.artifact import ArtifactState
 from dagent.schemas.capability import CapabilityInvocation, CapabilityResult
+from dagent.schemas.conversation import ContentReference
 
 
 RunTraceStatus = Literal[
@@ -56,7 +57,11 @@ class RunTraceNode(BaseModel):
     ref: dict[str, str] = Field(default_factory=dict)
     input: dict[str, Any] = Field(default_factory=dict)
     output: Any | None = None
+    output_reference: ContentReference | None = None
     value: Any | None = None
+    value_reference: ContentReference | None = None
+    value_references: dict[str, ContentReference] = Field(default_factory=dict)
+    references: tuple[ContentReference, ...] = ()
     error: RunTraceError | None = None
     capability_execution: CapabilityExecution | None = None
     children: list["RunTraceNode"] = Field(default_factory=list)

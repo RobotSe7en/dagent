@@ -5,7 +5,7 @@ from pathlib import Path
 from dagent.harness_runtime import ValidatorAgent, FeedbackLearnerAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
-from dagent.schemas import DAG, DAGNode, RunTrace, RunTraceNode
+from dagent.schemas import RunTrace, RunTraceNode
 
 
 def run(coro):

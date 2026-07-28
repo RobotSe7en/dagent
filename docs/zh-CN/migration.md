@@ -4,9 +4,83 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.7.6`。
+当前包版本是 `0.8.0`。
 
 ## Unreleased
+
+### 修复
+
+- 内置 API 和 WebUI 已使用 0.8 `input`/`ConversationState` contract，完整持久化
+  review checkpoint，并通过原子 claim 防止重复 resume。
+- conversation 保留的附件以及外置 tool/MCP 结果，在下一轮使用新的 run workspace
+  时仍然可访问。
+- compactor 输出严格遵守 token budget；审核后的工具失败保持 failed 状态；只有带类型
+  provenance 的外置结果才会被解释为 `ContentReference`。
+- SQLite 升级会显式标记 pre-V3 conversation，并以 HTTP 409 拒绝，而不是尝试解析旧
+  run state。
+- OpenAI-compatible 流式 usage metadata 改为显式启用，使拒绝 `stream_options` 的
+  endpoint 继续可用。
+- API/Web model record 会保留每个模型的 context window 和 output reserve；review
+  checkpoint 在多次审核门之间继续使用冻结限制。
+- 静态 DAG map 输出在父 trace 中保持外置，DAG trace 会保留 value 和诊断字段标准化
+  后的类型化引用。
+- capability handler 异常会记录为 failed 工具结果和 failed trace node。
+
+## 0.8.0
+
+### 破坏性变更
+
+- Agent run 现在接收 `input="..."` 和可选的有类型
+  `conversation=ConversationState`；原始 `messages=` 参数已删除。
+- 普通跨 run continuation 不再接收 `state=` 或 `checkpoint=`。下一轮应传入
+  `result.conversation`。
+- 审核 continuation 必须使用
+  `resume(decision, checkpoint=result.checkpoint)`；state-only resume 和内存
+  fallback 已删除。
+- `RunState`、`RunCheckpoint` 和 `ResolvedRunPlan` 使用 schema version 3。
+  V1/V2 payload 会被拒绝，runtime 不提供转换层。
+- 删除 `RunResult.messages`、`RunState.internal_messages` 和
+  `RunState.input_message_count`。
+- 删除 `Provider.strip_thinking`。推理捕获由 `reasoning.capture` 控制，并与可见回答
+  分开保存。
+- OpenAI-compatible provider 返回非法 JSON 或非对象 tool-call arguments 时会明确
+  失败，不再静默转换为空参数对象。
+
+### 新增
+
+- 与 provider 无关的 `ConversationState`、`UserMessage`、`AssistantMessage`、
+  `ToolResultMessage`、`ToolCallItem`、`Attachment`、`ContextSummary` 和
+  `ContentReference`。
+- tool agent、DAG planner、router、validator 和注册子 agent 共用统一上下文组装器；
+  每次调用前统一计算 system prompt、schema、历史、摘要和工具结果预算。
+- 模型摘要及明确的确定性 fallback、单个/总工具结果限制、调用前
+  `ContextWindowExceeded`、类型化 context usage 和压缩流事件。
+- assistant 审计 item 上的 reasoning 和 provider token usage；reasoning 永不回放。
+- 大型文本和二进制工具/MCP 结果会原子写入 run workspace，并使用 SHA-256 引用。
+- review checkpoint 会冻结 capability definition 指纹，并在执行获批 tool/MCP call
+  前完成校验。
+
+### 迁移
+
+```python
+# 0.7
+messages = [{"role": "user", "content": "记住蓝色。"}]
+first = await runner.run(agent, messages=messages)
+messages += first.messages
+messages.append({"role": "user", "content": "什么颜色？"})
+second = await runner.run(agent, messages=messages, state=first.state)
+
+# 0.8
+first = await runner.run(agent, input="记住蓝色。")
+second = await runner.run(
+    agent,
+    input="什么颜色？",
+    conversation=first.conversation,
+)
+```
+
+Host 必须为待审核 run 持久化完整 V3 checkpoint，并为聊天 continuation 持久化完整的
+有界 `ConversationState`。参见 [0.8 Host 迁移](host-migration-0.8.md)。
 
 ## 0.7.6
 

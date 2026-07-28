@@ -41,8 +41,9 @@ tool 的相对路径从当前 run workspace 解析。传入 `workspace=...` 时�
 如果应用已经拥有执行目录，可以给 `Runner.run(...)` 或 `Runner.stream(...)` 传入
 `workspace_path=...`。dagent 会直接使用这个目录运行，不再创建 `<run_id>` 子目录。
 这是运行时 workspace 选择能力，不是持久化能力；调用方仍然负责在 SDK 之外保存 run
-state。继续一个 `RunState` 时，dagent 会复用 `RunState.workspace_path`。如果继续
-state 的同时传入了不一致的 `workspace_path`，调用会报错。
+的 conversation 和 review 状态。会话续聊会创建新的 run，也可以选择不同 workspace。
+review 续跑使用 `RunCheckpoint` 中冻结的 workspace；`Runner.resume(...)` 不接受替换
+workspace。
 
 对于由 profile 驱动的模型调用，SDK 还会在 system prompt 中动态加入
 `Runtime Context` 段，写明解析后的 workspace root，并要求 agent 从该目录解析相对
@@ -61,8 +62,15 @@ provider = dagent.Provider(
     model="deepseek-v4-pro",
     api_key_env="DEEPSEEK_API_KEY",
     timeout_seconds=60,
-    strip_thinking=False,
-    reasoning={"enabled": True, "effort": "high", "budget_tokens": 1024},
+    reasoning={
+        "enabled": True,
+        "effort": "high",
+        "budget_tokens": 1024,
+        "capture": "field_and_tags",
+    },
+    stream_include_usage=False,
+    context_window_tokens=32768,
+    output_reserve_tokens=4096,
     extra_request_args={},
     extra_body={},
 )
@@ -71,8 +79,16 @@ provider = dagent.Provider(
 使用 `reasoning` 传递常见 reasoning controls。只有当目标 endpoint 支持对应字段时，
 才使用 `extra_request_args` 和 `extra_body` 传递 provider-specific 参数。
 
-对于 structured planner call，dagent 会在 system prompt 中注入一份完整的 compact runtime
-JSON Schema，并在本地校验返回对象。内置 OpenAI-compatible provider 固定请求
+reasoning 字段和 `<think>` tag 会被单独捕获，不会回放到后续模型输入。由于很多私有
+OpenAI-compatible endpoint 不会报告模型限制，因此需要显式配置上下文和输出预留。
+流式 usage metadata 默认关闭，因为部分兼容 endpoint 会拒绝 `stream_options`。
+只有目标 endpoint 支持 OpenAI 的流式 usage 扩展时才设置
+`stream_include_usage=True`；SDK 结果中的 usage 始终是可选值。
+`capture="field_and_tags"` 会记录专用 reasoning 字段和 tag 内容；
+`capture="field"` 只信任专用字段并丢弃 tag 内容；tag 不会残留在可见正文中。
+
+对于 structured planner call，dagent 会把 runtime JSON Schema 计入请求预算，并在本地
+校验返回对象。内置 OpenAI-compatible provider 固定请求
 `{"type": "json_object"}`，不再发送 `response_format.type="json_schema"`，也不会根据
 provider 或 model 名称选择不同路径。
 

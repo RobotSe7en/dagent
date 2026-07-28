@@ -132,10 +132,9 @@ result = await runner.resume(
 )
 ```
 
-`run(..., state=...)` 会拒绝 awaiting-review states，避免意外绕过 review gates。
-`resume(..., state=...)` 是已弃用的 legacy path，无法重建目标专属 profiles 或 limits。
-如果 checkpoint resume 报告 capability ID 缺失或被禁用，或 skill 缺失，请构造兼容的
-`Runner`；SDK 不会静默扩大保存的 scope。
+0.8 不再提供 `run(..., state=...)` 和 `resume(..., state=...)`。如果 checkpoint
+resume 报告 capability ID 缺失或被禁用，或 skill 缺失，请构造兼容的 `Runner`；
+SDK 不会静默扩大保存的 scope。
 
 ## Streaming 文本交错
 

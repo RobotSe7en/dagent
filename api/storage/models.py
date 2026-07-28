@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 RunStatus = Literal["queued", "running", "awaiting_review", "completed", "failed"]
 RunExecution = Literal["local", "sandbox", "worker"]
-ReviewStatus = Literal["pending", "resolved"]
+ReviewStatus = Literal["pending", "resuming", "resolved"]
 ConversationKind = Literal["chat", "dynamic_dag", "static_dag"]
 OrchestrationKind = Literal["dynamic_dag", "static_dag"]
 ConversationMessageRole = Literal["user", "assistant"]
@@ -38,6 +38,9 @@ class Conversation(BaseModel):
     status: str = "active"
     workspace_uri: str
     last_run_id: str | None = None
+    conversation_schema_version: Literal[0, 3] = 3
+    conversation_state_json: str | None = None
+    conversation_revision: int = 0
     created_at: int
     updated_at: int
     archived_at: int | None = None
@@ -55,6 +58,7 @@ class Run(BaseModel):
     workspace_uri: str
     saved_dag_id: str | None = None
     state_json: str | None = None
+    checkpoint_json: str | None = None
     output_text: str = ""
     error_json: str | None = None
     lease_owner: str | None = None

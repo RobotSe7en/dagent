@@ -9,7 +9,6 @@ from typing import Literal
 
 from dagent.schemas import (
     CapabilityDefinition,
-    CapabilityInvocation,
     CapabilityKind,
     CapabilityResult,
     validate_capability_id,

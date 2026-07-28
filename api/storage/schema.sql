@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     status TEXT NOT NULL DEFAULT 'active',
     workspace_uri TEXT NOT NULL,
     last_run_id TEXT,
+    conversation_schema_version INTEGER NOT NULL DEFAULT 3,
+    conversation_state_json TEXT,
+    conversation_revision INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     archived_at INTEGER
@@ -55,6 +58,7 @@ CREATE TABLE IF NOT EXISTS runs (
     workspace_uri TEXT NOT NULL,
     saved_dag_id TEXT REFERENCES saved_dags(id) ON DELETE SET NULL,
     state_json TEXT,
+    checkpoint_json TEXT,
     output_text TEXT NOT NULL DEFAULT '',
     error_json TEXT,
     lease_owner TEXT,

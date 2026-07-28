@@ -2,6 +2,7 @@ import stat
 from pathlib import Path
 
 import yaml
+import pytest
 
 import dagent
 from dagent.config import load_config, resolve_config_relative_path
@@ -28,12 +29,37 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
     assert config.provider.model == "qwen3"
     assert config.provider.api_key == "local-key"
     assert config.provider.timeout_seconds == 12
-    assert config.provider.strip_thinking is False
     assert config.provider.reasoning is None
+    assert config.provider.stream_include_usage is False
+    assert config.provider.context_window_tokens == 32768
+    assert config.provider.output_reserve_tokens == 4096
     assert config.provider.extra_request_args == {}
     assert config.provider.extra_body == {}
     assert config.profiles.directory is None
     assert config.planner_frontend == "typed_spec"
+
+
+def test_load_config_parses_stream_usage_and_context_limits(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "provider:",
+                '  base_url: "http://localhost:8000/v1"',
+                '  model: "qwen3"',
+                "  stream_include_usage: true",
+                "  context_window_tokens: 16384",
+                "  output_reserve_tokens: 2048",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.provider.stream_include_usage is True
+    assert config.provider.context_window_tokens == 16384
+    assert config.provider.output_reserve_tokens == 2048
 
 
 def test_load_config_parses_sdk_builder_planner_frontend(tmp_path: Path) -> None:
@@ -83,7 +109,8 @@ def test_load_config_resolves_api_key_from_dotenv(tmp_path: Path, monkeypatch) -
                 '  model: "MiniMax-M2.1"',
                 '  api_key_env: "MINIMAX_API_KEY"',
                 "  timeout_seconds: 60",
-                "  strip_thinking: true",
+                "  reasoning:",
+                "    capture: field_and_tags",
             ]
         ),
         encoding="utf-8",
@@ -94,7 +121,26 @@ def test_load_config_resolves_api_key_from_dotenv(tmp_path: Path, monkeypatch) -
     assert config.provider.base_url == "https://api.minimaxi.com/v1"
     assert config.provider.model == "MiniMax-M2.1"
     assert config.provider.api_key == "secret-key"
-    assert config.provider.strip_thinking is True
+    assert config.provider.reasoning is not None
+    assert config.provider.reasoning.capture == "field_and_tags"
+
+
+def test_load_config_rejects_removed_strip_thinking(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "provider:",
+                '  base_url: "http://localhost:8000/v1"',
+                '  model: "qwen3"',
+                "  strip_thinking: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="strip_thinking"):
+        load_config(config_path)
 
 
 def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path) -> None:
