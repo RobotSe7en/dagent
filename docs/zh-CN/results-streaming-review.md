@@ -116,6 +116,11 @@ runner = dagent.Runner(
 SDK 只负责 run workspace 内的标准化；长期上传、保留策略、访问控制和 URL 生成由 host
 负责。
 
+静态 DAG trace 会保留外置 value 以及 `stdout`/`stderr`/error 字段的类型化引用。
+Map node 的父级 value 保持有界；只有获准的下游 value expression 读取时，executor
+才会解析对应的索引引用。这样既保证 checkpoint 可安全序列化为 JSON，也保留完整
+dataflow 和审计恢复能力。
+
 ## 恢复审核
 
 run 等待审核时应持久化完整 checkpoint：
@@ -142,7 +147,8 @@ resumed = await runner.resume(
 0.8 不再提供 `Runner.run(..., checkpoint=...)`、`run(..., state=...)` 或
 `resume(..., state=...)`。checkpoint 会冻结 profile、capability/skill scope、
 capability definition 指纹、策略、限制、planner 模式和已消耗预算，避免审核在不同
-语义下恢复。
+语义下恢复。其中包括 context window 和 output reserve；即使 provider 配置在恢复期间
+发生变化，续跑再次进入审核门时，新 checkpoint 仍沿用原先冻结的限制。
 
 ## 流式调用
 

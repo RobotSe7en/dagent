@@ -502,8 +502,14 @@ class ToolAgentLoop:
                 except ExecutionLimitExceeded:
                     raise
                 except Exception as exc:
+                    capability_result = CapabilityResult.failed(
+                        invocation,
+                        str(exc),
+                        stop_reason=type(exc).__name__,
+                    )
                     return ControlToolResult(
-                        content=f"[TOOL_ERROR] {type(exc).__name__}: {exc}",
+                        content=_tool_content(capability_result),
+                        capability_result=capability_result,
                     )
                 result_content = _tool_content(capability_result)
                 return ControlToolResult(
@@ -755,6 +761,11 @@ class ToolAgentLoop:
                                 )
                             ),
                             status="awaiting_review" if review_pending else None,
+                            error=(
+                                None
+                                if recorded_result is None
+                                else recorded_result.error
+                            ),
                         )
                     )
                     if review_pending:

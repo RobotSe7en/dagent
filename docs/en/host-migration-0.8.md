@@ -67,6 +67,12 @@ restoring it; semantic changes require a new run.
    it read-only or migrate it in an offline, versioned job; do not add an SDK
    runtime shim.
 
+The bundled SQLite host records a conversation schema marker. During upgrade it
+marks rows without a valid, identity-matching V3 `ConversationState` as legacy
+and returns HTTP 409 before reading an old `last_run_id`. New conversations are
+created as V3. Other hosts should keep the same explicit distinction rather than
+using `NULL` state plus revision `0` for both legacy and newly created rows.
+
 ## Reasoning and audit
 
 `RunResult.new_items` is the full per-run audit delta and may contain

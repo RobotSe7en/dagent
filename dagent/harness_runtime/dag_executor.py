@@ -418,6 +418,7 @@ class DAGExecutor:
             result=capability_result,
             error=capability_result.error,
         )
+        capability_node.references = normalized.references
         _attach_child_trace(capability_node, capability_result)
         dag_node.children.append(capability_node)
 
@@ -458,6 +459,7 @@ class DAGExecutor:
             else dag_node.output
         )
         dag_node.value_reference = normalized.value_reference
+        dag_node.references = normalized.references
         dag_node.step_count = 1
         dag_node.ended_at = _now()
         return dag_node
@@ -489,7 +491,12 @@ class DAGExecutor:
         async def run_item(
             index: int,
             item: Any,
-        ) -> tuple[CapabilityInvocation, CapabilityResult, ContentReference | None]:
+        ) -> tuple[
+            CapabilityInvocation,
+            CapabilityResult,
+            ContentReference | None,
+            tuple[ContentReference, ...],
+        ]:
             invocation = payload.invocation.model_copy(
                 deep=True,
                 update={"invocation_id": f"{node.id}_item{index}_{uuid4().hex[:8]}"},
@@ -537,13 +544,19 @@ class DAGExecutor:
             finally:
                 if token_stream is not None:
                     token_stream.finish()
-            return invocation, result, normalized.value_reference
+            return (
+                invocation,
+                result,
+                normalized.value_reference,
+                normalized.references,
+            )
 
         outcomes = await asyncio.gather(
             *[run_item(index, item) for index, item in enumerate(items)],
             return_exceptions=True,
         )
         values: list[Any] = []
+        value_references: dict[str, ContentReference] = {}
         failure: str | None = None
         for outcome in outcomes:
             if isinstance(outcome, ExecutionLimitExceeded):
@@ -551,27 +564,28 @@ class DAGExecutor:
             if isinstance(outcome, BaseException):
                 failure = failure or str(outcome)
                 continue
-            invocation, result, value_reference = outcome
+            invocation, result, value_reference, references = outcome
             item_node = RunTraceNode.capability_call(
                 parent_id=dag_node.id,
                 invocation=invocation,
                 result=result,
                 error=result.error,
             )
+            item_node.references = references
             _attach_child_trace(item_node, result)
             dag_node.children.append(item_node)
             if result.status == "failed":
                 failure = failure or (result.error or result.content)
             else:
+                value_index = len(values)
                 values.append(
-                    _load_content_reference(
-                        result.value if result.value is not None else result.content,
-                        value_reference,
-                        self.workspace_path or self.capability_workspace_root,
-                    )
+                    result.value if result.value is not None else result.content
                 )
+                if value_reference is not None:
+                    value_references[f"/{value_index}"] = value_reference
         if failure is not None:
             raise DAGExecutionError(failure)
+        dag_node.value_references = value_references
         return values
 
     async def _execute_subgraph_node(
@@ -930,7 +944,46 @@ def _node_output_value(expr: NodeOutputExpr, scope: _ValueScope) -> Any:
     else:
         raise DAGExecutionError(f"Unknown node output field '{expr.field}'.")
     value = _load_content_reference(value, reference, scope.workspace_path)
+    value = _load_indexed_content_references(
+        value,
+        (
+            trace.value_references
+            if expr.field in {"value", "content"}
+            else {}
+        ),
+        scope.workspace_path,
+    )
     return _extract_path(value, expr.path)
+
+
+def _load_indexed_content_references(
+    value: Any,
+    references: dict[str, ContentReference],
+    workspace_path: Path | None,
+) -> Any:
+    if not references:
+        return value
+    if not isinstance(value, list):
+        raise DAGExecutionError(
+            "Indexed externalized values require a list node output."
+        )
+    resolved = list(value)
+    for pointer, reference in references.items():
+        if not pointer.startswith("/") or not pointer[1:].isdigit():
+            raise DAGExecutionError(
+                f"Invalid externalized value pointer: {pointer}"
+            )
+        index = int(pointer[1:])
+        if index >= len(resolved):
+            raise DAGExecutionError(
+                f"Externalized value pointer is out of range: {pointer}"
+            )
+        resolved[index] = _load_content_reference(
+            resolved[index],
+            reference,
+            workspace_path,
+        )
+    return resolved
 
 
 def _load_content_reference(

@@ -58,6 +58,11 @@ result = await runner.resume(
 7. 明确拒绝 V1/V2 记录。如需保留历史数据，应只读保存或通过离线、有版本的 job 迁移，
    不要在 SDK runtime 中增加兼容 shim。
 
+内置 SQLite host 会记录 conversation schema 标记。升级时，没有合法且 identity 匹配的
+V3 `ConversationState` 的旧行会被标记为 legacy，并在读取旧 `last_run_id` 前返回
+HTTP 409；新会话则明确创建为 V3。其他 host 也应保留同样的显式区分，不要让旧会话和
+新建会话同时使用 `NULL` state 加 revision `0`。
+
 ## 推理与审计
 
 `RunResult.new_items` 是完整的当前 run 审计增量，可能包含

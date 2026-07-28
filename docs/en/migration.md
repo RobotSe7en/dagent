@@ -18,6 +18,16 @@ The current package version is `0.8.0`.
 - Compactor output now obeys its token budget, reviewed tool failures retain
   failed status, and only typed externalization provenance is interpreted as a
   `ContentReference`.
+- SQLite upgrades mark pre-V3 conversations explicitly and reject them with
+  HTTP 409 instead of attempting to parse old run state.
+- OpenAI-compatible streaming usage metadata is opt-in, so endpoints that
+  reject `stream_options` continue to work.
+- API/Web model records preserve per-model context windows and output reserves,
+  and review checkpoints retain their frozen limits across repeated gates.
+- Static DAG map outputs stay externalized in parent traces, and DAG traces
+  retain typed references for normalized values and diagnostic fields.
+- Capability-handler exceptions are recorded as failed tool results and failed
+  trace nodes.
 
 ## 0.8.0
 

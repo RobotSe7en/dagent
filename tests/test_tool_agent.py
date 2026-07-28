@@ -13,6 +13,7 @@ from dagent.harness_runtime.context import ContextAssembler
 from dagent.profiles import AgentProfile
 from dagent.schemas import (
     Boundary,
+    CapabilityDefinition,
     ContextPolicy,
     ConversationState,
     ResultStoragePolicy,
@@ -225,6 +226,66 @@ def test_tool_agent_fast_review_guard_preserves_execution_context(tmp_path: Path
     assert "reasoning_content" not in assistant_message
     assert result.state.model_thread is not None
     assert result.state.model_thread.items[1].reasoning == "need the context-aware tool"
+
+
+def test_tool_agent_guard_records_handler_exception_as_failed(
+    tmp_path: Path,
+) -> None:
+    catalog = CapabilityCatalog(workspace_root=tmp_path)
+    definition = CapabilityDefinition(
+        id="tool.explode",
+        kind="tool",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+
+    def explode(_invocation):
+        raise RuntimeError("handler exploded")
+
+    catalog.register(definition, explode)
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_explode",
+                        name="tool_explode",
+                        arguments={"text": "boom"},
+                    )
+                ]
+            ),
+            ChatResponse(content="Recovered."),
+        ]
+    )
+    agent = ToolAgent(
+        loop=ToolAgentLoop(
+            provider=provider,
+            capability_executor=CapabilityExecutor(catalog),
+            tool_adapter=_tool_adapter(catalog),
+        ),
+        profile=_profile(),
+    )
+
+    result = run(agent.run("Explode", review_level="fast"))
+
+    tool_result = next(
+        item
+        for item in result.new_items
+        if item.type == "tool_result"
+    )
+    assert tool_result.status == "failed"
+    assert "[TOOL_ERROR] handler exploded" in tool_result.content.text
+    capability_trace = next(
+        node
+        for node in result.state.trace.root.children
+        if node.kind == "capability_call"
+    )
+    assert capability_trace.status == "failed"
+    assert capability_trace.error is not None
+    assert capability_trace.error.message == "handler exploded"
 
 
 def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) -> None:

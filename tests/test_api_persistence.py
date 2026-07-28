@@ -308,6 +308,58 @@ def test_sqlite_store_recreates_incompatible_api_database(tmp_path: Path) -> Non
     store.close()
 
 
+def test_sqlite_store_marks_pre_v3_conversations_during_migration(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "api.sqlite3"
+    workspace_uri = f"file://{tmp_path / 'workspace'}"
+    store = SQLiteStore(db_path)
+    legacy = store.create_conversation(
+        conversation_id="conv_legacy",
+        project_id=None,
+        title="Legacy",
+        workspace_uri=workspace_uri,
+    )
+    current = store.create_conversation(
+        conversation_id="conv_current",
+        project_id=None,
+        title="Current",
+        workspace_uri=workspace_uri,
+    )
+    current_state = ConversationState(id=current.id, revision=1)
+    store.save_conversation_state(
+        current.id,
+        current_state.model_dump_json(),
+        revision=1,
+        expected_revision=0,
+    )
+    store.close()
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "ALTER TABLE conversations DROP COLUMN conversation_schema_version"
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = SQLiteStore(db_path)
+    migrated_legacy = migrated.get_conversation(legacy.id)
+    migrated_current = migrated.get_conversation(current.id)
+    created_after_migration = migrated.create_conversation(
+        conversation_id="conv_new",
+        project_id=None,
+        title="New",
+        workspace_uri=workspace_uri,
+    )
+
+    assert migrated_legacy is not None
+    assert migrated_legacy.conversation_schema_version == 0
+    assert migrated_current is not None
+    assert migrated_current.conversation_schema_version == 3
+    assert created_after_migration.conversation_schema_version == 3
+    migrated.close()
+
+
 def test_sqlite_store_persists_conversation_kind(tmp_path: Path) -> None:
     db_path = tmp_path / "api.sqlite3"
     store = SQLiteStore(db_path)
@@ -1967,6 +2019,54 @@ def test_api_project_message_stream_rejects_client_workspace_root(persistence_cl
 
     assert response.status_code == 400
     assert "workspace_root" in response.json()["detail"]
+
+
+def test_api_message_stream_rejects_legacy_conversation_before_loading_run_state(
+    persistence_client,
+) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Legacy chat"},
+    ).json()["conversation"]
+    store = state.get_store()
+    run = store.create_run(
+        run_id="run_legacy",
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="tool",
+        status="completed",
+        workspace_uri=conversation["workspace_uri"],
+    )
+    store.save_run_state(
+        run.id,
+        '{"schema_version":2,"run_id":"run_legacy"}',
+        output_text="old",
+    )
+    store._conn.execute(
+        """
+        UPDATE conversations
+        SET conversation_schema_version = 0
+        WHERE id = ?
+        """,
+        (conversation["id"],),
+    )
+    store._conn.commit()
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "input": "continue",
+            "target": "tool",
+            "conversation_id": conversation["id"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Conversation predates the V3 context contract. "
+        "Start a new conversation or migrate it offline."
+    )
 
 
 def test_api_project_message_stream_requires_project_id_for_project_conversation(persistence_client) -> None:

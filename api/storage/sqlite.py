@@ -116,10 +116,48 @@ class SQLiteStore:
                 "ALTER TABLE conversations "
                 "ADD COLUMN conversation_revision INTEGER NOT NULL DEFAULT 0"
             )
+        if "conversation_schema_version" not in conversation_columns:
+            self._conn.execute(
+                "ALTER TABLE conversations "
+                "ADD COLUMN conversation_schema_version INTEGER NOT NULL DEFAULT 3"
+            )
+            self._mark_existing_conversation_versions()
         if "checkpoint_json" not in self._table_columns("runs"):
             self._conn.execute(
                 "ALTER TABLE runs ADD COLUMN checkpoint_json TEXT"
             )
+
+    def _mark_existing_conversation_versions(self) -> None:
+        rows = self._conn.execute(
+            """
+            SELECT id, conversation_state_json, conversation_revision
+            FROM conversations
+            """
+        ).fetchall()
+        versions: list[tuple[int, str]] = []
+        for row in rows:
+            version = 0
+            raw_state = row["conversation_state_json"]
+            if raw_state is not None:
+                try:
+                    state = ConversationState.model_validate_json(raw_state)
+                except ValueError:
+                    pass
+                else:
+                    if (
+                        state.id == row["id"]
+                        and state.revision == row["conversation_revision"]
+                    ):
+                        version = 3
+            versions.append((version, row["id"]))
+        self._conn.executemany(
+            """
+            UPDATE conversations
+            SET conversation_schema_version = ?
+            WHERE id = ?
+            """,
+            versions,
+        )
 
     def _needs_schema_rebuild(self) -> bool:
         tables = {
@@ -423,7 +461,9 @@ class SQLiteStore:
                 SET conversation_state_json = ?,
                     conversation_revision = ?,
                     updated_at = ?
-                WHERE id = ? AND conversation_revision = ?
+                WHERE id = ?
+                  AND conversation_schema_version = 3
+                  AND conversation_revision = ?
                 """,
                 (
                     state_json,
@@ -1331,6 +1371,7 @@ def _conversation_from_row(row: sqlite3.Row) -> Conversation:
         status=row["status"],
         workspace_uri=row["workspace_uri"],
         last_run_id=row["last_run_id"],
+        conversation_schema_version=row["conversation_schema_version"],
         conversation_state_json=row["conversation_state_json"],
         conversation_revision=row["conversation_revision"],
         created_at=row["created_at"],

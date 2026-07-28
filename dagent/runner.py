@@ -1470,8 +1470,12 @@ class Runner:
             planner_skill=runtime.dag_agent.loop.planner_skill,
             context_policy=runtime.tool_agent.context_policy,
             result_storage_policy=runtime.tool_agent.result_storage_policy,
-            context_window_tokens=getattr(runtime.provider, "context_window_tokens", 32768),
-            output_reserve_tokens=getattr(runtime.provider, "output_reserve_tokens", 4096),
+            context_window_tokens=(
+                runtime.tool_agent.context_assembler.context_window_tokens
+            ),
+            output_reserve_tokens=(
+                runtime.tool_agent.context_assembler.output_reserve_tokens
+            ),
         )
         finalized = replace(
             result,

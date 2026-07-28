@@ -8,11 +8,13 @@ import pytest
 from pydantic import ValidationError
 
 import dagent
+from dagent.capabilities.tools.registry import ToolOutput
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import normalize_capability_result
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import (
     AssistantMessage,
+    CapabilityDefinition,
     CapabilityInvocation,
     CapabilityResult,
     ContextPolicy,
@@ -606,6 +608,133 @@ def test_static_dag_rehydrates_externalized_values_for_downstream_nodes(
     assert producer_trace.value["type"] == "dagent_content_reference"
     assert producer_trace.value_reference is not None
     assert (Path(result.workspace_path) / producer_trace.value["path"]).is_file()
+    runner.close()
+
+
+def test_static_dag_map_keeps_externalized_binary_values_out_of_parent_trace(
+    tmp_path: Path,
+) -> None:
+    payload = b"\xff\x00" * 1000
+
+    @dagent.tool
+    def produce(seed: str):
+        return ToolOutput(content=f"produced:{seed}", value=payload)
+
+    graph = dagent.Dag("externalized_map", input=list)
+    produced = dagent.MapNode(
+        "produce_all",
+        target=produce,
+        over=graph.input,
+        inputs={"seed": dagent.item},
+    )
+    graph.add_node(produced)
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=MockProvider(),
+        result_storage_policy=ResultStoragePolicy(max_inline_bytes=1024),
+    )
+
+    result = run(runner.run(graph, graph_input=["a", "b"]))
+
+    map_trace = result.trace.dag_node_traces()["produce_all"]
+    assert all(
+        value["type"] == "dagent_content_reference"
+        for value in map_trace.value
+    )
+    assert set(map_trace.value_references) == {"/0", "/1"}
+    assert all(child.references for child in map_trace.children)
+    assert result.model_dump(mode="json")
+    assert result.checkpoint is not None
+    assert result.checkpoint.model_dump_json()
+    runner.close()
+
+
+def test_static_dag_map_rehydrates_externalized_values_for_downstream_nodes(
+    tmp_path: Path,
+) -> None:
+    @dagent.tool
+    def produce(seed: str) -> dict[str, str]:
+        return {"seed": seed, "payload": "z" * 5000}
+
+    @dagent.tool
+    def consume(items: list[dict[str, str]], status: str) -> str:
+        values = ",".join(
+            f"{item['seed']}:{len(item['payload'])}"
+            for item in items
+        )
+        return f"{status}:{values}"
+
+    graph = dagent.Dag("externalized_map_dataflow", input=list)
+    produced = dagent.MapNode(
+        "produce_all",
+        target=produce,
+        over=graph.input,
+        inputs={"seed": dagent.item},
+    )
+    consumed = dagent.Node(
+        "consume",
+        target=consume,
+        inputs={"items": produced.output, "status": produced.status},
+    )
+    graph.add_node(produced)
+    graph.add_node(consumed)
+    graph.add_edge(produced, consumed)
+    graph.output = consumed.output
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=MockProvider(),
+        result_storage_policy=ResultStoragePolicy(max_inline_bytes=1024),
+    )
+
+    result = run(runner.run(graph, graph_input=["a", "b"]))
+
+    assert result.output_text == "completed:a:5000,b:5000"
+    map_trace = result.trace.dag_node_traces()["produce_all"]
+    assert set(map_trace.value_references) == {"/0", "/1"}
+    runner.close()
+
+
+def test_static_dag_retains_references_for_normalized_result_fields(
+    tmp_path: Path,
+) -> None:
+    stdout = "stdout-" * 1000
+    stderr = "stderr-" * 1000
+    error = "error-" * 1000
+    definition = CapabilityDefinition(
+        id="tool.verbose",
+        kind="tool",
+        parameters={"type": "object"},
+    )
+
+    def verbose(invocation: CapabilityInvocation) -> CapabilityResult:
+        return CapabilityResult.completed(
+            invocation,
+            "done",
+            stdout=stdout,
+            stderr=stderr,
+            error=error,
+        )
+
+    graph = dagent.Dag("normalized_fields")
+    graph.add_node(dagent.Node("verbose", target="tool.verbose"))
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=MockProvider(),
+        result_storage_policy=ResultStoragePolicy(max_inline_bytes=1024),
+    )
+    runner.register_capability(definition, verbose)
+
+    result = run(runner.run(graph))
+
+    dag_trace = result.trace.dag_node_traces()["verbose"]
+    capability_trace = dag_trace.children[0]
+    assert len(dag_trace.references) == 3
+    assert capability_trace.references == dag_trace.references
+    recovered = {
+        (Path(result.workspace_path) / reference.path).read_text(encoding="utf-8")
+        for reference in dag_trace.references
+    }
+    assert recovered == {stdout, stderr, error}
     runner.close()
 
 

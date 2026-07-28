@@ -76,6 +76,7 @@ provider = dagent.Provider(
         "budget_tokens": 1024,
         "capture": "field_and_tags",
     },
+    stream_include_usage=False,
     context_window_tokens=32768,
     output_reserve_tokens=4096,
     extra_request_args={},
@@ -90,6 +91,10 @@ endpoint.
 Reasoning fields and `<think>` tags are captured separately and are not replayed
 into later model input. Context and output-reserve values are required because
 many private OpenAI-compatible endpoints do not report their model limits.
+Streaming usage metadata is disabled by default because some compatible
+endpoints reject `stream_options`. Set `stream_include_usage=True` only when the
+target endpoint supports OpenAI's streamed usage extension; usage remains
+optional in SDK results.
 `capture="field_and_tags"` records both dedicated reasoning fields and tag
 content. `capture="field"` trusts only the dedicated field and discards tag
 content; tags are never left in visible content.

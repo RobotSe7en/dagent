@@ -126,6 +126,12 @@ runner = dagent.Runner(
 The SDK owns only run-workspace normalization. A host is responsible for durable
 upload, retention, access control, and URL generation.
 
+Static DAG traces retain typed references for externalized values and
+`stdout`/`stderr`/error fields. Map-node parent values remain bounded; the
+executor resolves their indexed references only when an authorized downstream
+value expression reads them. This keeps checkpoints JSON-safe while preserving
+full dataflow and audit recovery.
+
 ## Resume a review
 
 Persist the full checkpoint whenever a run awaits review:
@@ -152,8 +158,10 @@ resumed = await runner.resume(
 `Runner.run(..., checkpoint=...)`, `run(..., state=...)`, and
 `resume(..., state=...)` do not exist in 0.8. A checkpoint freezes profiles,
 capability and skill scope, capability-definition fingerprints, policies,
-limits, planner mode, and prior execution usage so review cannot resume under
-different semantics.
+context-window and output-reserve limits, planner mode, and prior execution
+usage so review cannot resume under different semantics. If a resumed run
+reaches another review gate, its replacement checkpoint keeps those same frozen
+limits even if provider settings changed meanwhile.
 
 ## Streaming
 

@@ -60,6 +60,8 @@ class RunTraceNode(BaseModel):
     output_reference: ContentReference | None = None
     value: Any | None = None
     value_reference: ContentReference | None = None
+    value_references: dict[str, ContentReference] = Field(default_factory=dict)
+    references: tuple[ContentReference, ...] = ()
     error: RunTraceError | None = None
     capability_execution: CapabilityExecution | None = None
     children: list["RunTraceNode"] = Field(default_factory=list)

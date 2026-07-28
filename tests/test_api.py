@@ -4119,6 +4119,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "api_key": "session-secret",
                 "timeout_seconds": 42,
                 "reasoning": {"capture": "field_and_tags"},
+                "stream_include_usage": True,
+                "context_window_tokens": 16384,
+                "output_reserve_tokens": 2048,
                 "extra_request_args": {"headers": {"Authorization": "Bearer nested-secret"}, "timeout": 7},
                 "extra_body": {"temperature": 0.2, "metadata": {"api_key": "nested-body-secret"}},
             },
@@ -4139,6 +4142,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
         assert created_model["id"] == "local-qwen"
         assert created_model["source"] == "user"
         assert created_model["api_key_configured"] is True
+        assert created_model["stream_include_usage"] is True
+        assert created_model["context_window_tokens"] == 16384
+        assert created_model["output_reserve_tokens"] == 2048
         assert "api_key" not in created_model
         assert created_model["extra_request_args"]["headers"]["Authorization"] == "[redacted]"
         assert created_model["extra_body"]["metadata"]["api_key"] == "[redacted]"
@@ -4149,6 +4155,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
         assert state.get_runner().runtime.provider.config.base_url == "http://localhost:8000/v1"
         assert state.get_runner().runtime.provider.config.model == "qwen3-coder"
         assert state.get_runner().runtime.provider.config.timeout_seconds == 42
+        assert state.get_runner().runtime.provider.config.stream_include_usage is True
+        assert state.get_runner().runtime.provider.config.context_window_tokens == 16384
+        assert state.get_runner().runtime.provider.config.output_reserve_tokens == 2048
         assert (
             state.get_runner().runtime.provider.config.reasoning.capture
             == "field_and_tags"
@@ -4172,6 +4181,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "api_key_action": "preserve",
                 "timeout_seconds": 42,
                 "reasoning": {"capture": "field_and_tags"},
+                "stream_include_usage": True,
+                "context_window_tokens": 16384,
+                "output_reserve_tokens": 2048,
                 "extra_body": {"temperature": 0.2, "metadata": {"api_key": "[redacted]"}},
             },
         )
@@ -4192,6 +4204,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "api_key_action": "preserve",
                 "timeout_seconds": 30,
                 "reasoning": {"capture": "field_and_tags"},
+                "stream_include_usage": True,
+                "context_window_tokens": 16384,
+                "output_reserve_tokens": 2048,
                 "extra_body": {"temperature": 0.4},
             },
         )
@@ -4199,6 +4214,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
         assert updated.status_code == 200
         assert state.get_runner().runtime.provider.config.api_key == "session-secret"
         assert state.get_runner().runtime.provider.config.timeout_seconds == 30
+        assert state.get_runner().runtime.provider.config.stream_include_usage is True
+        assert state.get_runner().runtime.provider.config.context_window_tokens == 16384
+        assert state.get_runner().runtime.provider.config.output_reserve_tokens == 2048
         assert state.get_runner().runtime.provider.config.extra_body == {"temperature": 0.4}
 
         cleared = client.put(
@@ -4211,6 +4229,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "api_key_action": "clear",
                 "timeout_seconds": 30,
                 "reasoning": {"capture": "field_and_tags"},
+                "stream_include_usage": True,
+                "context_window_tokens": 16384,
+                "output_reserve_tokens": 2048,
             },
         )
 
@@ -4296,6 +4317,9 @@ def test_api_model_management_persists_user_models_to_user_config(monkeypatch, t
                 "base_url": "http://localhost:8000/v1",
                 "model": "qwen3-coder",
                 "api_key_env": "LOCAL_QWEN_API_KEY",
+                "stream_include_usage": True,
+                "context_window_tokens": 16384,
+                "output_reserve_tokens": 2048,
             },
         )
         activated = client.post("/models/local-qwen/activate")
@@ -4314,13 +4338,17 @@ def test_api_model_management_persists_user_models_to_user_config(monkeypatch, t
             "model": "qwen3-coder",
             "api_key_env": "LOCAL_QWEN_API_KEY",
             "timeout_seconds": 60,
-            "context_window_tokens": 32768,
-            "output_reserve_tokens": 4096,
+            "stream_include_usage": True,
+            "context_window_tokens": 16384,
+            "output_reserve_tokens": 2048,
         }
         assert listed.status_code == 200
         assert listed.json()["active_model_id"] == "local-qwen"
         assert [model["id"] for model in listed.json()["models"]] == ["config", "local-qwen"]
         assert listed.json()["models"][1]["source"] == "user"
+        assert listed.json()["models"][1]["stream_include_usage"] is True
+        assert listed.json()["models"][1]["context_window_tokens"] == 16384
+        assert listed.json()["models"][1]["output_reserve_tokens"] == 2048
     finally:
         state.close_runner()
         state.custom_model_providers.clear()

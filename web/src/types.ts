@@ -599,6 +599,9 @@ export interface ModelProvider {
   api_key_saved: boolean;
   timeout_seconds: number;
   reasoning?: ModelReasoningConfig | null;
+  stream_include_usage: boolean;
+  context_window_tokens: number;
+  output_reserve_tokens: number;
   extra_request_args: Record<string, unknown>;
   extra_body: Record<string, unknown>;
 }
@@ -622,6 +625,9 @@ export interface ModelProviderInput {
   api_key_env?: string | null;
   timeout_seconds: number;
   reasoning?: ModelReasoningConfig | null;
+  stream_include_usage: boolean;
+  context_window_tokens: number;
+  output_reserve_tokens: number;
   extra_request_args: Record<string, unknown>;
   extra_body: Record<string, unknown>;
 }

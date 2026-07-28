@@ -16,6 +16,15 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   时仍然可访问。
 - compactor 输出严格遵守 token budget；审核后的工具失败保持 failed 状态；只有带类型
   provenance 的外置结果才会被解释为 `ContentReference`。
+- SQLite 升级会显式标记 pre-V3 conversation，并以 HTTP 409 拒绝，而不是尝试解析旧
+  run state。
+- OpenAI-compatible 流式 usage metadata 改为显式启用，使拒绝 `stream_options` 的
+  endpoint 继续可用。
+- API/Web model record 会保留每个模型的 context window 和 output reserve；review
+  checkpoint 在多次审核门之间继续使用冻结限制。
+- 静态 DAG map 输出在父 trace 中保持外置，DAG trace 会保留 value 和诊断字段标准化
+  后的类型化引用。
+- capability handler 异常会记录为 failed 工具结果和 failed trace node。
 
 ## 0.8.0
 

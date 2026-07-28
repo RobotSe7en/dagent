@@ -68,6 +68,7 @@ provider = dagent.Provider(
         "budget_tokens": 1024,
         "capture": "field_and_tags",
     },
+    stream_include_usage=False,
     context_window_tokens=32768,
     output_reserve_tokens=4096,
     extra_request_args={},
@@ -80,6 +81,9 @@ provider = dagent.Provider(
 
 reasoning 字段和 `<think>` tag 会被单独捕获，不会回放到后续模型输入。由于很多私有
 OpenAI-compatible endpoint 不会报告模型限制，因此需要显式配置上下文和输出预留。
+流式 usage metadata 默认关闭，因为部分兼容 endpoint 会拒绝 `stream_options`。
+只有目标 endpoint 支持 OpenAI 的流式 usage 扩展时才设置
+`stream_include_usage=True`；SDK 结果中的 usage 始终是可选值。
 `capture="field_and_tags"` 会记录专用 reasoning 字段和 tag 内容；
 `capture="field"` 只信任专用字段并丢弃 tag 内容；tag 不会残留在可见正文中。
 

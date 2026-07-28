@@ -181,7 +181,8 @@ class OpenAICompatibleProvider:
         }
         if stream:
             kwargs["stream"] = True
-            kwargs["stream_options"] = {"include_usage": True}
+            if self.config.stream_include_usage:
+                kwargs["stream_options"] = {"include_usage": True}
         if tools:
             kwargs["tools"] = tools
 
@@ -218,6 +219,7 @@ class Provider(OpenAICompatibleProvider):
         api_key_env: str | None = None,
         timeout_seconds: float = 60,
         reasoning: dict[str, Any] | None = None,
+        stream_include_usage: bool = False,
         context_window_tokens: int = 32768,
         output_reserve_tokens: int = 4096,
         extra_request_args: dict[str, Any] | None = None,
@@ -232,6 +234,7 @@ class Provider(OpenAICompatibleProvider):
                 api_key_env=api_key_env,
                 timeout_seconds=timeout_seconds,
                 reasoning=reasoning,
+                stream_include_usage=stream_include_usage,
                 context_window_tokens=context_window_tokens,
                 output_reserve_tokens=output_reserve_tokens,
                 extra_request_args=extra_request_args or {},

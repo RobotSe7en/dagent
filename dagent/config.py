@@ -46,6 +46,7 @@ class ProviderConfig(BaseModel):
     api_key_env: str | None = None
     timeout_seconds: float = 60
     reasoning: ReasoningConfig | None = None
+    stream_include_usage: bool = False
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
     context_window_tokens: int = Field(default=32768, ge=1024)
@@ -305,6 +306,8 @@ def _provider_storage_data(provider: ProviderConfig) -> dict[str, Any]:
         data.pop("extra_request_args", None)
     if not data.get("extra_body"):
         data.pop("extra_body", None)
+    if not data.get("stream_include_usage"):
+        data.pop("stream_include_usage", None)
     return data
 
 

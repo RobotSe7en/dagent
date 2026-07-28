@@ -30,12 +30,36 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
     assert config.provider.api_key == "local-key"
     assert config.provider.timeout_seconds == 12
     assert config.provider.reasoning is None
+    assert config.provider.stream_include_usage is False
     assert config.provider.context_window_tokens == 32768
     assert config.provider.output_reserve_tokens == 4096
     assert config.provider.extra_request_args == {}
     assert config.provider.extra_body == {}
     assert config.profiles.directory is None
     assert config.planner_frontend == "typed_spec"
+
+
+def test_load_config_parses_stream_usage_and_context_limits(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "provider:",
+                '  base_url: "http://localhost:8000/v1"',
+                '  model: "qwen3"',
+                "  stream_include_usage: true",
+                "  context_window_tokens: 16384",
+                "  output_reserve_tokens: 2048",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.provider.stream_include_usage is True
+    assert config.provider.context_window_tokens == 16384
+    assert config.provider.output_reserve_tokens == 2048
 
 
 def test_load_config_parses_sdk_builder_planner_frontend(tmp_path: Path) -> None:

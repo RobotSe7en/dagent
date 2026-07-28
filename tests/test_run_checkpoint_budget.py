@@ -191,6 +191,70 @@ def test_checkpoint_resume_rebuilds_target_runtime_and_exact_scope(tmp_path) -> 
     )
 
 
+def test_checkpoint_resume_keeps_context_limits_across_multiple_review_gates(
+    tmp_path,
+) -> None:
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        return f"wrote:{text}"
+
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_write",
+                        arguments={"text": "first"},
+                    )
+                ]
+            ),
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_2",
+                        name="tool_write",
+                        arguments={"text": "second"},
+                    )
+                ]
+            ),
+        ]
+    )
+    provider.context_window_tokens = 16384
+    provider.output_reserve_tokens = 2048
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[],
+    )
+    agent = dagent.ToolAgent(
+        profile="conversation",
+        capabilities=[write],
+        review="careful",
+    )
+
+    first = run(runner.run(agent, input="write twice"))
+    assert first.requires_review
+    assert first.checkpoint is not None
+    assert first.checkpoint.plan.context_window_tokens == 16384
+    assert first.checkpoint.plan.output_reserve_tokens == 2048
+
+    provider.context_window_tokens = 4096
+    provider.output_reserve_tokens = 512
+    second = run(
+        runner.resume(
+            first.review.approve(),  # type: ignore[union-attr]
+            checkpoint=first.checkpoint,
+        )
+    )
+
+    assert second.requires_review
+    assert second.checkpoint is not None
+    assert second.checkpoint.plan.context_window_tokens == 16384
+    assert second.checkpoint.plan.output_reserve_tokens == 2048
+    runner.close()
+
+
 def test_checkpoint_resume_rejects_missing_capability(tmp_path) -> None:
     @dagent.tool(risk="medium")
     def write(text: str) -> str:
