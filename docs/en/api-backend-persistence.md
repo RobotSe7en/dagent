@@ -1,5 +1,9 @@
 # API Backend Persistence
 
+> Version note: this page describes the bundled 0.7 host implementation. It is
+> not compatible with the SDK 0.8 continuation contracts until the host adopts
+> [Host migration for 0.8](host-migration-0.8.md).
+
 The public Python SDK remains persistence-free. `Runner`, `ToolAgent`,
 `DagAgent`, `Dag`, and `RunState` stay declarative/runtime objects; they do not
 open databases, own users, or manage projects. Persistence belongs to the
@@ -94,14 +98,13 @@ For review resume, use:
 POST /projects/{project_id}/reviews/{review_id}/resume
 ```
 
-The backend reads `runs.state_json`, reconstructs `RunState`, and calls
-`Runner.resume_stream(decision, state=run_state)`. The client does not send
-state in hosted/project mode.
+The 0.7 backend reads `runs.state_json`, reconstructs `RunState`, and attempts
+the removed `Runner.resume_stream(decision, state=run_state)` call. The client
+does not send state in hosted/project mode.
 
-This is the bundled API's v0.7 persistence format and uses the SDK's deprecated
-state-only compatibility path. New hosts should persist `RunCheckpoint` and use
-`checkpoint=...`; migrating the local SQLite schema is separate from the SDK
-checkpoint contract.
+This path does not run against SDK 0.8. New hosts must persist `RunCheckpoint`
+and use `checkpoint=...`; migrating the local SQLite schema is separate from
+the SDK checkpoint contract.
 
 Trace and artifact endpoints read the stored `RunState` first and fall back to
 the in-memory runner only when no database state exists. This lets completed and

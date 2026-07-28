@@ -28,6 +28,8 @@
   `RunCheckpoint`、streaming events、共享 execution budgets、resume 和持久化。
 - [API 后端持久化](api-backend-persistence.md)：项目、会话、run state 存储、
   review resume 和企业化存储路径。
+- [0.8 Host 迁移](host-migration-0.8.md)：API/enterprise host 必须实施的持久化、
+  请求 shape、审计和外置结果变更。
 
 ## 运维和升级
 

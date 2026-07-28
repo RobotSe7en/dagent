@@ -417,7 +417,7 @@ def test_builder_translation_rejects_noncanonical_or_host_owned_source(
         translate_builder_source(source, capability_ids=["tool.echo"])
 
 
-def test_runner_sdk_builder_uses_frozen_skill_and_v2_checkpoint(tmp_path) -> None:
+def test_runner_sdk_builder_uses_frozen_skill_and_v3_checkpoint(tmp_path) -> None:
     @dagent.tool
     def echo(text: str) -> str:
         return text
@@ -445,19 +445,19 @@ dag.output = work.output
 
     result = run(runner.run(
         dagent.DagAgent(capabilities=[echo]),
-        messages=[{"role": "user", "content": "echo it"}],
+        input="echo it",
     ))
 
     assert result.output_text == "done"
-    assert result.state.schema_version == 2
+    assert result.state.schema_version == 3
     assert result.state.planner_frontend == "sdk_builder"
     assert result.plan is not None
-    assert result.plan.schema_version == 2
+    assert result.plan.schema_version == 3
     assert result.plan.planner_frontend == "sdk_builder"
     assert result.plan.planner_skill is not None
     assert result.plan.planner_skill.name == "generate-dag"
     assert result.checkpoint is not None
-    assert result.checkpoint.schema_version == 2
+    assert result.checkpoint.schema_version == 3
     request = provider.requests[0]
     assert request["response_format"].name == "dagent_dynamic_dag_builder_response"
     assert request["response_format"].schema == builder_planner_response_format().schema
@@ -500,7 +500,7 @@ dag.output = work.output
     )
     first = run(first_runner.run(
         dagent.DagAgent(capabilities=[echo], review="careful"),
-        messages=[{"role": "user", "content": "echo it"}],
+        input="echo it",
     ))
     assert first.requires_review
     assert first.checkpoint is not None
@@ -563,7 +563,7 @@ dag.output = work.output
 
     result = run(runner.run(
         dagent.DagAgent(capabilities=[echo], max_cycles=3),
-        messages=[{"role": "user", "content": "echo it"}],
+        input="echo it",
     ))
 
     assert result.output_text == "repaired"

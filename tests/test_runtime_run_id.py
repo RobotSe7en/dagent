@@ -7,7 +7,7 @@ import pytest
 import dagent
 from dagent.providers.base import ChatResponse
 from dagent.providers.mock import MockProvider
-from dagent.schemas import DAGNode, DAGSpec, RunState, StartNodePayload
+from dagent.schemas import DAGNode, DAGSpec, StartNodePayload
 
 
 @pytest.mark.asyncio
@@ -24,7 +24,7 @@ async def test_runner_cancel_stops_an_active_streamed_run(tmp_path) -> None:
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
     events = runner.stream(
         dagent.ToolAgent(profile="conversation"),
-        messages=[{"role": "user", "content": "wait"}],
+        input="wait",
         run_id="cancelled_run",
     )
 
@@ -51,7 +51,7 @@ async def test_runner_stream_uses_host_run_id_for_tool_agent(tmp_path) -> None:
         event
         async for event in runner.stream(
             dagent.ToolAgent(profile="conversation"),
-            messages=[{"role": "user", "content": "hi"}],
+            input="hi",
             run_id="enterprise_run_123",
         )
     ]
@@ -65,22 +65,17 @@ async def test_runner_stream_uses_host_run_id_for_tool_agent(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_runner_stream_rejects_run_id_when_state_is_supplied(tmp_path) -> None:
-    state = RunState(
-        run_id="existing_run",
-        kind="tool",
-        status="completed",
-    )
+async def test_runner_stream_does_not_accept_runtime_state(tmp_path) -> None:
     runner = dagent.Runner(
         workspace=tmp_path,
         provider=MockProvider([ChatResponse(content="done")]),
     )
 
-    with pytest.raises(ValueError, match="run_id"):
+    with pytest.raises(TypeError, match="unexpected keyword argument 'state'"):
         events = runner.stream(
             dagent.ToolAgent(profile="conversation"),
-            messages=[{"role": "user", "content": "hi"}],
-            state=state,
+            input="hi",
+            state=None,
             run_id="different_run",
         )
         async for _event in events:
@@ -131,7 +126,7 @@ async def test_runner_stream_rejects_unsafe_host_run_id_even_with_explicit_works
     with pytest.raises(ValueError, match="run_id"):
         events = runner.stream(
             dagent.ToolAgent(profile="conversation"),
-            messages=[{"role": "user", "content": "hi"}],
+            input="hi",
             run_id=bad_run_id,
             workspace_path=tmp_path / "explicit-workspace",
         )
@@ -156,7 +151,7 @@ async def test_runner_rejects_reused_host_run_id_for_new_run_with_explicit_works
 
     await runner.run(
         agent,
-        messages=[{"role": "user", "content": "first"}],
+        input="first",
         run_id="duplicate_run",
         workspace_path=tmp_path / "workspace-one",
     )
@@ -164,7 +159,7 @@ async def test_runner_rejects_reused_host_run_id_for_new_run_with_explicit_works
     with pytest.raises(ValueError, match="already exists"):
         await runner.run(
             agent,
-            messages=[{"role": "user", "content": "second"}],
+            input="second",
             run_id="duplicate_run",
             workspace_path=tmp_path / "workspace-two",
         )

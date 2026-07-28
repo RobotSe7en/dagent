@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +15,6 @@ from dagent.capabilities.workspace import current_workspace_root
 from dagent.harness_runtime.dag_builder import (
     MAX_EXECUTION_CONTEXT_CHARS,
     context_excerpt,
-    strip_thinking_blocks,
 )
 from dagent.harness_runtime.capability_executor import (
     CapabilityExecutionCallbacks,
@@ -48,19 +46,38 @@ from dagent.harness_runtime.llm_retry import (
 from dagent.review import ReviewLevel, _append_reviewer_feedback, _review_policy
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
+from dagent.providers.base import normalize_chat_response
 from dagent.schemas import (
+    AssistantMessage,
     Boundary,
     LoopOutcome,
     PendingReview,
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityResult,
+    ContentReference,
+    ContextPolicy,
+    ContextSummary,
+    ContextUsage,
+    ConversationItem,
+    ConversationState,
+    ResultStoragePolicy,
     RunState,
     RunTrace,
     RunTraceError,
     RunTraceNode,
+    ToolCallItem,
+    ToolResultMessage,
+    UserMessage,
 )
 from dagent.state import PromptBuilder, PromptRequest
+from dagent.harness_runtime.context import ContextAssembler
+from dagent.harness_runtime.result_storage import normalize_capability_result
+from dagent.schemas.conversation import (
+    StoredContent,
+    inline_content,
+    stored_content_text,
+)
 
 
 MAX_TOOL_RESULT_CONTEXT_CHARS = 4000
@@ -96,14 +113,23 @@ class ToolAgent:
         profile: AgentProfile,
         prompt_builder: PromptBuilder | None = None,
         max_steps: int = 8,
+        context_policy: ContextPolicy | None = None,
+        result_storage_policy: ResultStoragePolicy | None = None,
+        context_assembler: ContextAssembler | None = None,
     ) -> None:
         self.loop = loop
         self.profile = profile
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_steps = max_steps
+        self.context_policy = context_policy or ContextPolicy()
+        self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
+        self.context_assembler = context_assembler or ContextAssembler(
+            context_window_tokens=getattr(loop.provider, "context_window_tokens", 32768),
+            output_reserve_tokens=getattr(loop.provider, "output_reserve_tokens", 4096),
+        )
         self.tools = self.loop.available_capabilities()
         self.system_message = self._build_system_message(DEFAULT_CAPABILITY_SCOPE)
-        self.messages: list[dict[str, Any]] = []
+        self.conversation = ConversationState()
         self.trace: RunTrace | None = None
 
     def _build_system_message(
@@ -112,28 +138,13 @@ class ToolAgent:
         *,
         workspace_path: str | Path | None = None,
     ) -> dict[str, str]:
-        tools = self.loop.available_capabilities(capability_scope.capability_ids)
         return self.prompt_builder.build_system_message(
             PromptRequest(
                 profile=self.profile,
                 task_content="",
-                tools=tools,
                 workspace_path=workspace_path,
             )
         )
-
-    def _provider_messages(
-        self,
-        messages: list[dict[str, Any]],
-        capability_scope: CapabilityScope,
-        *,
-        workspace_path: str | Path | None = None,
-    ) -> list[dict[str, Any]]:
-        system_message = self._build_system_message(
-            capability_scope,
-            workspace_path=workspace_path,
-        )
-        return [dict(system_message), *[dict(message) for message in messages]]
 
     async def run(
         self,
@@ -146,15 +157,10 @@ class ToolAgent:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
-        """Append a user turn to the tool-agent thread and run the bounded loop."""
+        """Run one user turn from a new conversation."""
         boundary = Boundary(allowed_paths=["."])
-        return await self.run_messages(
-            [
-                self.prompt_builder.build_user_message(
-                    "{{ user_message }}",
-                    {"user_message": message},
-                )
-            ],
+        return await self.run_conversation(
+            ConversationState(items=(UserMessage(content=message, run_id=run_id),)),
             run_id=run_id,
             review_level=review_level,
             capability_context=capability_context,
@@ -164,9 +170,9 @@ class ToolAgent:
             on_event=on_event,
         )
 
-    async def run_messages(
+    async def run_conversation(
         self,
-        messages: list[dict[str, Any]],
+        conversation: ConversationState,
         *,
         run_id: str | None = None,
         review_level: ReviewLevel = "fast",
@@ -176,10 +182,10 @@ class ToolAgent:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
-        """Run a tool-agent thread from OpenAI-compatible messages."""
-        self.messages = [dict(message) for message in messages]
-        return await self._continue_messages(
-            self.messages,
+        """Run a provider-neutral conversation state."""
+        self.conversation = conversation
+        return await self._continue_conversation(
+            conversation,
             run_id=run_id,
             review_level=review_level,
             boundary=boundary or Boundary(allowed_paths=["."]),
@@ -225,6 +231,8 @@ class ToolAgent:
 
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
         result: CapabilityResult | None = None
+        stored_content: StoredContent | None = None
+        attachments: tuple[Any, ...] = ()
         if approved:
             boundary_review_approved = (
                 pending_review.payload.get("reason") == "boundary_violation"
@@ -240,6 +248,12 @@ class ToolAgent:
                             invocation.invocation_id if boundary_review_approved else None
                         ),
                     ),
+                )
+                result, stored_content, attachments = normalize_capability_result(
+                    result,
+                    workspace_path=state.workspace_path
+                    or current_workspace_root(self.loop.capability_executor.workspace_root),
+                    policy=self.result_storage_policy,
                 )
                 feed_content = _tool_content(result)
                 self.loop._emit_capability_event(
@@ -262,22 +276,40 @@ class ToolAgent:
                 )
 
         feed_content = _append_reviewer_feedback(feed_content, feedback)
+        if isinstance(stored_content, ContentReference):
+            stored_content = stored_content.model_copy(
+                update={"preview": feed_content}
+            )
+        elif stored_content is not None:
+            stored_content = inline_content(feed_content)
         _reconcile_reviewed_trace_node(
-            self.trace,
+            state.trace,
             invocation,
             approved=approved,
             result=result,
             content=feed_content,
         )
-        _replace_tool_result(
-            self.messages,
+        conversation = state.model_thread or state.conversation
+        if conversation is None:
+            raise ValueError("Tool review checkpoint has no model thread.")
+        conversation = _replace_tool_result(
+            conversation,
             tool_call_id=invocation.invocation_id,
             tool_name=capability_call.tool_name,
             content=feed_content,
+            stored_content=stored_content,
+            value=None if result is None else result.value,
+            artifacts=attachments,
         )
-        reviewed_trace = self.trace
-        outcome = await self._continue_messages(
-            self.messages,
+        reviewed_item = next(
+            item
+            for item in reversed(conversation.items)
+            if isinstance(item, ToolResultMessage)
+            and item.call_id == invocation.invocation_id
+        )
+        reviewed_trace = state.trace
+        outcome = await self._continue_conversation(
+            conversation,
             run_id=state.run_id,
             review_level=state.review_level,
             boundary=invocation.boundary,
@@ -290,17 +322,27 @@ class ToolAgent:
             on_token=on_token,
             on_event=on_event,
         )
+        state_update: dict[str, Any] = {
+            "context_usage": [
+                *state.context_usage,
+                *outcome.state.context_usage,
+            ],
+        }
         if reviewed_trace is not None and outcome.state.trace is not None:
-            next_state = outcome.state.model_copy(
-                update={"trace": reviewed_trace.merge(outcome.state.trace)}
-            )
-            outcome = outcome.model_copy(update={"state": next_state})
-            self.trace = next_state.trace
+            state_update["trace"] = reviewed_trace.merge(outcome.state.trace)
+        next_state = outcome.state.model_copy(update=state_update)
+        outcome = outcome.model_copy(
+            update={
+                "state": next_state,
+                "new_items": (reviewed_item, *outcome.new_items),
+            }
+        )
+        self.trace = next_state.trace
         return outcome
 
-    async def _continue_messages(
+    async def _continue_conversation(
         self,
-        messages: list[dict[str, Any]],
+        conversation: ConversationState,
         *,
         run_id: str | None = None,
         review_level: ReviewLevel,
@@ -310,14 +352,13 @@ class ToolAgent:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
-        """Resume a tool-agent conversation from already-built messages."""
+        """Resume a tool-agent conversation from typed state."""
         control_tool_names = self.reviewable_tool_names(capability_scope)
         control_tool_names.update(
             self.loop.tool_adapter.function_name(definition)
             for definition in self.loop.available_capabilities(capability_scope.capability_ids)
         )
-        provider_messages = self._provider_messages(
-            messages,
+        system_message = self._build_system_message(
             capability_scope,
             workspace_path=(
                 capability_context.workspace_path
@@ -329,11 +370,14 @@ class ToolAgent:
             ),
         )
         outcome = await self.loop.run(
-            "",
+            conversation,
             run_id=run_id,
             boundary=boundary,
             max_steps=self.max_steps,
-            messages=provider_messages,
+            system_message=system_message,
+            context_policy=self.context_policy,
+            result_storage_policy=self.result_storage_policy,
+            context_assembler=self.context_assembler,
             control_tool_names=control_tool_names,
             review_level=review_level,
             capability_ids=capability_scope.capability_ids,
@@ -343,11 +387,8 @@ class ToolAgent:
             on_token=on_token,
             on_event=on_event,
         )
-        internal_messages = _strip_system_message(outcome.state.internal_messages)
-        state = outcome.state.model_copy(update={"internal_messages": internal_messages})
-        outcome = outcome.model_copy(update={"state": state})
-        self.messages = list(internal_messages)
-        self.trace = state.trace
+        self.conversation = outcome.state.model_thread or conversation
+        self.trace = outcome.state.trace
         return outcome
 
     def reviewable_tool_names(self, capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE) -> set[str]:
@@ -464,12 +505,15 @@ class ToolAgentLoop:
 
     async def run(
         self,
-        user_message: str,
+        conversation: ConversationState,
         *,
         run_id: str | None = None,
         boundary: Boundary,
         max_steps: int = 8,
-        messages: list[dict[str, Any]] | None = None,
+        system_message: dict[str, Any],
+        context_policy: ContextPolicy,
+        result_storage_policy: ResultStoragePolicy,
+        context_assembler: ContextAssembler,
         control_tool_names: set[str] | None = None,
         review_level: ReviewLevel | None = None,
         capability_ids: Sequence[str] | None = None,
@@ -482,9 +526,9 @@ class ToolAgentLoop:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
 
-        loop_messages = list(messages or [])
-        if user_message:
-            loop_messages.append({"role": "user", "content": user_message})
+        loop_conversation = conversation
+        new_items: list[ConversationItem] = []
+        context_usages: list[ContextUsage] = []
         resolved_run_id = run_id or f"tool_run_{uuid4().hex}"
         trace = RunTrace(run_id=resolved_run_id, root=RunTraceNode.run(run_id=resolved_run_id))
         execution_context = _execution_context(
@@ -510,8 +554,35 @@ class ToolAgentLoop:
 
         for step in range(1, max_steps + 1):
             tool_definitions = self._llm_tool_definitions(capability_ids=capability_ids)
+            previous_revision = loop_conversation.revision
+            prepared = await context_assembler.prepare(
+                system_message=system_message,
+                conversation=loop_conversation,
+                tools=tool_definitions,
+                policy=context_policy,
+                compact=lambda summary, items, limit: self._compact_history(
+                    summary,
+                    items,
+                    limit,
+                    run_id=resolved_run_id,
+                    on_event=on_event,
+                    context_assembler=context_assembler,
+                    context_policy=context_policy,
+                ),
+            )
+            loop_conversation = prepared.conversation
+            context_usages.append(prepared.usage)
+            if on_event is not None and loop_conversation.revision != previous_revision:
+                on_event(
+                    {
+                        "type": "context_compacted",
+                        "run_id": resolved_run_id,
+                        "scope": "conversation",
+                        "usage": prepared.usage.model_dump(mode="json"),
+                    }
+                )
             response = await self._chat(
-                loop_messages,
+                prepared.messages,
                 tools=tool_definitions,
                 run_id=resolved_run_id,
                 step=step,
@@ -520,7 +591,11 @@ class ToolAgentLoop:
             )
 
             assistant_message = self._assistant_message(response)
-            loop_messages.append(assistant_message)
+            assistant_message = assistant_message.model_copy(
+                update={"run_id": resolved_run_id}
+            )
+            loop_conversation = _append_item(loop_conversation, assistant_message)
+            new_items.append(assistant_message)
             trace.root.children.append(
                 RunTraceNode(
                     parent_id=trace.root.id,
@@ -528,6 +603,12 @@ class ToolAgentLoop:
                     status="completed",
                     label=f"model_step_{step}",
                     ref={"step": str(step)},
+                    input={"context_usage": prepared.usage.model_dump(mode="json")},
+                    output={
+                        "content": response.content,
+                        "reasoning": response.reasoning_content,
+                        "refusal": response.refusal,
+                    },
                 )
             )
 
@@ -537,8 +618,9 @@ class ToolAgentLoop:
                     state=_tool_run_state(
                         run_id=resolved_run_id,
                         status="completed",
-                        messages=loop_messages,
+                        conversation=loop_conversation,
                         trace=trace,
+                        context_usage=context_usages,
                         capability_scope=state_scope,
                         workspace_path=(
                             None
@@ -546,8 +628,9 @@ class ToolAgentLoop:
                             else str(execution_context.workspace_path)
                         ),
                     ),
-                    execution_context=_format_capability_execution_context(loop_messages),
-                    output_text=strip_thinking_blocks(response.content).strip(),
+                    execution_context=_format_capability_execution_context(loop_conversation),
+                    output_text=response.content.strip(),
+                    new_items=tuple(new_items),
                 )
 
             for tool_call_index, tool_call in enumerate(response.tool_calls):
@@ -560,14 +643,14 @@ class ToolAgentLoop:
                     )
                 except KeyError as exc:
                     error_content = f"[TOOL_ERROR] {_exception_message(exc)}"
-                    loop_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": error_content,
-                        }
+                    tool_item = _tool_result_item(
+                        tool_call=tool_call,
+                        run_id=resolved_run_id,
+                        status="failed",
+                        content=error_content,
                     )
+                    loop_conversation = _append_item(loop_conversation, tool_item)
+                    new_items.append(tool_item)
                     continue
                 self._emit_capability_event(on_event, invocation, "capability_call", run_id=resolved_run_id)
                 if control_tool_names and tool_call.name in control_tool_names:
@@ -592,20 +675,47 @@ class ToolAgentLoop:
                             )
                         )
                         raise
-                    loop_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": control_result.content,
-                        }
+                    recorded_result = control_result.capability_result
+                    stored_content: Any = None
+                    attachments: tuple[Any, ...] = ()
+                    if recorded_result is not None:
+                        recorded_result, stored_content, attachments = normalize_capability_result(
+                            recorded_result,
+                            workspace_path=execution_context.workspace_path
+                            or current_workspace_root(self.capability_executor.workspace_root),
+                            policy=result_storage_policy,
+                        )
+                    bounded_content = (
+                        control_result.content
+                        if stored_content is None
+                        else stored_content_text(stored_content)
                     )
+                    tool_item = _tool_result_item(
+                        tool_call=tool_call,
+                        run_id=resolved_run_id,
+                        status=(
+                            "pending_review"
+                            if control_result.needs_review
+                            else (
+                                "completed"
+                                if recorded_result is None or recorded_result.status == "completed"
+                                else "failed"
+                            )
+                        ),
+                        content=bounded_content,
+                        capability_id=invocation.capability_id,
+                        stored_content=stored_content,
+                        value=None if recorded_result is None else recorded_result.value,
+                        artifacts=attachments,
+                    )
+                    loop_conversation = _append_item(loop_conversation, tool_item)
+                    new_items.append(tool_item)
                     self._emit_capability_event(
                         on_event,
                         invocation,
                         "capability_result",
                         run_id=resolved_run_id,
-                        content=control_result.content,
+                        content=bounded_content,
                     )
                     review_pending = control_result.needs_review
                     trace.root.children.append(
@@ -616,7 +726,7 @@ class ToolAgentLoop:
                                 None
                                 if review_pending
                                 else (
-                                    control_result.capability_result
+                                    recorded_result
                                     or CapabilityResult.completed(invocation, control_result.content)
                                 )
                             ),
@@ -624,10 +734,12 @@ class ToolAgentLoop:
                         )
                     )
                     if review_pending:
-                        _append_skipped_tool_results(
-                            loop_messages,
+                        loop_conversation, skipped_items = _append_skipped_tool_results(
+                            loop_conversation,
                             response.tool_calls[tool_call_index + 1:],
+                            run_id=resolved_run_id,
                         )
+                        new_items.extend(skipped_items)
                         pending_review = PendingReview(
                             review_id=f"review_{uuid4().hex}",
                             kind="capability_review",
@@ -647,8 +759,9 @@ class ToolAgentLoop:
                             state=_tool_run_state(
                                 run_id=resolved_run_id,
                                 status="awaiting_review",
-                                messages=loop_messages,
+                                conversation=loop_conversation,
                                 trace=trace,
+                                context_usage=context_usages,
                                 pending_review=pending_review,
                                 pending_invocation=invocation,
                                 capability_scope=state_scope,
@@ -658,7 +771,8 @@ class ToolAgentLoop:
                                     else str(execution_context.workspace_path)
                                 ),
                             ),
-                            execution_context=_format_capability_execution_context(loop_messages),
+                            execution_context=_format_capability_execution_context(loop_conversation),
+                            new_items=tuple(new_items),
                         )
                     if control_result.stop_reason:
                         trace.root.status = "failed"
@@ -666,8 +780,9 @@ class ToolAgentLoop:
                             state=_tool_run_state(
                                 run_id=resolved_run_id,
                                 status="failed",
-                                messages=loop_messages,
+                                conversation=loop_conversation,
                                 trace=trace,
+                                context_usage=context_usages,
                                 capability_scope=state_scope,
                                 workspace_path=(
                                     None
@@ -675,8 +790,9 @@ class ToolAgentLoop:
                                     else str(execution_context.workspace_path)
                                 ),
                             ),
-                            execution_context=_format_capability_execution_context(loop_messages),
-                            output_text=control_result.content,
+                            execution_context=_format_capability_execution_context(loop_conversation),
+                            output_text=bounded_content,
+                            new_items=tuple(new_items),
                         )
                     continue
 
@@ -686,7 +802,6 @@ class ToolAgentLoop:
                         context=execution_context,
                         callbacks=capability_callbacks,
                     )
-                    tool_result = _tool_content(capability_result)
                 except ExecutionLimitExceeded:
                     raise
                 except Exception as exc:
@@ -698,14 +813,15 @@ class ToolAgentLoop:
                         run_id=resolved_run_id,
                         content=error_content,
                     )
-                    loop_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": error_content,
-                        }
+                    tool_item = _tool_result_item(
+                        tool_call=tool_call,
+                        run_id=resolved_run_id,
+                        status="failed",
+                        content=error_content,
+                        capability_id=invocation.capability_id,
                     )
+                    loop_conversation = _append_item(loop_conversation, tool_item)
+                    new_items.append(tool_item)
                     trace.root.children.append(
                         RunTraceNode.capability_call(
                             parent_id=trace.root.id,
@@ -715,20 +831,35 @@ class ToolAgentLoop:
                         )
                     )
                     continue
-                loop_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": tool_call.name,
-                        "content": tool_result,
-                    }
+                capability_result, stored_content, attachments = normalize_capability_result(
+                    capability_result,
+                    workspace_path=execution_context.workspace_path
+                    or current_workspace_root(self.capability_executor.workspace_root),
+                    policy=result_storage_policy,
                 )
+                bounded_content = stored_content_text(stored_content)
+                tool_item = _tool_result_item(
+                    tool_call=tool_call,
+                    run_id=resolved_run_id,
+                    status=(
+                        "completed"
+                        if capability_result.status == "completed"
+                        else "failed"
+                    ),
+                    content=bounded_content,
+                    capability_id=invocation.capability_id,
+                    stored_content=stored_content,
+                    value=capability_result.value,
+                    artifacts=attachments,
+                )
+                loop_conversation = _append_item(loop_conversation, tool_item)
+                new_items.append(tool_item)
                 self._emit_capability_event(
                     on_event,
                     invocation,
                     "capability_result",
                     run_id=resolved_run_id,
-                    content=tool_result,
+                    content=bounded_content,
                 )
                 trace.root.children.append(
                     RunTraceNode.capability_call(
@@ -744,17 +875,91 @@ class ToolAgentLoop:
             state=_tool_run_state(
                 run_id=resolved_run_id,
                 status="failed",
-                messages=loop_messages,
-                    trace=trace,
-                    capability_scope=state_scope,
-                    workspace_path=(
-                        None
-                        if execution_context.workspace_path is None
-                        else str(execution_context.workspace_path)
-                    ),
+                conversation=loop_conversation,
+                trace=trace,
+                context_usage=context_usages,
+                capability_scope=state_scope,
+                workspace_path=(
+                    None
+                    if execution_context.workspace_path is None
+                    else str(execution_context.workspace_path)
                 ),
-            execution_context=_format_capability_execution_context(loop_messages),
+            ),
+            execution_context=_format_capability_execution_context(loop_conversation),
+            new_items=tuple(new_items),
         )
+
+    async def _compact_history(
+        self,
+        previous: ContextSummary | None,
+        items: tuple[ConversationItem, ...],
+        max_tokens: int,
+        *,
+        run_id: str,
+        on_event: LoopEventHandler | None,
+        context_assembler: ContextAssembler,
+        context_policy: ContextPolicy,
+    ) -> ContextSummary:
+        if on_event is not None:
+            on_event(
+                {
+                    "type": "context_compaction_started",
+                    "run_id": run_id,
+                    "item_count": len(items),
+                }
+            )
+        source, source_truncated = context_assembler.truncate_text(
+            _compaction_source(previous, items),
+            max_tokens=max(
+                1,
+                int(
+                    (
+                        context_assembler.context_window_tokens
+                        - context_assembler.output_reserve_tokens
+                    )
+                    * 0.7
+                ),
+            ),
+        )
+        system_message = {
+            "role": "system",
+            "content": (
+                "Summarize earlier conversation data for later task continuation. "
+                "Preserve facts, decisions, constraints, unresolved work, and important "
+                "tool outcomes. Do not include hidden reasoning. Return only the summary."
+            ),
+        }
+        prepared = await context_assembler.prepare(
+            system_message=system_message,
+            conversation=ConversationState(
+                items=(
+                    UserMessage(
+                        content=source,
+                        scope="compactor",
+                        visibility="internal",
+                    ),
+                )
+            ),
+            policy=context_policy,
+        )
+        reserve_model_turn()
+        response = normalize_chat_response(
+            await self.provider.chat(prepared.messages)
+        )
+        content = response.content.strip()
+        if not content:
+            raise ValueError("Context compactor returned an empty summary.")
+        content = content[: max_tokens * 6]
+        summary = ContextSummary(
+            content=content,
+            source_item_count=(previous.source_item_count if previous else 0) + len(items),
+            method="model",
+            source_truncated=source_truncated,
+            reasoning=response.reasoning_content,
+            usage=response.usage,
+            context_usage=prepared.usage,
+        )
+        return summary
 
     def _llm_tool_definitions(
         self,
@@ -781,10 +986,12 @@ class ToolAgentLoop:
             return await self.provider.chat(messages, tools=tools)
 
         if on_token is None and on_event is None:
-            return await run_with_llm_retries(
-                chat_attempt,
-                policy=self.llm_retry_policy,
-                sleep=self.llm_retry_sleep,
+            return normalize_chat_response(
+                await run_with_llm_retries(
+                    chat_attempt,
+                    policy=self.llm_retry_policy,
+                    sleep=self.llm_retry_sleep,
+                )
             )
 
         stream = response_token_stream(
@@ -793,10 +1000,12 @@ class ToolAgentLoop:
             context=ResponseStreamContext.create(run_id=run_id, model_step=step),
         )
         if stream is None:
-            return await run_with_llm_retries(
-                chat_attempt,
-                policy=self.llm_retry_policy,
-                sleep=self.llm_retry_sleep,
+            return normalize_chat_response(
+                await run_with_llm_retries(
+                    chat_attempt,
+                    policy=self.llm_retry_policy,
+                    sleep=self.llm_retry_sleep,
+                )
             )
 
         response: ChatResponse | None = None
@@ -822,37 +1031,32 @@ class ToolAgentLoop:
 
         try:
             stream.start()
-            return await run_with_llm_retries(
-                attempt,
-                policy=self.llm_retry_policy,
-                sleep=self.llm_retry_sleep,
-                should_retry=lambda _exc: not emitted_tokens,
+            return normalize_chat_response(
+                await run_with_llm_retries(
+                    attempt,
+                    policy=self.llm_retry_policy,
+                    sleep=self.llm_retry_sleep,
+                    should_retry=lambda _exc: not emitted_tokens,
+                )
             )
         finally:
             stream.finish()
 
-    def _assistant_message(self, response: ChatResponse) -> dict[str, Any]:
-        message: dict[str, Any] = {
-            "role": "assistant",
-            "content": response.content,
-        }
-        if response.reasoning_content:
-            message["reasoning_content"] = response.reasoning_content
-        if response.tool_calls:
-            message["tool_calls"] = [
-                self._tool_call_message(tool_call) for tool_call in response.tool_calls
-            ]
-        return message
-
-    def _tool_call_message(self, tool_call: ToolCall) -> dict[str, Any]:
-        return {
-            "id": tool_call.id,
-            "type": "function",
-            "function": {
-                "name": tool_call.name,
-                "arguments": json.dumps(tool_call.arguments),
-            },
-        }
+    def _assistant_message(self, response: ChatResponse) -> AssistantMessage:
+        return AssistantMessage(
+            content=response.content,
+            reasoning=response.reasoning_content,
+            refusal=response.refusal,
+            usage=response.usage,
+            tool_calls=tuple(
+                ToolCallItem(
+                    id=tool_call.id,
+                    name=tool_call.name,
+                    arguments=tool_call.arguments,
+                )
+                for tool_call in response.tool_calls
+            ),
+        )
 
     def _emit_capability_event(
         self,
@@ -877,14 +1081,14 @@ class ToolAgentLoop:
         on_event(payload)
 
 
-def _format_capability_execution_context(messages: list[dict[str, Any]]) -> str:
+def _format_capability_execution_context(conversation: ConversationState) -> str:
     """Format ToolAgentLoop tool calls for validation and fallback output."""
     lines: list[str] = []
-    for message in messages:
-        if message.get("role") == "tool":
-            name = message.get("name", "unknown")
+    for message in conversation.items:
+        if isinstance(message, ToolResultMessage):
+            name = message.name
             content = context_excerpt(
-                str(message.get("content", "")),
+                stored_content_text(message.content),
                 limit=MAX_TOOL_RESULT_CONTEXT_CHARS,
             )
             lines.append(f"  - {name}: {content}")
@@ -895,7 +1099,7 @@ def _format_capability_execution_context(messages: list[dict[str, Any]]) -> str:
             limit=MAX_EXECUTION_CONTEXT_CHARS,
         )
 
-    final_answer = _last_assistant_content(messages)
+    final_answer = _last_assistant_content(conversation)
     if final_answer:
         return context_excerpt(
             f"Assistant response:\n{final_answer}",
@@ -904,54 +1108,123 @@ def _format_capability_execution_context(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _append_item(
+    conversation: ConversationState,
+    item: ConversationItem,
+) -> ConversationState:
+    return conversation.model_copy(
+        update={
+            "revision": conversation.revision + 1,
+            "items": (*conversation.items, item),
+        }
+    )
+
+
+def _tool_result_item(
+    *,
+    tool_call: ToolCall,
+    run_id: str,
+    status: str,
+    content: str,
+    capability_id: str | None = None,
+    stored_content: StoredContent | None = None,
+    value: Any = None,
+    artifacts: tuple[Any, ...] = (),
+) -> ToolResultMessage:
+    return ToolResultMessage(
+        run_id=run_id,
+        call_id=tool_call.id,
+        name=tool_call.name,
+        capability_id=capability_id,
+        status=status,  # type: ignore[arg-type]
+        content=stored_content or inline_content(content),
+        value=value,
+        artifacts=artifacts,
+    )
+
+
+def _compaction_source(
+    previous: ContextSummary | None,
+    items: tuple[ConversationItem, ...],
+) -> str:
+    sections: list[str] = []
+    if previous is not None:
+        sections.append("Previous summary:\n" + previous.content)
+    for item in items:
+        if isinstance(item, UserMessage):
+            sections.append("User:\n" + item.content)
+        elif isinstance(item, AssistantMessage):
+            sections.append("Assistant:\n" + item.content)
+        elif isinstance(item, ToolResultMessage):
+            sections.append(
+                f"Tool {item.capability_id or item.name} ({item.status}):\n"
+                + stored_content_text(item.content)
+            )
+    return "\n\n".join(sections)
+
+
 def _replace_tool_result(
-    messages: list[dict[str, Any]],
+    conversation: ConversationState,
     *,
     tool_call_id: str,
     tool_name: str,
     content: str,
-) -> None:
-    replacement = {
-        "role": "tool",
-        "tool_call_id": tool_call_id,
-        "name": tool_name,
-        "content": content,
-    }
-    for index in range(len(messages) - 1, -1, -1):
-        message = messages[index]
-        if message.get("role") == "tool" and message.get("tool_call_id") == tool_call_id:
-            messages[index] = replacement
-            return
-    messages.append(replacement)
+    stored_content: StoredContent | None = None,
+    value: Any = None,
+    artifacts: tuple[Any, ...] = (),
+) -> ConversationState:
+    replacement = ToolResultMessage(
+        call_id=tool_call_id,
+        name=tool_name,
+        status="completed" if not content.startswith("[DENIED]") else "denied",
+        content=stored_content or inline_content(content),
+        value=value,
+        artifacts=artifacts,
+    )
+    items = list(conversation.items)
+    for index in range(len(items) - 1, -1, -1):
+        message = items[index]
+        if isinstance(message, ToolResultMessage) and message.call_id == tool_call_id:
+            replacement = replacement.model_copy(
+                update={
+                    "id": message.id,
+                    "run_id": message.run_id,
+                    "capability_id": message.capability_id,
+                }
+            )
+            items[index] = replacement
+            return conversation.model_copy(
+                update={"revision": conversation.revision + 1, "items": tuple(items)}
+            )
+    return _append_item(conversation, replacement)
 
 
 def _append_skipped_tool_results(
-    messages: list[dict[str, Any]],
+    conversation: ConversationState,
     tool_calls: Sequence[ToolCall],
-) -> None:
+    *,
+    run_id: str,
+) -> tuple[ConversationState, list[ToolResultMessage]]:
+    skipped: list[ToolResultMessage] = []
     for tool_call in tool_calls:
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "name": tool_call.name,
-                "content": _REVIEW_SKIPPED_TOOL_CONTENT,
-            }
+        item = _tool_result_item(
+            tool_call=tool_call,
+            run_id=run_id,
+            status="skipped",
+            content=_REVIEW_SKIPPED_TOOL_CONTENT,
         )
-
-
-def _strip_system_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if messages and messages[0].get("role") == "system":
-        return [dict(message) for message in messages[1:]]
-    return [dict(message) for message in messages]
+        conversation = _append_item(conversation, item)
+        skipped.append(item)
+    return conversation, skipped
 
 
 def _tool_run_state(
     *,
     run_id: str,
     status: str,
-    messages: list[dict[str, Any]],
+    conversation: ConversationState,
     trace: RunTrace,
+    context_usage: list[ContextUsage],
     pending_review: PendingReview | None = None,
     pending_invocation: CapabilityInvocation | None = None,
     capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
@@ -961,7 +1234,9 @@ def _tool_run_state(
         run_id=run_id,
         kind="tool",
         status=status,  # type: ignore[arg-type]
-        internal_messages=[dict(message) for message in messages],
+        conversation=conversation,
+        model_thread=conversation,
+        context_usage=context_usage,
         trace=trace,
         pending_review=pending_review,
         pending_invocation=pending_invocation,
@@ -1055,8 +1330,8 @@ def _execution_context(
     return replace(base, skills=skills)
 
 
-def _last_assistant_content(messages: list[dict[str, Any]]) -> str:
-    for message in reversed(messages):
-        if message.get("role") == "assistant" and message.get("content"):
-            return str(message["content"])
+def _last_assistant_content(conversation: ConversationState) -> str:
+    for message in reversed(conversation.items):
+        if isinstance(message, AssistantMessage) and message.content:
+            return message.content
     return ""

@@ -105,21 +105,21 @@ def test_pending_capability_review_requires_tool_name() -> None:
         RunResult.model_validate({"state": payload, "output_text": ""})
 
 
-def test_run_state_defaults_missing_schema_version_to_v1() -> None:
+def test_run_state_defaults_missing_schema_version_to_v3() -> None:
     state = RunState.model_validate({
         "run_id": "run_1",
         "kind": "tool",
         "status": "completed",
     })
 
-    assert state.schema_version == 1
-    assert state.model_dump(mode="json")["schema_version"] == 1
+    assert state.schema_version == 3
+    assert state.model_dump(mode="json")["schema_version"] == 3
 
 
 def test_run_state_rejects_unsupported_schema_version() -> None:
     with pytest.raises(ValidationError, match="schema_version"):
         RunState.model_validate({
-            "schema_version": 3,
+            "schema_version": 2,
             "run_id": "run_1",
             "kind": "tool",
             "status": "completed",

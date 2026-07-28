@@ -1,282 +1,162 @@
-# 结果、流式输出和 Review
+# 会话、结果、流式事件与审核
 
-`Runner.run(...)` 会为每个公开 target 返回 `RunResult`：`AutoAgent`、`ToolAgent`、
-`DagAgent`、`Dag` 和 `DAGSpec`。
+dagent 0.8 将“跨 run 的多轮会话”和“同一 run 的审核续跑”明确分开。这是一次有意的
+破坏性变更：
 
-## Run Results
+- `ConversationState` 用于在多个独立 run 之间延续会话；
+- `RunCheckpoint` 用于恢复停在审核门上的同一个 run；
+- 原始 OpenAI `messages` 和 `RunState` 不再是 continuation 输入。
 
-```python
-messages = [{"role": "user", "content": "Write the report."}]
-result = await runner.run(agent, messages=messages)
+## 延续多轮会话
 
-print(result.kind)
-print(result.status)
-print(result.output_text)
-print(result.trace)
-```
-
-对于 agent targets，`result.messages` 只包含当前 run 生成的 messages。把它们追加到
-调用方维护的 conversation 中：
+每次调用只提交本轮用户输入，并传入上一轮返回的有界会话：
 
 ```python
-messages += result.messages
-messages.append({"role": "user", "content": "Continue with one more detail."})
-result = await runner.run(agent, messages=messages, state=result.state)
-```
+first = await runner.run(agent, input="记住发布颜色是蓝色。")
 
-`result.state` 包含 dagent 可恢复的 internal thread、DAG、trace、pending review 和
-static DAG metadata。`RunResult.output_text` 是规范的最终答案。
-
-如果宿主在执行前已经创建了 run record，可以传入最终 run id：
-
-```python
-result = await runner.run(
+second = await runner.run(
     agent,
-    messages=messages,
-    run_id="enterprise_run_123",
+    input="发布颜色是什么？",
+    conversation=first.conversation,
+)
+print(second.output_text)
+```
+
+`ConversationState` 与 provider 无关，包含有类型的用户消息、助手消息、工具结果、可选
+摘要和 revision。它不包含 system prompt 或 provider 请求参数。
+
+不要自行把 `result.new_items` 追加回会话。`new_items` 是当前 run 的审计增量；
+`result.conversation` 已经是下一轮应传入的完整有界状态。
+
+## 实际输入模型的内容
+
+每次模型调用前，统一的上下文组装器会按以下顺序创建 OpenAI-compatible 请求：
+
+1. 当前 system prompt；
+2. 可选的早期会话摘要；
+3. 最近的有类型会话或内部 model thread；
+4. 工具 schema 或 planner response schema。
+
+助手推理内容不会进入这个投影。它保留在 `AssistantMessage.reasoning` 中供展示和审计，
+但绝不会回放到后续模型请求。
+
+工具调用与对应工具结果始终保持结构完整。工具结果文本可以在模型上下文中做首尾截断，
+但不会删除审计记录，也不会破坏 `tool_call_id` 配对。
+
+## 上下文限制与压缩
+
+本地 OpenAI-compatible endpoint 通常不会可靠声明上下文大小，因此 provider 默认使用
+32K 上下文窗口，并预留 4K 输出：
+
+```python
+provider = dagent.Provider(
+    base_url="http://localhost:8000/v1",
+    model="local-model",
+    context_window_tokens=32768,
+    output_reserve_tokens=4096,
 )
 ```
 
-同一个 `run_id` 会用于 `run.started`、每个 stream event envelope、最终 `RunState`
-以及默认 run workspace 名称。宿主传入的 run id 必须是单个目录名。如果同时传入
-`state`，`run_id` 必须匹配 `state.run_id`。
-
-## 持久化 Checkpoint
-
-`RunState` 继续表示普通 conversation continuation 使用的可变执行状态。跨进程 review
-continuation 应使用 `RunCheckpoint`；它还包含 SDK 已解析的执行 plan 和累计 usage：
+使用 `ContextPolicy` 配置每个 agent 的上下文行为：
 
 ```python
-checkpoint = result.checkpoint
-if checkpoint is None:
-    raise RuntimeError("SDK result did not contain a checkpoint")
-
-saved_json = checkpoint.model_dump_json()
-
-# 在之后的进程中，先构造兼容的 Runner：
-restored = dagent.RunCheckpoint.model_validate_json(saved_json)
-pending = restored.state.pending_review
-if pending is not None:
-    decision = dagent.ReviewHandle(pending).approve()
-    result = await new_runner.resume(decision, checkpoint=restored)
-else:
-    messages.append({"role": "user", "content": "Continue."})
-    result = await new_runner.run(agent, messages=messages, checkpoint=restored)
-```
-
-JSON 保存位置和方式由 host 决定。SDK 定义 checkpoint 的校验与 resume 语义，但不负责
-数据库、租户生命周期、RBAC 或 retention policy。
-
-Checkpoint resume 时，`Runner` 会验证精确的 capability、agent 和 skill IDs 是否可用，
-根据已解析的 profiles 和局部 loop limits 重建目标专属 runtime，恢复累计 usage，然后才应用
-review decision。缺失或禁用的 capabilities、缺失的 skills 都会 fail closed。同一个 runner
-仍可通过内存中的 checkpoint cache 使用 `resume(decision)`。
-
-Resolved plan 使用冻结的 profile snapshots 和 SDK 定义的 canonical SHA-256 fingerprint。
-Fingerprint 用于发现意外 payload 修改，不是签名或 authentication boundary。
-
-SDK 新生成的 checkpoint 使用 schema V2，并记录 `planner_frontend`。当 frontend 为
-`sdk_builder` 时，resolved plan 还会冻结 mandatory、versioned `generate-dag` skill 的完整
-内容和 SHA-256 digest。即使新 Runner 的全局 frontend 不同，resume 也会重建 checkpoint
-中记录的 frontend 和 skill。Schema V1 checkpoint 继续可读，并始终表示 `typed_spec`。
-
-同一个 `Runner` 上的普通 continuation 可以使用 `run(..., state=...)`；最新匹配的内存
-checkpoint 会恢复 usage 和原 limits。跨进程 continuation 应向 `run(...)` 传入
-`checkpoint=...`。过期 state 会被拒绝，恢复出的 limits 不能替换或扩大。
-`resume(..., state=...)` 已弃用，因为单独的 `RunState` 无法恢复目标专属 profiles、limits
-和精确执行语义。它暂时作为显式 legacy path 保留；新的持久化代码应保存
-`result.checkpoint`。
-
-Checkpoint review decision 在同一个 `Runner` 中只能消费一次。如果 continuation 失败，
-`Runner.run_checkpoint(run_id)` 会返回 terminal checkpoint。如果 resume 期间抛出
-`ExecutionLimitExceeded`，同一 checkpoint 和更新后的 usage 也可通过
-`error.checkpoint`、`error.usage` 获取。Durable host 必须在执行前原子认领 review ID，
-以避免不同进程间重放；无持久化 SDK 无法单独保证 exactly-once side effects。
-
-`RunResult.model_dump(...)` 继续保持原有的 `state` 和 `output_text` shape。需要跨进程
-review resume 时，请单独持久化 `result.checkpoint`。
-
-新持久化的 `RunState` payload 包含 `schema_version: 2`。不含该字段的 payload 会按
-version 1 读取，V1 使用 `typed_spec` 语义。宿主遇到显式声明的不支持版本时应拒绝，
-而不是静默迁移。
-
-## Run-Wide Execution Budget
-
-当 host 需要 root agent、DAG nodes、map/loop/subgraph、validation 和 subagents 共享同一个
-上限时，使用 `ExecutionLimits`：
-
-```python
-result = await runner.run(
-    agent,
-    messages=messages,
-    limits=dagent.ExecutionLimits(
-        max_total_operations=40,
-        max_model_turns=24,
-        max_capability_calls=20,
+agent = dagent.ToolAgent(
+    profile="conversation",
+    context=dagent.ContextPolicy(
+        compaction_trigger_ratio=0.8,
+        keep_recent_turns=4,
+        summary_max_tokens=1024,
+        max_tool_result_tokens=2048,
+        max_total_tool_result_tokens=8192,
     ),
 )
-
-print(result.usage.model_turns)
-print(result.usage.capability_calls)
 ```
 
-每次模型请求都会原子预留一个 model turn，包括 route、planning、validation、retry 和
-subagent turns。每次 tool、MCP、memory 或 agent capability 执行都会预留一个 capability
-call；两者都会增加 total operations。并发工作会在开始前原子预留。超过限制时，SDK 会在
-不允许的外部操作开始前抛出 `ExecutionLimitExceeded`。
+达到阈值后，dagent 会总结完整的旧轮次并保留最近轮次。正常路径调用当前模型，并消耗一次
+模型调用预算；如果摘要调用失败，则使用确定性的有界摘要，并记录 fallback 原因。如果必须
+保留的输入仍然放不下，会在调用 provider 前抛出 `ContextWindowExceeded`。
+compactor 请求本身也会独立做预算。`ContextSummary` 会记录 source 是否被截断、
+provider usage、上下文估算和捕获到的 reasoning；后续只投影
+`ContextSummary.content`。
 
-`ToolAgent.max_steps` 和 `DagAgent.max_cycles` 仍是局部 loop limits，run-wide budget 不会
-改变其含义。Limits 和 usage 会写入 checkpoint；review resume 和普通 checkpoint
-continuation 都不能重置或扩大它们。
+`result.context_usage` 会提供 token 估算、保留/压缩 item 数、工具结果截断数以及压缩方法。
 
-## 静态 DAG Result Helpers
+## 推理内容与 provider usage
 
-静态 DAG 在同一个 result object 上暴露 DAG-oriented helpers：
+OpenAI-compatible 的 `reasoning_content`/`reasoning` 字段和
+`<think>...</think>` 内容会统一进入 `AssistantMessage.reasoning`，可见回答单独保存：
 
 ```python
-result = await runner.run(dag, graph_input="dagent", workspace_root="runs")
-
-print(result.workspace_path)
-print(result.node_output("write_report"))
-print(result.node_value("search"))
-print(result.artifact_state("report").status)
+for item in result.new_items:
+    if isinstance(item, dagent.AssistantMessage):
+        print(item.content)
+        print(item.reasoning)
+        print(item.usage)  # provider 提供时可用
 ```
 
-当 `workspace_root` 不是绝对路径时，它会相对 runner workspace 解析。使用默认
-runner workspace 时，运行 artifact 会写到 `.dagent/runs/<run_id>`。
+类型化流事件中，推理增量使用 `response.reasoning.delta`，回答增量使用
+`response.content.delta`。
 
-`DAGRun` 仍然是 API projections 使用的 schema，并且可以通过静态 DAG runs 的
-`result.dag_run` 访问。
+## 大型工具与 MCP 结果
 
-本地 WebUI 会把 run workspace 中的文件列为运行 artifacts。文本、Markdown 和代码
-artifacts 使用文本预览接口；PDF artifacts 会通过 artifact download 接口拉取文件，
-并在浏览器中渲染。如果 `~/.dagent/config.yaml` 中启用了 `onlyoffice` 配置，DOCX、
-XLSX 和 PPTX artifacts 会通过 ONLYOFFICE Document Server 以 view mode 打开。如果同时
-启用 `run_artifact_edit_enabled`，这些 artifacts 会以关闭 autosave 的 edit mode 打开；
-只有用户显式点击 Save 时才会覆盖 run workspace 中的文件，并且不会修改历史 trace。
-artifact 文件元数据会包含 `version`，WebUI 据此在文件变化时让 Office 预览缓存失效。
-未配置 ONLYOFFICE 时，这些 Office 文件会回退到内置的浏览器渲染器。
-
-WebUI 可以通过持久化运行历史查看历史编排 runs。选择某个历史动态或静态编排 run
-会恢复其 trace、输出和 artifacts 供检查，但不会修改当前动态草稿或已保存的静态 DAG。
-
-## Streaming
-
-`Runner.stream(...)` 运行 target，并 yield 类型化的 `RunStreamEvent` objects。事件
-envelope 统一包含：`type`、`data`、`sequence` 和 `run_id`。
+默认情况下，256 KiB 以内的工具/MCP 文本内联保存。更大的文本、二进制 value 和 MCP
+二进制 payload 会原子写入 run workspace，并转换为带校验和的 `ContentReference`。
+模型只看到有界预览和 workspace 相对引用。
 
 ```python
-async for event in runner.stream(agent, messages=messages):
-    if event.type == "response.content.delta":
-        print(event.data.delta, end="")
-    elif event.type == "trace.updated":
-        print(event.data.trace.status)
-    elif event.type == "review.required":
-        print(event.data.message)
-    elif event.type == "run.finished":
-        print(event.data.result.output_text)
-```
-
-如果需要从另一个 task 停止 streamed run，请保存 `run.started` envelope 中的
-`run_id`，并传给 `Runner.cancel(...)`：
-
-```python
-cancelled = await runner.cancel(run_id)
-```
-
-活动 run 接受取消时返回 `True`；run 已不再活动时返回 `False`。取消信号会从 runtime
-继续传递到 async capability call、MCP call 和内置 shell 的进程组。Python 无法强制终止
-线程中正在执行的任意同步用户代码，因此长时间运行的自定义 function tool 仍应设置明确
-边界，并在它自己的外部操作被取消后及时返回。
-
-运行离线 streaming 示例：
-
-```bash
-uv run python -m examples.streaming
-```
-
-## Event Protocol
-
-| Event type | 主要字段 |
-| --- | --- |
-| `run.started` | `event.data.kind`；envelope `run_id` 是最终 run id |
-| `response.started` | response identity fields |
-| `response.reasoning.delta` | `event.data.delta`，结构化 provider reasoning 或 `<think>...</think>` 中的文本 |
-| `response.content.delta` | `event.data.delta`，reasoning 外的 assistant answer text |
-| `response.finished` | response identity fields |
-| `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`，可选 DAG context fields |
-| `capability.call.completed` / `capability.call.failed` | invocation fields、result content、可选 DAG context fields |
-| `dag.updated` | `event.data.dag`，仅当 DAG 改变时发出 |
-| `trace.updated` | `event.data.trace`，仅当 trace 改变时发出 |
-| `validation.started` / `validation.passed` / `validation.retry` | `event.data` |
-| `review.required` | `event.data.review_id`, `event.data.kind`, `event.data.message` |
-| `run.finished` | `event.data.result` |
-| `run.failed` | `event.data.message`, `event.data.error_type` |
-
-每个 streamed text source 都由 `response.started` 和 `response.finished` 包围。按
-`response_id` 聚合 deltas，不要只依赖 ordering 或 `model_step`。
-
-## Review 和 Resume
-
-当 run 需要 review 时，`RunResult.requires_review` 为 true，`RunResult.review` 包含
-handle：
-
-```python
-first = await runner.run(
-    agent,
-    messages=[{"role": "user", "content": "Write the report."}],
+runner = dagent.Runner(
+    provider=provider,
+    result_storage_policy=dagent.ResultStoragePolicy(
+        max_inline_bytes=256 * 1024,
+        internal_directory=".dagent/results",
+    ),
 )
-
-if first.requires_review and first.review is not None:
-    result = await runner.resume(first.review.approve())
 ```
 
-批准和拒绝都可以携带 reviewer feedback。拒绝时可以用它说明原因，或引导 agent
-改用另一条执行路径：
+SDK 只负责 run workspace 内的标准化；长期上传、保留策略、访问控制和 URL 生成由 host
+负责。
+
+## 恢复审核
+
+run 等待审核时应持久化完整 checkpoint：
 
 ```python
-if first.requires_review and first.review is not None:
-    result = await runner.resume(
-        first.review.reject(feedback="不要读取该路径，改为总结 README.md。")
-    )
+result = await runner.run(agent, input="写发布说明。")
+
+if result.requires_review:
+    checkpoint_json = result.checkpoint.model_dump_json()
 ```
 
-Streaming resume 使用相同 event contract：
+恢复后通过专用 API 续跑：
 
 ```python
-if first.requires_review and first.review is not None:
-    async for event in runner.resume_stream(first.review.approve()):
-        if event.type == "response.content.delta":
-            print(event.data.delta, end="")
-        elif event.type == "run.finished":
-            print(event.data.result.output_text)
+checkpoint = dagent.RunCheckpoint.model_validate_json(checkpoint_json)
+decision = result.review.approve(feedback="继续，保持简洁。")
+
+resumed = await runner.resume(
+    decision,
+    checkpoint=checkpoint,
+)
 ```
 
-如果 pending review 是重启后恢复出来的，传入保存的 checkpoint：
+0.8 不再提供 `Runner.run(..., checkpoint=...)`、`run(..., state=...)` 或
+`resume(..., state=...)`。checkpoint 会冻结 profile、capability/skill scope、
+capability definition 指纹、策略、限制、planner 模式和已消耗预算，避免审核在不同
+语义下恢复。
+
+## 流式调用
 
 ```python
-restored = dagent.RunCheckpoint.model_validate_json(saved_json)
-pending = restored.state.pending_review
-
-if pending is not None:
-    async for event in runner.resume_stream(
-        dagent.ReviewHandle(pending).approve(),
-        checkpoint=restored,
-    ):
-        ...
+async for event in runner.stream(agent, input="准备答案。"):
+    if event.type == "response.reasoning.delta":
+        show_reasoning(event.data.delta)
+    elif event.type == "response.content.delta":
+        show_content(event.data.delta)
+    elif event.type == "context.compaction.finished":
+        show_context_usage(event.data.usage)
+    elif event.type == "run.finished":
+        result = event.data.result
 ```
 
-`review.required` stream event 是轻量信号。Review UI 应基于后续 `run.finished` result
-中携带的完整 pending review 构建。
-
-DAG review 会授权已批准 DAG 版本的执行。DAG review 批准后，提交审核的这张 DAG
-中的所有节点都可以按审核时展示的 boundary 执行。Replan 会生成新的 DAG 版本；当所选
-review level 要求审核时，变更后的 DAG 需要重新 review。Boundary 授权绑定到人工批准
-的 DAG 版本，而不是所有 lifecycle status 为 `approved` 的 DAG object；静态 DAG 和
-fast no-review revision 如果节点越过 boundary，仍会 fail closed。
-
-Capability review 可以由 risk policy 触发，也可以在 tool-agent 执行过程中由 boundary
-override 请求触发。Boundary override review 使用 `kind == "capability_review"`，并在
-payload 中包含 `payload.reason == "boundary_violation"` 以及原始错误。批准只会执行这一次
-pending capability call，不会扩大后续调用的 run boundary；拒绝会把 denial 消息反馈给
-agent。如果 review decision 携带 `feedback`，该文本会进入 agent 的后续上下文。
+审核续跑对应 `resume_stream(decision, checkpoint=checkpoint)`。
+`run.finished` 中的 `RunResult` 与非流式调用一致。

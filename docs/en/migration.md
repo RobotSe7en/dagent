@@ -5,9 +5,70 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.7.6`.
+The current package version is `0.8.0`.
 
 ## Unreleased
+
+## 0.8.0
+
+### Breaking changes
+
+- Agent runs now accept `input="..."` plus an optional typed
+  `conversation=ConversationState`. The raw `messages=` parameter was removed.
+- Ordinary cross-run continuation no longer accepts `state=` or `checkpoint=`.
+  Pass `result.conversation` to the next independent run.
+- Review continuation now requires
+  `resume(decision, checkpoint=result.checkpoint)`. State-only resume and
+  in-memory fallback were removed.
+- `RunState`, `RunCheckpoint`, and `ResolvedRunPlan` use schema version 3.
+  Version 1/2 payloads are rejected; there is no runtime conversion layer.
+- `RunResult.messages`, `RunState.internal_messages`, and
+  `RunState.input_message_count` were removed.
+- `Provider.strip_thinking` was removed. Reasoning capture is controlled by
+  `reasoning.capture` and is represented separately from visible content.
+- Invalid JSON or non-object tool-call arguments from OpenAI-compatible
+  providers now fail explicitly instead of becoming an empty argument object.
+
+### Added
+
+- Provider-neutral `ConversationState`, `UserMessage`, `AssistantMessage`,
+  `ToolResultMessage`, `ToolCallItem`, `Attachment`, `ContextSummary`, and
+  `ContentReference` contracts.
+- One context assembler for tool agents, DAG planners, routers, validators, and
+  registered subagents. It budgets the system prompt, schemas, history,
+  summaries, and tool results before every model call.
+- Model compaction with an explicit deterministic fallback, per-tool and
+  aggregate tool-result limits, preflight `ContextWindowExceeded`, typed
+  context-usage records, and compaction stream events.
+- Reasoning and provider token usage on assistant audit items. Reasoning is
+  never replayed into later model input.
+- Run-workspace externalization for large text and binary tool/MCP results,
+  with SHA-256 references and atomic writes.
+- Review checkpoints freeze and verify capability-definition fingerprints
+  before executing an approved tool or MCP call.
+
+### Migration
+
+```python
+# 0.7
+messages = [{"role": "user", "content": "Remember blue."}]
+first = await runner.run(agent, messages=messages)
+messages += first.messages
+messages.append({"role": "user", "content": "What color?"})
+second = await runner.run(agent, messages=messages, state=first.state)
+
+# 0.8
+first = await runner.run(agent, input="Remember blue.")
+second = await runner.run(
+    agent,
+    input="What color?",
+    conversation=first.conversation,
+)
+```
+
+Hosts must persist the complete V3 checkpoint for pending reviews and the
+complete bounded `ConversationState` for chat continuation. See
+[Host migration for 0.8](host-migration-0.8.md).
 
 ## 0.7.6
 

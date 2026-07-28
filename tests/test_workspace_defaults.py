@@ -15,10 +15,6 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def user_messages(content: str) -> list[dict[str, str]]:
-    return [{"role": "user", "content": content}]
-
-
 def test_runner_defaults_to_managed_dagent_workspace(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 
@@ -50,7 +46,7 @@ def test_tool_agent_uses_run_workspace_for_relative_tool_paths(
     result = run(
         runner.run(
             dagent.ToolAgent(profile="conversation"),
-            messages=user_messages("write a tool note"),
+            input="write a tool note",
         )
     )
 
@@ -88,7 +84,7 @@ def test_runner_uses_resolved_workspace_after_cwd_changes(
     result = run(
         runner.run(
             dagent.ToolAgent(profile="conversation"),
-            messages=user_messages("write after cwd changed"),
+            input="write after cwd changed",
         )
     )
 
@@ -118,7 +114,7 @@ def test_dag_agent_uses_run_workspace_for_relative_tool_paths(
     result = run(
         runner.run(
             dagent.DagAgent(),
-            messages=user_messages("write a dag note"),
+            input="write a dag note",
         )
     )
 
@@ -132,7 +128,7 @@ def test_dag_agent_uses_run_workspace_for_relative_tool_paths(
     assert not (tmp_path / ".dagent" / "shared" / "dag.txt").exists()
 
 
-def test_tool_agent_continuation_reuses_run_id_and_workspace(
+def test_tool_agent_conversation_continuation_uses_a_new_run_workspace(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -165,22 +161,25 @@ def test_tool_agent_continuation_reuses_run_id_and_workspace(
     first = run(
         runner.run(
             agent,
-            messages=user_messages("write first"),
+            input="write first",
         )
     )
     second = run(
         runner.run(
             agent,
-            messages=user_messages("write second"),
-            state=first.state,
+            input="write second",
+            conversation=first.conversation,
         )
     )
 
-    assert second.run_id == first.run_id
-    assert second.workspace_path == first.workspace_path
-    workspace_path = Path(second.workspace_path)
-    assert (workspace_path / "shared" / "first.txt").read_text(encoding="utf-8") == "one"
-    assert (workspace_path / "shared" / "second.txt").read_text(encoding="utf-8") == "two"
+    assert second.run_id != first.run_id
+    assert second.workspace_path != first.workspace_path
+    first_workspace = Path(first.workspace_path)
+    second_workspace = Path(second.workspace_path)
+    assert (first_workspace / "shared" / "first.txt").read_text(encoding="utf-8") == "one"
+    assert not (first_workspace / "shared" / "second.txt").exists()
+    assert not (second_workspace / "shared" / "first.txt").exists()
+    assert (second_workspace / "shared" / "second.txt").read_text(encoding="utf-8") == "two"
     assert not (tmp_path / ".dagent" / "shared" / "first.txt").exists()
     assert not (tmp_path / ".dagent" / "shared" / "second.txt").exists()
 
@@ -208,7 +207,7 @@ def test_tool_agent_can_use_exact_workspace_path_without_run_subdirectory(
     result = run(
         runner.run(
             dagent.ToolAgent(profile="conversation"),
-            messages=user_messages("write in project workspace"),
+            input="write in project workspace",
             workspace_path=workspace,
         )
     )
@@ -222,7 +221,7 @@ def test_tool_agent_can_use_exact_workspace_path_without_run_subdirectory(
     assert not (workspace / result.run_id).exists()
 
 
-def test_runner_rejects_conflicting_exact_workspace_path_for_continuation(
+def test_conversation_continuation_can_choose_a_new_exact_workspace(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -239,23 +238,26 @@ def test_runner_rejects_conflicting_exact_workspace_path_for_continuation(
     first = run(
         runner.run(
             agent,
-            messages=user_messages("first"),
+            input="first",
             workspace_path=first_workspace,
         )
     )
 
-    with pytest.raises(ValueError, match="workspace_path"):
-        run(
-            runner.run(
-                agent,
-                messages=user_messages("second"),
-                state=first.state,
-                workspace_path=second_workspace,
-            )
+    second = run(
+        runner.run(
+            agent,
+            input="second",
+            conversation=first.conversation,
+            workspace_path=second_workspace,
         )
+    )
+
+    assert Path(first.workspace_path) == first_workspace
+    assert Path(second.workspace_path) == second_workspace
+    assert first.run_id != second.run_id
 
 
-def test_dag_agent_continuation_reuses_run_id_and_workspace(
+def test_dag_agent_conversation_continuation_uses_a_new_run_workspace(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -280,22 +282,25 @@ def test_dag_agent_continuation_reuses_run_id_and_workspace(
     first = run(
         runner.run(
             agent,
-            messages=user_messages("write first dag note"),
+            input="write first dag note",
         )
     )
     second = run(
         runner.run(
             agent,
-            messages=user_messages("write second dag note"),
-            state=first.state,
+            input="write second dag note",
+            conversation=first.conversation,
         )
     )
 
-    assert second.run_id == first.run_id
-    assert second.workspace_path == first.workspace_path
-    workspace_path = Path(second.workspace_path)
-    assert (workspace_path / "shared" / "dag_first.txt").read_text(encoding="utf-8") == "one"
-    assert (workspace_path / "shared" / "dag_second.txt").read_text(encoding="utf-8") == "two"
+    assert second.run_id != first.run_id
+    assert second.workspace_path != first.workspace_path
+    first_workspace = Path(first.workspace_path)
+    second_workspace = Path(second.workspace_path)
+    assert (first_workspace / "shared" / "dag_first.txt").read_text(encoding="utf-8") == "one"
+    assert not (first_workspace / "shared" / "dag_second.txt").exists()
+    assert not (second_workspace / "shared" / "dag_first.txt").exists()
+    assert (second_workspace / "shared" / "dag_second.txt").read_text(encoding="utf-8") == "two"
     assert not (tmp_path / ".dagent" / "shared" / "dag_first.txt").exists()
     assert not (tmp_path / ".dagent" / "shared" / "dag_second.txt").exists()
 
@@ -437,7 +442,7 @@ def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
     result = run(
         runner.run(
             dagent.ToolAgent(profile="conversation"),
-            messages=user_messages("write a sandbox note"),
+            input="write a sandbox note",
             execution="sandbox",
         )
     )
@@ -478,7 +483,7 @@ def test_sandbox_rejects_exact_workspace_path_outside_runner_workspace(
         run(
             runner.run(
                 dagent.ToolAgent(profile="conversation"),
-                messages=user_messages("write outside"),
+                input="write outside",
                 execution="sandbox",
                 workspace_path=tmp_path / "outside-workspace",
             )

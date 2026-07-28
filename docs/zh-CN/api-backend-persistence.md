@@ -1,5 +1,9 @@
 # API 后端持久化
 
+> 版本说明：本页描述内置的 0.7 host 实现。在 host 完成
+> [0.8 Host 迁移](host-migration-0.8.md) 前，它与 SDK 0.8 continuation contract
+> 不兼容。
+
 公开 Python SDK 仍然不做持久化。`Runner`、`ToolAgent`、`DagAgent`、`Dag`
 和 `RunState` 继续是声明式/运行时对象；它们不打开数据库、不拥有用户，也不管理项目。
 持久化属于顶层 `api/` FastAPI 后端。
@@ -81,13 +85,12 @@ review 和该 run 的可见会话记录。
 POST /projects/{project_id}/reviews/{review_id}/resume
 ```
 
-后端读取 `runs.state_json`，重建 `RunState`，然后调用
+0.7 后端读取 `runs.state_json`，重建 `RunState`，然后尝试调用已删除的
 `Runner.resume_stream(decision, state=run_state)`。hosted/project 模式下客户端不发送
 state。
 
-这是内置 API 的 v0.7 persistence format，会使用 SDK 已弃用的 state-only 兼容路径。
-新的 host 应持久化 `RunCheckpoint` 并使用 `checkpoint=...`；本地 SQLite schema 的迁移
-独立于 SDK checkpoint contract。
+该路径无法在 SDK 0.8 下运行。新的 host 必须持久化 `RunCheckpoint` 并使用
+`checkpoint=...`；本地 SQLite schema 的迁移独立于 SDK checkpoint contract。
 
 Trace 和 artifact endpoint 会先读取数据库里的 `RunState`，没有数据库 state 时才回退到
 进程内 runner。只要 workspace 文件仍可访问，API 进程重启后，completed 和

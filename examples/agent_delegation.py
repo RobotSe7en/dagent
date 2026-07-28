@@ -48,7 +48,7 @@ async def main() -> None:
     )
     result = await runner.run(
         agent,
-        messages=[{"role": "user", "content": "Delegate this summary."}],
+        input="Delegate this summary.",
     )
 
     print(result.status)

@@ -83,7 +83,7 @@ async def main():
 
     result = await runner.run(
         agent,
-        messages=[{"role": "user", "content": "Use echo to respond with hello."}],
+        input="Use echo to respond with hello.",
     )
 
     print(result.status)

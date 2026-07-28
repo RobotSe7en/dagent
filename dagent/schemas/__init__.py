@@ -1,6 +1,25 @@
 """Public schema exports."""
 
 from dagent.schemas.common import Boundary, RiskLevel
+from dagent.schemas.context import (
+    ContextPolicy,
+    ContextUsage,
+    ContextWindowExceeded,
+    ModelTokenUsage,
+    ResultStoragePolicy,
+)
+from dagent.schemas.conversation import (
+    AssistantMessage,
+    Attachment,
+    ContentReference,
+    ContextSummary,
+    ConversationItem,
+    ConversationState,
+    InlineContent,
+    ToolCallItem,
+    ToolResultMessage,
+    UserMessage,
+)
 from dagent.schemas.artifact import Artifact, ArtifactState, ArtifactStatus
 from dagent.schemas.dag import DAG, DAGRun, DAGRunStatus, DAGSpec, iter_dag_invocations
 from dagent.schemas.edge import DAGEdge
@@ -65,7 +84,22 @@ from dagent.schemas.sandbox import (
     SandboxConfig,
 )
 __all__ = [
+    "AssistantMessage",
+    "Attachment",
     "Boundary",
+    "ContentReference",
+    "ContextPolicy",
+    "ContextSummary",
+    "ContextUsage",
+    "ContextWindowExceeded",
+    "ConversationItem",
+    "ConversationState",
+    "InlineContent",
+    "ModelTokenUsage",
+    "ResultStoragePolicy",
+    "ToolCallItem",
+    "ToolResultMessage",
+    "UserMessage",
     "Artifact",
     "ArtifactState",
     "ArtifactStatus",

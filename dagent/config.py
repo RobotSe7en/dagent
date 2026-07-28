@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from dagent.schemas.capability import validate_capability_id_segment
 from dagent.schemas.results import PlannerFrontend
@@ -29,21 +29,35 @@ def resolve_run_workspace_root(workspace_root: str | Path, run_workspace_root: s
 
 
 class ReasoningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool | None = None
     effort: str | None = None
     budget_tokens: int | None = None
+    capture: Literal["field", "field_and_tags"] = "field_and_tags"
 
 
 class ProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     base_url: str
     model: str
     api_key: str | None = None
     api_key_env: str | None = None
     timeout_seconds: float = 60
-    strip_thinking: bool = False
     reasoning: ReasoningConfig | None = None
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
+    context_window_tokens: int = Field(default=32768, ge=1024)
+    output_reserve_tokens: int = Field(default=4096, ge=0)
+
+    @model_validator(mode="after")
+    def validate_context_window(self) -> "ProviderConfig":
+        if self.output_reserve_tokens >= self.context_window_tokens:
+            raise ValueError(
+                "output_reserve_tokens must be smaller than context_window_tokens."
+            )
+        return self
 
     @model_validator(mode="after")
     def resolve_api_key(self) -> "ProviderConfig":

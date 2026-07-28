@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-import re
 from typing import Any
 from uuid import uuid4
 
@@ -16,7 +15,6 @@ from dagent.schemas import (
     DAGSpec,
     CapabilityNodePayload,
     CapabilityDefinition,
-    CapabilityInvocation,
     LoopNodePayload,
     MapNodePayload,
     StartNodePayload,
@@ -370,11 +368,6 @@ def context_excerpt(text: str, *, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + f"\n[TRUNCATED after {limit} chars]"
-
-
-def strip_thinking_blocks(content: str) -> str:
-    content = re.sub(r"<think>.*?</think>", "", content, flags=re.IGNORECASE | re.DOTALL)
-    return re.sub(r"<think>.*", "", content, flags=re.IGNORECASE | re.DOTALL)
 
 
 def _ensure_acyclic(node_ids: set[str], edges: list[tuple[str, str]]) -> None:

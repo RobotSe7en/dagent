@@ -59,7 +59,7 @@ async def main():
 
     result = await runner.run(
         agent,
-        messages=[{"role": "user", "content": "Use echo to respond with hello."}],
+        input="Use echo to respond with hello.",
     )
     print(result.output_text)
     runner.close()
@@ -97,9 +97,10 @@ agent = dagent.AutoAgent(
     dynamic_adjust=True,
 )
 
-messages = [{"role": "user", "content": "Answer directly or plan if orchestration helps."}]
-result = await runner.run(agent, messages=messages)
-messages += result.messages
+result = await runner.run(
+    agent,
+    input="Answer directly or plan if orchestration helps.",
+)
 ```
 
 运行离线示例：
@@ -141,7 +142,7 @@ agent = dagent.DagAgent(
 
 result = await runner.run(
     agent,
-    messages=[{"role": "user", "content": "Research dagent and write a note."}],
+    input="Research dagent and write a note.",
 )
 
 if result.requires_review and result.review is not None:
@@ -217,13 +218,15 @@ user-message 区块。
 
 ## 对话继续
 
-Agent runs 接收 OpenAI-compatible `messages`。结果只包含当前 run 生成的 messages，
-因此继续前需要追加它们：
+Agent run 接收一个新的 `input` 和可选的、有界且与 provider 无关的
+`ConversationState`：
 
 ```python
-messages += result.messages
-messages.append({"role": "user", "content": "Continue with one more detail."})
-result = await runner.run(agent, messages=messages, state=result.state)
+result = await runner.run(
+    agent,
+    input="Continue with one more detail.",
+    conversation=result.conversation,
+)
 ```
 
 持久化和 review-safe resume flow 见[结果、流式输出和 Review](results-streaming-review.md)。

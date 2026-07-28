@@ -24,7 +24,7 @@ async def main() -> None:
 
     async for event in runner.stream(
         agent,
-        messages=[{"role": "user", "content": "Answer when ready."}],
+        input="Answer when ready.",
     ):
         if event.type == "run.started":
             print(f"[{event.run_id}] {event.data.kind} run started")

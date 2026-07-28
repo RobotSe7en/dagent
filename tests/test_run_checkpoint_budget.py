@@ -11,10 +11,6 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def user_messages(content: str) -> list[dict[str, str]]:
-    return [{"role": "user", "content": content}]
-
-
 def tool_names(request: dict) -> set[str]:
     return {
         tool["function"]["name"]
@@ -33,7 +29,7 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
 
     result = run(runner.run(
         dagent.ToolAgent(profile="conversation", capabilities=[]),
-        messages=user_messages("hello"),
+        input="hello",
     ))
 
     checkpoint = result.checkpoint
@@ -100,7 +96,7 @@ def test_checkpoint_rejects_pending_capability_outside_plan_scope(tmp_path) -> N
             capabilities=[allowed],
             review="careful",
         ),
-        messages=user_messages("run allowed"),
+        input="run allowed",
     ))
     assert first.checkpoint is not None
 
@@ -163,7 +159,7 @@ def test_checkpoint_resume_rebuilds_target_runtime_and_exact_scope(tmp_path) -> 
         skill_roots=[],
     )
 
-    first = run(first_runner.run(agent, messages=user_messages("write hello")))
+    first = run(first_runner.run(agent, input="write hello"))
     assert first.checkpoint is not None
     serialized = first.checkpoint.model_dump_json()
     first_runner.close()
@@ -218,7 +214,7 @@ def test_checkpoint_resume_rejects_missing_capability(tmp_path) -> None:
             capabilities=[write],
             review="careful",
         ),
-        messages=user_messages("write"),
+        input="write",
     ))
     assert first.checkpoint is not None
 
@@ -234,6 +230,51 @@ def test_checkpoint_resume_rejects_missing_capability(tmp_path) -> None:
         ))
 
 
+def test_checkpoint_resume_rejects_changed_capability_definition(tmp_path) -> None:
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        return text
+
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(id="call_1", name="tool_write", arguments={"text": "x"})
+            ]
+        )
+    ])
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=provider,
+        capabilities=[write],
+        skill_roots=[],
+    )
+    first = run(
+        runner.run(
+            dagent.ToolAgent(
+                profile="conversation",
+                capabilities=[write],
+                review="careful",
+            ),
+            input="write",
+        )
+    )
+    assert first.checkpoint is not None
+    runner.replace_capability(
+        write.definition.model_copy(
+            update={"description": "changed after checkpoint"}
+        ),
+        write.handler,
+    )
+
+    with pytest.raises(ValueError, match="definition changed"):
+        run(
+            runner.resume(
+                first.review.approve(),  # type: ignore[union-attr]
+                checkpoint=first.checkpoint,
+            )
+        )
+
+
 def test_model_limit_is_reserved_before_provider_call(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="not reached")])
     runner = dagent.Runner(
@@ -245,7 +286,7 @@ def test_model_limit_is_reserved_before_provider_call(tmp_path) -> None:
     with pytest.raises(dagent.ExecutionLimitExceeded) as raised:
         run(runner.run(
             dagent.ToolAgent(profile="conversation", capabilities=[]),
-            messages=user_messages("hello"),
+            input="hello",
             limits=dagent.ExecutionLimits(max_model_turns=0),
         ))
 
@@ -277,7 +318,7 @@ def test_capability_limit_is_reserved_before_handler_call(tmp_path) -> None:
     with pytest.raises(dagent.ExecutionLimitExceeded) as raised:
         run(runner.run(
             dagent.ToolAgent(profile="conversation", capabilities=[write]),
-            messages=user_messages("write"),
+            input="write",
             limits=dagent.ExecutionLimits(max_capability_calls=0),
         ))
 
@@ -313,7 +354,7 @@ def test_checkpoint_resume_restores_usage_without_resetting_limit(tmp_path) -> N
             capabilities=[write],
             review="careful",
         ),
-        messages=user_messages("write"),
+        input="write",
         limits=dagent.ExecutionLimits(max_total_operations=2),
     ))
     assert first.checkpoint is not None
@@ -352,11 +393,11 @@ def test_checkpoint_resume_restores_usage_without_resetting_limit(tmp_path) -> N
     assert calls == ["x"]
 
 
-def test_state_continuation_restores_cached_usage_and_limits(tmp_path) -> None:
+def test_conversation_continuation_starts_a_new_run_budget(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(content="first"),
         ChatResponse(content="second"),
-        ChatResponse(content="not reached"),
+        ChatResponse(content="third"),
     ])
     runner = dagent.Runner(
         workspace=tmp_path,
@@ -368,48 +409,32 @@ def test_state_continuation_restores_cached_usage_and_limits(tmp_path) -> None:
 
     first = run(runner.run(
         agent,
-        messages=user_messages("first"),
+        input="first",
         limits=limits,
     ))
     second = run(runner.run(
         agent,
-        messages=user_messages("second"),
-        state=first.state,
+        input="second",
+        conversation=first.conversation,
+        limits=limits,
     ))
 
     assert second.usage == dagent.ExecutionUsage(
-        total_operations=2,
-        model_turns=2,
+        total_operations=1,
+        model_turns=1,
         capability_calls=0,
     )
     assert second.plan is not None
     assert second.plan.limits == limits
-
-    with pytest.raises(dagent.ExecutionLimitExceeded):
-        run(runner.run(
-            agent,
-            messages=user_messages("third"),
-            state=second.state,
-        ))
-    assert len(provider.requests) == 2
-
-    with pytest.raises(ValueError, match="state is stale"):
-        run(runner.run(
-            agent,
-            messages=user_messages("stale"),
-            state=first.state,
-        ))
-
-    with pytest.raises(ValueError, match="cannot replace or expand"):
-        run(runner.run(
-            agent,
-            messages=user_messages("expanded"),
-            state=second.state,
-            limits=dagent.ExecutionLimits(max_model_turns=3),
-        ))
+    assert first.run_id != second.run_id
+    assert provider.requests[1]["messages"][-3:] == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first"},
+        {"role": "user", "content": "second"},
+    ]
 
 
-def test_cross_process_run_continuation_restores_checkpoint_usage(tmp_path) -> None:
+def test_cross_process_conversation_continuation_has_independent_usage(tmp_path) -> None:
     first_runner = dagent.Runner(
         workspace=tmp_path,
         provider=MockProvider([ChatResponse(content="first")]),
@@ -418,12 +443,12 @@ def test_cross_process_run_continuation_restores_checkpoint_usage(tmp_path) -> N
     agent = dagent.ToolAgent(profile="conversation", capabilities=[])
     first = run(first_runner.run(
         agent,
-        messages=user_messages("first"),
+        input="first",
         limits=dagent.ExecutionLimits(max_model_turns=2),
     ))
-    assert first.checkpoint is not None
-    checkpoint = dagent.RunCheckpoint.model_validate_json(
-        first.checkpoint.model_dump_json()
+    assert first.conversation is not None
+    conversation = dagent.ConversationState.model_validate_json(
+        first.conversation.model_dump_json()
     )
     first_runner.close()
 
@@ -434,11 +459,12 @@ def test_cross_process_run_continuation_restores_checkpoint_usage(tmp_path) -> N
     )
     second = run(second_runner.run(
         agent,
-        messages=user_messages("second"),
-        checkpoint=checkpoint,
+        input="second",
+        conversation=conversation,
+        limits=dagent.ExecutionLimits(max_model_turns=2),
     ))
 
-    assert second.usage.model_turns == 2
+    assert second.usage.model_turns == 1
     assert second.plan is not None
     assert second.plan.limits.max_model_turns == 2
 

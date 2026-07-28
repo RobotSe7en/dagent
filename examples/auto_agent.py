@@ -39,7 +39,7 @@ async def main() -> None:
 
     result = await runner.run(
         agent,
-        messages=[{"role": "user", "content": "Research dagent."}],
+        input="Research dagent.",
     )
 
     print(result.kind)

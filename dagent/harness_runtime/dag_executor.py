@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import operator
 from collections import defaultdict
 from collections.abc import Callable
@@ -26,6 +28,7 @@ from dagent.harness_runtime.capability_executor import (
     CapabilityExecutionError,
     CapabilityExecutor,
 )
+from dagent.harness_runtime.result_storage import normalize_capability_result
 from dagent.harness_runtime.execution_budget import ExecutionLimitExceeded
 from dagent.harness_runtime.runtime_events import ResponseStreamContext, response_token_stream
 from dagent.harness_runtime.dag_builder import compile_dag_spec, validate_dag
@@ -35,6 +38,9 @@ from dagent.schemas import (
     CapabilityInvocation,
     CapabilityNodePayload,
     CapabilityResult,
+    ContentReference,
+    InlineContent,
+    ResultStoragePolicy,
     DAG,
     DAGEdge,
     DAGNode,
@@ -100,6 +106,7 @@ class DAGExecutor:
         artifact_states: dict[str, ArtifactState] | None = None,
         spec_id: str | None = None,
         graph_input: Any = None,
+        result_storage_policy: ResultStoragePolicy | None = None,
     ) -> None:
         self.capability_executor = capability_executor
         self.partial_node_traces: dict[str, RunTraceNode] = {}
@@ -113,6 +120,7 @@ class DAGExecutor:
         self.artifact_states = artifact_states or init_artifact_states(self.artifacts)
         self.spec_id = spec_id
         self.graph_input = _normalize_graph_input(graph_input)
+        self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
 
     def configure_spec(
         self,
@@ -378,6 +386,11 @@ class DAGExecutor:
                     on_event=node_event_emitter,
                 ),
             )
+            capability_result, stored_content, _references = normalize_capability_result(
+                capability_result,
+                workspace_path=self.workspace_path or self.capability_workspace_root,
+                policy=self.result_storage_policy,
+            )
         except Exception as exc:
             node.status = "failed"
             failed_result = CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__)
@@ -429,8 +442,16 @@ class DAGExecutor:
             )
         node.status = "completed"
         dag_node.status = "completed"
-        dag_node.output = capability_result.content
-        dag_node.value = capability_result.value
+        dag_node.output = (
+            stored_content.text
+            if isinstance(stored_content, InlineContent)
+            else stored_content.model_dump(mode="json")
+        )
+        dag_node.value = (
+            capability_result.value
+            if capability_result.value is not None
+            else dag_node.output
+        )
         dag_node.step_count = 1
         dag_node.ended_at = _now()
         return dag_node
@@ -498,6 +519,11 @@ class DAGExecutor:
                             on_event=emitter,
                         ),
                     )
+                    result, _stored_content, _references = normalize_capability_result(
+                        result,
+                        workspace_path=self.workspace_path or self.capability_workspace_root,
+                        policy=self.result_storage_policy,
+                    )
             finally:
                 if token_stream is not None:
                     token_stream.finish()
@@ -527,7 +553,12 @@ class DAGExecutor:
             if result.status == "failed":
                 failure = failure or (result.error or result.content)
             else:
-                values.append(result.value if result.value is not None else result.content)
+                values.append(
+                    _load_content_reference(
+                        result.value if result.value is not None else result.content,
+                        self.workspace_path or self.capability_workspace_root,
+                    )
+                )
         if failure is not None:
             raise DAGExecutionError(failure)
         return values
@@ -607,6 +638,7 @@ class DAGExecutor:
             capability_executor=self.capability_executor,
             workspace_path=self.workspace_path,
             capability_workspace_root=self.capability_workspace_root,
+            result_storage_policy=self.result_storage_policy,
             artifacts=spec.artifacts,
             spec_id=spec.id,
             graph_input=graph_input,
@@ -818,7 +850,7 @@ def _resolve_value(value: Any, scope: _ValueScope) -> Any:
     if isinstance(expr, GraphInputExpr):
         return _extract_path(scope.graph_input, expr.path)
     if isinstance(expr, NodeOutputExpr):
-        return _node_output_value(expr, scope.node_traces)
+        return _node_output_value(expr, scope)
     if isinstance(expr, ArtifactExpr):
         return _artifact_value(
             expr,
@@ -864,8 +896,8 @@ def _resolve_value_list(values: list[Any], scope: _ValueScope) -> list[str]:
     return resolved
 
 
-def _node_output_value(expr: NodeOutputExpr, node_traces: dict[str, RunTraceNode]) -> Any:
-    trace = node_traces.get(expr.node_id)
+def _node_output_value(expr: NodeOutputExpr, scope: _ValueScope) -> Any:
+    trace = scope.node_traces.get(expr.node_id)
     if trace is None or trace.status not in SETTLED_NODE_STATUSES:
         raise DAGExecutionError(
             f"Cannot resolve output for node '{expr.node_id}' before it completes."
@@ -882,7 +914,54 @@ def _node_output_value(expr: NodeOutputExpr, node_traces: dict[str, RunTraceNode
         value = trace.step_count
     else:
         raise DAGExecutionError(f"Unknown node output field '{expr.field}'.")
+    value = _load_content_reference(value, scope.workspace_path)
     return _extract_path(value, expr.path)
+
+
+def _load_content_reference(
+    value: Any,
+    workspace_path: Path | None,
+) -> Any:
+    if not isinstance(value, dict) or value.get("type") != "artifact":
+        return value
+    if workspace_path is None:
+        raise DAGExecutionError(
+            "Cannot resolve an externalized capability result without a run workspace."
+        )
+    try:
+        reference = ContentReference.model_validate(value)
+    except ValueError as exc:
+        raise DAGExecutionError(
+            "Externalized capability result reference is malformed."
+        ) from exc
+    root = workspace_path.expanduser().resolve()
+    target = (root / reference.path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise DAGExecutionError(
+            "Externalized capability result escapes the run workspace."
+        ) from exc
+    try:
+        data = target.read_bytes()
+    except OSError as exc:
+        raise DAGExecutionError(
+            f"Externalized capability result cannot be read: {reference.path}"
+        ) from exc
+    if len(data) != reference.byte_length:
+        raise DAGExecutionError(
+            f"Externalized capability result size mismatch: {reference.path}"
+        )
+    if hashlib.sha256(data).hexdigest() != reference.sha256:
+        raise DAGExecutionError(
+            f"Externalized capability result checksum mismatch: {reference.path}"
+        )
+    media_type = reference.media_type.split(";", 1)[0]
+    if media_type == "application/json":
+        return json.loads(data.decode("utf-8"))
+    if media_type.startswith("text/"):
+        return data.decode("utf-8")
+    return data
 
 
 def _artifact_value(

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import threading
-import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
@@ -65,6 +66,7 @@ from dagent.harness_runtime.execution_budget import (
     ExecutionLimitExceeded,
     execution_budget_scope,
 )
+from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.planner_skill import load_dag_generation_skill
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
@@ -73,6 +75,8 @@ from dagent.result import (
     CapabilityCallCompletedData,
     CapabilityCallFailedData,
     CapabilityCallStartedData,
+    ContextCompactionFinishedData,
+    ContextCompactionStartedData,
     DagUpdatedData,
     ResponseFinishedData,
     ResponseStartedData,
@@ -94,6 +98,9 @@ from dagent.schemas import (
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityResult,
+    ConversationState,
+    ContextPolicy,
+    ContextUsage,
     DAG,
     DAGSpec,
     ExecutionLimits,
@@ -113,6 +120,7 @@ from dagent.schemas import (
     RunCheckpoint,
     RunState,
     RunTrace,
+    ResultStoragePolicy,
     SandboxConfig,
     ValidationIssue,
     ValidationResult,
@@ -147,11 +155,13 @@ class Runner:
         sandbox: SandboxConfig | None = None,
         planner_frontend: PlannerFrontend = "typed_spec",
         mcp_stdio_stderr: MCPStdioStderr = "discard",
+        result_storage_policy: ResultStoragePolicy | None = None,
     ) -> None:
         self.workspace = Path(workspace)
         self.profile_root = Path(profile_root) if profile_root is not None else None
         self.sandbox = sandbox or SandboxConfig()
         self._mcp_stdio_stderr = validate_mcp_stdio_stderr(mcp_stdio_stderr)
+        self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
         if planner_frontend not in {"typed_spec", "sdk_builder"}:
             raise ValueError(
                 "planner_frontend must be 'typed_spec' or 'sdk_builder'."
@@ -182,6 +192,7 @@ class Runner:
             profile_root=self.profile_root,
             planner_frontend=planner_frontend,
             planner_skill=planner_skill,
+            result_storage_policy=self.result_storage_policy,
         )
         self._local_tool_binding_ids.update(
             _capability_parts(capability)[0].id
@@ -208,6 +219,7 @@ class Runner:
         sandbox: SandboxConfig | None = None,
         planner_frontend: PlannerFrontend | None = None,
         mcp_stdio_stderr: MCPStdioStderr = "discard",
+        result_storage_policy: ResultStoragePolicy | None = None,
     ) -> "Runner":
         config_path = resolve_config_path(path)
         config = load_config(config_path)
@@ -233,6 +245,7 @@ class Runner:
             sandbox=sandbox or config.sandbox,
             planner_frontend=planner_frontend or config.planner_frontend,
             mcp_stdio_stderr=mcp_stdio_stderr,
+            result_storage_policy=result_storage_policy,
         )
 
     @property
@@ -274,6 +287,7 @@ class Runner:
         sandbox: SandboxConfig | None = None,
         planner_frontend: PlannerFrontend | None = None,
         mcp_stdio_stderr: MCPStdioStderr | None = None,
+        result_storage_policy: ResultStoragePolicy | None = None,
         agents: Iterable[ToolAgent] = (),
         inherit_local_tools: bool = False,
         exclude_local_tool_ids: Iterable[str] = (),
@@ -323,6 +337,9 @@ class Runner:
                 mcp_stdio_stderr
                 if mcp_stdio_stderr is not None
                 else self._mcp_stdio_stderr
+            ),
+            result_storage_policy=(
+                result_storage_policy or self.result_storage_policy
             ),
         )
         try:
@@ -1103,16 +1120,11 @@ class Runner:
     def _ensure_new_run_id_available(
         self,
         run_id: str | None,
-        *,
-        state: RunState | None,
     ) -> None:
-        if run_id is None or state is not None:
+        if run_id is None:
             return
         if run_id in self._runtime.session.runs:
-            raise ValueError(
-                f"run_id '{run_id}' already exists; "
-                "pass state to continue an existing run."
-            )
+            raise ValueError(f"run_id '{run_id}' already exists.")
 
     def _sync_skill_root_metadata(self) -> None:
         roots = [str(root) for root in self._skill_provider.store.roots]
@@ -1128,9 +1140,8 @@ class Runner:
         self,
         target: RunTarget,
         *,
-        messages: list[dict[str, Any]] | None = None,
-        state: RunState | None = None,
-        checkpoint: RunCheckpoint | None = None,
+        input: str | None = None,
+        conversation: ConversationState | None = None,
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
@@ -1144,33 +1155,16 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
-        if checkpoint is not None and state is not None:
-            raise TypeError("checkpoint and state cannot be supplied together.")
-        continuation_checkpoint = checkpoint
-        if checkpoint is not None:
-            checkpoint = RunCheckpoint.model_validate(
-                checkpoint.model_dump(mode="python")
-            )
-            continuation_checkpoint = checkpoint
-            self._validate_checkpoint_runtime(checkpoint)
-            state = checkpoint.state
+        self._ensure_open()
         if run_id is not None:
             validate_run_id(run_id)
-        if state is not None:
-            _ensure_run_state_can_continue(state)
-            if run_id is not None and run_id != state.run_id:
-                raise ValueError("run_id must match state.run_id when state is supplied.")
-            if continuation_checkpoint is None:
-                cached = self._run_checkpoints.get(state.run_id)
-                if cached is not None:
-                    if cached.state != state:
-                        raise ValueError(
-                            "state is stale; continue from the latest checkpoint."
-                        )
-                    continuation_checkpoint = cached
-        self._ensure_new_run_id_available(run_id, state=state)
-        resolved_workspace_path = _validated_workspace_path_for_state(state, workspace_path)
-        resolved_execution = _resolve_run_execution(execution, state)
+        self._ensure_new_run_id_available(run_id)
+        resolved_workspace_path = (
+            None
+            if workspace_path is None
+            else Path(workspace_path).expanduser().resolve()
+        )
+        resolved_execution = _resolve_run_execution(execution, None)
         if resolved_execution == "sandbox" and resolved_workspace_path is not None:
             _ensure_sandbox_workspace_path_is_mounted(
                 resolved_workspace_path,
@@ -1185,25 +1179,12 @@ class Runner:
                 f"({type(target).__name__}); use a tool agent or execution='local'."
             )
         skill_names = (
-            continuation_checkpoint.plan.skill_ids
-            if continuation_checkpoint is not None
-            else (
-                _agent_skills(target)
-                if isinstance(target, (AutoAgent, ToolAgent, DagAgent))
-                else None
-            )
+            _agent_skills(target)
+            if isinstance(target, (AutoAgent, ToolAgent, DagAgent))
+            else None
         )
-        if continuation_checkpoint is not None:
-            if limits is not None and limits != continuation_checkpoint.plan.limits:
-                raise ValueError(
-                    "limits cannot replace or expand limits restored from a checkpoint."
-                )
-            resolved_limits = continuation_checkpoint.plan.limits
-            initial_usage = continuation_checkpoint.usage
-        else:
-            resolved_limits = limits or ExecutionLimits()
-            initial_usage = ExecutionUsage()
-        budget = ExecutionBudget(resolved_limits, initial_usage)
+        resolved_limits = limits or ExecutionLimits()
+        budget = ExecutionBudget(resolved_limits, ExecutionUsage())
         with (
             self._run_scope(
                 resolved_execution,
@@ -1213,9 +1194,8 @@ class Runner:
         ):
             return await self._run_dispatch(
                 target,
-                messages=messages,
-                state=state,
-                checkpoint=continuation_checkpoint,
+                input=input,
+                conversation=conversation,
                 graph_input=graph_input,
                 review=review,
                 dynamic_adjust=dynamic_adjust,
@@ -1234,9 +1214,8 @@ class Runner:
         self,
         target: RunTarget,
         *,
-        messages: list[dict[str, Any]] | None = None,
-        state: RunState | None = None,
-        checkpoint: RunCheckpoint | None = None,
+        input: str | None = None,
+        conversation: ConversationState | None = None,
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
@@ -1250,35 +1229,18 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
-        if checkpoint is not None:
-            return await self._run_checkpoint_continuation(
-                target,
-                checkpoint=checkpoint,
-                messages=messages,
-                graph_input=graph_input,
-                review=review,
-                dynamic_adjust=dynamic_adjust,
-                limits=limits,
-                budget=budget,
-                workspace_root=workspace_root,
-                workspace_path=workspace_path,
-                run_id=run_id,
-                input_uploads=input_uploads,
-                on_token=on_token,
-                on_event=on_event,
-            )
         if isinstance(target, AutoAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for AutoAgent targets.")
-            run_messages = _require_messages(messages, "AutoAgent")
+            run_input = _require_input(input, "AutoAgent")
             resolved = self._runtime_for_auto_agent(target)
             review_level = review or target.review
             resolved_dynamic_adjust = (
                 target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust
             )
-            result = await resolved.runtime.handle_messages(
-                run_messages,
-                run_state=state,
+            result = await resolved.runtime.handle_input(
+                run_input,
+                conversation=conversation,
                 mode="auto",
                 review_level=review_level,
                 dynamic_adjust=resolved_dynamic_adjust,
@@ -1307,12 +1269,12 @@ class Runner:
         if isinstance(target, ToolAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for ToolAgent targets.")
-            run_messages = _require_messages(messages, "ToolAgent")
+            run_input = _require_input(input, "ToolAgent")
             resolved = self._runtime_for_tool_agent(target)
             review_level = review or target.review
-            result = await resolved.runtime.handle_messages(
-                run_messages,
-                run_state=state,
+            result = await resolved.runtime.handle_input(
+                run_input,
+                conversation=conversation,
                 mode="tool",
                 review_level=review_level,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
@@ -1340,15 +1302,15 @@ class Runner:
         if isinstance(target, DagAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for DagAgent targets.")
-            run_messages = _require_messages(messages, "DagAgent")
+            run_input = _require_input(input, "DagAgent")
             resolved = self._runtime_for_dag_agent(target)
             review_level = review or target.review
             resolved_dynamic_adjust = (
                 target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust
             )
-            result = await resolved.runtime.handle_messages(
-                run_messages,
-                run_state=state,
+            result = await resolved.runtime.handle_input(
+                run_input,
+                conversation=conversation,
                 mode="dag",
                 review_level=review_level,
                 dynamic_adjust=resolved_dynamic_adjust,
@@ -1377,10 +1339,10 @@ class Runner:
         if isinstance(target, Dag):
             if review is not None:
                 raise TypeError("review is not accepted for Dag targets.")
-            if messages is not None:
-                raise TypeError("messages is not accepted for Dag targets.")
-            if state is not None:
-                raise TypeError("state is not accepted for Dag targets.")
+            if input is not None:
+                raise TypeError("input is not accepted for Dag targets.")
+            if conversation is not None:
+                raise TypeError("conversation is not accepted for Dag targets.")
             self._ensure_dag_capabilities(target)
             spec = self._resolve_spec_capability_metadata(target.to_dag_spec())
             result = await self._runtime.run_dag_spec(
@@ -1403,10 +1365,10 @@ class Runner:
         if isinstance(target, DAGSpec):
             if review is not None:
                 raise TypeError("review is not accepted for DAGSpec targets.")
-            if messages is not None:
-                raise TypeError("messages is not accepted for DAGSpec targets.")
-            if state is not None:
-                raise TypeError("state is not accepted for DAGSpec targets.")
+            if input is not None:
+                raise TypeError("input is not accepted for DAGSpec targets.")
+            if conversation is not None:
+                raise TypeError("conversation is not accepted for DAGSpec targets.")
             spec = self._resolve_spec_capability_metadata(target)
             result = await self._runtime.run_dag_spec(
                 spec,
@@ -1426,77 +1388,6 @@ class Runner:
             )
 
         raise TypeError("Runner.run expects an AutoAgent, ToolAgent, DagAgent, Dag, or DAGSpec target.")
-
-    async def _run_checkpoint_continuation(
-        self,
-        target: RunTarget,
-        *,
-        checkpoint: RunCheckpoint,
-        messages: list[dict[str, Any]] | None,
-        graph_input: Any,
-        review: ReviewLevel | None,
-        dynamic_adjust: bool | None,
-        limits: ExecutionLimits,
-        budget: ExecutionBudget,
-        workspace_root: str | Path,
-        workspace_path: str | Path | None,
-        run_id: str | None,
-        input_uploads: list[ArtifactUpload] | None,
-        on_token: TokenHandler | None,
-        on_event: LoopEventHandler | None,
-    ) -> RunResult:
-        plan = checkpoint.plan
-        expected_kinds = {
-            AutoAgent: {"tool", "dynamic_dag"},
-            ToolAgent: {"tool"},
-            DagAgent: {"dynamic_dag"},
-        }
-        matching_type = next(
-            (agent_type for agent_type in expected_kinds if isinstance(target, agent_type)),
-            None,
-        )
-        if matching_type is None:
-            raise TypeError("Checkpoints can only continue agent targets.")
-        if plan.runtime_kind not in expected_kinds[matching_type]:
-            raise ValueError(
-                f"Checkpoint runtime kind '{plan.runtime_kind}' is incompatible "
-                f"with {matching_type.__name__}."
-            )
-        if graph_input is not None:
-            raise TypeError("graph_input is not accepted for agent checkpoint continuation.")
-        run_messages = _require_messages(messages, matching_type.__name__)
-        runtime = self._runtime_for_resolved_plan(plan)
-        review_level = review or plan.review_level
-        resolved_dynamic_adjust = (
-            plan.dynamic_adjust if dynamic_adjust is None else dynamic_adjust
-        )
-        result = await runtime.handle_messages(
-            run_messages,
-            run_state=checkpoint.state,
-            mode="tool" if plan.runtime_kind == "tool" else "dag",
-            review_level=review_level,
-            dynamic_adjust=resolved_dynamic_adjust,
-            workspace_root=self._resolve_run_workspace_root(workspace_root),
-            workspace_path=workspace_path,
-            run_id=run_id,
-            input_uploads=input_uploads,
-            capability_scope=CapabilityScope(
-                capability_ids=plan.capability_ids,
-                skills=plan.skill_ids,
-            ),
-            on_token=on_token,
-            on_event=on_event,
-        )
-        return self._finalize_run_result(
-            result,
-            runtime=runtime,
-            capability_ids=plan.capability_ids,
-            skill_ids=plan.skill_ids,
-            review_level=review_level,
-            dynamic_adjust=resolved_dynamic_adjust,
-            limits=limits,
-            usage=budget.snapshot(),
-        )
 
     def _finalize_static_result(
         self,
@@ -1537,7 +1428,7 @@ class Runner:
         capability_ids = tuple(sorted(capability_ids))
         skill_ids = tuple(sorted(skill_ids))
         state = result.state.model_copy(update={
-            "schema_version": 2,
+            "schema_version": 3,
             "review_level": review_level,
             "dynamic_adjust": dynamic_adjust,
             "planner_frontend": runtime.dag_agent.loop.planner_frontend,
@@ -1553,7 +1444,7 @@ class Runner:
             else None
         )
         plan = ResolvedRunPlan(
-            schema_version=2,
+            schema_version=3,
             runtime_kind=state.kind,
             tool_profile=runtime.tool_agent.profile.model_copy(deep=True),
             planner_profile=runtime.dag_agent.profile.model_copy(deep=True),
@@ -1562,6 +1453,9 @@ class Runner:
             review_level=review_level,
             dynamic_adjust=dynamic_adjust,
             capability_ids=capability_ids,
+            capability_fingerprints=self._capability_fingerprints(
+                capability_ids
+            ),
             skill_ids=skill_ids,
             agent_ids=tuple(
                 capability_id
@@ -1574,8 +1468,17 @@ class Runner:
             limits=limits,
             planner_frontend=runtime.dag_agent.loop.planner_frontend,
             planner_skill=runtime.dag_agent.loop.planner_skill,
+            context_policy=runtime.tool_agent.context_policy,
+            result_storage_policy=runtime.tool_agent.result_storage_policy,
+            context_window_tokens=getattr(runtime.provider, "context_window_tokens", 32768),
+            output_reserve_tokens=getattr(runtime.provider, "output_reserve_tokens", 4096),
         )
-        finalized = replace(result, state=state, plan=plan, usage=usage)
+        finalized = replace(
+            result,
+            state=state,
+            plan=plan,
+            usage=usage,
+        )
         checkpoint = finalized.checkpoint
         if checkpoint is None:
             raise RuntimeError("SDK run result did not produce a checkpoint.")
@@ -1588,13 +1491,33 @@ class Runner:
             for entry in visible_skills(self._skill_provider.store.list(), names)
         ))
 
+    def _capability_fingerprints(
+        self,
+        capability_ids: Iterable[str],
+    ) -> dict[str, str]:
+        fingerprints: dict[str, str] = {}
+        for capability_id in capability_ids:
+            definition = self._runtime.capability_catalog.get(capability_id)
+            if definition is None:
+                raise KeyError(
+                    f"Capability '{capability_id}' is not registered."
+                )
+            payload = definition.model_dump(mode="json")
+            canonical = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            fingerprints[capability_id] = hashlib.sha256(canonical).hexdigest()
+        return fingerprints
+
     async def stream(
         self,
         target: RunTarget,
         *,
-        messages: list[dict[str, Any]] | None = None,
-        state: RunState | None = None,
-        checkpoint: RunCheckpoint | None = None,
+        input: str | None = None,
+        conversation: ConversationState | None = None,
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
@@ -1608,21 +1531,15 @@ class Runner:
     ) -> AsyncIterator[RunStreamEvent]:
         """Run a target and yield typed stream events."""
 
-        if checkpoint is not None and state is not None:
-            raise TypeError("checkpoint and state cannot be supplied together.")
-        continuation_state = checkpoint.state if checkpoint is not None else state
         if run_id is not None:
             validate_run_id(run_id)
-        if continuation_state is not None and run_id is not None and run_id != continuation_state.run_id:
-            raise ValueError("run_id must match state.run_id when state is supplied.")
-        self._ensure_new_run_id_available(run_id, state=continuation_state)
+        self._ensure_new_run_id_available(run_id)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             return await self.run(
                 target,
-                messages=messages,
-                state=state,
-                checkpoint=checkpoint,
+                input=input,
+                conversation=conversation,
                 graph_input=graph_input,
                 review=review,
                 dynamic_adjust=dynamic_adjust,
@@ -1658,8 +1575,7 @@ class Runner:
         self,
         decision: ReviewDecision,
         *,
-        checkpoint: RunCheckpoint | None = None,
-        state: RunState | None = None,
+        checkpoint: RunCheckpoint,
         execution: RunExecution = "local",
     ) -> AsyncIterator[RunStreamEvent]:
         """Resume a pending review and yield typed stream events."""
@@ -1668,7 +1584,6 @@ class Runner:
             result = await self.resume(
                 decision,
                 checkpoint=checkpoint,
-                state=state,
                 execution=execution,
                 on_event=on_event,
             )
@@ -1753,57 +1668,18 @@ class Runner:
         self,
         decision: ReviewDecision,
         *,
-        checkpoint: RunCheckpoint | None = None,
-        state: RunState | None = None,
+        checkpoint: RunCheckpoint,
         execution: RunExecution = "local",
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
-        if checkpoint is not None and state is not None:
-            raise TypeError("checkpoint and state cannot be supplied together.")
-
-        session_state = self._runtime.session.get_review_state(decision.review_id)
-        selected_checkpoint = checkpoint
-        if selected_checkpoint is None and state is not None:
-            cached = self._run_checkpoints.get(state.run_id)
-            if cached is not None and cached.state == state:
-                selected_checkpoint = cached
-        if selected_checkpoint is None and state is None and session_state is not None:
-            selected_checkpoint = self._run_checkpoints.get(session_state.run_id)
-
-        if selected_checkpoint is not None:
-            return await self._resume_checkpoint(
-                decision,
-                selected_checkpoint,
-                execution=execution,
-                on_token=on_token,
-                on_event=on_event,
-            )
-
-        if state is not None:
-            warnings.warn(
-                "Runner.resume(..., state=...) cannot restore target-specific runtime "
-                "configuration; persist result.checkpoint and pass checkpoint=... instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            decision = _decision_for_resume_state(decision, state)
-        resolved_execution = _resolve_run_execution(execution, state or session_state)
-        resume_state = state or session_state
-        with self._run_scope(
-            resolved_execution,
-            skill_names=resume_state.capability_scope.skills if resume_state is not None else None,
-        ):
-            return await self._runtime.resume_review(
-                decision.review_id,
-                run_state=state,
-                dag=decision.dag,
-                approved=decision.approved,
-                review_level=decision.review_level,
-                feedback=decision.feedback,
-                on_token=on_token,
-                on_event=on_event,
-            )
+        return await self._resume_checkpoint(
+            decision,
+            checkpoint,
+            execution=execution,
+            on_token=on_token,
+            on_event=on_event,
+        )
 
     async def _resume_checkpoint(
         self,
@@ -1885,11 +1761,10 @@ class Runner:
             if (
                 resume_state.pending_review is not None
                 and resume_state.pending_review.kind == "capability_review"
-                and runtime.tool_agent.messages
+                and runtime.tool_agent.conversation.items
             ):
-                failed_update["internal_messages"] = [
-                    dict(message) for message in runtime.tool_agent.messages
-                ]
+                failed_update["conversation"] = runtime.tool_agent.conversation
+                failed_update["model_thread"] = runtime.tool_agent.conversation
                 failed_update["trace"] = runtime.tool_agent.trace
             failed_state = resume_state.model_copy(update=failed_update)
             failed_state = self._runtime.session.save_run_state(failed_state)
@@ -1923,6 +1798,17 @@ class Runner:
             if capability_id in checkpoint.plan.agent_ids and definition.kind != "agent":
                 raise ValueError(
                     f"Checkpoint agent capability has incompatible kind: {capability_id}"
+                )
+            current_fingerprint = self._capability_fingerprints(
+                (capability_id,)
+            )[capability_id]
+            if (
+                checkpoint.plan.capability_fingerprints[capability_id]
+                != current_fingerprint
+            ):
+                raise ValueError(
+                    "Checkpoint capability definition changed: "
+                    f"{capability_id}"
                 )
         available_skills = {
             entry.qualified_name for entry in self._skill_provider.store.list()
@@ -1960,6 +1846,10 @@ class Runner:
             profile_root=None,
             planner_frontend=plan.planner_frontend,
             planner_skill=plan.planner_skill,
+            context_policy=plan.context_policy,
+            result_storage_policy=plan.result_storage_policy,
+            context_window_tokens=plan.context_window_tokens,
+            output_reserve_tokens=plan.output_reserve_tokens,
         )
         runtime.session = self._runtime.session
         runtime.runs = self._runtime.runs
@@ -1975,6 +1865,7 @@ class Runner:
             dag_max_cycles=agent.max_cycles,
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
+            context_policy=agent.context,
         )
         return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
@@ -1988,6 +1879,7 @@ class Runner:
             dag_max_cycles=6,
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
+            context_policy=agent.context,
         )
         return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
@@ -2001,6 +1893,7 @@ class Runner:
             dag_max_cycles=agent.max_cycles,
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
+            context_policy=agent.context,
         )
         return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
@@ -2101,6 +1994,8 @@ class Runner:
             f"Registered subagent 'agent.{name}' cannot expose subagents",
         )
         config["skills"] = _agent_skills(agent)
+        config["context_policy"] = agent.context
+        config["result_storage_policy"] = self.result_storage_policy
         config["tool_adapter"] = _tool_adapter(self._runtime.capability_catalog, capability_ids)
 
     def _validate_agent_registration(self, agent: ToolAgent, *, replacing: bool) -> None:
@@ -2165,6 +2060,8 @@ class Runner:
             "profile": _resolve_profile(agent.profile, profile_root=self.profile_root),
             "description": agent.description,
             "max_steps": agent.max_steps,
+            "context_policy": agent.context,
+            "result_storage_policy": self.result_storage_policy,
             "skills": _agent_skills(agent),
             "capability_executor": self._runtime.capability_executor,
             "tool_adapter": _tool_adapter(self._runtime.capability_catalog, capability_ids),
@@ -2247,7 +2144,21 @@ def _assemble_runtime(
     profile_root: str | Path | None,
     planner_frontend: PlannerFrontend = "typed_spec",
     planner_skill: PlannerSkillSnapshot | None = None,
+    context_policy: ContextPolicy | None = None,
+    result_storage_policy: ResultStoragePolicy | None = None,
+    context_window_tokens: int | None = None,
+    output_reserve_tokens: int | None = None,
 ) -> HarnessRuntime:
+    resolved_context_policy = context_policy or ContextPolicy()
+    resolved_result_storage_policy = result_storage_policy or ResultStoragePolicy()
+    resolved_context_window = context_window_tokens or getattr(
+        provider, "context_window_tokens", 32768
+    )
+    resolved_output_reserve = (
+        getattr(provider, "output_reserve_tokens", 4096)
+        if output_reserve_tokens is None
+        else output_reserve_tokens
+    )
     runtime_tool_agent = RuntimeToolAgent(
         loop=ToolAgentLoop(
             provider=provider,
@@ -2256,6 +2167,12 @@ def _assemble_runtime(
         ),
         profile=_resolve_profile(tool_profile, profile_root=profile_root),
         max_steps=tool_max_steps,
+        context_policy=resolved_context_policy,
+        result_storage_policy=resolved_result_storage_policy,
+        context_assembler=ContextAssembler(
+            context_window_tokens=resolved_context_window,
+            output_reserve_tokens=resolved_output_reserve,
+        ),
     )
     runtime_dag_agent = RuntimeDAGAgent(
         loop=DAGAgentLoop(
@@ -2263,6 +2180,7 @@ def _assemble_runtime(
             dag_executor=DAGExecutor(
                 capability_executor=capability_executor,
                 capability_workspace_root=catalog.workspace_root,
+                result_storage_policy=resolved_result_storage_policy,
             ),
             tool_adapter=tool_adapter,
             max_cycles=dag_max_cycles,
@@ -2270,6 +2188,12 @@ def _assemble_runtime(
             planner_skill=planner_skill,
         ),
         profile=_resolve_profile(dag_profile, profile_root=profile_root),
+        context_policy=resolved_context_policy,
+        result_storage_policy=resolved_result_storage_policy,
+        context_assembler=ContextAssembler(
+            context_window_tokens=resolved_context_window,
+            output_reserve_tokens=resolved_output_reserve,
+        ),
     )
     return HarnessRuntime(
         provider=provider,
@@ -2297,6 +2221,7 @@ def _create_runtime(
     profile_root: str | Path | None = None,
     planner_frontend: PlannerFrontend = "typed_spec",
     planner_skill: PlannerSkillSnapshot | None = None,
+    result_storage_policy: ResultStoragePolicy | None = None,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
     if provider is None:
@@ -2325,6 +2250,7 @@ def _create_runtime(
         profile_root=profile_root,
         planner_frontend=planner_frontend,
         planner_skill=planner_skill,
+        result_storage_policy=result_storage_policy,
     )
 
 
@@ -2337,6 +2263,7 @@ def _runtime_from_existing(
     dag_max_cycles: int,
     visible_capability_ids: tuple[str, ...],
     profile_root: str | Path | None,
+    context_policy: ContextPolicy,
 ) -> HarnessRuntime:
     runtime = _assemble_runtime(
         provider=base.provider,
@@ -2353,6 +2280,8 @@ def _runtime_from_existing(
         profile_root=profile_root,
         planner_frontend=base.dag_agent.loop.planner_frontend,
         planner_skill=base.dag_agent.loop.planner_skill,
+        context_policy=context_policy,
+        result_storage_policy=base.tool_agent.result_storage_policy,
     )
     runtime.session = base.session
     runtime.runs = base.runs
@@ -2366,40 +2295,15 @@ def _tool_adapter(catalog, capability_ids: tuple[str, ...]) -> CapabilityToolAda
     )
 
 
-def _require_messages(
-    messages: list[dict[str, Any]] | None,
+def _require_input(
+    input: str | None,
     target_name: str,
-) -> list[dict[str, Any]]:
-    if messages is None:
-        raise TypeError(f"messages is required for {target_name} targets.")
-    if not any(message.get("role") == "user" for message in messages):
-        raise ValueError("messages must contain at least one user message.")
-    return [dict(message) for message in messages]
-
-
-def _ensure_run_state_can_continue(state: RunState) -> None:
-    if state.status == "awaiting_review" or state.pending_review is not None:
-        raise ValueError(
-            "Run state is awaiting review; use Runner.resume(..., checkpoint=...) "
-            "with the SDK-produced RunCheckpoint."
-        )
-
-
-def _validated_workspace_path_for_state(
-    state: RunState | None,
-    workspace_path: str | Path | None,
-) -> Path | None:
-    if workspace_path is None:
-        return None
-    resolved = Path(workspace_path).expanduser().resolve()
-    if state is None or not state.workspace_path:
-        return resolved
-    state_path = Path(state.workspace_path).expanduser().resolve()
-    if state_path != resolved:
-        raise ValueError(
-            f"workspace_path '{resolved}' does not match run state workspace_path '{state_path}'."
-        )
-    return resolved
+) -> str:
+    if input is None:
+        raise TypeError(f"input is required for {target_name} targets.")
+    if not isinstance(input, str):
+        raise TypeError("input must be a string.")
+    return input
 
 
 def _ensure_sandbox_workspace_path_is_mounted(workspace_path: Path, workspace_root: Path) -> None:
@@ -2526,6 +2430,26 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
         return RunStreamEvent(
             type="response.finished",
             data=ResponseFinishedData(**_response_event_context(data)),
+        )
+
+    if event_type == "context_compaction_started":
+        return RunStreamEvent(
+            type="context.compaction.started",
+            data=ContextCompactionStartedData(
+                item_count=int(data.get("item_count") or 0),
+                scope=str(data.get("scope") or "conversation"),
+            ),
+            run_id=_nullable_event_string(data.get("run_id")),
+        )
+
+    if event_type == "context_compacted":
+        return RunStreamEvent(
+            type="context.compaction.finished",
+            data=ContextCompactionFinishedData(
+                usage=ContextUsage.model_validate(data.get("usage") or {}),
+                scope=str(data.get("scope") or "conversation"),
+            ),
+            run_id=_nullable_event_string(data.get("run_id")),
         )
 
     if event_type == "dag":

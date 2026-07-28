@@ -1,6 +1,5 @@
 import asyncio
 import inspect
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -12,10 +11,6 @@ from tests.planner_helpers import capability_plan_response, final_answer_respons
 
 def run(coro):
     return asyncio.run(coro)
-
-
-def user_messages(content: str) -> list[dict[str, str]]:
-    return [{"role": "user", "content": content}]
 
 
 def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
@@ -193,19 +188,24 @@ def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
         profile_root=tmp_path / "profiles",
     )
 
-    result = run(runner.run(agent, messages=user_messages("hi")))
+    result = run(runner.run(agent, input="hi"))
 
     assert result.output_text == "hello"
     system_message = provider.requests[0]["messages"][0]["content"]
     assert "You are a conversation profile." in system_message
-    assert "search" in system_message
+    assert "search" not in system_message
+    assert _tool_names(provider.requests[0]) == {
+        "skill_list",
+        "skill_view",
+        "tool_search",
+    }
 
 
 def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="hello")])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("hi")))
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), input="hi"))
 
     assert result.output_text == "hello"
     system_message = provider.requests[0]["messages"][0]["content"]
@@ -221,7 +221,7 @@ def test_runner_stream_yields_unified_event_protocol(tmp_path) -> None:
             event
             async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
-                messages=user_messages("hi"),
+                input="hi",
             )
         ]
 
@@ -254,7 +254,7 @@ def test_runner_stream_brackets_each_model_call_with_response_boundaries(tmp_pat
             event
             async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
-                messages=user_messages("hi"),
+                input="hi",
             )
         ]
 
@@ -287,7 +287,7 @@ def test_runner_stream_content_deltas_match_output_text(tmp_path) -> None:
             event
             async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
-                messages=user_messages("hi"),
+                input="hi",
             )
         ]
 
@@ -300,11 +300,16 @@ def test_runner_stream_content_deltas_match_output_text(tmp_path) -> None:
     assert content == "hello world"
     assert content == result.output_text
     assert result.state.trace.root.output is None
-    assert all(
-        node.output is None
+    model_call = next(
+        node
         for node in result.state.trace.root.children
         if node.kind == "model_call"
     )
+    assert model_call.output == {
+        "content": "hello world",
+        "reasoning": "checking",
+        "refusal": "",
+    }
 
 
 def test_runner_stream_maps_provider_reasoning_channel(tmp_path) -> None:
@@ -338,7 +343,7 @@ def test_runner_stream_maps_provider_reasoning_channel(tmp_path) -> None:
             event
             async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
-                messages=user_messages("hi"),
+                input="hi",
             )
         ]
 
@@ -368,7 +373,7 @@ def test_runner_stream_brackets_chat_only_provider_response(tmp_path) -> None:
             event
             async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
-                messages=user_messages("hi"),
+                input="hi",
             )
         ]
 
@@ -393,7 +398,7 @@ def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None
             event
             async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
-                messages=user_messages("hi"),
+                input="hi",
             )
         ]
 
@@ -448,7 +453,7 @@ def test_run_result_model_validate_round_trips_current_payload_and_rejects_legac
     provider = MockProvider([ChatResponse(content="hello")])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("hi")))
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), input="hi"))
     restored = dagent.RunResult.model_validate(result.model_dump(mode="json"))
 
     assert restored.output_text == "hello"
@@ -481,7 +486,7 @@ def test_runner_stream_does_not_poll_queue_with_timeout(tmp_path, monkeypatch) -
             event
             async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
-                messages=user_messages("hi"),
+                input="hi",
             )
         ]
 
@@ -502,7 +507,7 @@ def test_runner_stream_failed_event_is_terminal(tmp_path) -> None:
     run(collect())
 
     assert events[-1].type == "run.failed"
-    assert events[-1].data.message == "messages is required for ToolAgent targets."
+    assert events[-1].data.message == "input is required for ToolAgent targets."
     assert events[-1].data.error_type == "TypeError"
 
 
@@ -514,7 +519,7 @@ def test_runner_auto_agent_routes_to_tool_result(tmp_path) -> None:
     agent = dagent.AutoAgent(capabilities=[], skills=[])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(agent, messages=user_messages("hi")))
+    result = run(runner.run(agent, input="hi"))
 
     assert result.kind == "tool"
     assert result.output_text == "hello from tool"
@@ -539,7 +544,7 @@ def test_runner_auto_agent_tool_mode_can_delegate_to_registered_agent(tmp_path) 
     agent = dagent.AutoAgent(capabilities=[], skills=[], agents=[helper])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(agent, messages=user_messages("delegate")))
+    result = run(runner.run(agent, input="delegate"))
 
     assert result.kind == "tool"
     assert result.output_text == "done"
@@ -562,7 +567,7 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     agent = dagent.AutoAgent(capabilities=[search], skills=[])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(agent, messages=user_messages("research X")))
+    result = run(runner.run(agent, input="research X"))
 
     assert result.kind == "dynamic_dag"
     assert result.output_text == "Report: found:X"
@@ -582,7 +587,7 @@ def test_runner_dag_agent_can_plan_registered_agent_node(tmp_path) -> None:
     agent = dagent.DagAgent(capabilities=[], skills=[], agents=[helper])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(agent, messages=user_messages("delegate")))
+    result = run(runner.run(agent, input="delegate"))
 
     assert result.kind == "dynamic_dag"
     assert result.output_text == "final answer"
@@ -620,7 +625,7 @@ def test_runner_dag_agent_dynamic_adjust_false_keeps_initial_dag_fixed(tmp_path)
         profile_root=tmp_path / "profiles",
     )
 
-    result = run(runner.run(agent, messages=user_messages("repair through DAG")))
+    result = run(runner.run(agent, input="repair through DAG"))
 
     assert result.kind == "dynamic_dag"
     assert result.state.dynamic_adjust is False
@@ -647,12 +652,19 @@ def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
-    first = run(runner.run(agent, messages=user_messages("write hello")))
+    first = run(runner.run(agent, input="write hello"))
     assert first.requires_review
     assert first.review is not None
+    assert first.checkpoint is not None
 
     async def collect() -> list[dagent.RunStreamEvent]:
-        return [event async for event in runner.resume_stream(first.review.approve())]
+        return [
+            event
+            async for event in runner.resume_stream(
+                first.review.approve(),
+                checkpoint=first.checkpoint,
+            )
+        ]
 
     events = run(collect())
 
@@ -690,7 +702,7 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     async def collect() -> list[dagent.RunStreamEvent]:
-        return [event async for event in runner.stream(agent, messages=user_messages("write hello"))]
+        return [event async for event in runner.stream(agent, input="write hello")]
 
     events = run(collect())
 
@@ -720,7 +732,7 @@ def test_run_result_public_surface_uses_single_names(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="hello")])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("hi")))
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), input="hi"))
 
     assert result.output_text == "hello"
     assert result.run_id is not None
@@ -766,7 +778,7 @@ def test_tool_agent_capability_stream_events_include_run_id(tmp_path) -> None:
             event
             async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation", capabilities=[echo]),
-                messages=user_messages("echo ok"),
+                input="echo ok",
             )
         ]
 
@@ -822,7 +834,7 @@ def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) ->
         capabilities=[search],
     )
 
-    result = run(runner.run(agent, messages=user_messages("research X")))
+    result = run(runner.run(agent, input="research X"))
 
     assert result.output_text == "Report: found:X"
     assert result.dag is not None
@@ -842,7 +854,7 @@ def test_runner_auto_registers_agent_capability_bindings(tmp_path) -> None:
     )
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
-    result = run(runner.run(agent, messages=user_messages("hi")))
+    result = run(runner.run(agent, input="hi"))
 
     assert result.output_text == "hello"
     assert runner.runtime.capability_catalog.get("tool.search") is not None
@@ -858,7 +870,7 @@ def test_runner_rejects_unknown_agent_capability_id(tmp_path) -> None:
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     with pytest.raises(KeyError, match="tool.missing"):
-        run(runner.run(agent, messages=user_messages("hi")))
+        run(runner.run(agent, input="hi"))
 
 
 def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
@@ -883,11 +895,16 @@ def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
         profile_root=tmp_path / "profiles",
     )
 
-    run(runner.run(agent, messages=user_messages("hi")))
+    run(runner.run(agent, input="hi"))
 
     system_message = provider.requests[0]["messages"][0]["content"]
-    assert "search" in system_message
+    assert "search" not in system_message
     assert "write" not in system_message
+    assert _tool_names(provider.requests[0]) == {
+        "skill_list",
+        "skill_view",
+        "tool_search",
+    }
 
 
 def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_path) -> None:
@@ -906,7 +923,7 @@ def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_pat
     agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=["writing/brief"])
     runner = dagent.Runner(workspace=tmp_path, provider=provider, skill_roots=[skill_root])
 
-    result = run(runner.run(agent, messages=user_messages("list skills")))
+    result = run(runner.run(agent, input="list skills"))
 
     assert result.output_text == "done"
     assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == [
@@ -925,7 +942,7 @@ def test_runner_agent_empty_skills_disables_skill_tools(tmp_path) -> None:
     agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=[])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    run(runner.run(agent, messages=user_messages("no tools")))
+    run(runner.run(agent, input="no tools"))
 
     assert provider.requests[0]["tools"] == []
 
@@ -943,7 +960,7 @@ def test_runner_default_agent_capabilities_exclude_registered_agent_capabilities
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     run(runner.run(dag, workspace_root=tmp_path / "runs"))
-    result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("hi")))
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), input="hi"))
 
     assert result.output_text == "hello"
     assert "writer" not in _tool_names(provider.requests[-1])
@@ -965,17 +982,20 @@ def test_runner_resume_continues_pending_tool_agent_runtime(tmp_path) -> None:
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
-    first = run(runner.run(agent, messages=user_messages("write hello")))
+    first = run(runner.run(agent, input="write hello"))
     assert first.requires_review
     assert first.review is not None
 
-    resumed = run(runner.resume(first.review.approve()))
+    assert first.checkpoint is not None
+    resumed = run(
+        runner.resume(first.review.approve(), checkpoint=first.checkpoint)
+    )
 
     assert resumed is not None
     assert resumed.output_text == "done"
 
 
-def test_runner_resume_can_restore_pending_capability_gate_from_state(tmp_path) -> None:
+def test_runner_resume_can_restore_pending_capability_gate_from_checkpoint(tmp_path) -> None:
     @dagent.tool(risk="medium")
     def write(text: str) -> str:
         return f"wrote:{text}"
@@ -990,32 +1010,37 @@ def test_runner_resume_can_restore_pending_capability_gate_from_state(tmp_path) 
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
     first_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
 
-    first = run(first_runner.run(agent, messages=user_messages("write hello")))
-    saved_state = dagent.RunState.model_validate(first.state.model_dump(mode="json"))
+    first = run(first_runner.run(agent, input="write hello"))
+    assert first.checkpoint is not None
+    saved_checkpoint = dagent.RunCheckpoint.model_validate(
+        first.checkpoint.model_dump(mode="json")
+    )
     first_runner.close()
 
     second_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
-    with pytest.warns(DeprecationWarning, match="checkpoint"):
-        resumed = run(second_runner.resume(first.review.approve(), state=saved_state))
+    resumed = run(
+        second_runner.resume(
+            first.review.approve(),
+            checkpoint=saved_checkpoint,
+        )
+    )
 
     assert resumed is not None
     assert resumed.output_text == "done"
-    assert [message["role"] for message in resumed.messages] == [
+    assert resumed.conversation is not None
+    assert [item.type for item in resumed.conversation.items] == [
+        "user",
         "assistant",
-        "tool",
+        "tool_result",
         "assistant",
     ]
-    assert resumed.messages[0]["tool_calls"][0]["id"] == "call_1"
-    assert resumed.messages[1] == {
-        "role": "tool",
-        "tool_call_id": "call_1",
-        "name": "tool_write",
-        "content": "wrote:hello",
-    }
-    assert resumed.messages[-1]["content"] == "done"
+    assert resumed.conversation.items[1].tool_calls[0].id == "call_1"
+    assert resumed.conversation.items[2].call_id == "call_1"
+    assert resumed.conversation.items[2].content.text == "wrote:hello"
+    assert resumed.conversation.items[-1].content == "done"
 
 
-def test_runner_run_rejects_awaiting_review_state(tmp_path) -> None:
+def test_runner_run_does_not_accept_runtime_state(tmp_path) -> None:
     @dagent.tool(risk="medium")
     def write(text: str) -> str:
         return f"wrote:{text}"
@@ -1029,13 +1054,12 @@ def test_runner_run_rejects_awaiting_review_state(tmp_path) -> None:
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
     runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
 
-    first = run(runner.run(agent, messages=user_messages("write hello")))
+    assert "state" not in inspect.signature(runner.run).parameters
+    with pytest.raises(TypeError, match="unexpected keyword argument 'state'"):
+        run(runner.run(agent, input="continue", state=None))
 
-    with pytest.raises(ValueError, match="use Runner.resume"):
-        run(runner.run(agent, messages=user_messages("continue"), state=first.state))
 
-
-def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> None:
+def test_runner_resume_can_restore_pending_dag_review_from_checkpoint(tmp_path) -> None:
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
         ChatResponse(content=capability_plan_response(
@@ -1051,16 +1075,18 @@ def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> No
     agent = dagent.DagAgent(planner_profile="planner", capabilities=[search], review="careful")
     first_runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
-    first = run(first_runner.run(agent, messages=user_messages("research X")))
+    first = run(first_runner.run(agent, input="research X"))
     assert first.requires_review
     assert first.review is not None
-    saved_state = dagent.RunState.model_validate(first.state.model_dump(mode="json"))
+    assert first.checkpoint is not None
+    saved_checkpoint = dagent.RunCheckpoint.model_validate(
+        first.checkpoint.model_dump(mode="json")
+    )
     first_runner.close()
 
     second_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[search])
     decision = dagent.ReviewDecision(review_id=first.review.review_id, approved=True)
-    with pytest.warns(DeprecationWarning, match="checkpoint"):
-        resumed = run(second_runner.resume(decision, state=saved_state))
+    resumed = run(second_runner.resume(decision, checkpoint=saved_checkpoint))
 
     assert resumed is not None
     assert resumed.output_text == "Report: found:X"
@@ -1080,14 +1106,15 @@ def test_runner_resume_rejects_mismatched_serialized_review_state(tmp_path) -> N
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
     runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
 
-    first = run(runner.run(agent, messages=user_messages("write hello")))
+    first = run(runner.run(agent, input="write hello"))
     decision = dagent.ReviewDecision(review_id="review_other", approved=True)
 
     with pytest.raises(ValueError, match="does not match decision"):
-        run(runner.resume(decision, state=first.state))
+        assert first.checkpoint is not None
+        run(runner.resume(decision, checkpoint=first.checkpoint))
 
 
-def test_runner_run_continues_from_serialized_state_with_derived_messages(tmp_path) -> None:
+def test_runner_run_continues_from_serialized_conversation(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(content="The project color is blue."),
         ChatResponse(content="It is blue."),
@@ -1095,24 +1122,41 @@ def test_runner_run_continues_from_serialized_state_with_derived_messages(tmp_pa
     agent = dagent.ToolAgent(profile="conversation")
     first_runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    messages = user_messages("Remember that the project color is blue.")
-    first = run(first_runner.run(agent, messages=messages))
-    messages += first.messages
-    saved_state = dagent.RunState.model_validate(first.state.model_dump(mode="json"))
+    first = run(
+        first_runner.run(
+            agent,
+            input="Remember that the project color is blue.",
+        )
+    )
+    assert first.conversation is not None
+    saved_conversation = dagent.ConversationState.model_validate(
+        first.conversation.model_dump(mode="json")
+    )
     first_runner.close()
 
-    assert [message["role"] for message in first.messages] == ["assistant"]
-    assert first.messages[0]["content"] == "The project color is blue."
+    assert [item.type for item in first.new_items] == ["user", "assistant"]
+    assert first.new_items[-1].content == "The project color is blue."
 
     second_runner = dagent.Runner(workspace=tmp_path, provider=provider)
-    messages.append({"role": "user", "content": "What color did I mention?"})
-    second = run(second_runner.run(agent, messages=messages, state=saved_state))
+    second = run(
+        second_runner.run(
+            agent,
+            input="What color did I mention?",
+            conversation=saved_conversation,
+        )
+    )
     second_runner.close()
 
     assert second.output_text == "It is blue."
-    assert [message["role"] for message in second.messages] == ["assistant"]
-    assert second.messages[0]["content"] == "It is blue."
-    assert second.state.input_message_count == len(second.state.internal_messages) - 1
+    assert [item.type for item in second.new_items] == ["user", "assistant"]
+    assert second.new_items[-1].content == "It is blue."
+    assert second.conversation is not None
+    assert [item.type for item in second.conversation.items] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
 
 
 def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> None:
@@ -1131,12 +1175,13 @@ def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> No
     agent = dagent.DagAgent(planner_profile="planner", capabilities=[search], review="careful")
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
-    first = run(runner.run(agent, messages=user_messages("research X")))
+    first = run(runner.run(agent, input="research X"))
     assert first.requires_review
     assert first.review is not None
 
     decision = dagent.ReviewDecision(review_id=first.review.review_id, approved=True)
-    resumed = run(runner.resume(decision))
+    assert first.checkpoint is not None
+    resumed = run(runner.resume(decision, checkpoint=first.checkpoint))
 
     assert resumed is not None
     assert resumed.output_text == "Report: found:X"
