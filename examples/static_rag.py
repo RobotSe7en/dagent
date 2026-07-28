@@ -50,7 +50,11 @@ async def main() -> None:
     dag.add_node(answer_node)
     dag.add_edge(retrieve_node, answer_node)
 
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(
+        workspace="agent-workspace",
+        runtime_directory=".runtime",
+        provider=provider,
+    )
     result = await runner.run(dag, graph_input="What does dagent execute?")
 
     print(result.status)

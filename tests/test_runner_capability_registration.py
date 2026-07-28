@@ -71,7 +71,7 @@ class FakeMCPManager:
 
 
 def _runner(tmp_path) -> dagent.Runner:
-    return dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
+    return dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=MockProvider([]))
 
 
 def test_add_skill_root_makes_skill_discoverable_at_runtime(tmp_path) -> None:
@@ -123,7 +123,7 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
         ),
         ChatResponse(content="done"),
     ])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     manager = FakeMCPManager()
 
     definitions = runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
@@ -164,6 +164,7 @@ def test_runner_passes_stdio_stderr_policy_to_mcp_manager(monkeypatch, tmp_path)
 
     monkeypatch.setattr(runner_module, "MCPServerManager", RecordingManager)
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([]),
         mcp_servers={"mock-server": {"command": "fake"}},
@@ -187,6 +188,7 @@ def test_runner_derive_inherits_and_can_override_stdio_stderr_policy(
 
     monkeypatch.setattr(runner_module, "MCPServerManager", RecordingManager)
     base = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path / "base",
         provider=MockProvider([]),
         mcp_stdio_stderr="inherit",
@@ -235,6 +237,7 @@ def echo(value: str) -> str:
 server.run(transport="stdio")
 """
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path / "workspace",
         provider=MockProvider([]),
         mcp_servers={
@@ -263,6 +266,7 @@ def test_runner_rejects_unknown_stdio_stderr_mode(tmp_path) -> None:
         match="mcp_stdio_stderr must be 'discard' or 'inherit'",
     ):
         dagent.Runner(
+            runtime_directory=".runtime",
             workspace=tmp_path,
             provider=MockProvider([]),
             mcp_stdio_stderr="persistent",
@@ -471,6 +475,7 @@ def test_runner_derive_overlays_validation_without_mutating_base(tmp_path) -> No
     inherited = base.derive(workspace=tmp_path / "inherited")
     overridden = base.derive(
         workspace=tmp_path / "overridden",
+        runtime_directory="private-runtime",
         enable_validation=False,
         max_validation_retries=5,
     )
@@ -480,8 +485,10 @@ def test_runner_derive_overlays_validation_without_mutating_base(tmp_path) -> No
     assert inherited.enable_validation is True
     assert inherited.runtime.validator is base.runtime.validator
     assert inherited.runtime.max_validation_retries == 3
+    assert inherited.runtime_directory == base.runtime_directory
     assert overridden.enable_validation is False
     assert overridden.runtime.max_validation_retries == 5
+    assert overridden.runtime_directory == "private-runtime"
     inherited.close()
     overridden.close()
     base.close()
@@ -501,7 +508,7 @@ def test_add_agent_registers_capability_and_tool_agent_can_delegate(tmp_path) ->
         ChatResponse(content="helper answer"),
         ChatResponse(content="done"),
     ])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     helper = dagent.ToolAgent(
         profile="conversation",
         name="helper",
@@ -543,7 +550,7 @@ def test_top_level_agent_can_expose_all_registered_agents(tmp_path) -> None:
         ChatResponse(content="helper answer"),
         ChatResponse(content="done"),
     ])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[]))
 
     result = run(runner.run(
@@ -1017,7 +1024,7 @@ def test_tool_agent_delegation_events_include_parent_capability_id(tmp_path) -> 
         ChatResponse(content="helper done"),
         ChatResponse(content="done"),
     ])
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[echo])
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, capabilities=[echo])
     runner.add_agent(
         dagent.ToolAgent(
             profile="conversation",
@@ -1471,6 +1478,7 @@ def test_replace_mcp_server_removes_constructor_registered_tools(monkeypatch, tm
     monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
     monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([]),
         mcp_servers={"mock": {"command": "fake", "tools": ["old"]}},

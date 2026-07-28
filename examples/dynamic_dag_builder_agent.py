@@ -47,6 +47,8 @@ dag.output = lookup.output
         })),
     ])
     runner = dagent.Runner(
+        workspace="agent-workspace",
+        runtime_directory=".runtime",
         provider=provider,
         capabilities=[search],
         planner_frontend="sdk_builder",

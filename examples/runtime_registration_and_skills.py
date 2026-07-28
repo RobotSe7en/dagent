@@ -47,7 +47,11 @@ async def main() -> None:
             ]
         )
 
-        runner = dagent.Runner(workspace=workspace_path / ".dagent", provider=provider)
+        runner = dagent.Runner(
+            workspace=workspace_path,
+            runtime_directory=".runtime",
+            provider=provider,
+        )
         runner.add_tool(summarize)
         runner.add_skill_root(skill_root)
 

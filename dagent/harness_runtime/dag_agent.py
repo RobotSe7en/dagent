@@ -779,6 +779,7 @@ class DAGAgentLoop:
             capability_executor=self.dag_executor.capability_executor,
             workspace_path=workspace,
             capability_workspace_root=capability_workspace_root,
+            runtime_directory=self.dag_executor.runtime_directory,
             result_storage_policy=self.result_storage_policy,
             artifacts=spec.artifacts,
             artifact_states=artifact_states,

@@ -105,13 +105,17 @@ for item in result.new_items:
 
 ```python
 runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     provider=provider,
     result_storage_policy=dagent.ResultStoragePolicy(
         max_inline_bytes=256 * 1024,
-        internal_directory=".dagent/results",
     ),
 )
 ```
+
+这个 runner 的结果目录是 `<run-workspace>/.runtime/results`。
+`ResultStoragePolicy` 只控制内联大小阈值，存储位置由 runner 统一拥有。
 
 SDK 只负责 run workspace 内的标准化；长期上传、保留策略、访问控制和 URL 生成由 host
 负责。

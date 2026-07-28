@@ -48,7 +48,12 @@ def echo(text: str) -> str:
 
 
 async def main():
-    runner = dagent.Runner(provider=provider, workspace=".dagent", capabilities=[echo])
+    runner = dagent.Runner(
+        workspace="agent-workspace",
+        runtime_directory=".runtime",
+        provider=provider,
+        capabilities=[echo],
+    )
     agent = dagent.ToolAgent(
         profile="conversation",
         capabilities=["tool.echo"],

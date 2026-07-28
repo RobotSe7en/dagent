@@ -18,6 +18,8 @@ async def main() -> None:
         ChatResponse(content="<think>checking</think>The answer is ready."),
     ])
     runner = dagent.Runner(
+        workspace="agent-workspace",
+        runtime_directory=".runtime",
         provider=provider,
     )
     agent = dagent.ToolAgent(profile="conversation")

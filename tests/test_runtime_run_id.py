@@ -21,7 +21,7 @@ async def test_runner_cancel_stops_an_active_streamed_run(tmp_path) -> None:
             await asyncio.Event().wait()
 
     provider = BlockingProvider()
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     events = runner.stream(
         dagent.ToolAgent(profile="conversation"),
         input="wait",
@@ -43,6 +43,7 @@ async def test_runner_cancel_stops_an_active_streamed_run(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_runner_stream_uses_host_run_id_for_tool_agent(tmp_path) -> None:
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([ChatResponse(content="done")]),
     )
@@ -67,6 +68,7 @@ async def test_runner_stream_uses_host_run_id_for_tool_agent(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_runner_stream_does_not_accept_runtime_state(tmp_path) -> None:
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([ChatResponse(content="done")]),
     )
@@ -87,6 +89,7 @@ async def test_runner_stream_does_not_accept_runtime_state(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_runner_stream_uses_host_run_id_for_static_dag_spec(tmp_path) -> None:
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([]),
     )
@@ -119,6 +122,7 @@ async def test_runner_stream_rejects_unsafe_host_run_id_even_with_explicit_works
     bad_run_id: str,
 ) -> None:
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([ChatResponse(content="done")]),
     )
@@ -141,6 +145,7 @@ async def test_runner_rejects_reused_host_run_id_for_new_run_with_explicit_works
     tmp_path,
 ) -> None:
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([
             ChatResponse(content="first"),

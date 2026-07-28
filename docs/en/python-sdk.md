@@ -55,7 +55,11 @@ provider = dagent.Provider(
     model="your-model",
     api_key_env="OPENAI_API_KEY",
 )
-runner = dagent.Runner(provider=provider, workspace=".dagent")
+runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
+    provider=provider,
+)
 ```
 
 dagent is an in-process SDK. Construct and close `Runner` in the process you

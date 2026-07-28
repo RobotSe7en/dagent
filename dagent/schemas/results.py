@@ -9,12 +9,16 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dagent.profiles import AgentProfile
+from dagent.schemas.common import validate_runtime_directory
 from dagent.schemas.dag import DAG, DAGSpec
 from dagent.schemas.capability import CapabilityInvocation
 from dagent.schemas.run_trace import RunTrace
 from dagent.schemas.sandbox import RunExecution
 from dagent.schemas.context import ContextPolicy, ContextUsage, ResultStoragePolicy
-from dagent.schemas.conversation import ConversationItem, ConversationState
+from dagent.schemas.conversation import (
+    ConversationItem,
+    ConversationState,
+)
 
 
 ReviewKind = Literal["initial_dag", "dag_replan", "capability_review"]
@@ -83,7 +87,7 @@ class ResolvedRunPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     runtime_kind: RunStateKind
     tool_profile: AgentProfile
     planner_profile: AgentProfile
@@ -103,6 +107,7 @@ class ResolvedRunPlan(BaseModel):
     planner_skill: PlannerSkillSnapshot | None = None
     context_policy: ContextPolicy = Field(default_factory=ContextPolicy)
     result_storage_policy: ResultStoragePolicy = Field(default_factory=ResultStoragePolicy)
+    runtime_directory: str
     context_window_tokens: int = Field(default=32768, ge=1024)
     output_reserve_tokens: int = Field(default=4096, ge=0)
     fingerprint: str = ""
@@ -129,6 +134,11 @@ class ResolvedRunPlan(BaseModel):
         if any(not item for item in ids):
             raise ValueError("Resolved run plan ids must not be empty.")
         return tuple(sorted(set(ids)))
+
+    @field_validator("runtime_directory", mode="before")
+    @classmethod
+    def validate_runtime_directory(cls, value: Any) -> str:
+        return validate_runtime_directory(value)
 
     @model_validator(mode="after")
     def validate_resolved_configuration(self) -> "ResolvedRunPlan":
@@ -264,7 +274,7 @@ class RunCheckpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     state: RunState
     plan: ResolvedRunPlan
     usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
@@ -275,7 +285,7 @@ class RunCheckpoint(BaseModel):
         if self.schema_version != self.plan.schema_version:
             raise ValueError("Checkpoint schema version does not match the resolved run plan.")
         if self.state.schema_version != 3:
-            raise ValueError("Checkpoint V3 requires RunState V3.")
+            raise ValueError("Checkpoint V4 requires RunState V3.")
         if self.state.planner_frontend != self.plan.planner_frontend:
             raise ValueError("Checkpoint planner frontend does not match the resolved run plan.")
         if self.state.kind != self.plan.runtime_kind:

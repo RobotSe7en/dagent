@@ -12,7 +12,8 @@ Add skill roots at runner construction or runtime:
 ```python
 runner = dagent.Runner(
     provider=provider,
-    workspace=".dagent",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     skill_roots=["team-skills"],
 )
 

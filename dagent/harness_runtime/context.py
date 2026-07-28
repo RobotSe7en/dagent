@@ -235,17 +235,26 @@ class ContextAssembler:
             summary_tokens = self.token_counter.count_text(summary_text)
 
         remaining_tool_tokens = policy.max_total_tool_result_tokens
-        tool_budgets: dict[str, int] = {}
+        tool_projections: dict[str, tuple[str, bool]] = {}
         for item in reversed(conversation.items):
             if not isinstance(item, ToolResultMessage):
                 continue
-            full_tokens = self.token_counter.count_text(stored_content_text(item.content))
             budget = min(
                 policy.max_tool_result_tokens,
                 remaining_tool_tokens,
             )
-            tool_budgets[item.id] = max(0, budget)
-            remaining_tool_tokens = max(0, remaining_tool_tokens - min(full_tokens, budget))
+            projection = _truncate_tool_content(
+                stored_content_text(item.content),
+                budget=max(0, budget),
+                counter=self.token_counter,
+                references=_tool_result_references(item),
+            )
+            tool_projections[item.id] = projection
+            remaining_tool_tokens = max(
+                0,
+                remaining_tool_tokens
+                - min(self.token_counter.count_text(projection[0]), budget),
+            )
 
         for item in conversation.items:
             if isinstance(item, UserMessage):
@@ -281,13 +290,9 @@ class ContextAssembler:
                 )
                 continue
 
-            full_content = stored_content_text(item.content)
-            budget = tool_budgets.get(item.id, 0)
-            projected_content, was_truncated = _truncate_tool_content(
-                full_content,
-                budget=budget,
-                counter=self.token_counter,
-                reference=item.content if isinstance(item.content, ContentReference) else None,
+            projected_content, was_truncated = tool_projections.get(
+                item.id,
+                ("", True),
             )
             if was_truncated:
                 truncated_tool_results += 1
@@ -389,19 +394,76 @@ def _truncate_tool_content(
     *,
     budget: int,
     counter: TokenCounter,
-    reference: ContentReference | None,
+    references: tuple[ContentReference, ...],
 ) -> tuple[str, bool]:
-    reference_text = ""
-    if reference is not None:
-        reference_text = (
-            f"\n[Full result: {reference.path}; sha256={reference.sha256}; "
-            f"bytes={reference.byte_length}]"
-        )
     if budget <= 0:
-        return "[TOOL_RESULT_OMITTED: aggregate tool-result budget exhausted]" + reference_text, True
-    available = max(16, budget - counter.count_text(reference_text))
+        return "", True
+
+    reference_lines = [
+        (
+            f"[Stored result: path={reference.path}; "
+            f"media_type={reference.media_type}; bytes={reference.byte_length}; "
+            f"sha256={reference.sha256}]"
+        )
+        for reference in references
+    ]
+    selected: list[str] = []
+    omitted = 0
+    for index, line in enumerate(reference_lines):
+        remaining = len(reference_lines) - index - 1
+        candidate_lines = [*selected, line]
+        candidate_omitted = omitted + remaining
+        if candidate_omitted:
+            candidate_lines.append(
+                f"[{candidate_omitted} stored result references omitted]"
+            )
+        if counter.count_text("\n".join(candidate_lines)) <= budget:
+            selected.append(line)
+        else:
+            omitted += 1
+
+    reference_parts = list(selected)
+    if omitted:
+        reference_parts.append(f"[{omitted} stored result references omitted]")
+    reference_text = "\n".join(reference_parts)
+    if reference_text and counter.count_text(reference_text) > budget:
+        reference_text, _ = _truncate_text(
+            f"[{len(references)} stored result references omitted]",
+            budget,
+            counter,
+        )
+
+    reference_tokens = counter.count_text(reference_text)
+    separator_tokens = counter.count_text("\n") if text and reference_text else 0
+    available = max(0, budget - reference_tokens - separator_tokens)
     projected, truncated = _truncate_text(text, available, counter)
-    return projected + reference_text, truncated or reference is not None
+    parts = [part for part in (projected, reference_text) if part]
+    return "\n".join(parts), (
+        truncated or bool(references) or omitted > 0
+    )
+
+
+def _tool_result_references(
+    item: ToolResultMessage,
+) -> tuple[ContentReference, ...]:
+    candidates = [
+        *(
+            (item.content,)
+            if isinstance(item.content, ContentReference)
+            else ()
+        ),
+        *((item.value_reference,) if item.value_reference is not None else ()),
+        *item.artifacts,
+    ]
+    references: list[ContentReference] = []
+    seen: set[tuple[str, str]] = set()
+    for reference in candidates:
+        identity = (reference.path, reference.sha256)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        references.append(reference)
+    return tuple(references)
 
 
 def _truncate_text(

@@ -63,6 +63,7 @@ from dagent.schemas.value import (
     NodeOutputExpr,
     parse_value_binding,
 )
+from dagent.schemas.common import validate_runtime_directory
 
 
 class DAGExecutionError(RuntimeError):
@@ -106,6 +107,7 @@ class DAGExecutor:
         artifact_states: dict[str, ArtifactState] | None = None,
         spec_id: str | None = None,
         graph_input: Any = None,
+        runtime_directory: str,
         result_storage_policy: ResultStoragePolicy | None = None,
     ) -> None:
         self.capability_executor = capability_executor
@@ -120,6 +122,7 @@ class DAGExecutor:
         self.artifact_states = artifact_states or init_artifact_states(self.artifacts)
         self.spec_id = spec_id
         self.graph_input = _normalize_graph_input(graph_input)
+        self.runtime_directory = validate_runtime_directory(runtime_directory)
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
 
     def configure_spec(
@@ -389,6 +392,7 @@ class DAGExecutor:
             normalized = normalize_capability_result(
                 capability_result,
                 workspace_path=self.workspace_path or self.capability_workspace_root,
+                runtime_directory=self.runtime_directory,
                 policy=self.result_storage_policy,
             )
             capability_result = normalized.result
@@ -538,6 +542,7 @@ class DAGExecutor:
                     normalized = normalize_capability_result(
                         result,
                         workspace_path=self.workspace_path or self.capability_workspace_root,
+                        runtime_directory=self.runtime_directory,
                         policy=self.result_storage_policy,
                     )
                     result = normalized.result
@@ -663,6 +668,7 @@ class DAGExecutor:
             capability_executor=self.capability_executor,
             workspace_path=self.workspace_path,
             capability_workspace_root=self.capability_workspace_root,
+            runtime_directory=self.runtime_directory,
             result_storage_policy=self.result_storage_policy,
             artifacts=spec.artifacts,
             spec_id=spec.id,

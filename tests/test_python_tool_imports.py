@@ -326,7 +326,7 @@ def test_api_python_tool_reload_keeps_runner_instance(
         "    names: [echo_text]\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(workspace=".", runtime_directory=".runtime", provider=MockProvider([])))
     client = TestClient(app, raise_server_exceptions=False)
 
     assert client.get("/python-tools").status_code == 200
@@ -359,7 +359,7 @@ def test_api_python_tool_reload_reads_updated_user_config(
     config_path = state.get_user_config_path()
     config_path.parent.mkdir(parents=True)
     save_user_config(UserDagentConfig(), config_path)
-    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(workspace=".", runtime_directory=".runtime", provider=MockProvider([])))
     client = TestClient(app)
 
     assert client.get("/python-tools").json()["tools"] == []
@@ -418,7 +418,7 @@ def test_api_delete_python_tool_reports_dependent_preset_error_without_rebuildin
         encoding="utf-8",
     )
     monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
-    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(workspace=".", runtime_directory=".runtime", provider=MockProvider([])))
     client = TestClient(app)
 
     assert client.get("/python-tools").status_code == 200
@@ -474,7 +474,7 @@ def test_api_delete_python_tool_removes_multiple_dependent_presets(
             encoding="utf-8",
         )
     monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
-    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(workspace=".", runtime_directory=".runtime", provider=MockProvider([])))
     client = TestClient(app)
 
     assert client.get("/python-tools").status_code == 200
@@ -540,7 +540,7 @@ def test_api_python_tool_reload_replaces_changed_agent_preset(
         encoding="utf-8",
     )
     monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
-    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(workspace=".", runtime_directory=".runtime", provider=MockProvider([])))
     client = TestClient(app)
 
     assert client.get("/python-tools").status_code == 200
@@ -588,7 +588,7 @@ def test_api_delete_python_tool_removes_agent_created_through_api(
     )
     agent_root = tmp_path / "agents"
     monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
-    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(workspace=".", runtime_directory=".runtime", provider=MockProvider([])))
     client = TestClient(app)
 
     assert client.get("/python-tools").status_code == 200

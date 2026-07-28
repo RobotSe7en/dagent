@@ -46,7 +46,11 @@ If no path is passed, config resolution uses:
 Pass the path explicitly when running from a different working directory:
 
 ```python
-runner = dagent.Runner.from_config("/path/to/config.yaml")
+runner = dagent.Runner.from_config(
+    "/path/to/config.yaml",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
+)
 ```
 
 ## MCP Registration Fails

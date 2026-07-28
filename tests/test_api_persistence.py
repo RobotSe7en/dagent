@@ -1395,6 +1395,8 @@ def test_api_project_message_stream_uses_project_workspace(
     persistence_client,
 ) -> None:
     state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
         provider=MockProvider([
             ChatResponse(
                 tool_calls=[
@@ -1441,6 +1443,8 @@ def test_api_standalone_message_stream_uses_conversation_workspace(
     persistence_client,
 ) -> None:
     state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
         provider=MockProvider([
             ChatResponse(
                 tool_calls=[
@@ -1789,6 +1793,8 @@ def test_api_project_message_stream_persists_run_events_and_state(
     persistence_client,
 ) -> None:
     state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
         provider=MockProvider([
             ChatResponse(
                 tool_calls=[
@@ -2197,7 +2203,7 @@ def test_api_project_message_stream_locks_only_the_conversation(persistence_clie
         json={"title": "Second chat"},
     ).json()["conversation"]
     lock = state.get_store().acquire_conversation_lock(first["id"], owner="manual")
-    state.runner = Runner(provider=MockProvider([ChatResponse(content="done")]))
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([ChatResponse(content="done")]))
     try:
         busy = persistence_client.post(
             "/messages/stream",
@@ -2228,7 +2234,7 @@ def test_api_project_message_stream_locks_only_the_conversation(persistence_clie
 def test_api_project_message_stream_continues_from_persisted_conversation(
     persistence_client,
 ) -> None:
-    state.runner = Runner(provider=MockProvider([
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([
         ChatResponse(content="first done"),
         ChatResponse(content="second done"),
     ]))
@@ -2296,7 +2302,7 @@ def test_api_project_review_resume_uses_db_state_after_runner_restart(
             ],
         )
     ])
-    state.runner = Runner(provider=provider)
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=provider)
     project = persistence_client.post(
         "/projects",
         json={"name": "Demo", "slug": "demo"},
@@ -2327,7 +2333,7 @@ def test_api_project_review_resume_uses_db_state_after_runner_restart(
     assert stream_result["state"]["status"] == "awaiting_review"
 
     state.close_runner()
-    state.runner = Runner(provider=MockProvider([ChatResponse(content="I will stop.")]))
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([ChatResponse(content="I will stop.")]))
     resume_response = persistence_client.post(
         f"/projects/{project['id']}/reviews/{review_id}/resume",
         json={"approved": False, "feedback": "Do not read that file."},
@@ -2378,7 +2384,7 @@ def test_api_standalone_review_resume_uses_db_state_after_runner_restart(
             ],
         )
     ])
-    state.runner = Runner(provider=provider)
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=provider)
     conversation = persistence_client.post(
         "/conversations",
         json={"title": "Inbox chat"},
@@ -2404,7 +2410,7 @@ def test_api_standalone_review_resume_uses_db_state_after_runner_restart(
     assert stream_result["state"]["status"] == "awaiting_review"
 
     state.close_runner()
-    state.runner = Runner(provider=MockProvider([ChatResponse(content="I will stop.")]))
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([ChatResponse(content="I will stop.")]))
     resume_response = persistence_client.post(
         f"/reviews/{review_id}/resume",
         json={"approved": False, "feedback": "Do not read that file."},
@@ -2530,7 +2536,7 @@ def test_api_saved_dag_payload_falls_back_to_valid_empty_spec(
 def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(
     persistence_client,
 ) -> None:
-    state.runner = Runner(provider=MockProvider([]))
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([]))
     project = persistence_client.post(
         "/projects",
         json={"name": "Static", "slug": "static"},
@@ -2594,7 +2600,7 @@ def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(
 
 
 def test_api_saved_dag_artifact_upload_persists_across_process_state_reset(persistence_client) -> None:
-    state.runner = Runner(provider=MockProvider([]))
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([]))
     spec = {
         "id": "with_upload",
         "name": "With Upload",
@@ -2858,6 +2864,8 @@ def test_api_dynamic_dag_stream_updates_standalone_orchestration_session_draft(
     persistence_client,
 ) -> None:
     state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
         provider=MockProvider([
             ChatResponse(content=capability_plan_response(
                 "tool.echo", {"text": "ok"}, node_id="answer"
@@ -2913,6 +2921,8 @@ def test_api_smart_workbench_dynamic_dag_stream_persists_conversation_messages(
     persistence_client,
 ) -> None:
     state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
         provider=MockProvider([
             ChatResponse(content=capability_plan_response(
                 "tool.echo", {"text": "ok"}, node_id="answer"
@@ -2962,6 +2972,8 @@ def test_api_orchestration_workspace_dynamic_dag_stream_persists_visible_message
     persistence_client,
 ) -> None:
     state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
         provider=MockProvider([
             ChatResponse(content=capability_plan_response(
                 "tool.echo", {"text": "ok"}, node_id="answer"
@@ -3010,6 +3022,8 @@ def test_api_orchestration_workspace_dynamic_dag_stream_creates_distinct_run_his
     persistence_client,
 ) -> None:
     state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
         provider=MockProvider([
             ChatResponse(content=capability_plan_response(
                 "tool.echo", {"text": "one"}, node_id="answer"
@@ -3140,6 +3154,8 @@ def test_api_dynamic_dag_review_resume_updates_orchestration_session_draft(
     persistence_client,
 ) -> None:
     state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
         provider=MockProvider(
             [
                 ChatResponse(
@@ -3198,7 +3214,7 @@ def test_api_dynamic_dag_review_resume_updates_orchestration_session_draft(
 def test_interrupted_dag_review_rejection_clears_pending_review_and_allows_run_delete(
     persistence_client,
 ) -> None:
-    state.runner = Runner(provider=MockProvider([]))
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([]))
     conversation = persistence_client.post(
         "/conversations",
         json={"title": "Interrupted dynamic DAG", "kind": "dynamic_dag"},
@@ -3331,7 +3347,7 @@ def test_interrupted_dag_review_rejection_clears_pending_review_and_allows_run_d
 def test_interrupted_auto_capability_review_rejection_clears_pending_review_and_allows_run_delete(
     persistence_client,
 ) -> None:
-    state.runner = Runner(provider=MockProvider([]))
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([]))
     conversation = persistence_client.post(
         "/conversations",
         json={"title": "Interrupted auto tool"},
@@ -3486,6 +3502,8 @@ def test_auto_capability_review_rejection_is_persisted_before_resume_stream_body
     persistence_client,
 ) -> None:
     state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
         provider=MockProvider(
             [
                 ChatResponse(

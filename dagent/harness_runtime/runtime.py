@@ -63,6 +63,7 @@ from dagent.schemas import (
     UserMessage,
 )
 from dagent.schemas.run_id import validate_run_id
+from dagent.schemas.common import validate_runtime_directory
 from dagent.config import DEFAULT_RUNS_DIR, resolve_run_workspace_root
 
 
@@ -102,6 +103,7 @@ class HarnessRuntime:
         capability_catalog: CapabilityCatalog | None = None,
         capability_executor: CapabilityExecutor | None = None,
         agent_capability_configs: Iterable[MutableMapping[str, Any]] | None = None,
+        runtime_directory: str,
     ) -> None:
         self.provider = provider
         self.tool_agent = tool_agent
@@ -109,13 +111,15 @@ class HarnessRuntime:
         self.validator = validator
         self.enable_validation = enable_validation
         self.max_validation_retries = max_validation_retries
+        self.runtime_directory = validate_runtime_directory(runtime_directory)
         self.session = HarnessRuntimeSession()
         self.runs = self.session.runs
         if capability_catalog is None and capability_executor is not None:
             capability_catalog = capability_executor.catalog
         self.capability_catalog = capability_catalog or CapabilityCatalog()
         self.conversation_resources = ConversationResourceStore(
-            self.capability_catalog.workspace_root
+            self.capability_catalog.workspace_root,
+            self.runtime_directory,
         )
         if capability_executor is not None and capability_executor.catalog is not self.capability_catalog:
             raise ValueError("HarnessRuntime capability_catalog must match capability_executor.catalog.")
@@ -899,6 +903,7 @@ class HarnessRuntime:
             capability_executor=base.capability_executor,
             workspace_path=workspace_path,
             capability_workspace_root=capability_workspace_root,
+            runtime_directory=self.runtime_directory,
             result_storage_policy=base.result_storage_policy,
         )
 

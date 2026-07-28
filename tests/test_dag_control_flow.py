@@ -15,7 +15,12 @@ def run(coro):
 
 
 def run_dag(dag, graph_input, capabilities):
-    runner = dagent.Runner(provider=MockProvider([]), capabilities=capabilities)
+    runner = dagent.Runner(
+        workspace=".",
+        runtime_directory=".runtime",
+        provider=MockProvider([]),
+        capabilities=capabilities,
+    )
     try:
         return run(runner.run(dag, graph_input=graph_input))
     finally:
@@ -414,7 +419,11 @@ def test_map_node_accepts_literal_list() -> None:
 
 def test_map_over_agent_isolates_item_sessions_and_keeps_inner_traces() -> None:
     provider = MockProvider([ChatResponse(content="r1"), ChatResponse(content="r2")])
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(
+        workspace=".",
+        runtime_directory=".runtime",
+        provider=provider,
+    )
     agent = dagent.ToolAgent(profile="conversation", name="writer", max_steps=1)
 
     dag = dagent.Dag("agent_map", input=list)
@@ -513,7 +522,11 @@ def test_compare_expr_requires_both_operands() -> None:
 
 
 def test_list_files_value_feeds_map_fanout(tmp_path) -> None:
-    runner = dagent.Runner(provider=MockProvider([]), workspace=tmp_path)
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        runtime_directory=".runtime",
+        provider=MockProvider([]),
+    )
 
     dag = dagent.Dag("list_then_map", input=str)
     write_a = dagent.Node(

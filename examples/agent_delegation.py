@@ -29,7 +29,11 @@ async def main() -> None:
             ChatResponse(content="Final answer using the helper summary."),
         ]
     )
-    runner = dagent.Runner(provider=provider)
+    runner = dagent.Runner(
+        workspace="agent-workspace",
+        runtime_directory=".runtime",
+        provider=provider,
+    )
     helper = dagent.ToolAgent(
         profile="conversation",
         name="helper",

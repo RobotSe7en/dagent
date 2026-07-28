@@ -5,9 +5,98 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.8.0`.
+The current package version is `0.8.1`.
 
 ## Unreleased
+
+## 0.8.1
+
+### Breaking changes
+
+- `Runner(...)` and `Runner.from_config(...)` now require explicit `workspace`
+  and `runtime_directory` keyword arguments. The SDK no longer chooses or
+  creates a cwd-relative `.dagent` workspace implicitly.
+- `runtime_directory` is a safe relative path inside the runner or run
+  workspace. Absolute paths, drive-qualified paths, empty paths, `.` and `..`
+  segments are rejected.
+- `ResultStoragePolicy.internal_directory` was removed. The policy now controls
+  only `max_inline_bytes`; all SDK-private paths belong to the runner.
+- `ResolvedRunPlan` and `RunCheckpoint` use schema version 4 and freeze
+  `runtime_directory`. V3 checkpoints are rejected without conversion.
+  `ConversationState`, `ContentReference`, and `RunState` remain schema version
+  3.
+
+### Storage layout and model context
+
+- Conversation backing resources use
+  `<workspace>/<runtime_directory>/conversations`.
+- Externalized tool and MCP results use
+  `<run-workspace>/<runtime_directory>/results`; resources restored into a new
+  run use `<run-workspace>/<runtime_directory>/history`.
+- These private directories are created lazily. Runner construction, text-only
+  turns, and small inline results do not create them.
+- A continuation first verifies and reuses a resource already reachable at its
+  workspace-relative path. It materializes from the conversation backing store
+  only when that path is missing.
+- Model input includes bounded, deduplicated references for externalized
+  content, values, and MCP artifacts. References include a complete relative
+  path, media type, byte count, and digest and count against tool-result token
+  budgets. Absolute paths and conversation backing-store paths are not exposed.
+
+### Migration
+
+Choose both locations in the host and pass them on every runner:
+
+```python
+runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
+    provider=provider,
+)
+
+runner = dagent.Runner.from_config(
+    "config.yaml",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
+)
+```
+
+Move a former result-directory choice from `ResultStoragePolicy` to the runner:
+
+```python
+# 0.8.0
+policy = dagent.ResultStoragePolicy(
+    max_inline_bytes=64 * 1024,
+    internal_directory=".dagent/results",
+)
+
+# 0.8.1
+runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory=".dagent",
+    provider=provider,
+    result_storage_policy=dagent.ResultStoragePolicy(
+        max_inline_bytes=64 * 1024,
+    ),
+)
+```
+
+To reproduce the old cwd layout exactly, use
+`workspace=".dagent", runtime_directory=".dagent"`. Directory moves are
+host-owned; the SDK does not migrate files automatically. Complete, deny, or
+cancel pending V3 reviews before upgrading. V3 conversations can continue when
+their referenced files or runner conversation backing resources remain
+reachable.
+
+If private runtime data should live in memory, mount the chosen workspace or
+runtime subtree on tmpfs. The SDK deliberately does not add a second in-memory
+storage implementation.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `uv build`
+- `git diff --check`
 
 ## 0.8.0
 

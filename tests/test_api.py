@@ -111,7 +111,7 @@ def test_api_skills_use_file_scanner(monkeypatch, tmp_path) -> None:
 
 def test_api_cancels_active_run_by_run_id(monkeypatch, tmp_path) -> None:
     state.close_runner()
-    runner = Runner(workspace=tmp_path, provider=MockProvider([]))
+    runner = Runner(runtime_directory=".runtime", workspace=tmp_path, provider=MockProvider([]))
     cancelled_run_ids: list[str] = []
 
     async def cancel(run_id: str) -> bool:
@@ -140,6 +140,8 @@ def test_api_installs_markdown_skill_and_serves_through_capability(monkeypatch, 
     monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
     monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
     state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
         provider=MockProvider([ChatResponse(content="unused")]),
         skill_roots=[managed_root],
     )
@@ -882,6 +884,7 @@ def test_api_message_stream_capability_review_event_includes_call_and_payload(tm
     blocked.mkdir()
     (blocked / "secret.txt").write_text("private", encoding="utf-8")
     state.runner = Runner(
+        runtime_directory=".runtime",
         workspace=workspace,
         provider=MockProvider([
             ChatResponse(
@@ -944,7 +947,7 @@ def test_api_resume_capability_review_forwards_reviewer_feedback(tmp_path) -> No
         ),
         ChatResponse(content="I will read the allowed README instead."),
     ])
-    state.runner = Runner(workspace=workspace, provider=provider)
+    state.runner = Runner(runtime_directory=".runtime", workspace=workspace, provider=provider)
     client = TestClient(app)
 
     stream_response = client.post(
@@ -1931,7 +1934,7 @@ def test_api_retries_agent_preset_registration_after_capability_dependency_is_cr
         encoding="utf-8",
     )
     monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
-    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([])))
     client = TestClient(app)
 
     response = client.post(
@@ -4565,7 +4568,7 @@ def test_api_mcp_project_user_conflicts_are_reported_and_preserved(monkeypatch, 
 
 
 def _runner(provider: MockProvider, *, skill_roots: list[Path] | None = None) -> Runner:
-    runner = Runner(provider=provider, skill_roots=skill_roots)
+    runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=provider, skill_roots=skill_roots)
     registry = ToolRegistry()
     registry.register(
         name="echo",

@@ -17,7 +17,8 @@ provider = dagent.Provider(
     api_key_env="OPENAI_API_KEY",
 )
 runner = dagent.Runner(
-    workspace=".dagent",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     provider=provider,
     capabilities=[],
     skill_roots=["team-skills"],
@@ -30,13 +31,19 @@ runner = dagent.Runner(
 dagent 是进程内 SDK。请在你控制的进程中构造并关闭 `Runner`。进程命令、健康检查、
 凭证、持久化、调度和容器生命周期由 host 负责；SDK 不提供 worker 或 service loop。
 
-`Runner(...)` 不会隐式读取 `config.yaml`。
+`Runner(...)` 不会隐式读取 `config.yaml`。`workspace` 和 `runtime_directory`
+都是必填 SDK 输入。`runtime_directory` 必须是非空、无路径穿越的相对路径；名称由
+host 决定。如果运行数据只需驻留内存，host 可以把 workspace 放在 tmpfs。
 
-runner workspace 默认是 `.dagent`，每次运行都会在 `.dagent/runs/<run_id>`
-下记录自己的目录。在 ToolAgent 和 DagAgent message run 中，内置 file 和 shell
-tool 的相对路径从当前 run workspace 解析。传入 `workspace=...` 时，dagent 会把
-该目录本身作为 runtime workspace，因此默认 run workspace 会位于
-`<workspace>/runs/<run_id>`。
+每次运行默认在 `<workspace>/runs/<run_id>` 下记录自己的目录。在 ToolAgent 和
+DagAgent message run 中，内置 file 和 shell tool 的相对路径从当前 run workspace
+解析。SDK 私有数据隔离在调用方选择的相对目录中：
+
+- `<workspace>/<runtime_directory>/conversations` 保存后续会话轮次需要的内容寻址资源；
+- `<run-workspace>/<runtime_directory>/results` 保存外置的 tool/MCP 输出；
+- `<run-workspace>/<runtime_directory>/history` 保存恢复到新 run workspace 的资源。
+
+这些目录按需创建。只构造 runner、执行纯文本轮次或保持小结果内联都不会创建它们。
 
 如果应用已经拥有执行目录，可以给 `Runner.run(...)` 或 `Runner.stream(...)` 传入
 `workspace_path=...`。dagent 会直接使用这个目录运行，不再创建 `<run_id>` 子目录。
@@ -51,6 +58,10 @@ workspace。
 validator。Profile Markdown 本身保持不变；runtime path 不会写入 profile 内容，也不会
 对 profile 做模板替换。`FeedbackLearnerAgent` 等底层 profile-backed helper 在调用时
 收到 `workspace_path` 后，也会使用相同的动态段。
+
+模型会在该 system 段中收到解析后的 run workspace。上传附件和外置结果会以 workspace
+相对路径、媒体类型、字节数和摘要出现在 conversation input 中，因此文件工具可以打开
+它们，同时不会暴露绝对路径或 runner-level conversation backing store。
 
 ## Provider 选项
 
@@ -105,7 +116,8 @@ MCP server 的 `tool_timeout` 是单独配置，只控制 MCP 工具调用。
 ```python
 runner = dagent.Runner.from_config(
     "config.yaml",
-    workspace=".dagent",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     capabilities=[search],
 )
 ```
@@ -144,7 +156,7 @@ planner_frontend: typed_spec
 host 不执行 Python，而是解析后立即规范化为 canonical `DAGSpec`：
 
 ```python
-runner = dagent.Runner(provider=provider, planner_frontend="sdk_builder")
+runner = dagent.Runner(workspace="agent-workspace", runtime_directory=".runtime", provider=provider, planner_frontend="sdk_builder")
 ```
 
 Builder frontend 会打包并显式注入 version-locked `generate-dag` skill，支持初始规划和
@@ -247,7 +259,8 @@ API 响应仍会 redact 已保存的密钥。
 
 ```python
 runner = dagent.Runner(
-    workspace=".dagent",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     provider=provider,
     capabilities=[search],
     skill_roots=["team-skills"],
@@ -382,7 +395,8 @@ provider = dagent.Provider(
     api_key_env="OPENAI_API_KEY",
 )
 runner = dagent.Runner(
-    workspace=".dagent",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
     provider=provider,
     skill_roots=skill_roots,
     mcp_servers=mcp_servers,
@@ -395,7 +409,7 @@ runner = dagent.Runner(
 
 ```python
 derived = runner.derive(
-    workspace=".dagent/effective",
+    workspace="effective-workspace",
     provider=provider,
     capabilities=python_tool_bindings,
     inherit_local_tools=True,
@@ -405,6 +419,9 @@ derived = runner.derive(
     profile_root=profile_root,
 )
 ```
+
+派生 runner 默认继承 `runtime_directory`；只有派生 runtime 确实需要另一套私有布局时，
+才传入不同的安全相对路径。
 
 派生 runner 拥有自己的 catalog、MCP registrations、skill roots、agent registrations、
 sandbox config 和 validation 设置。默认复用 base provider；传入 `provider=` 时使用新的
@@ -432,7 +449,7 @@ responses 不会被 validation。
 内置 profiles 是打包资源。用户 profile 目录需要显式传入：
 
 ```python
-runner = dagent.Runner(provider=provider, profile_root="profiles")
+runner = dagent.Runner(workspace="agent-workspace", runtime_directory=".runtime", provider=provider, profile_root="profiles")
 agent = dagent.ToolAgent(profile="reviewer")
 ```
 

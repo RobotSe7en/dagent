@@ -115,15 +115,15 @@ def test_harness_runtime_reuses_executor_catalog_without_assembling_capabilities
     capability_executor = make_capability_executor()
     tool_adapter = _tool_adapter(capability_executor.catalog)
     tool_agent = ToolAgent(
-        loop=ToolAgentLoop(
+        loop=ToolAgentLoop(runtime_directory=".runtime",
             provider=provider,
             capability_executor=capability_executor,
             tool_adapter=tool_adapter,
         ),
         profile=_conversation_profile(),
     )
-    dag_executor = DAGExecutor(capability_executor=capability_executor)
-    runtime = HarnessRuntime(
+    dag_executor = DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor)
+    runtime = HarnessRuntime(runtime_directory=".runtime",
         provider=provider,
         tool_agent=tool_agent,
         dag_agent=DAGAgent(
@@ -303,10 +303,10 @@ def test_harness_runtime_tool_agent_retries_failed_llm_request_with_default_back
     provider = FailFiveTimesProvider([ChatResponse(content="retried answer")])
     capability_executor = make_capability_executor()
     tool_adapter = _tool_adapter(capability_executor.catalog)
-    runtime = HarnessRuntime(
+    runtime = HarnessRuntime(runtime_directory=".runtime",
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(
+            loop=ToolAgentLoop(runtime_directory=".runtime",
                 provider=provider,
                 capability_executor=capability_executor,
                 tool_adapter=tool_adapter,
@@ -317,7 +317,7 @@ def test_harness_runtime_tool_agent_retries_failed_llm_request_with_default_back
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
-                dag_executor=DAGExecutor(capability_executor=capability_executor),
+                dag_executor=DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor),
                 tool_adapter=tool_adapter,
                 _llm_retry_sleep=record_sleep,
             ),
@@ -377,15 +377,15 @@ def test_harness_runtime_dynamic_dag_loop_retries_failed_llm_request_before_cycl
     tool_adapter = _tool_adapter(capability_executor.catalog)
     dag_agent_loop = DAGAgentLoop(
         provider=provider,
-        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        dag_executor=DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor),
         tool_adapter=tool_adapter,
         _llm_retry_sleep=record_sleep,
     )
     dag_agent_loop.max_cycles = 1
-    runtime = HarnessRuntime(
+    runtime = HarnessRuntime(runtime_directory=".runtime",
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(
+            loop=ToolAgentLoop(runtime_directory=".runtime",
                 provider=provider,
                 capability_executor=capability_executor,
                 tool_adapter=tool_adapter,
@@ -1205,13 +1205,13 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
         ChatResponse(content="good answer"),
     ])
     tool_adapter = _tool_adapter(capability_executor.catalog)
-    tool_agent_loop = ToolAgentLoop(
+    tool_agent_loop = ToolAgentLoop(runtime_directory=".runtime",
         provider=provider,
         capability_executor=capability_executor,
         tool_adapter=tool_adapter,
     )
-    dag_executor = DAGExecutor(capability_executor=capability_executor)
-    runtime = HarnessRuntime(
+    dag_executor = DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor)
+    runtime = HarnessRuntime(runtime_directory=".runtime",
         provider=provider,
         tool_agent=ToolAgent(
             loop=tool_agent_loop,
@@ -1270,10 +1270,10 @@ def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
         ChatResponse(content=final_answer_response("good answer")),
     ])
     tool_adapter = _tool_adapter(capability_executor.catalog)
-    runtime = HarnessRuntime(
+    runtime = HarnessRuntime(runtime_directory=".runtime",
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(
+            loop=ToolAgentLoop(runtime_directory=".runtime",
                 provider=provider,
                 capability_executor=capability_executor,
                 tool_adapter=tool_adapter,
@@ -1283,7 +1283,7 @@ def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
-                dag_executor=DAGExecutor(capability_executor=capability_executor),
+                dag_executor=DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor),
                 tool_adapter=tool_adapter,
             ),
             profile=_dag_agent_profile(),
@@ -1317,10 +1317,10 @@ def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
     ])
     capability_executor = make_capability_executor()
     tool_adapter = _tool_adapter(capability_executor.catalog)
-    runtime = HarnessRuntime(
+    runtime = HarnessRuntime(runtime_directory=".runtime",
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(
+            loop=ToolAgentLoop(runtime_directory=".runtime",
                 provider=provider,
                 capability_executor=capability_executor,
                 tool_adapter=tool_adapter,
@@ -1330,7 +1330,7 @@ def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
-                dag_executor=DAGExecutor(capability_executor=capability_executor),
+                dag_executor=DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor),
                 tool_adapter=tool_adapter,
             ),
             profile=_dag_agent_profile(),
@@ -1428,7 +1428,7 @@ def _runtime(
 ) -> HarnessRuntime:
     capability_executor = make_capability_executor()
     tool_adapter = _tool_adapter(capability_executor.catalog)
-    tool_agent_loop = ToolAgentLoop(
+    tool_agent_loop = ToolAgentLoop(runtime_directory=".runtime",
         provider=provider,
         capability_executor=capability_executor,
         tool_adapter=tool_adapter,
@@ -1437,13 +1437,13 @@ def _runtime(
         loop=tool_agent_loop,
         profile=_conversation_profile(),
     )
-    dag_executor = DAGExecutor(capability_executor=capability_executor)
+    dag_executor = DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor)
     dag_agent_loop = DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
         tool_adapter=tool_adapter,
     )
-    return HarnessRuntime(
+    return HarnessRuntime(runtime_directory=".runtime",
         provider=provider,
         tool_agent=tool_agent,
         dag_agent=DAGAgent(

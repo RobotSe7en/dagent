@@ -34,24 +34,6 @@ class ResultStoragePolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     max_inline_bytes: int = Field(default=256 * 1024, ge=1024)
-    internal_directory: str = ".dagent/results"
-
-    @model_validator(mode="after")
-    def validate_internal_directory(self) -> "ResultStoragePolicy":
-        from pathlib import PurePosixPath, PureWindowsPath
-
-        path = PurePosixPath(self.internal_directory)
-        windows_path = PureWindowsPath(self.internal_directory)
-        if (
-            path.is_absolute()
-            or windows_path.is_absolute()
-            or windows_path.drive
-            or not path.parts
-            or any(part in {"", ".", ".."} for part in path.parts)
-            or any(part in {"", ".", ".."} for part in windows_path.parts)
-        ):
-            raise ValueError("internal_directory must be a safe relative path.")
-        return self
 
 
 class ContextUsage(BaseModel):

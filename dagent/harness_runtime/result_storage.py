@@ -13,8 +13,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from dagent.schemas import CapabilityResult
+from dagent.schemas.common import validate_runtime_directory
 from dagent.schemas.context import ResultStoragePolicy
-from dagent.schemas.conversation import ContentReference, InlineContent, StoredContent
+from dagent.schemas.conversation import (
+    ContentReference,
+    InlineContent,
+    StoredContent,
+)
 
 
 @dataclass(frozen=True)
@@ -31,12 +36,18 @@ def normalize_capability_result(
     result: CapabilityResult,
     *,
     workspace_path: str | Path,
+    runtime_directory: str,
     policy: ResultStoragePolicy,
 ) -> NormalizedCapabilityResult:
     """Return a checkpoint-safe result plus model/audit content references."""
 
     workspace = Path(workspace_path).expanduser().resolve()
-    result_root = _safe_result_root(workspace, policy.internal_directory)
+    runtime_path = PurePosixPath(validate_runtime_directory(runtime_directory))
+    result_root = workspace.joinpath(*runtime_path.parts, "results").resolve()
+    try:
+        result_root.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError("runtime_directory escapes the run workspace.") from exc
     references: list[ContentReference] = []
     content_reference: ContentReference | None = None
 
@@ -188,19 +199,6 @@ def _display_content(result: CapabilityResult) -> str:
     return f"{prefix} {result.error or result.content}".rstrip()
 
 
-def _safe_result_root(workspace: Path, relative: str) -> Path:
-    posix = PurePosixPath(relative)
-    if posix.is_absolute() or any(part in {"", ".", ".."} for part in posix.parts):
-        raise ValueError("Result storage directory is unsafe.")
-    root = workspace.joinpath(*posix.parts).resolve()
-    try:
-        root.relative_to(workspace)
-    except ValueError as exc:
-        raise ValueError("Result storage directory escapes the run workspace.") from exc
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
 def _normalize_artifact(
     workspace: Path,
     root: Path,
@@ -268,6 +266,7 @@ def _write_reference(
     media_type: str,
     preview: str,
 ) -> ContentReference:
+    root.mkdir(parents=True, exist_ok=True)
     target = (root / filename).resolve()
     try:
         target.relative_to(root)

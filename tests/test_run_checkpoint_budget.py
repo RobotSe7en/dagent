@@ -22,6 +22,7 @@ def tool_names(request: dict) -> set[str]:
 def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="done")])
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         skill_roots=[],
@@ -41,6 +42,9 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     assert restored.plan.runtime_kind == "tool"
     assert restored.plan.capability_ids == ()
     assert restored.plan.skill_ids == ()
+    assert restored.schema_version == 4
+    assert restored.plan.schema_version == 4
+    assert restored.plan.runtime_directory == ".runtime"
     assert len(restored.plan.fingerprint) == 64
     assert restored.usage == dagent.ExecutionUsage(
         total_operations=1,
@@ -55,6 +59,12 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     tampered["plan"]["tool_profile"]["content"] = "tampered"
     with pytest.raises(ValidationError, match="fingerprint"):
         dagent.RunCheckpoint.model_validate(tampered)
+
+    legacy = checkpoint.model_dump(mode="json")
+    legacy["schema_version"] = 3
+    legacy["plan"]["schema_version"] = 3
+    with pytest.raises(ValidationError, match="Input should be 4"):
+        dagent.RunCheckpoint.model_validate(legacy)
 
     copied_plan = restored.plan.model_copy(update={"max_tool_steps": 99})
     with pytest.raises(ValidationError, match="fingerprint"):
@@ -85,6 +95,7 @@ def test_checkpoint_rejects_pending_capability_outside_plan_scope(tmp_path) -> N
         )
     ])
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         capabilities=[outside],
@@ -154,6 +165,7 @@ def test_checkpoint_resume_rebuilds_target_runtime_and_exact_scope(tmp_path) -> 
         review="careful",
     )
     first_runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         skill_roots=[],
@@ -165,6 +177,7 @@ def test_checkpoint_resume_rebuilds_target_runtime_and_exact_scope(tmp_path) -> 
     first_runner.close()
 
     second_runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         capabilities=[write, unrelated],
@@ -223,6 +236,7 @@ def test_checkpoint_resume_keeps_context_limits_across_multiple_review_gates(
     provider.context_window_tokens = 16384
     provider.output_reserve_tokens = 2048
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         skill_roots=[],
@@ -238,6 +252,7 @@ def test_checkpoint_resume_keeps_context_limits_across_multiple_review_gates(
     assert first.checkpoint is not None
     assert first.checkpoint.plan.context_window_tokens == 16384
     assert first.checkpoint.plan.output_reserve_tokens == 2048
+    assert first.checkpoint.plan.runtime_directory == ".runtime"
 
     provider.context_window_tokens = 4096
     provider.output_reserve_tokens = 512
@@ -252,6 +267,7 @@ def test_checkpoint_resume_keeps_context_limits_across_multiple_review_gates(
     assert second.checkpoint is not None
     assert second.checkpoint.plan.context_window_tokens == 16384
     assert second.checkpoint.plan.output_reserve_tokens == 2048
+    assert second.checkpoint.plan.runtime_directory == ".runtime"
     runner.close()
 
 
@@ -268,6 +284,7 @@ def test_checkpoint_resume_rejects_missing_capability(tmp_path) -> None:
         )
     ])
     first_runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         skill_roots=[],
@@ -283,6 +300,7 @@ def test_checkpoint_resume_rejects_missing_capability(tmp_path) -> None:
     assert first.checkpoint is not None
 
     second_runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         skill_roots=[],
@@ -307,6 +325,7 @@ def test_checkpoint_resume_rejects_changed_capability_definition(tmp_path) -> No
         )
     ])
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         capabilities=[write],
@@ -342,6 +361,7 @@ def test_checkpoint_resume_rejects_changed_capability_definition(tmp_path) -> No
 def test_model_limit_is_reserved_before_provider_call(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="not reached")])
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         skill_roots=[],
@@ -374,6 +394,7 @@ def test_capability_limit_is_reserved_before_handler_call(tmp_path) -> None:
         )
     ])
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         skill_roots=[],
@@ -408,6 +429,7 @@ def test_checkpoint_resume_restores_usage_without_resetting_limit(tmp_path) -> N
         ChatResponse(content="not reached"),
     ])
     first_runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         skill_roots=[],
@@ -425,6 +447,7 @@ def test_checkpoint_resume_restores_usage_without_resetting_limit(tmp_path) -> N
     first_runner.close()
 
     second_runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         capabilities=[write],
@@ -464,6 +487,7 @@ def test_conversation_continuation_starts_a_new_run_budget(tmp_path) -> None:
         ChatResponse(content="third"),
     ])
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         skill_roots=[],
@@ -500,6 +524,7 @@ def test_conversation_continuation_starts_a_new_run_budget(tmp_path) -> None:
 
 def test_cross_process_conversation_continuation_has_independent_usage(tmp_path) -> None:
     first_runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([ChatResponse(content="first")]),
         skill_roots=[],
@@ -517,6 +542,7 @@ def test_cross_process_conversation_continuation_has_independent_usage(tmp_path)
     first_runner.close()
 
     second_runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([ChatResponse(content="second")]),
         skill_roots=[],
@@ -552,6 +578,7 @@ def test_parallel_dag_capability_reservations_are_atomic(tmp_path) -> None:
     dag.add_edge(start, first)
     dag.add_edge(start, second)
     runner = dagent.Runner(
+        runtime_directory=".runtime",
         workspace=tmp_path,
         provider=MockProvider([]),
         skill_roots=[],

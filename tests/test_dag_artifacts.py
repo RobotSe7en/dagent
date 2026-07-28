@@ -364,7 +364,7 @@ def test_artifact_states_mark_created_and_missing_outputs(tmp_path: Path) -> Non
 
 
 def test_executor_resets_artifact_state_when_paths_change(tmp_path: Path) -> None:
-    executor = DAGExecutor(
+    executor = DAGExecutor(runtime_directory=".runtime",
         capability_executor=_write_capability_executor(tmp_path),
         workspace_path=tmp_path,
         artifacts={"report": Artifact(id="report", paths=["old/report.md"])},
@@ -395,7 +395,7 @@ def test_executor_resets_artifact_state_when_paths_change(tmp_path: Path) -> Non
 
 
 def test_executor_updates_artifact_states_after_node_outputs(tmp_path: Path) -> None:
-    executor = DAGExecutor(
+    executor = DAGExecutor(runtime_directory=".runtime",
         capability_executor=_write_capability_executor(tmp_path),
         workspace_path=tmp_path,
         artifacts={
@@ -432,7 +432,7 @@ def _expr(payload: dict) -> dict:
 
 
 def test_executor_resolves_artifact_exprs_in_arguments_and_boundary(tmp_path: Path) -> None:
-    executor = DAGExecutor(
+    executor = DAGExecutor(runtime_directory=".runtime",
         capability_executor=_write_capability_executor(tmp_path),
         workspace_path=tmp_path,
         artifacts={
@@ -519,6 +519,7 @@ def test_concurrent_executors_keep_workspace_context_isolated(tmp_path: Path) ->
     release = asyncio.Event()
     executor_a = _DelayedDAGExecutor(
         release,
+        runtime_directory=".runtime",
         capability_executor=capability_executor,
         workspace_path=workspace_a,
         capability_workspace_root=workspace_a,
@@ -526,6 +527,7 @@ def test_concurrent_executors_keep_workspace_context_isolated(tmp_path: Path) ->
     )
     executor_b = _DelayedDAGExecutor(
         release,
+        runtime_directory=".runtime",
         capability_executor=capability_executor,
         workspace_path=workspace_b,
         capability_workspace_root=workspace_b,
@@ -759,7 +761,7 @@ def _dag_agent_loop_for_executor(
     )
     return DAGAgentLoop(
         provider=MockProvider([ChatResponse(content="unused")]),
-        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        dag_executor=DAGExecutor(runtime_directory=".runtime", capability_executor=capability_executor),
         tool_adapter=tool_adapter,
     )
 

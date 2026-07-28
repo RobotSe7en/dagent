@@ -94,7 +94,11 @@ async def main() -> None:
     dag = build_dag()
     dagent.validate_dag_spec(dag.to_dag_spec())
 
-    runner = dagent.Runner(provider=MockProvider([]))
+    runner = dagent.Runner(
+        workspace="agent-workspace",
+        runtime_directory=".runtime",
+        provider=MockProvider([]),
+    )
     result = await runner.run(dag, graph_input="topic")
 
     print(result.status)

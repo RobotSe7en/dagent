@@ -45,7 +45,11 @@ provider = dagent.Provider(
 从不同 working directory 运行时，请显式传入 path：
 
 ```python
-runner = dagent.Runner.from_config("/path/to/config.yaml")
+runner = dagent.Runner.from_config(
+    "/path/to/config.yaml",
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
+)
 ```
 
 ## MCP 注册失败

@@ -26,6 +26,8 @@ async def main() -> None:
     )
     agent = dagent.ToolAgent(profile=profile)
     runner = dagent.Runner(
+        workspace="agent-workspace",
+        runtime_directory=".runtime",
         provider=provider,
     )
     async for event in runner.stream(
