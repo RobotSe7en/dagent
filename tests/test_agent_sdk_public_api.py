@@ -68,6 +68,32 @@ def test_runner_accepts_exact_workspace_path_parameter() -> None:
     assert "workspace_path" in inspect.signature(dagent.Runner.stream).parameters
 
 
+def test_runner_validates_extra_system_prompt(tmp_path) -> None:
+    assert "extra_system_prompt" in inspect.signature(dagent.Runner).parameters
+
+    with pytest.raises(TypeError, match="None or a string"):
+        dagent.Runner(
+            runtime_directory=".runtime",
+            workspace=tmp_path,
+            provider=MockProvider([]),
+            extra_system_prompt=123,
+        )
+    with pytest.raises(ValueError, match="non-empty string"):
+        dagent.Runner(
+            runtime_directory=".runtime",
+            workspace=tmp_path,
+            provider=MockProvider([]),
+            extra_system_prompt=" \n ",
+        )
+    with pytest.raises(ValueError, match="at most 16384 characters"):
+        dagent.Runner(
+            runtime_directory=".runtime",
+            workspace=tmp_path,
+            provider=MockProvider([]),
+            extra_system_prompt="x" * 16_385,
+        )
+
+
 def test_builtin_profiles_are_available_from_package_root() -> None:
     profile = dagent.load_builtin_profile("conversation")
 
@@ -197,6 +223,32 @@ def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
     assert "You are a conversation profile." in system_message
     assert "search" not in system_message
     assert _tool_names(provider.requests[0]) == {"tool_search"}
+
+
+def test_runner_extra_system_prompt_applies_to_tool_agent(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="hello")])
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        extra_system_prompt="Keep answers under three sentences.",
+    )
+
+    result = run(
+        runner.run(dagent.ToolAgent(profile="conversation"), input="hi")
+    )
+
+    assert result.output_text == "hello"
+    assert result.plan is not None
+    assert (
+        result.plan.extra_system_prompt
+        == "Keep answers under three sentences."
+    )
+    system_prompt = provider.requests[0]["messages"][0]["content"]
+    assert system_prompt.index("## Runtime Context") < system_prompt.index(
+        "## Extra System Prompt"
+    )
+    assert "Keep answers under three sentences." in system_prompt
 
 
 def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
@@ -523,6 +575,34 @@ def test_runner_auto_agent_routes_to_tool_result(tmp_path) -> None:
     assert result.output_text == "hello from tool"
 
 
+def test_runner_extra_system_prompt_applies_after_auto_tool_routing(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(content="tool"),
+        ChatResponse(content="hello from tool"),
+    ])
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        extra_system_prompt="Use the host's response policy.",
+    )
+
+    result = run(
+        runner.run(
+            dagent.AutoAgent(capabilities=[], skills=[]),
+            input="hi",
+        )
+    )
+
+    assert result.kind == "tool"
+    assert "Use the host's response policy." not in provider.requests[0][
+        "messages"
+    ][0]["content"]
+    assert "Use the host's response policy." in provider.requests[1][
+        "messages"
+    ][0]["content"]
+
+
 def test_runner_auto_agent_tool_mode_can_delegate_to_registered_agent(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(content="tool"),
@@ -571,6 +651,36 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     assert result.output_text == "Report: found:X"
     assert result.dag is not None
     assert result.dag.nodes[-1].payload.invocation.capability_id == "tool.search"
+
+
+def test_runner_extra_system_prompt_applies_after_auto_dag_routing(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(content="dag"),
+        ChatResponse(content=final_answer_response("direct answer")),
+    ])
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        extra_system_prompt="Prefer a direct final answer when planning permits.",
+    )
+
+    result = run(
+        runner.run(
+            dagent.AutoAgent(capabilities=[], skills=[]),
+            input="analyze this",
+        )
+    )
+
+    assert result.kind == "dynamic_dag"
+    assert "Prefer a direct final answer when planning permits." not in (
+        provider.requests[0]["messages"][0]["content"]
+    )
+    planner_prompt = provider.requests[1]["messages"][0]["content"]
+    assert "Prefer a direct final answer when planning permits." in planner_prompt
+    assert planner_prompt.index("## Extra System Prompt") < planner_prompt.index(
+        "## Context"
+    )
 
 
 def test_runner_dynamic_dag_follow_up_review_advances_conversation_revision(
@@ -653,6 +763,102 @@ def test_runner_dag_agent_can_plan_registered_agent_node(tmp_path) -> None:
     assert result.output_text == "final answer"
     assert result.dag is not None
     assert result.dag.nodes[-1].payload.invocation.capability_id == "agent.helper"
+
+
+def test_runner_extra_system_prompt_applies_to_registered_agent(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="agent_helper",
+                    arguments={"prompt": "summarize this"},
+                )
+            ]
+        ),
+        ChatResponse(content="helper answer"),
+        ChatResponse(content="done"),
+    ])
+    helper = dagent.ToolAgent(
+        profile="conversation",
+        name="helper",
+        max_steps=1,
+        capabilities=[],
+        skills=[],
+    )
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        extra_system_prompt="Use the shared SDK policy.",
+    )
+
+    result = run(
+        runner.run(
+            dagent.ToolAgent(
+                profile="conversation",
+                capabilities=[],
+                skills=[],
+                agents=[helper],
+            ),
+            input="delegate",
+        )
+    )
+
+    assert result.output_text == "done"
+    assert "Use the shared SDK policy." in provider.requests[0]["messages"][0][
+        "content"
+    ]
+    registered_prompt = provider.requests[1]["messages"][0]["content"]
+    assert "Use the shared SDK policy." in registered_prompt
+    assert registered_prompt.index("## Extra System Prompt") < (
+        registered_prompt.index("## Context")
+    )
+
+
+def test_runner_extra_system_prompt_applies_to_dag_replan(tmp_path) -> None:
+    @dagent.tool
+    def fail_tool(text: str) -> str:
+        raise RuntimeError(f"failed:{text}")
+
+    @dagent.tool
+    def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    provider = MockProvider([
+        ChatResponse(content=capability_plan_response(
+            "tool.fail_tool", {"text": "boom"}, node_id="bad"
+        )),
+        ChatResponse(content=capability_plan_response(
+            "tool.echo", {"text": "recovered"}, node_id="answer"
+        )),
+        ChatResponse(content=final_answer_response("Recovered.")),
+    ])
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        extra_system_prompt="Keep the original recovery constraints.",
+    )
+
+    result = run(
+        runner.run(
+            dagent.DagAgent(
+                capabilities=[fail_tool, echo],
+                skills=[],
+            ),
+            input="recover from failure",
+        )
+    )
+
+    assert result.output_text == "Recovered."
+    assert len(provider.requests) == 3
+    for request in provider.requests:
+        system_prompt = request["messages"][0]["content"]
+        assert "Keep the original recovery constraints." in system_prompt
+        assert system_prompt.index("## Extra System Prompt") < (
+            system_prompt.index("## Context")
+        )
 
 
 def test_runner_dag_agent_dynamic_adjust_false_keeps_initial_dag_fixed(tmp_path) -> None:
@@ -1100,6 +1306,72 @@ def test_runner_resume_can_restore_pending_capability_gate_from_checkpoint(tmp_p
     assert resumed.conversation.items[-1].content == "done"
 
 
+def test_runner_resume_uses_checkpoint_extra_system_prompt(tmp_path) -> None:
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        return f"wrote:{text}"
+
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="tool_write",
+                    arguments={"text": "hello"},
+                )
+            ]
+        ),
+        ChatResponse(content="done"),
+    ])
+    agent = dagent.ToolAgent(
+        profile="conversation",
+        capabilities=[write],
+        review="careful",
+    )
+    first_runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        capabilities=[write],
+        extra_system_prompt="Original run policy.",
+    )
+
+    first = run(first_runner.run(agent, input="write hello"))
+
+    assert first.requires_review
+    assert first.review is not None
+    assert first.checkpoint is not None
+    assert first.checkpoint.plan.extra_system_prompt == "Original run policy."
+    saved_checkpoint = dagent.RunCheckpoint.model_validate(
+        first.checkpoint.model_dump(mode="json")
+    )
+    first_runner.close()
+
+    second_runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        capabilities=[write],
+        extra_system_prompt="Changed runner policy.",
+    )
+    resumed = run(
+        second_runner.resume(
+            first.review.approve(),
+            checkpoint=saved_checkpoint,
+        )
+    )
+
+    assert resumed is not None
+    resumed_prompt = provider.requests[1]["messages"][0]["content"]
+    assert "Original run policy." in resumed_prompt
+    assert "Changed runner policy." not in resumed_prompt
+    assert resumed.checkpoint is not None
+    assert (
+        resumed.checkpoint.plan.extra_system_prompt
+        == "Original run policy."
+    )
+
+
 def test_runner_run_does_not_accept_runtime_state(tmp_path) -> None:
     @dagent.tool(risk="medium")
     def write(text: str) -> str:
@@ -1351,6 +1623,57 @@ def test_runner_enable_validation_prepares_default_validator(tmp_path) -> None:
 
     assert runner.enable_validation is True
     assert runner.runtime.validator is not None
+
+
+def test_runner_extra_system_prompt_does_not_apply_to_validator(tmp_path) -> None:
+    @dagent.tool
+    def search(q: str) -> str:
+        return f"found:{q}"
+
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="tool_search",
+                    arguments={"q": "dagent"},
+                )
+            ]
+        ),
+        ChatResponse(content="done"),
+        ChatResponse(
+            content='{"passed": true, "issues": [], "summary": "ok"}'
+        ),
+    ])
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        capabilities=[search],
+        validator="validator_agent",
+        extra_system_prompt="Only execution agents receive this.",
+    )
+
+    result = run(
+        runner.run(
+            dagent.ToolAgent(
+                profile="conversation",
+                capabilities=[search],
+            ),
+            input="search",
+        )
+    )
+
+    assert result.output_text == "done"
+    assert "Only execution agents receive this." in provider.requests[0][
+        "messages"
+    ][0]["content"]
+    assert "Only execution agents receive this." in provider.requests[1][
+        "messages"
+    ][0]["content"]
+    assert "Only execution agents receive this." not in provider.requests[2][
+        "messages"
+    ][0]["content"]
 
 
 def _profile_root(tmp_path, name: str = "conversation"):

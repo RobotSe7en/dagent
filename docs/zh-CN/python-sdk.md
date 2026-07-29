@@ -58,11 +58,16 @@ runner = dagent.Runner(
     workspace="agent-workspace",
     runtime_directory=".runtime",
     provider=provider,
+    extra_system_prompt=None,
 )
 ```
 
 dagent 是进程内 SDK。请在你控制的进程中构造并关闭 `Runner`。进程命令、健康检查、
 凭证、持久化、调度和容器生命周期由 host 负责；SDK 不提供 worker 或 service loop。
+
+如果这个 runner 上的所有执行 agent 和动态 DAG planner 都需要同一条额外字面指令，
+可把 `extra_system_prompt` 设为非空字符串。Review checkpoint 会冻结当前 run 的初始值。
+参数顺序、适用范围、校验和排除项见[Runner 和配置](runner-and-configuration.md)。
 
 ## 最小 Tool
 

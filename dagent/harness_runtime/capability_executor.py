@@ -33,6 +33,7 @@ class CapabilityExecutionContext:
     output_artifacts: dict[str, list[str | Path]] = field(default_factory=dict)
     artifact_states: dict[str, ArtifactState] = field(default_factory=dict)
     skills: tuple[str, ...] | None = None
+    extra_system_prompt: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     approved_boundary_invocation_id: str | None = None
 

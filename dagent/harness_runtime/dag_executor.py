@@ -109,6 +109,7 @@ class DAGExecutor:
         graph_input: Any = None,
         runtime_directory: str,
         result_storage_policy: ResultStoragePolicy | None = None,
+        extra_system_prompt: str | None = None,
     ) -> None:
         self.capability_executor = capability_executor
         self.partial_node_traces: dict[str, RunTraceNode] = {}
@@ -124,6 +125,7 @@ class DAGExecutor:
         self.graph_input = _normalize_graph_input(graph_input)
         self.runtime_directory = validate_runtime_directory(runtime_directory)
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
+        self.extra_system_prompt = extra_system_prompt
 
     def configure_spec(
         self,
@@ -670,6 +672,7 @@ class DAGExecutor:
             capability_workspace_root=self.capability_workspace_root,
             runtime_directory=self.runtime_directory,
             result_storage_policy=self.result_storage_policy,
+            extra_system_prompt=self.extra_system_prompt,
             artifacts=spec.artifacts,
             spec_id=spec.id,
             graph_input=graph_input,
@@ -734,6 +737,7 @@ class DAGExecutor:
             output_artifacts=output_artifacts,
             artifact_states=dict(self.artifact_states),
             skills=skills,
+            extra_system_prompt=self.extra_system_prompt,
             approved_boundary_invocation_id=approved_boundary_invocation_id,
         )
 

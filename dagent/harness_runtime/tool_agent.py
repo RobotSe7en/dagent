@@ -115,6 +115,7 @@ class ToolAgent:
         profile: AgentProfile,
         prompt_builder: PromptBuilder | None = None,
         max_steps: int = 8,
+        extra_system_prompt: str | None = None,
         context_policy: ContextPolicy | None = None,
         result_storage_policy: ResultStoragePolicy | None = None,
         context_assembler: ContextAssembler | None = None,
@@ -123,6 +124,7 @@ class ToolAgent:
         self.profile = profile
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_steps = max_steps
+        self.extra_system_prompt = extra_system_prompt
         self.context_policy = context_policy or ContextPolicy()
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
         self.context_assembler = context_assembler or ContextAssembler(
@@ -144,6 +146,7 @@ class ToolAgent:
             PromptRequest(
                 profile=self.profile,
                 task_content="",
+                extra_system_prompt=self.extra_system_prompt,
                 workspace_path=workspace_path,
             )
         )
@@ -247,6 +250,7 @@ class ToolAgent:
                         task_id=state.run_id,
                         workspace_path=state.workspace_path,
                         skills=capability_scope.skills,
+                        extra_system_prompt=self.extra_system_prompt,
                         approved_boundary_invocation_id=(
                             invocation.invocation_id if boundary_review_approved else None
                         ),
@@ -336,6 +340,7 @@ class ToolAgent:
                 task_id=state.run_id,
                 workspace_path=state.workspace_path,
                 skills=capability_scope.skills,
+                extra_system_prompt=self.extra_system_prompt,
             ),
             on_token=on_token,
             on_event=on_event,
@@ -371,6 +376,11 @@ class ToolAgent:
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
         """Resume a tool-agent conversation from typed state."""
+        if capability_context is not None:
+            capability_context = replace(
+                capability_context,
+                extra_system_prompt=self.extra_system_prompt,
+            )
         control_tool_names = self.reviewable_tool_names(capability_scope)
         control_tool_names.update(
             self.loop.tool_adapter.function_name(definition)

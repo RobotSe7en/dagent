@@ -133,6 +133,7 @@ class DAGAgent:
         loop: "DAGAgentLoop",
         profile: AgentProfile,
         prompt_builder: PromptBuilder | None = None,
+        extra_system_prompt: str | None = None,
         context_policy: ContextPolicy | None = None,
         result_storage_policy: ResultStoragePolicy | None = None,
         context_assembler: ContextAssembler | None = None,
@@ -140,6 +141,7 @@ class DAGAgent:
         self.loop = loop
         self.profile = profile
         self.prompt_builder = prompt_builder or PromptBuilder()
+        self.extra_system_prompt = extra_system_prompt
         self.context_policy = context_policy or ContextPolicy()
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
         self.context_assembler = context_assembler or ContextAssembler(
@@ -181,6 +183,7 @@ class DAGAgent:
                 profile=self.profile,
                 task_content="",
                 context="\n\n".join(context_sections),
+                extra_system_prompt=self.extra_system_prompt,
                 workspace_path=workspace_path,
             )
         )
@@ -791,6 +794,7 @@ class DAGAgentLoop:
             capability_workspace_root=capability_workspace_root,
             runtime_directory=self.dag_executor.runtime_directory,
             result_storage_policy=self.result_storage_policy,
+            extra_system_prompt=self.dag_executor.extra_system_prompt,
             artifacts=spec.artifacts,
             artifact_states=artifact_states,
             spec_id=spec.id,

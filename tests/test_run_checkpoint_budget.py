@@ -45,6 +45,7 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     assert restored.schema_version == 4
     assert restored.plan.schema_version == 4
     assert restored.plan.runtime_directory == ".runtime"
+    assert restored.plan.extra_system_prompt is None
     assert len(restored.plan.fingerprint) == 64
     assert restored.usage == dagent.ExecutionUsage(
         total_operations=1,
@@ -59,6 +60,13 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     tampered["plan"]["tool_profile"]["content"] = "tampered"
     with pytest.raises(ValidationError, match="fingerprint"):
         dagent.RunCheckpoint.model_validate(tampered)
+
+    pre_extra_prompt = checkpoint.model_dump(mode="json")
+    pre_extra_prompt["plan"].pop("extra_system_prompt")
+    restored_pre_extra_prompt = dagent.RunCheckpoint.model_validate(
+        pre_extra_prompt
+    )
+    assert restored_pre_extra_prompt.plan.extra_system_prompt is None
 
     legacy = checkpoint.model_dump(mode="json")
     legacy["schema_version"] = 3

@@ -63,6 +63,32 @@ def test_prompt_builder_injects_resolved_workspace_runtime_context(
     assert profile.content == "Stay concise."
 
 
+def test_prompt_builder_places_literal_extra_prompt_before_dynamic_sections(
+    tmp_path: Path,
+) -> None:
+    profile = AgentProfile(name="conversation", content="Profile instructions.")
+    tool = CapabilityDefinition(id="tool.search", kind="tool")
+    extra = "Follow tenant policy literally: {{ do_not_render }}."
+
+    message = PromptBuilder().build_system_message(
+        PromptRequest(
+            profile=profile,
+            task_content="",
+            workspace_path=tmp_path,
+            extra_system_prompt=extra,
+            tools=[tool],
+            context="Dynamic DAG schema.",
+        )
+    )
+
+    content = message["content"]
+    assert content.index("Profile instructions.") < content.index("## Runtime Context")
+    assert content.index("## Runtime Context") < content.index("## Extra System Prompt")
+    assert content.index("## Extra System Prompt") < content.index("## Available Tools")
+    assert content.index("## Available Tools") < content.index("## Context")
+    assert extra in content
+
+
 def test_prompt_builder_renders_user_message_template() -> None:
     builder = PromptBuilder()
     message = builder.build_user_message(

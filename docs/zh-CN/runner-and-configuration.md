@@ -25,6 +25,7 @@ runner = dagent.Runner(
     profile_root="profiles",
     planner_frontend="typed_spec",
     mcp_stdio_stderr="discard",
+    extra_system_prompt="遵循宿主应用的回答策略。",
 )
 ```
 
@@ -62,6 +63,20 @@ validator。Profile Markdown 本身保持不变；runtime path 不会写入 prof
 模型会在该 system 段中收到解析后的 run workspace。上传附件和外置结果会以 workspace
 相对路径、媒体类型、字节数和摘要出现在 conversation input 中，因此文件工具可以打开
 它们，同时不会暴露绝对路径或 runner-level conversation backing store。
+
+`extra_system_prompt` 用一个普通字符串统一追加宿主指令，不会替换 Agent Profile 或
+`Runtime Context`。SDK 的组装顺序是：Profile、Runtime Context、Extra System Prompt，
+然后才是动态 tool、capability catalog 和 DAG schema 内容。它适用于 `ToolAgent`、
+`AutoAgent` 实际选择的 tool 或 DAG 执行路径、DAG 初始规划与 replan，以及 registered
+agent；不适用于 `ValidatorAgent`、`FeedbackLearnerAgent` 和 AutoAgent 的路由分类器。
+
+传入 `None` 时，system prompt 与现有行为完全相同。非空值必须是去除空白后仍有内容、
+且不超过 16,384 个字符的字符串。SDK 按字面注入它，不执行 Jinja 模板，也不提供
+targets 或 prompt extension 语义。它只影响模型指令，不会授予 capability、扩大
+boundary、绕过 review 或改变 workspace 权限。
+
+每个 run 会把初始值冻结在 `ResolvedRunPlan` 中。因此 review 续跑始终使用 checkpoint
+里的值，即使另一个 runner 或原 runner 后续配置了不同的 `extra_system_prompt`。
 
 ## Provider 选项
 
@@ -119,8 +134,11 @@ runner = dagent.Runner.from_config(
     workspace="agent-workspace",
     runtime_directory=".runtime",
     capabilities=[search],
+    extra_system_prompt="遵循宿主应用的回答策略。",
 )
 ```
+
+`extra_system_prompt` 始终是显式 SDK 参数，不会从 YAML 文件中加载。
 
 示例 `config.yaml`：
 
