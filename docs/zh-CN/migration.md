@@ -4,9 +4,32 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.8.1`。
+当前包版本是 `0.8.2`。
 
 ## Unreleased
+
+## 0.8.2
+
+### 修复
+
+- Dynamic DAG review continuation 在执行失败并重规划到下一个审核边界时，现在会推进
+  `ConversationState.revision`，即使可见 conversation items 未改变。
+  `RunResult`、`RunState` 和 `RunCheckpoint` 会暴露同一个替换 conversation 快照。
+- Planner model-thread revision 现在从前一个状态版本递增，不再根据 item 数量生成。
+
+### 兼容性与迁移
+
+- 此 patch release 没有 breaking API 或 schema 变化。
+- Host 应继续执行严格的 revision compare-and-swap 及 duplicate/stale rejection，不要为
+  0.8.1 增加 equality fallback。
+- 现有 V4 review checkpoint 和 V3 conversation 可在 0.8.2 上直接恢复，无需转换。
+
+### 验证
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
 
 ## 0.8.1
 

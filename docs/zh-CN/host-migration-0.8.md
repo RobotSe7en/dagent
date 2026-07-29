@@ -16,6 +16,9 @@ host 仍需在自己的持久化与鉴权层落实这些边界。
 
 租户/用户/项目 key、鉴权、脱敏、加密、保留策略和乐观并发仍由 host 负责。可以使用
 `ConversationState.id` 和 `revision` 作为 SDK 层身份与版本，但不能把它们当作鉴权边界。
+`revision` 是状态版本，不是 item 数量。review resume 再次到达审核边界时，替换
+conversation 的 revision 必须严格大于上一个边界的 revision。相等 revision 属于 stale
+状态，host 不得增加 equality fallback。
 
 ## 请求映射
 
@@ -96,5 +99,7 @@ checksum。
 - 超长输入在 provider 调用前失败；
 - 大型工具/MCP 输出被引用，并能随 workspace 上传长期存储；
 - 进程重启后，仅依赖持久化 V3 checkpoint 即可恢复审核；
+- review continuation 再次到达审核边界时，即使可见 items 不变，完整 conversation
+  revision 也会推进；
 - 重复或过期 conversation revision 被拒绝；
 - V1/V2 resume 明确返回版本错误。

@@ -573,6 +573,68 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     assert result.dag.nodes[-1].payload.invocation.capability_id == "tool.search"
 
 
+def test_runner_dynamic_dag_follow_up_review_advances_conversation_revision(
+    tmp_path,
+) -> None:
+    @dagent.tool
+    def fail_tool(text: str) -> str:
+        raise RuntimeError(f"failed:{text}")
+
+    @dagent.tool
+    def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    provider = MockProvider([
+        ChatResponse(content="dag"),
+        ChatResponse(content=capability_plan_response(
+            "tool.fail_tool", {"text": "boom"}, node_id="bad"
+        )),
+        ChatResponse(content=capability_plan_response(
+            "tool.echo", {"text": "recovered"}, node_id="answer"
+        )),
+    ])
+    agent = dagent.AutoAgent(
+        capabilities=[fail_tool, echo],
+        skills=[],
+        review="careful",
+    )
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+    )
+
+    initial = run(runner.run(agent, input="repair through a reviewed DAG"))
+
+    assert initial.requires_review
+    assert initial.review is not None
+    assert initial.pending_review is not None
+    assert initial.pending_review.kind == "initial_dag"
+    assert initial.conversation is not None
+    assert initial.checkpoint is not None
+
+    follow_up = run(
+        runner.resume(
+            initial.review.approve(),
+            checkpoint=initial.checkpoint,
+        )
+    )
+
+    assert follow_up is not None
+    assert follow_up.requires_review
+    assert follow_up.pending_review is not None
+    assert follow_up.pending_review.kind == "dag_replan"
+    assert follow_up.conversation is not None
+    assert follow_up.checkpoint is not None
+    assert follow_up.conversation.revision > initial.conversation.revision
+    assert follow_up.conversation.items == initial.conversation.items
+    assert (
+        follow_up.conversation
+        == follow_up.state.conversation
+        == follow_up.checkpoint.state.conversation
+    )
+
+
 def test_runner_dag_agent_can_plan_registered_agent_node(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(content=capability_plan_response(

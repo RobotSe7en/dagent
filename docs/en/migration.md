@@ -5,9 +5,35 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.8.1`.
+The current package version is `0.8.2`.
 
 ## Unreleased
+
+## 0.8.2
+
+### Fixed
+
+- Dynamic DAG review continuation now advances `ConversationState.revision`
+  when execution failure and replanning produce another review gate, even when
+  the visible conversation items are unchanged. `RunResult`, `RunState`, and
+  `RunCheckpoint` expose the same replacement conversation snapshot.
+- Planner model-thread revisions now advance from the prior state version
+  instead of being derived from the number of items.
+
+### Compatibility and migration
+
+- This patch release has no breaking API or schema changes.
+- Hosts should retain strict revision compare-and-swap and duplicate/stale
+  rejection. Do not add an equality fallback for 0.8.1.
+- Existing V4 review checkpoints and V3 conversations can resume on 0.8.2
+  without conversion.
+
+### Verification
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
 
 ## 0.8.1
 

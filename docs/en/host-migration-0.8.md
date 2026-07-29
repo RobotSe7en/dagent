@@ -19,7 +19,11 @@ Do not persist a bare `RunState` as a resumable object.
 The host remains responsible for tenant/user/project keys, authorization,
 redaction, encryption, retention, and optimistic concurrency. Use
 `ConversationState.id` and `revision` as the SDK-level identity and version, but
-do not treat them as an authorization boundary.
+do not treat them as an authorization boundary. `revision` is a state version,
+not an item count. When review resume reaches another review gate, the
+replacement conversation revision must be strictly newer than the conversation
+at the previous gate. Equal revisions are stale and must not receive a host-side
+equality fallback.
 
 ## Request mapping
 
@@ -112,5 +116,7 @@ inside the recorded run workspace and verify their checksum.
 - oversized input fails before provider invocation;
 - large tool/MCP output is referenced and survives workspace upload;
 - review works after process restart from only the persisted V3 checkpoint;
+- a review continuation that reaches another review gate advances the complete
+  conversation revision even when its visible items are unchanged;
 - duplicate or stale conversation revisions are rejected;
 - V1/V2 resume attempts fail with an explicit version error.

@@ -276,6 +276,7 @@ class DAGAgent:
         self.thread = _thread_from_openai_messages(
             _strip_system_message(provider_messages),
             conversation_id=self.thread.id,
+            revision=self.thread.revision + 1,
             run_id=resolved_task_id,
             summary=self.loop.latest_context_summary,
         )
@@ -342,14 +343,23 @@ class DAGAgent:
         self.thread = _thread_from_openai_messages(
             _strip_system_message(provider_messages),
             conversation_id=self.thread.id,
+            revision=self.thread.revision + 1,
             run_id=state.run_id,
             summary=self.loop.latest_context_summary,
         )
+        previous_conversation = state.conversation or ConversationState()
         public_conversation = _bounded_public_conversation(
-            state.conversation or ConversationState(),
+            previous_conversation,
             summary=self.loop.latest_context_summary,
             keep_recent_turns=self.context_policy.keep_recent_turns,
         )
+        if (
+            outcome.state.status == "awaiting_review"
+            and public_conversation.revision == previous_conversation.revision
+        ):
+            public_conversation = public_conversation.model_copy(
+                update={"revision": previous_conversation.revision + 1}
+            )
         next_state = outcome.state.model_copy(
             update={
                 "model_thread": self.thread,
@@ -1790,6 +1800,7 @@ def _thread_from_openai_messages(
     messages: list[dict[str, Any]],
     *,
     conversation_id: str,
+    revision: int = 0,
     run_id: str | None = None,
     summary: ContextSummary | None = None,
 ) -> ConversationState:
@@ -1850,7 +1861,7 @@ def _thread_from_openai_messages(
             )
     return ConversationState(
         id=conversation_id,
-        revision=len(items),
+        revision=revision,
         summary=summary,
         items=tuple(items),
     )
