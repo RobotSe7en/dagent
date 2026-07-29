@@ -2,7 +2,7 @@ from pathlib import Path
 
 from dagent.profiles import AgentProfile
 from dagent.state import PromptBuilder, PromptRequest
-from dagent.schemas import CapabilityDefinition
+from dagent.schemas import CapabilityDefinition, PromptExtension
 
 
 def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
@@ -61,6 +61,77 @@ def test_prompt_builder_injects_resolved_workspace_runtime_context(
         "- Resolve relative file paths from this workspace root."
     )
     assert profile.content == "Stay concise."
+
+
+def test_prompt_builder_orders_and_filters_host_extensions(
+    tmp_path: Path,
+) -> None:
+    profile = AgentProfile(name="conversation", content="PROFILE")
+    tool = CapabilityDefinition(
+        id="tool.read_file",
+        kind="tool",
+        description="Read a file.",
+    )
+    builder = PromptBuilder()
+    baseline = builder.build_system_message(
+        PromptRequest(
+            profile=profile,
+            task_content="",
+            workspace_path=tmp_path,
+            tools=[tool],
+            context="DYNAMIC_CONTEXT",
+        )
+    )
+    explicit_empty = builder.build_system_message(
+        PromptRequest(
+            profile=profile,
+            task_content="",
+            workspace_path=tmp_path,
+            tools=[tool],
+            context="DYNAMIC_CONTEXT",
+            prompt_extensions=(),
+        )
+    )
+    extended = builder.build_system_message(
+        PromptRequest(
+            profile=profile,
+            task_content="",
+            workspace_path=tmp_path,
+            tools=[tool],
+            context="DYNAMIC_CONTEXT",
+            prompt_extensions=(
+                PromptExtension(
+                    id="host.z",
+                    content="EXTENSION_Z",
+                    targets=["tool_agent"],
+                ),
+                PromptExtension(
+                    id="host.a",
+                    content="EXTENSION_A {{ host_does_not_render_here }}",
+                    targets=["tool_agent"],
+                ),
+                PromptExtension(
+                    id="host.dag",
+                    content="DAG_ONLY",
+                    targets=["dag_planner"],
+                ),
+            ),
+            prompt_target="tool_agent",
+        )
+    )
+
+    assert explicit_empty == baseline
+    content = extended["content"]
+    assert "DAG_ONLY" not in content
+    assert "{{ host_does_not_render_here }}" in content
+    assert (
+        content.index("PROFILE")
+        < content.index("## Runtime Context")
+        < content.index("Host Prompt Extension: host.a")
+        < content.index("Host Prompt Extension: host.z")
+        < content.index("## Available Tools")
+        < content.index("DYNAMIC_CONTEXT")
+    )
 
 
 def test_prompt_builder_renders_user_message_template() -> None:

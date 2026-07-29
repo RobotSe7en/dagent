@@ -9,6 +9,28 @@ The current package version is `0.8.2`.
 
 ## Unreleased
 
+### Added
+
+- Added the frozen, extra-forbid `PromptExtension` public contract and explicit
+  `Runner(..., prompt_extensions=...)` /
+  `Runner.from_config(..., prompt_extensions=...)` inputs for trusted,
+  already-rendered host Markdown.
+- Extensions can target tool agents, dynamic DAG planners, and registered
+  agents. Default empty configuration preserves existing model prompts and
+  runtime behavior.
+
+### Prompt and continuation semantics
+
+- System prompts now have a fixed profile → SDK runtime context → named host
+  extensions → SDK dynamic context order. Extensions do not alter capability
+  scope, boundaries, workspaces, or review policy.
+- Runs with extensions use `ResolvedRunPlan` and `RunCheckpoint` schema V5 and
+  freeze canonical extension contents and targets into the plan fingerprint.
+- Default empty runs continue to produce V4. Existing V4 checkpoints remain a
+  strict no-extension format and resume without conversion.
+  `ConversationState` remains V3. No equality fallback or host-specific
+  compatibility path is required.
+
 ## 0.8.2
 
 ### Fixed

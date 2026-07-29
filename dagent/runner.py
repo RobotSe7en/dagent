@@ -110,6 +110,7 @@ from dagent.schemas import (
     PendingReview,
     PlannerFrontend,
     PlannerSkillSnapshot,
+    PromptExtension,
     PythonToolRegistrationResult,
     PythonToolSourceRegistrationStatus,
     RunnerCatalogView,
@@ -127,6 +128,7 @@ from dagent.schemas import (
 )
 from dagent.schemas.run_id import validate_run_id
 from dagent.schemas.common import validate_runtime_directory
+from dagent.schemas.prompt import normalize_prompt_extensions
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
@@ -155,6 +157,7 @@ class Runner:
         profile_root: str | Path | None = None,
         sandbox: SandboxConfig | None = None,
         planner_frontend: PlannerFrontend = "typed_spec",
+        prompt_extensions: Iterable[PromptExtension] = (),
         mcp_stdio_stderr: MCPStdioStderr = "discard",
         result_storage_policy: ResultStoragePolicy | None = None,
     ) -> None:
@@ -162,6 +165,7 @@ class Runner:
         self.runtime_directory = validate_runtime_directory(runtime_directory)
         self.profile_root = Path(profile_root) if profile_root is not None else None
         self.sandbox = sandbox or SandboxConfig()
+        self._prompt_extensions = normalize_prompt_extensions(prompt_extensions)
         self._mcp_stdio_stderr = validate_mcp_stdio_stderr(mcp_stdio_stderr)
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
         if planner_frontend not in {"typed_spec", "sdk_builder"}:
@@ -195,6 +199,7 @@ class Runner:
             profile_root=self.profile_root,
             planner_frontend=planner_frontend,
             planner_skill=planner_skill,
+            prompt_extensions=self._prompt_extensions,
             result_storage_policy=self.result_storage_policy,
         )
         self._local_tool_binding_ids.update(
@@ -222,6 +227,7 @@ class Runner:
         profile_root: str | Path | None = None,
         sandbox: SandboxConfig | None = None,
         planner_frontend: PlannerFrontend | None = None,
+        prompt_extensions: Iterable[PromptExtension] = (),
         mcp_stdio_stderr: MCPStdioStderr = "discard",
         result_storage_policy: ResultStoragePolicy | None = None,
     ) -> "Runner":
@@ -249,6 +255,7 @@ class Runner:
             profile_root=resolved_profile_root,
             sandbox=sandbox or config.sandbox,
             planner_frontend=planner_frontend or config.planner_frontend,
+            prompt_extensions=prompt_extensions,
             mcp_stdio_stderr=mcp_stdio_stderr,
             result_storage_policy=result_storage_policy,
         )
@@ -260,6 +267,10 @@ class Runner:
     @property
     def capabilities(self) -> list[CapabilityDefinition]:
         return self._runtime.capability_catalog.list(enabled_only=True)
+
+    @property
+    def prompt_extensions(self) -> tuple[PromptExtension, ...]:
+        return self._prompt_extensions
 
     def close(self) -> None:
         if self._closed:
@@ -292,6 +303,7 @@ class Runner:
         profile_root: str | Path | None = None,
         sandbox: SandboxConfig | None = None,
         planner_frontend: PlannerFrontend | None = None,
+        prompt_extensions: Iterable[PromptExtension] | None = None,
         mcp_stdio_stderr: MCPStdioStderr | None = None,
         result_storage_policy: ResultStoragePolicy | None = None,
         agents: Iterable[ToolAgent] = (),
@@ -343,6 +355,11 @@ class Runner:
                 planner_frontend
                 if planner_frontend is not None
                 else self._runtime.dag_agent.loop.planner_frontend
+            ),
+            prompt_extensions=(
+                self._prompt_extensions
+                if prompt_extensions is None
+                else prompt_extensions
             ),
             mcp_stdio_stderr=(
                 mcp_stdio_stderr
@@ -1454,8 +1471,9 @@ class Runner:
             if runtime.validator is not None
             else None
         )
+        prompt_extensions = runtime.tool_agent.prompt_extensions
         plan = ResolvedRunPlan(
-            schema_version=4,
+            schema_version=5 if prompt_extensions else 4,
             runtime_kind=state.kind,
             tool_profile=runtime.tool_agent.profile.model_copy(deep=True),
             planner_profile=runtime.dag_agent.profile.model_copy(deep=True),
@@ -1488,6 +1506,7 @@ class Runner:
             output_reserve_tokens=(
                 runtime.tool_agent.context_assembler.output_reserve_tokens
             ),
+            prompt_extensions=prompt_extensions,
         )
         finalized = replace(
             result,
@@ -1862,6 +1881,7 @@ class Runner:
             profile_root=None,
             planner_frontend=plan.planner_frontend,
             planner_skill=plan.planner_skill,
+            prompt_extensions=plan.prompt_extensions,
             context_policy=plan.context_policy,
             result_storage_policy=plan.result_storage_policy,
             runtime_directory=plan.runtime_directory,
@@ -2013,6 +2033,7 @@ class Runner:
         config["skills"] = _agent_skills(agent)
         config["context_policy"] = agent.context
         config["result_storage_policy"] = self.result_storage_policy
+        config["prompt_extensions"] = self._prompt_extensions
         config["tool_adapter"] = _tool_adapter(self._runtime.capability_catalog, capability_ids)
 
     def _validate_agent_registration(self, agent: ToolAgent, *, replacing: bool) -> None:
@@ -2082,6 +2103,7 @@ class Runner:
             "max_steps": agent.max_steps,
             "context_policy": agent.context,
             "result_storage_policy": self.result_storage_policy,
+            "prompt_extensions": self._prompt_extensions,
             "skills": _agent_skills(agent),
             "capability_executor": self._runtime.capability_executor,
             "tool_adapter": _tool_adapter(self._runtime.capability_catalog, capability_ids),
@@ -2165,6 +2187,7 @@ def _assemble_runtime(
     runtime_directory: str,
     planner_frontend: PlannerFrontend = "typed_spec",
     planner_skill: PlannerSkillSnapshot | None = None,
+    prompt_extensions: tuple[PromptExtension, ...] = (),
     context_policy: ContextPolicy | None = None,
     result_storage_policy: ResultStoragePolicy | None = None,
     context_window_tokens: int | None = None,
@@ -2189,6 +2212,7 @@ def _assemble_runtime(
         ),
         profile=_resolve_profile(tool_profile, profile_root=profile_root),
         max_steps=tool_max_steps,
+        prompt_extensions=prompt_extensions,
         context_policy=resolved_context_policy,
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
@@ -2203,6 +2227,7 @@ def _assemble_runtime(
                 capability_executor=capability_executor,
                 capability_workspace_root=catalog.workspace_root,
                 runtime_directory=runtime_directory,
+                prompt_extensions=prompt_extensions,
                 result_storage_policy=resolved_result_storage_policy,
             ),
             tool_adapter=tool_adapter,
@@ -2211,6 +2236,7 @@ def _assemble_runtime(
             planner_skill=planner_skill,
         ),
         profile=_resolve_profile(dag_profile, profile_root=profile_root),
+        prompt_extensions=prompt_extensions,
         context_policy=resolved_context_policy,
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
@@ -2246,6 +2272,7 @@ def _create_runtime(
     profile_root: str | Path | None = None,
     planner_frontend: PlannerFrontend = "typed_spec",
     planner_skill: PlannerSkillSnapshot | None = None,
+    prompt_extensions: tuple[PromptExtension, ...] = (),
     result_storage_policy: ResultStoragePolicy | None = None,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
@@ -2276,6 +2303,7 @@ def _create_runtime(
         runtime_directory=runtime_directory,
         planner_frontend=planner_frontend,
         planner_skill=planner_skill,
+        prompt_extensions=prompt_extensions,
         result_storage_policy=result_storage_policy,
     )
 
@@ -2307,6 +2335,7 @@ def _runtime_from_existing(
         runtime_directory=base.runtime_directory,
         planner_frontend=base.dag_agent.loop.planner_frontend,
         planner_skill=base.dag_agent.loop.planner_skill,
+        prompt_extensions=base.tool_agent.prompt_extensions,
         context_policy=context_policy,
         result_storage_policy=base.tool_agent.result_storage_policy,
     )

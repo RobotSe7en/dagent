@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from dagent.profiles import AgentProfile
-from dagent.schemas import CapabilityDefinition
+from dagent.schemas import (
+    CapabilityDefinition,
+    PromptExtension,
+    PromptExtensionTarget,
+)
+from dagent.schemas.prompt import prompt_extensions_for_target
 
 
 @dataclass(frozen=True)
@@ -18,6 +23,8 @@ class PromptRequest:
     context: str = ""
     variables: dict[str, Any] = field(default_factory=dict)
     workspace_path: str | Path | None = None
+    prompt_extensions: tuple[PromptExtension, ...] = ()
+    prompt_target: PromptExtensionTarget | None = None
 
 
 class PromptBuilder:
@@ -34,6 +41,17 @@ class PromptBuilder:
         system_sections.append(request.profile.render())
         if request.workspace_path is not None:
             system_sections.append(_runtime_context_section(request.workspace_path))
+        if request.prompt_extensions:
+            if request.prompt_target is None:
+                raise ValueError(
+                    "prompt_target is required when prompt_extensions are provided."
+                )
+            system_sections.extend(
+                _prompt_extension_sections(
+                    request.prompt_extensions,
+                    request.prompt_target,
+                )
+            )
         if request.tools:
             system_sections.append(_tools_section(request.tools))
         if request.context:
@@ -81,6 +99,19 @@ def _runtime_context_section(workspace_path: str | Path) -> str:
             "- Resolve relative file paths from this workspace root."
         ),
     )
+
+
+def _prompt_extension_sections(
+    extensions: tuple[PromptExtension, ...],
+    target: PromptExtensionTarget,
+) -> list[str]:
+    return [
+        _named_section(
+            f"Host Prompt Extension: {extension.id}",
+            extension.content,
+        )
+        for extension in prompt_extensions_for_target(extensions, target)
+    ]
 
 
 def _render_template(template: str, values: dict[str, Any]) -> str:

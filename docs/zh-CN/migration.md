@@ -8,6 +8,26 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
+### 新增
+
+- 新增冻结、extra-forbid 的公开 `PromptExtension` contract，以及显式的
+  `Runner(..., prompt_extensions=...)` /
+  `Runner.from_config(..., prompt_extensions=...)` 输入，用于接收 host 已渲染并信任的
+  Markdown。
+- 扩展可面向 tool agent、动态 DAG planner 和注册 agent。默认空配置保持现有模型
+  prompt 与 runtime 行为不变。
+
+### Prompt 与 continuation 语义
+
+- System prompt 使用固定的 profile → SDK runtime context → 具名 host extensions →
+  SDK 动态上下文顺序。扩展不会改变 capability scope、boundary、workspace 或 review
+  policy。
+- 带扩展的 run 使用 `ResolvedRunPlan` 和 `RunCheckpoint` schema V5，并把标准化的扩展
+  内容和 targets 冻结进 plan fingerprint。
+- 默认空扩展 run 继续生成 V4。现有 V4 checkpoint 保持严格的无扩展格式，可直接恢复
+  而无需转换。`ConversationState` 保持 V3；不需要 equality fallback 或
+  host-specific 兼容路径。
+
 ## 0.8.2
 
 ### 修复

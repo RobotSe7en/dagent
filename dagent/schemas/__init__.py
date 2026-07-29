@@ -20,6 +20,7 @@ from dagent.schemas.conversation import (
     ToolResultMessage,
     UserMessage,
 )
+from dagent.schemas.prompt import PromptExtension, PromptExtensionTarget
 from dagent.schemas.artifact import Artifact, ArtifactState, ArtifactStatus
 from dagent.schemas.dag import DAG, DAGRun, DAGRunStatus, DAGSpec, iter_dag_invocations
 from dagent.schemas.edge import DAGEdge
@@ -120,6 +121,8 @@ __all__ = [
     "PendingReview",
     "PlannerFrontend",
     "PlannerSkillSnapshot",
+    "PromptExtension",
+    "PromptExtensionTarget",
     "RunCapabilityScope",
     "RunCheckpoint",
     "ResolvedRunPlan",

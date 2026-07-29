@@ -150,9 +150,15 @@ resumed = await runner.resume(
 
 0.8 不再提供 `Runner.run(..., checkpoint=...)`、`run(..., state=...)` 或
 `resume(..., state=...)`。checkpoint 会冻结 profile、capability/skill scope、
-capability definition 指纹、策略、限制、planner 模式和已消耗预算，避免审核在不同
-语义下恢复。其中包括 context window 和 output reserve；即使 provider 配置在恢复期间
-发生变化，续跑再次进入审核门时，新 checkpoint 仍沿用原先冻结的限制。
+host prompt extensions、capability definition 指纹、策略、限制、planner 模式和已消耗
+预算，避免审核在不同语义下恢复。其中包括 context window 和 output reserve；即使当前
+runner 或 provider 配置在恢复期间发生变化，续跑再次进入审核门时，新 checkpoint 仍沿用
+原先冻结的设置。
+
+带 prompt extensions 的 run 使用 checkpoint schema V5，因为 resolved plan 的指纹
+包含标准化的 extension 快照。默认无扩展 run 继续生成 V4；现有 V4 checkpoint 也是
+明确的无扩展格式，可直接恢复而无需转换。`ConversationState` 保持 V3；把它传给
+`Runner.run(...)` 会在该 runner 的当前配置下启动一个新 run。
 
 ## 流式调用
 

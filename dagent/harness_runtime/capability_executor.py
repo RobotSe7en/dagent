@@ -13,7 +13,13 @@ from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.capabilities.sandbox_context import current_run_execution
 from dagent.capabilities.workspace import workspace_context
 from dagent.harness_runtime.execution_budget import reserve_capability_call
-from dagent.schemas import ArtifactState, CapabilityInvocation, CapabilityResult, DAGNode
+from dagent.schemas import (
+    ArtifactState,
+    CapabilityInvocation,
+    CapabilityResult,
+    DAGNode,
+    PromptExtension,
+)
 
 
 class CapabilityExecutionError(RuntimeError):
@@ -33,6 +39,7 @@ class CapabilityExecutionContext:
     output_artifacts: dict[str, list[str | Path]] = field(default_factory=dict)
     artifact_states: dict[str, ArtifactState] = field(default_factory=dict)
     skills: tuple[str, ...] | None = None
+    prompt_extensions: tuple[PromptExtension, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     approved_boundary_invocation_id: str | None = None
 

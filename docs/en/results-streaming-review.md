@@ -162,11 +162,19 @@ resumed = await runner.resume(
 
 `Runner.run(..., checkpoint=...)`, `run(..., state=...)`, and
 `resume(..., state=...)` do not exist in 0.8. A checkpoint freezes profiles,
-capability and skill scope, capability-definition fingerprints, policies,
-context-window and output-reserve limits, planner mode, and prior execution
-usage so review cannot resume under different semantics. If a resumed run
-reaches another review gate, its replacement checkpoint keeps those same frozen
-limits even if provider settings changed meanwhile.
+host prompt extensions, capability and skill scope, capability-definition
+fingerprints, policies, context-window and output-reserve limits, planner mode,
+and prior execution usage so review cannot resume under different semantics. If
+a resumed run reaches another review gate, its replacement checkpoint keeps
+those same frozen settings even if the current runner or provider configuration
+changed meanwhile.
+
+Runs with prompt extensions use checkpoint schema V5 because the resolved plan
+includes the canonical extension snapshot in its fingerprint. Default
+no-extension runs continue to produce V4, and existing V4 checkpoints remain an
+explicit no-extension format that resumes without conversion.
+`ConversationState` remains V3; passing it to `Runner.run(...)` starts a new run
+under that runner's current configuration.
 
 ## Streaming
 

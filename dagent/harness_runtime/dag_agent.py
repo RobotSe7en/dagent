@@ -73,6 +73,7 @@ from dagent.schemas import (
     PendingReview,
     PlannerFrontend,
     PlannerSkillSnapshot,
+    PromptExtension,
     CapabilityDefinition,
     CapabilityNodePayload,
     ContextPolicy,
@@ -96,6 +97,7 @@ from dagent.schemas import (
     UserMessage,
     iter_dag_invocations,
 )
+from dagent.schemas.prompt import normalize_prompt_extensions
 from dagent.config import DEFAULT_RUNS_DIR, resolve_run_workspace_root
 from dagent.schemas.node import NodeStatus
 from dagent.schemas.value import iter_artifact_exprs
@@ -133,6 +135,7 @@ class DAGAgent:
         loop: "DAGAgentLoop",
         profile: AgentProfile,
         prompt_builder: PromptBuilder | None = None,
+        prompt_extensions: tuple[PromptExtension, ...] = (),
         context_policy: ContextPolicy | None = None,
         result_storage_policy: ResultStoragePolicy | None = None,
         context_assembler: ContextAssembler | None = None,
@@ -140,6 +143,7 @@ class DAGAgent:
         self.loop = loop
         self.profile = profile
         self.prompt_builder = prompt_builder or PromptBuilder()
+        self.prompt_extensions = normalize_prompt_extensions(prompt_extensions)
         self.context_policy = context_policy or ContextPolicy()
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
         self.context_assembler = context_assembler or ContextAssembler(
@@ -182,6 +186,8 @@ class DAGAgent:
                 task_content="",
                 context="\n\n".join(context_sections),
                 workspace_path=workspace_path,
+                prompt_extensions=self.prompt_extensions,
+                prompt_target="dag_planner",
             )
         )
 
@@ -790,6 +796,7 @@ class DAGAgentLoop:
             workspace_path=workspace,
             capability_workspace_root=capability_workspace_root,
             runtime_directory=self.dag_executor.runtime_directory,
+            prompt_extensions=self.dag_executor.prompt_extensions,
             result_storage_policy=self.result_storage_policy,
             artifacts=spec.artifacts,
             artifact_states=artifact_states,

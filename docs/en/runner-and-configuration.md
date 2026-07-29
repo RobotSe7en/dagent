@@ -78,6 +78,65 @@ workspace-relative paths, media type, byte count, and digest, so file tools can
 open them without exposing absolute paths or the runner-level conversation
 backing store.
 
+## Host prompt extensions
+
+Use `PromptExtension` when a host needs to add trusted, already-rendered
+Markdown to selected model system prompts:
+
+```python
+rendered_workspace_policy = """
+This run uses a host-managed workspace.
+
+- Preserve the existing workspace structure.
+- Place standalone deliverables in the delivery location designated by the host.
+"""
+
+runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
+    provider=provider,
+    prompt_extensions=[
+        dagent.PromptExtension(
+            id="host.workspace_policy",
+            content=rendered_workspace_policy,
+        )
+    ],
+)
+```
+
+The host renders and trusts `content` before constructing the runner. The SDK
+does not run Jinja or another template engine, read host configuration, infer
+policy from user messages or files, or promote secrets into the system prompt.
+`PromptExtension` does not add an output-path parameter and does not grant
+capabilities, boundary access, workspace access, or review approval.
+
+The default targets are `tool_agent`, `dag_planner`, and `registered_agent`.
+Select a narrower set when appropriate:
+
+```python
+dagent.PromptExtension(
+    id="host.planning_policy",
+    content="Prefer the host's documented project structure.",
+    targets=["dag_planner"],
+)
+```
+
+Validators, routers, and feedback learners are not extension targets. Extension
+ids are normalized to lowercase and must be unique; ids and targets have a
+canonical deterministic order. Content is limited to 16,384 characters per
+extension and 32,768 characters across the runner.
+
+System prompt assembly is deterministic: agent profile, SDK `Runtime Context`,
+named `Host Prompt Extension` sections, then the applicable capability catalog,
+tool catalog, DAG response schema, or other SDK dynamic context. Extensions add
+sections; they cannot replace the profile or SDK-owned runtime rules.
+
+`Runner.from_config(...)` accepts the same explicit `prompt_extensions=`
+argument but does not load them from YAML. `Runner.derive(...)` inherits the
+current tuple unless the host supplies a replacement. Review checkpoints freeze
+the canonical extensions in the resolved run plan, so a resumed run uses its
+original prompt snapshot even on a different runner.
+
 ## Provider Options
 
 `dagent.Provider` targets OpenAI-compatible chat completions endpoints:

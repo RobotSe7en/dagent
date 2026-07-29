@@ -6,7 +6,15 @@ import hashlib
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from dagent.profiles import AgentProfile
 from dagent.schemas.common import validate_runtime_directory
@@ -19,6 +27,7 @@ from dagent.schemas.conversation import (
     ConversationItem,
     ConversationState,
 )
+from dagent.schemas.prompt import PromptExtension, normalize_prompt_extensions
 
 
 ReviewKind = Literal["initial_dag", "dag_replan", "capability_review"]
@@ -87,7 +96,7 @@ class ResolvedRunPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[4] = 4
+    schema_version: Literal[4, 5] = 4
     runtime_kind: RunStateKind
     tool_profile: AgentProfile
     planner_profile: AgentProfile
@@ -110,6 +119,7 @@ class ResolvedRunPlan(BaseModel):
     runtime_directory: str
     context_window_tokens: int = Field(default=32768, ge=1024)
     output_reserve_tokens: int = Field(default=4096, ge=0)
+    prompt_extensions: tuple[PromptExtension, ...] = ()
     fingerprint: str = ""
 
     @field_validator(
@@ -135,6 +145,14 @@ class ResolvedRunPlan(BaseModel):
             raise ValueError("Resolved run plan ids must not be empty.")
         return tuple(sorted(set(ids)))
 
+    @field_validator("prompt_extensions", mode="before")
+    @classmethod
+    def canonicalize_prompt_extensions(
+        cls,
+        value: Any,
+    ) -> tuple[PromptExtension, ...]:
+        return normalize_prompt_extensions(value)
+
     @field_validator("runtime_directory", mode="before")
     @classmethod
     def validate_runtime_directory(cls, value: Any) -> str:
@@ -142,6 +160,10 @@ class ResolvedRunPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_resolved_configuration(self) -> "ResolvedRunPlan":
+        if self.schema_version == 4 and self.prompt_extensions:
+            raise ValueError("Resolved run plan V4 does not support prompt extensions.")
+        if self.schema_version == 5 and not self.prompt_extensions:
+            raise ValueError("Resolved run plan V5 requires prompt extensions.")
         if self.planner_frontend == "sdk_builder" and self.planner_skill is None:
             raise ValueError("sdk_builder plans require a frozen planner skill.")
         if self.planner_frontend == "typed_spec" and self.planner_skill is not None:
@@ -197,6 +219,16 @@ class ResolvedRunPlan(BaseModel):
     def validate_fingerprint(self) -> None:
         if self.fingerprint != self.canonical_fingerprint():
             raise ValueError("Resolved run plan fingerprint does not match its payload.")
+
+    @model_serializer(mode="wrap")
+    def serialize_versioned_plan(
+        self,
+        handler: SerializerFunctionWrapHandler,
+    ) -> dict[str, Any]:
+        payload = handler(self)
+        if self.schema_version == 4:
+            payload.pop("prompt_extensions", None)
+        return payload
 
 
 class RunCapabilityScope(BaseModel):
@@ -274,7 +306,7 @@ class RunCheckpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[4] = 4
+    schema_version: Literal[4, 5] = 4
     state: RunState
     plan: ResolvedRunPlan
     usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
@@ -285,7 +317,7 @@ class RunCheckpoint(BaseModel):
         if self.schema_version != self.plan.schema_version:
             raise ValueError("Checkpoint schema version does not match the resolved run plan.")
         if self.state.schema_version != 3:
-            raise ValueError("Checkpoint V4 requires RunState V3.")
+            raise ValueError("Checkpoint V4/V5 requires RunState V3.")
         if self.state.planner_frontend != self.plan.planner_frontend:
             raise ValueError("Checkpoint planner frontend does not match the resolved run plan.")
         if self.state.kind != self.plan.runtime_kind:

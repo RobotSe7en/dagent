@@ -52,6 +52,7 @@ from dagent.schemas import (
     Boundary,
     LoopOutcome,
     PendingReview,
+    PromptExtension,
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityResult,
@@ -70,6 +71,7 @@ from dagent.schemas import (
     ToolResultMessage,
     UserMessage,
 )
+from dagent.schemas.prompt import normalize_prompt_extensions
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import normalize_capability_result
@@ -115,6 +117,7 @@ class ToolAgent:
         profile: AgentProfile,
         prompt_builder: PromptBuilder | None = None,
         max_steps: int = 8,
+        prompt_extensions: tuple[PromptExtension, ...] = (),
         context_policy: ContextPolicy | None = None,
         result_storage_policy: ResultStoragePolicy | None = None,
         context_assembler: ContextAssembler | None = None,
@@ -123,6 +126,7 @@ class ToolAgent:
         self.profile = profile
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_steps = max_steps
+        self.prompt_extensions = normalize_prompt_extensions(prompt_extensions)
         self.context_policy = context_policy or ContextPolicy()
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
         self.context_assembler = context_assembler or ContextAssembler(
@@ -145,6 +149,8 @@ class ToolAgent:
                 profile=self.profile,
                 task_content="",
                 workspace_path=workspace_path,
+                prompt_extensions=self.prompt_extensions,
+                prompt_target="tool_agent",
             )
         )
 
@@ -247,6 +253,7 @@ class ToolAgent:
                         task_id=state.run_id,
                         workspace_path=state.workspace_path,
                         skills=capability_scope.skills,
+                        prompt_extensions=self.prompt_extensions,
                         approved_boundary_invocation_id=(
                             invocation.invocation_id if boundary_review_approved else None
                         ),
@@ -402,6 +409,7 @@ class ToolAgent:
             capability_scope=capability_scope,
             capability_context=capability_context,
             skills=capability_scope.skills,
+            prompt_extensions=self.prompt_extensions,
             on_token=on_token,
             on_event=on_event,
         )
@@ -547,6 +555,7 @@ class ToolAgentLoop:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
         skills: tuple[str, ...] | None = None,
+        prompt_extensions: tuple[PromptExtension, ...] = (),
         capability_context: CapabilityExecutionContext | None = None,
     ) -> LoopOutcome:
         if max_steps < 1:
@@ -561,6 +570,7 @@ class ToolAgentLoop:
             capability_context,
             task_id=resolved_run_id,
             skills=skills,
+            prompt_extensions=prompt_extensions,
         )
         state_scope = _state_capability_scope(
             capability_scope,
@@ -1379,9 +1389,14 @@ def _execution_context(
     *,
     task_id: str,
     skills: tuple[str, ...] | None,
+    prompt_extensions: tuple[PromptExtension, ...],
 ) -> CapabilityExecutionContext:
     base = context or CapabilityExecutionContext(task_id=task_id)
-    return replace(base, skills=skills)
+    return replace(
+        base,
+        skills=skills,
+        prompt_extensions=prompt_extensions,
+    )
 
 
 def _last_assistant_content(conversation: ConversationState) -> str:

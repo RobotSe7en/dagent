@@ -27,6 +27,7 @@ from dagent.schemas import (
     ResultStoragePolicy,
     UserMessage,
 )
+from dagent.schemas.prompt import normalize_prompt_extensions
 from dagent.schemas.common import validate_runtime_directory
 from dagent.capabilities.tools.boundary import (
     enforce_command_allowed,
@@ -260,6 +261,13 @@ class AgentCapabilityProvider:
             fingerprint=fingerprint,
         )
         reference_content = _reference_content(invocation)
+        prompt_extensions = normalize_prompt_extensions(
+            (
+                config.get("prompt_extensions")
+                if context is None
+                else context.prompt_extensions
+            )
+        )
         system_message = self.prompt_builder.build_system_message(
             PromptRequest(
                 profile=profile,
@@ -269,6 +277,8 @@ class AgentCapabilityProvider:
                     has_reference_content=bool(reference_content),
                 ),
                 workspace_path=None if context is None else context.workspace_path,
+                prompt_extensions=prompt_extensions,
+                prompt_target="registered_agent",
             )
         )
         context_policy = config.get("context_policy")
@@ -292,6 +302,7 @@ class AgentCapabilityProvider:
                     output_reserve_tokens=getattr(provider, "output_reserve_tokens", 4096),
                 ),
                 skills=config.get("skills"),
+                prompt_extensions=prompt_extensions,
                 capability_context=_agent_capability_context(context, config.get("skills")),
                 on_token=callbacks.on_token,
                 on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),

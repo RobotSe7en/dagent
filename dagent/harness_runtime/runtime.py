@@ -904,6 +904,7 @@ class HarnessRuntime:
             workspace_path=workspace_path,
             capability_workspace_root=capability_workspace_root,
             runtime_directory=self.runtime_directory,
+            prompt_extensions=base.prompt_extensions,
             result_storage_policy=base.result_storage_policy,
         )
 

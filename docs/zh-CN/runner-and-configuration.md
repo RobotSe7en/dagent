@@ -63,6 +63,61 @@ validator。Profile Markdown 本身保持不变；runtime path 不会写入 prof
 相对路径、媒体类型、字节数和摘要出现在 conversation input 中，因此文件工具可以打开
 它们，同时不会暴露绝对路径或 runner-level conversation backing store。
 
+## Host prompt extensions
+
+当 host 需要向指定模型的 system prompt 加入可信、已经渲染完成的 Markdown 时，使用
+`PromptExtension`：
+
+```python
+rendered_workspace_policy = """
+This run uses a host-managed workspace.
+
+- Preserve the existing workspace structure.
+- Place standalone deliverables in the delivery location designated by the host.
+"""
+
+runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory=".runtime",
+    provider=provider,
+    prompt_extensions=[
+        dagent.PromptExtension(
+            id="host.workspace_policy",
+            content=rendered_workspace_policy,
+        )
+    ],
+)
+```
+
+Host 必须在构造 runner 前完成 `content` 的渲染与信任判断。SDK 不执行 Jinja 或其他
+模板引擎，不读取 host 配置，不从用户消息或文件推导 policy，也不会把 secrets 提升到
+system prompt。`PromptExtension` 不新增 output-path 参数，也不会授予 capability、
+boundary、workspace 或 review 权限。
+
+默认 targets 为 `tool_agent`、`dag_planner` 和 `registered_agent`。需要时可缩小范围：
+
+```python
+dagent.PromptExtension(
+    id="host.planning_policy",
+    content="Prefer the host's documented project structure.",
+    targets=["dag_planner"],
+)
+```
+
+Validator、router 和 feedback learner 不是 extension target。Extension id 会规范化为
+小写并且必须唯一；id 和 targets 使用确定的标准顺序。单个扩展内容上限为 16,384
+字符，一个 runner 的扩展内容总上限为 32,768 字符。
+
+System prompt 拼装顺序固定为：agent profile、SDK `Runtime Context`、具名
+`Host Prompt Extension` 段，最后是适用的 capability catalog、tool catalog、DAG
+response schema 或其他 SDK 动态上下文。扩展只能新增段落，不能替换 profile 或 SDK
+拥有的 runtime rules。
+
+`Runner.from_config(...)` 接收同一个显式 `prompt_extensions=` 参数，但不会从 YAML
+加载扩展。`Runner.derive(...)` 默认继承当前 tuple，除非 host 显式传入替换值。Review
+checkpoint 会把标准化扩展冻结进 resolved run plan，因此即使换到另一个 runner 恢复，
+续跑仍使用最初的 prompt 快照。
+
 ## Provider 选项
 
 `dagent.Provider` 面向 OpenAI-compatible chat completions endpoints：

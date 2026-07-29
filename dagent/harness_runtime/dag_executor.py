@@ -41,6 +41,7 @@ from dagent.schemas import (
     ContentReference,
     InlineContent,
     ResultStoragePolicy,
+    PromptExtension,
     DAG,
     DAGEdge,
     DAGNode,
@@ -54,6 +55,7 @@ from dagent.schemas import (
     SubgraphNodePayload,
     iter_dag_invocations,
 )
+from dagent.schemas.prompt import normalize_prompt_extensions
 from dagent.schemas.value import (
     ArtifactExpr,
     CompareExpr,
@@ -108,6 +110,7 @@ class DAGExecutor:
         spec_id: str | None = None,
         graph_input: Any = None,
         runtime_directory: str,
+        prompt_extensions: tuple[PromptExtension, ...] = (),
         result_storage_policy: ResultStoragePolicy | None = None,
     ) -> None:
         self.capability_executor = capability_executor
@@ -123,6 +126,7 @@ class DAGExecutor:
         self.spec_id = spec_id
         self.graph_input = _normalize_graph_input(graph_input)
         self.runtime_directory = validate_runtime_directory(runtime_directory)
+        self.prompt_extensions = normalize_prompt_extensions(prompt_extensions)
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
 
     def configure_spec(
@@ -669,6 +673,7 @@ class DAGExecutor:
             workspace_path=self.workspace_path,
             capability_workspace_root=self.capability_workspace_root,
             runtime_directory=self.runtime_directory,
+            prompt_extensions=self.prompt_extensions,
             result_storage_policy=self.result_storage_policy,
             artifacts=spec.artifacts,
             spec_id=spec.id,
@@ -734,6 +739,7 @@ class DAGExecutor:
             output_artifacts=output_artifacts,
             artifact_states=dict(self.artifact_states),
             skills=skills,
+            prompt_extensions=self.prompt_extensions,
             approved_boundary_invocation_id=approved_boundary_invocation_id,
         )
 
