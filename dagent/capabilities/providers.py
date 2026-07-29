@@ -268,6 +268,9 @@ class AgentCapabilityProvider:
                     context,
                     has_reference_content=bool(reference_content),
                 ),
+                extra_system_prompt=(
+                    None if context is None else context.extra_system_prompt
+                ),
                 workspace_path=None if context is None else context.workspace_path,
             )
         )

@@ -9,7 +9,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dagent.profiles import AgentProfile
-from dagent.schemas.common import validate_runtime_directory
+from dagent.schemas.common import (
+    validate_extra_system_prompt,
+    validate_runtime_directory,
+)
 from dagent.schemas.dag import DAG, DAGSpec
 from dagent.schemas.capability import CapabilityInvocation
 from dagent.schemas.run_trace import RunTrace
@@ -110,6 +113,7 @@ class ResolvedRunPlan(BaseModel):
     runtime_directory: str
     context_window_tokens: int = Field(default=32768, ge=1024)
     output_reserve_tokens: int = Field(default=4096, ge=0)
+    extra_system_prompt: str | None = None
     fingerprint: str = ""
 
     @field_validator(
@@ -139,6 +143,11 @@ class ResolvedRunPlan(BaseModel):
     @classmethod
     def validate_runtime_directory(cls, value: Any) -> str:
         return validate_runtime_directory(value)
+
+    @field_validator("extra_system_prompt", mode="before")
+    @classmethod
+    def validate_extra_system_prompt_value(cls, value: Any) -> str | None:
+        return validate_extra_system_prompt(value)
 
     @model_validator(mode="after")
     def validate_resolved_configuration(self) -> "ResolvedRunPlan":
@@ -186,6 +195,10 @@ class ResolvedRunPlan(BaseModel):
         """Return the SDK-defined SHA-256 fingerprint for this plan payload."""
 
         payload = self.model_dump(mode="json", exclude={"fingerprint"})
+        if self.extra_system_prompt is None:
+            # Preserve fingerprints for V4 plans created before this optional
+            # field existed.
+            payload.pop("extra_system_prompt", None)
         canonical = json.dumps(
             payload,
             ensure_ascii=False,

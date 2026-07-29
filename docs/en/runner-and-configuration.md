@@ -26,6 +26,7 @@ runner = dagent.Runner(
     profile_root="profiles",
     planner_frontend="typed_spec",
     mcp_stdio_stderr="discard",
+    extra_system_prompt="Follow the host application's response policy.",
 )
 ```
 
@@ -77,6 +78,24 @@ attachments and externalized results are represented in conversation input by
 workspace-relative paths, media type, byte count, and digest, so file tools can
 open them without exposing absolute paths or the runner-level conversation
 backing store.
+
+`extra_system_prompt` adds one literal, runner-wide instruction string without
+replacing the agent profile or `Runtime Context`. The SDK assembles profile,
+runtime context, extra prompt, and then dynamic tool, capability-catalog, and DAG
+schema content in that order. The value applies to `ToolAgent`, the selected
+tool or DAG execution path of `AutoAgent`, initial DAG planning and replanning,
+and registered agents. It does not apply to `ValidatorAgent`,
+`FeedbackLearnerAgent`, or AutoAgent's routing classifier.
+
+Pass `None` to retain the existing prompt exactly. A configured value must be a
+non-blank string of at most 16,384 characters. It is inserted literally: it is
+not a Jinja template and has no targets or prompt-extension semantics. The
+string only changes model instructions; it does not grant capabilities, expand
+boundaries, bypass review, or change workspace permissions.
+
+Each run freezes its initial value in `ResolvedRunPlan`. Review continuation
+therefore uses the checkpointed value even if another runner, or the original
+runner's later configuration, has a different `extra_system_prompt`.
 
 ## Provider Options
 
@@ -141,8 +160,12 @@ runner = dagent.Runner.from_config(
     workspace="agent-workspace",
     runtime_directory=".runtime",
     capabilities=[search],
+    extra_system_prompt="Follow the host application's response policy.",
 )
 ```
+
+`extra_system_prompt` remains an explicit SDK argument; it is not loaded from
+the YAML file.
 
 Example `config.yaml`:
 

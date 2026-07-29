@@ -4,9 +4,41 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.8.2`。
+当前包版本是 `0.8.3`。
 
 ## Unreleased
+
+## 0.8.3
+
+### 新增
+
+- `Runner(extra_system_prompt=...)` 可以在 Agent Profile 和 Runtime Context 之后、
+  动态 tool、capability catalog 与 DAG schema 内容之前，统一追加一段字面指令。
+- 该提示词适用于 `ToolAgent`、AutoAgent 实际选择的 Tool 或 DAG 路径、DAG 初始规划
+  与 replan，以及 registered agent。
+- `ResolvedRunPlan` 和 `RunCheckpoint` 会冻结当前 run 的初始提示词，因此 review
+  续跑不受 Runner 后续配置变化影响。
+
+### 行为、兼容性与迁移
+
+- `None` 会保持原有模型提示不变。对于 resolved plan 尚无此可选字段的现有 V4
+  checkpoint，fingerprint 保持兼容，仍可直接恢复。
+- 配置值必须是去除空白后仍非空、且不超过 16,384 个字符的字符串。SDK 按字面注入，
+  不执行 Jinja、targets 或模板展开。
+- 该提示词只影响模型指令，不会改变 capability 可见性、boundary、review 要求或
+  workspace 权限。
+- `ValidatorAgent`、`FeedbackLearnerAgent` 和 AutoAgent 的路由分类器不会收到该提示词。
+- 此 patch release 没有 breaking API 或 schema 变化，也不需要迁移动作。
+
+### 验证与已知限制
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv run --extra dev ruff check dagent tests/test_agent_sdk_public_api.py tests/test_prompt_builder.py tests/test_run_checkpoint_budget.py`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+- 静态 DAG 执行没有 planner prompt；但静态 DAG 中的 registered-agent 节点仍会收到
+  Runner 提示词。
 
 ## 0.8.2
 

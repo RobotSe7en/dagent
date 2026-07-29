@@ -13,6 +13,24 @@ from dagent.schemas.value import ValueBinding
 
 RiskLevel = Literal["low", "medium", "high"]
 BoundaryValue = str | ValueBinding
+MAX_EXTRA_SYSTEM_PROMPT_LENGTH = 16_384
+
+
+def validate_extra_system_prompt(value: Any) -> str | None:
+    """Validate the optional runner-level system-prompt addition."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("extra_system_prompt must be None or a string.")
+    if not value.strip():
+        raise ValueError("extra_system_prompt must be a non-empty string.")
+    if len(value) > MAX_EXTRA_SYSTEM_PROMPT_LENGTH:
+        raise ValueError(
+            "extra_system_prompt must be at most "
+            f"{MAX_EXTRA_SYSTEM_PROMPT_LENGTH} characters."
+        )
+    return value
 
 
 def validate_runtime_directory(value: Any) -> str:

@@ -16,6 +16,7 @@ class PromptRequest:
     task_content: str
     tools: list[CapabilityDefinition] = field(default_factory=list)
     context: str = ""
+    extra_system_prompt: str | None = None
     variables: dict[str, Any] = field(default_factory=dict)
     workspace_path: str | Path | None = None
 
@@ -34,6 +35,10 @@ class PromptBuilder:
         system_sections.append(request.profile.render())
         if request.workspace_path is not None:
             system_sections.append(_runtime_context_section(request.workspace_path))
+        if request.extra_system_prompt is not None:
+            system_sections.append(
+                _named_section("Extra System Prompt", request.extra_system_prompt)
+            )
         if request.tools:
             system_sections.append(_tools_section(request.tools))
         if request.context:

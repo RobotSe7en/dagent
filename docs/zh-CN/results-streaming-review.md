@@ -25,6 +25,9 @@ print(second.output_text)
 `ConversationState` 与 provider 无关，包含有类型的用户消息、助手消息、工具结果、可选
 摘要和 revision。它不包含 system prompt 或 provider 请求参数。
 
+Runner 级 `extra_system_prompt` 属于 resolved run plan，而不是 conversation。
+Review resume 会恢复 checkpoint 中冻结的值。
+
 不要自行把 `result.new_items` 追加回会话。`new_items` 是当前 run 的审计增量；
 `result.conversation` 已经是下一轮应传入的完整有界状态。
 

@@ -126,7 +126,10 @@ from dagent.schemas import (
     iter_dag_invocations,
 )
 from dagent.schemas.run_id import validate_run_id
-from dagent.schemas.common import validate_runtime_directory
+from dagent.schemas.common import (
+    validate_extra_system_prompt,
+    validate_runtime_directory,
+)
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
@@ -157,6 +160,7 @@ class Runner:
         planner_frontend: PlannerFrontend = "typed_spec",
         mcp_stdio_stderr: MCPStdioStderr = "discard",
         result_storage_policy: ResultStoragePolicy | None = None,
+        extra_system_prompt: str | None = None,
     ) -> None:
         self.workspace = Path(workspace)
         self.runtime_directory = validate_runtime_directory(runtime_directory)
@@ -164,6 +168,7 @@ class Runner:
         self.sandbox = sandbox or SandboxConfig()
         self._mcp_stdio_stderr = validate_mcp_stdio_stderr(mcp_stdio_stderr)
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
+        self.extra_system_prompt = extra_system_prompt
         if planner_frontend not in {"typed_spec", "sdk_builder"}:
             raise ValueError(
                 "planner_frontend must be 'typed_spec' or 'sdk_builder'."
@@ -196,6 +201,7 @@ class Runner:
             planner_frontend=planner_frontend,
             planner_skill=planner_skill,
             result_storage_policy=self.result_storage_policy,
+            extra_system_prompt=self.extra_system_prompt,
         )
         self._local_tool_binding_ids.update(
             _capability_parts(capability)[0].id
@@ -224,6 +230,7 @@ class Runner:
         planner_frontend: PlannerFrontend | None = None,
         mcp_stdio_stderr: MCPStdioStderr = "discard",
         result_storage_policy: ResultStoragePolicy | None = None,
+        extra_system_prompt: str | None = None,
     ) -> "Runner":
         config_path = resolve_config_path(path)
         config = load_config(config_path)
@@ -251,6 +258,7 @@ class Runner:
             planner_frontend=planner_frontend or config.planner_frontend,
             mcp_stdio_stderr=mcp_stdio_stderr,
             result_storage_policy=result_storage_policy,
+            extra_system_prompt=extra_system_prompt,
         )
 
     @property
@@ -260,6 +268,20 @@ class Runner:
     @property
     def capabilities(self) -> list[CapabilityDefinition]:
         return self._runtime.capability_catalog.list(enabled_only=True)
+
+    @property
+    def extra_system_prompt(self) -> str | None:
+        return self._extra_system_prompt
+
+    @extra_system_prompt.setter
+    def extra_system_prompt(self, value: str | None) -> None:
+        validated = validate_extra_system_prompt(value)
+        self._extra_system_prompt = validated
+        runtime = getattr(self, "_runtime", None)
+        if runtime is not None:
+            runtime.tool_agent.extra_system_prompt = validated
+            runtime.dag_agent.extra_system_prompt = validated
+            runtime.dag_agent.loop.dag_executor.extra_system_prompt = validated
 
     def close(self) -> None:
         if self._closed:
@@ -352,6 +374,7 @@ class Runner:
             result_storage_policy=(
                 result_storage_policy or self.result_storage_policy
             ),
+            extra_system_prompt=self.extra_system_prompt,
         )
         try:
             derived.runtime.max_validation_retries = (
@@ -1488,6 +1511,7 @@ class Runner:
             output_reserve_tokens=(
                 runtime.tool_agent.context_assembler.output_reserve_tokens
             ),
+            extra_system_prompt=runtime.tool_agent.extra_system_prompt,
         )
         finalized = replace(
             result,
@@ -1867,6 +1891,7 @@ class Runner:
             runtime_directory=plan.runtime_directory,
             context_window_tokens=plan.context_window_tokens,
             output_reserve_tokens=plan.output_reserve_tokens,
+            extra_system_prompt=plan.extra_system_prompt,
         )
         runtime.session = self._runtime.session
         runtime.runs = self._runtime.runs
@@ -1883,6 +1908,7 @@ class Runner:
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
             context_policy=agent.context,
+            extra_system_prompt=self.extra_system_prompt,
         )
         return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
@@ -1897,6 +1923,7 @@ class Runner:
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
             context_policy=agent.context,
+            extra_system_prompt=self.extra_system_prompt,
         )
         return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
@@ -1911,6 +1938,7 @@ class Runner:
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
             context_policy=agent.context,
+            extra_system_prompt=self.extra_system_prompt,
         )
         return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
@@ -2169,6 +2197,7 @@ def _assemble_runtime(
     result_storage_policy: ResultStoragePolicy | None = None,
     context_window_tokens: int | None = None,
     output_reserve_tokens: int | None = None,
+    extra_system_prompt: str | None = None,
 ) -> HarnessRuntime:
     resolved_context_policy = context_policy or ContextPolicy()
     resolved_result_storage_policy = result_storage_policy or ResultStoragePolicy()
@@ -2189,6 +2218,7 @@ def _assemble_runtime(
         ),
         profile=_resolve_profile(tool_profile, profile_root=profile_root),
         max_steps=tool_max_steps,
+        extra_system_prompt=extra_system_prompt,
         context_policy=resolved_context_policy,
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
@@ -2204,6 +2234,7 @@ def _assemble_runtime(
                 capability_workspace_root=catalog.workspace_root,
                 runtime_directory=runtime_directory,
                 result_storage_policy=resolved_result_storage_policy,
+                extra_system_prompt=extra_system_prompt,
             ),
             tool_adapter=tool_adapter,
             max_cycles=dag_max_cycles,
@@ -2211,6 +2242,7 @@ def _assemble_runtime(
             planner_skill=planner_skill,
         ),
         profile=_resolve_profile(dag_profile, profile_root=profile_root),
+        extra_system_prompt=extra_system_prompt,
         context_policy=resolved_context_policy,
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
@@ -2247,6 +2279,7 @@ def _create_runtime(
     planner_frontend: PlannerFrontend = "typed_spec",
     planner_skill: PlannerSkillSnapshot | None = None,
     result_storage_policy: ResultStoragePolicy | None = None,
+    extra_system_prompt: str | None = None,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
     if provider is None:
@@ -2277,6 +2310,7 @@ def _create_runtime(
         planner_frontend=planner_frontend,
         planner_skill=planner_skill,
         result_storage_policy=result_storage_policy,
+        extra_system_prompt=extra_system_prompt,
     )
 
 
@@ -2290,6 +2324,7 @@ def _runtime_from_existing(
     visible_capability_ids: tuple[str, ...],
     profile_root: str | Path | None,
     context_policy: ContextPolicy,
+    extra_system_prompt: str | None,
 ) -> HarnessRuntime:
     runtime = _assemble_runtime(
         provider=base.provider,
@@ -2309,6 +2344,7 @@ def _runtime_from_existing(
         planner_skill=base.dag_agent.loop.planner_skill,
         context_policy=context_policy,
         result_storage_policy=base.tool_agent.result_storage_policy,
+        extra_system_prompt=extra_system_prompt,
     )
     runtime.session = base.session
     runtime.runs = base.runs

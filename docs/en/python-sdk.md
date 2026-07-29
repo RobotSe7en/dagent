@@ -59,6 +59,7 @@ runner = dagent.Runner(
     workspace="agent-workspace",
     runtime_directory=".runtime",
     provider=provider,
+    extra_system_prompt=None,
 )
 ```
 
@@ -66,6 +67,12 @@ dagent is an in-process SDK. Construct and close `Runner` in the process you
 control. Process commands, health, credentials, persistence, scheduling, and
 container lifecycle are host responsibilities; the SDK intentionally exposes
 no worker or service loop.
+
+Set `extra_system_prompt` to a non-blank string when every execution agent and
+dynamic DAG planner on this runner needs the same additional literal
+instruction. Review checkpoints freeze the run's initial value. See
+[Runner and Configuration](runner-and-configuration.md) for ordering, scope,
+validation, and exclusions.
 
 ## Minimal Tool
 

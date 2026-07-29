@@ -27,6 +27,9 @@ print(second.output_text)
 tool-result items, plus an optional summary and a revision. It never contains a
 system prompt or provider request options.
 
+Runner-level `extra_system_prompt` is part of the resolved run plan rather than
+the conversation. A review resume restores the value frozen in the checkpoint.
+
 Do not append `result.new_items` yourself. They are the audit delta for the run;
 `result.conversation` is already the complete bounded state to pass next time.
 

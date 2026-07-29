@@ -5,9 +5,45 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.8.2`.
+The current package version is `0.8.3`.
 
 ## Unreleased
+
+## 0.8.3
+
+### Added
+
+- `Runner(extra_system_prompt=...)` adds one runner-wide literal instruction
+  after the Agent Profile and Runtime Context, and before dynamic tool,
+  capability-catalog, and DAG-schema content.
+- The prompt applies to `ToolAgent`, AutoAgent's selected Tool or DAG path,
+  initial DAG planning and replanning, and registered agents.
+- `ResolvedRunPlan` and `RunCheckpoint` freeze the run's initial prompt so
+  review continuation is independent of later Runner configuration changes.
+
+### Behavior, compatibility, and migration
+
+- `None` preserves the previous model prompt. Existing V4 checkpoints whose
+  resolved plans predate this optional field retain their fingerprints and
+  remain restorable.
+- Configured prompts must be non-blank strings of at most 16,384 characters.
+  Values are inserted literally without Jinja, targets, or template expansion.
+- The prompt affects model instructions only. It does not alter capability
+  visibility, boundaries, review requirements, or workspace permissions.
+- `ValidatorAgent`, `FeedbackLearnerAgent`, and AutoAgent's routing classifier
+  do not receive the additional prompt.
+- This patch release has no breaking API or schema changes and requires no
+  migration.
+
+### Verification and known limitations
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv run --extra dev ruff check dagent tests/test_agent_sdk_public_api.py tests/test_prompt_builder.py tests/test_run_checkpoint_budget.py`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+- Static DAG execution has no planner prompt; registered-agent nodes in a static
+  DAG still receive the Runner prompt.
 
 ## 0.8.2
 
