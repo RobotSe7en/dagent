@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.8.3`.
+The current package version is `0.8.4`.
 
 ## Unreleased
+
+## 0.8.4
 
 ### Fixed
 
@@ -15,14 +17,36 @@ The current package version is `0.8.3`.
   includes DAG-orchestration instructions. It now contains only general direct
   response and tool-selection guidance for bounded tool loops.
 
-### Compatibility and migration
+### Behavior and compatibility
 
 - `AutoAgent` still defaults to `profile="conversation"` and
   `planner_profile="dag_agent"`. Its separate router prompt still chooses the
   tool or DAG path; `ToolAgent` and `DagAgent` execution semantics are unchanged.
-- This is a prompt-only SDK fix with no API or schema break. Published `0.8.3`
-  artifacts remain immutable, so consumers pinned to `0.8.3` should upgrade to
-  a new patch release (expected `0.8.4`) rather than copying a private profile.
+- This is a prompt-only SDK fix with no API, schema, capability-id, or
+  configuration-shape changes.
+- Existing V4 checkpoints remain restorable and retain their frozen original
+  profile. Start a new run after upgrading to use the revised built-in profile.
+
+### Breaking changes
+
+- None.
+
+### Migration steps
+
+- Upgrade the `dagent-ai` dependency to `0.8.4`. No data conversion or host-side
+  configuration change is required.
+- Downstream hosts should consume the published SDK profile instead of copying a
+  private replacement.
+
+### Verification and known limitations
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv run --extra dev --frozen ruff check dagent tests`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+- The change applies only to the built-in `conversation` profile. Custom
+  profiles and checkpoints with frozen profiles are intentionally unchanged.
 
 ## 0.8.3
 

@@ -4,23 +4,44 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.8.3`。
+当前包版本是 `0.8.4`。
 
 ## Unreleased
+
+## 0.8.4
 
 ### 修复
 
 - 内置 `conversation` profile 不再介绍 `dag_agent`，也不再包含 DAG orchestration
   指令。它现在只保留 bounded tool loop 所需的通用直接回答与 tool selection 规则。
 
-### 兼容性与迁移
+### 行为与兼容性
 
 - `AutoAgent` 仍默认使用 `profile="conversation"` 与
   `planner_profile="dag_agent"`。独立 router prompt 继续选择 tool 或 DAG 路径；
   `ToolAgent` 和 `DagAgent` 的执行语义不变。
-- 这是仅修改提示词的 SDK 修复，没有 API 或 schema 破坏。已经发布的 `0.8.3` 制品保持
-  不可变，因此固定使用 `0.8.3` 的消费方应升级到新的 patch release（预计 `0.8.4`），
-  而不是复制私有 profile。
+- 这是仅修改提示词的 SDK 修复，没有 API、schema、capability id 或配置 shape 变化。
+- 现有 V4 checkpoint 仍可恢复，并继续使用其中冻结的原始 profile。升级后需要启动新 run
+  才会使用修订后的内置 profile。
+
+### 破坏性变化
+
+- 无。
+
+### 迁移步骤
+
+- 将 `dagent-ai` 依赖升级到 `0.8.4`。不需要数据转换或 host 侧配置变更。
+- 下游 host 应消费已发布的 SDK profile，不应复制私有替代版本。
+
+### 验证与已知限制
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv run --extra dev --frozen ruff check dagent tests`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+- 此变更仅适用于内置 `conversation` profile。自定义 profile 以及已冻结 profile 的
+  checkpoint 保持不变。
 
 ## 0.8.3
 
