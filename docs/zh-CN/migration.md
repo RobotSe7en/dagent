@@ -8,6 +8,20 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
+### 修复
+
+- 内置 `conversation` profile 不再介绍 `dag_agent`，也不再包含 DAG orchestration
+  指令。它现在只保留 bounded tool loop 所需的通用直接回答与 tool selection 规则。
+
+### 兼容性与迁移
+
+- `AutoAgent` 仍默认使用 `profile="conversation"` 与
+  `planner_profile="dag_agent"`。独立 router prompt 继续选择 tool 或 DAG 路径；
+  `ToolAgent` 和 `DagAgent` 的执行语义不变。
+- 这是仅修改提示词的 SDK 修复，没有 API 或 schema 破坏。已经发布的 `0.8.3` 制品保持
+  不可变，因此固定使用 `0.8.3` 的消费方应升级到新的 patch release（预计 `0.8.4`），
+  而不是复制私有 profile。
+
 ## 0.8.3
 
 ### 新增

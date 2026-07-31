@@ -9,6 +9,21 @@ The current package version is `0.8.3`.
 
 ## Unreleased
 
+### Fixed
+
+- The built-in `conversation` profile no longer describes `dag_agent` or
+  includes DAG-orchestration instructions. It now contains only general direct
+  response and tool-selection guidance for bounded tool loops.
+
+### Compatibility and migration
+
+- `AutoAgent` still defaults to `profile="conversation"` and
+  `planner_profile="dag_agent"`. Its separate router prompt still chooses the
+  tool or DAG path; `ToolAgent` and `DagAgent` execution semantics are unchanged.
+- This is a prompt-only SDK fix with no API or schema break. Published `0.8.3`
+  artifacts remain immutable, so consumers pinned to `0.8.3` should upgrade to
+  a new patch release (expected `0.8.4`) rather than copying a private profile.
+
 ## 0.8.3
 
 ### Added

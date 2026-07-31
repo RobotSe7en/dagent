@@ -60,7 +60,12 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
 
 
 def test_auto_agent_is_public_target_without_mode_field() -> None:
-    assert "mode" not in inspect.signature(dagent.AutoAgent).parameters
+    signature = inspect.signature(dagent.AutoAgent)
+    agent = dagent.AutoAgent()
+
+    assert "mode" not in signature.parameters
+    assert agent.profile == "conversation"
+    assert agent.planner_profile == "dag_agent"
 
 
 def test_runner_accepts_exact_workspace_path_parameter() -> None:
@@ -257,9 +262,12 @@ def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
 
     result = run(runner.run(dagent.ToolAgent(profile="conversation"), input="hi"))
 
+    assert result.kind == "tool"
     assert result.output_text == "hello"
     system_message = provider.requests[0]["messages"][0]["content"]
     assert "General-Purpose Agent" in system_message
+    assert "dag_agent" not in system_message
+    assert "DAG Orchestration" not in system_message
 
 
 def test_runner_stream_yields_unified_event_protocol(tmp_path) -> None:
@@ -573,6 +581,8 @@ def test_runner_auto_agent_routes_to_tool_result(tmp_path) -> None:
 
     assert result.kind == "tool"
     assert result.output_text == "hello from tool"
+    assert "routing classifier" in provider.requests[0]["messages"][0]["content"]
+    assert "General-Purpose Agent" in provider.requests[1]["messages"][0]["content"]
 
 
 def test_runner_extra_system_prompt_applies_after_auto_tool_routing(tmp_path) -> None:
@@ -651,6 +661,8 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     assert result.output_text == "Report: found:X"
     assert result.dag is not None
     assert result.dag.nodes[-1].payload.invocation.capability_id == "tool.search"
+    assert "routing classifier" in provider.requests[0]["messages"][0]["content"]
+    assert "DAG Agent" in provider.requests[1]["messages"][0]["content"]
 
 
 def test_runner_extra_system_prompt_applies_after_auto_dag_routing(tmp_path) -> None:

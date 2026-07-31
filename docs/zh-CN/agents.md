@@ -83,12 +83,15 @@ uv run python -m examples.tool_agent
 
 内置 `conversation` profile 的显示名称为“通用智能体”。它会在某个可用工具能直接完成用户
 请求时优先调用它，包括简单的单工具任务。它仍会直接回答问候以及没有明确相关工具的请求，
-也不会仅因工具已启用就调用。这属于模型自主选择，不保证强制调用；若工作流必须使用特定
-工具，请使用带有明确指令的专用自定义 profile。
+也不会仅因工具已启用就调用。它是纯 tool-loop profile，不包含 DAG 选择或规划指令。这属于
+模型自主选择，不保证强制调用；若工作流必须使用特定工具，请使用带有明确指令的专用自定义
+profile。
 
 ## AutoAgent
 
-`AutoAgent` 没有 mode 字段。它会为每个请求路由到直接 tool use 或 dynamic DAG planning。
+`AutoAgent` 没有 mode 字段。它通过独立 router prompt 为每个请求路由到直接 tool use 或
+dynamic DAG planning。tool 分支使用 `profile`（默认 `conversation`），DAG 分支使用
+`planner_profile`（默认 `dag_agent`）。
 
 ```python
 agent = dagent.AutoAgent(
