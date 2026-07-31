@@ -92,13 +92,16 @@ The built-in `conversation` profile, titled **General-Purpose Agent**, prefers
 an available tool when it directly fulfills the user's request, including simple
 one-tool tasks. It still answers greetings and requests without a clearly
 relevant tool directly, and does not call tools merely because they are enabled.
+It is a tool-loop profile and contains no DAG selection or planning instructions.
 This is model-directed behavior, not a forced invocation guarantee; use a
 dedicated custom profile when a workflow requires a particular tool.
 
 ## AutoAgent
 
-`AutoAgent` has no mode field. It routes each request to direct tool use or
-dynamic DAG planning.
+`AutoAgent` has no mode field. Its separate router prompt routes each request to
+direct tool use or dynamic DAG planning. The tool branch uses `profile`
+(`conversation` by default); the DAG branch uses `planner_profile`
+(`dag_agent` by default).
 
 ```python
 agent = dagent.AutoAgent(
