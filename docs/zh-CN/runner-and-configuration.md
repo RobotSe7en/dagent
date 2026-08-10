@@ -32,9 +32,11 @@ runner = dagent.Runner(
 dagent 是进程内 SDK。请在你控制的进程中构造并关闭 `Runner`。进程命令、健康检查、
 凭证、持久化、调度和容器生命周期由 host 负责；SDK 不提供 worker 或 service loop。
 
-`Runner(...)` 不会隐式读取 `config.yaml`。`workspace` 和 `runtime_directory`
-都是必填 SDK 输入。`runtime_directory` 必须是非空、无路径穿越的相对路径；名称由
-host 决定。如果运行数据只需驻留内存，host 可以把 workspace 放在 tmpfs。
+`Runner(...)` 不会隐式读取 `config.yaml`。省略时，`workspace` 默认为
+`Path.home() / ".dagent"`，`runtime_directory` 默认为 `.runtime`。
+`runtime_directory` 必须是非空、无路径穿越的相对路径。自行管理存储或隔离边界的 host
+应显式传入这两个值；如果运行数据只需驻留内存，也可以把 workspace 放在 tmpfs。
+`Runner.from_config(...)` 使用相同的运行路径默认值，不会从 YAML 加载它们。
 
 每次运行默认在 `<workspace>/runs/<run_id>` 下记录自己的目录。在 ToolAgent 和
 DagAgent message run 中，内置 file 和 shell tool 的相对路径从当前 run workspace

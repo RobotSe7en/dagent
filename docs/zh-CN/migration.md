@@ -8,6 +8,22 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
+### 变更
+
+- `Runner(...)` 和 `Runner.from_config(...)` 现在默认使用
+  `workspace=Path.home() / ".dagent"` 和 `runtime_directory=".runtime"`。
+- 显式传入的值保持原有行为。`runtime_directory` 仍必须是 runner 或 run workspace 内的
+  安全相对路径。
+
+### 破坏性变化
+
+- 无。
+
+### 迁移步骤
+
+- 现有 host 无需修改。希望由 SDK 管理本地存储的应用可以省略其中任意一个或两个运行路径
+  参数。
+
 ## 0.8.6
 
 ### 修复

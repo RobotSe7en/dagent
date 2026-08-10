@@ -9,6 +9,22 @@ The current package version is `0.8.6`.
 
 ## Unreleased
 
+### Changed
+
+- `Runner(...)` and `Runner.from_config(...)` now default `workspace` to
+  `Path.home() / ".dagent"` and `runtime_directory` to `.runtime`.
+- Explicit values keep their existing behavior. `runtime_directory` remains a
+  safe relative path inside the runner or run workspace.
+
+### Breaking changes
+
+- None.
+
+### Migration steps
+
+- Existing hosts do not need to change. Applications that want SDK-managed
+  local storage may omit either or both runtime-path arguments.
+
 ## 0.8.6
 
 ### Fixed

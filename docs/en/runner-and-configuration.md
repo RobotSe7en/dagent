@@ -35,10 +35,13 @@ control. Process commands, health, credentials, persistence, scheduling, and
 container lifecycle are host responsibilities; the SDK intentionally exposes
 no worker or service loop.
 
-`Runner(...)` does not read `config.yaml` implicitly. Both `workspace` and
-`runtime_directory` are required SDK inputs. `runtime_directory` must be a
-non-empty, traversal-free relative path; the host chooses the name and may put
-the workspace on tmpfs when runtime data should remain memory-backed.
+`Runner(...)` does not read `config.yaml` implicitly. When omitted, `workspace`
+defaults to `Path.home() / ".dagent"` and `runtime_directory` defaults to
+`.runtime`. `runtime_directory` must be a non-empty, traversal-free relative
+path. Hosts that own storage or isolation boundaries should pass both values
+explicitly and may put the workspace on tmpfs when runtime data should remain
+memory-backed. `Runner.from_config(...)` uses the same runtime-path defaults;
+they are not loaded from YAML.
 
 Each run records its own directory under `<workspace>/runs/<run_id>`. In
 ToolAgent and DagAgent message runs, built-in file and shell tool relative paths

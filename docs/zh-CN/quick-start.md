@@ -74,12 +74,7 @@ async def main():
         model="your-model",
         api_key_env="OPENAI_API_KEY",
     )
-    runner = dagent.Runner(
-        workspace="agent-workspace",
-        runtime_directory=".runtime",
-        provider=provider,
-        capabilities=[echo],
-    )
+    runner = dagent.Runner(provider=provider, capabilities=[echo])
     agent = dagent.ToolAgent(
         profile="conversation",
         capabilities=["tool.echo"],
@@ -97,6 +92,9 @@ async def main():
 
 asyncio.run(main())
 ```
+
+`Runner` 默认把 workspace 放在 `~/.dagent`，并使用相对的 `.runtime` 作为私有运行目录。
+自行管理存储位置的应用可以显式覆盖其中任意一个值。
 
 使用 `MockProvider` 的离线版本可以这样运行：
 
@@ -140,11 +138,7 @@ async def main():
 
     dagent.validate_dag_spec(dag.to_dag_spec())
 
-    runner = dagent.Runner(
-        workspace="agent-workspace",
-        runtime_directory=".runtime",
-        provider=provider,
-    )
+    runner = dagent.Runner(provider=provider)
     result = await runner.run(dag, graph_input="dagent")
     print(result.output_text)
     runner.close()

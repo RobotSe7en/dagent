@@ -133,6 +133,8 @@ from dagent.schemas.common import (
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
+_DEFAULT_RUNNER_WORKSPACE = Path.home() / ".dagent"
+_DEFAULT_RUNTIME_DIRECTORY = ".runtime"
 
 
 @dataclass(frozen=True)
@@ -148,8 +150,8 @@ class Runner:
     def __init__(
         self,
         *,
-        workspace: str | Path,
-        runtime_directory: str | Path,
+        workspace: str | Path = _DEFAULT_RUNNER_WORKSPACE,
+        runtime_directory: str | Path = _DEFAULT_RUNTIME_DIRECTORY,
         provider: ChatProvider | None = None,
         capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
@@ -219,8 +221,8 @@ class Runner:
         cls,
         path: str | Path | None = None,
         *,
-        workspace: str | Path,
-        runtime_directory: str | Path,
+        workspace: str | Path = _DEFAULT_RUNNER_WORKSPACE,
+        runtime_directory: str | Path = _DEFAULT_RUNTIME_DIRECTORY,
         capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
         skill_roots: list[str | Path] | None = None,

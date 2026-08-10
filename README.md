@@ -108,12 +108,7 @@ async def main():
         model="your-model",
         api_key_env="OPENAI_API_KEY",
     )
-    runner = dagent.Runner(
-        workspace="agent-workspace",
-        runtime_directory=".runtime",
-        provider=provider,
-        capabilities=[echo],
-    )
+    runner = dagent.Runner(provider=provider, capabilities=[echo])
     agent = dagent.ToolAgent(profile="conversation", capabilities=["tool.echo"])
 
     result = await runner.run(
@@ -126,6 +121,9 @@ async def main():
 
 asyncio.run(main())
 ```
+
+`Runner` defaults to the `~/.dagent` workspace and a private `.runtime`
+subdirectory; pass either path explicitly when the host owns its storage layout.
 
 For a complete first run, static DAG example, provider configuration, and local
 development setup, read the [Quick Start](docs/en/quick-start.md).

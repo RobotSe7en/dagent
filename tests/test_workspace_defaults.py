@@ -32,11 +32,17 @@ def test_runner_uses_explicit_workspace_without_creating_runtime_directory(
     assert not (tmp_path / "sdk-workspace" / ".runtime").exists()
 
 
-def test_runner_requires_explicit_workspace_and_runtime_directory() -> None:
-    with pytest.raises(TypeError, match="workspace"):
-        dagent.Runner(runtime_directory=".runtime", provider=MockProvider([]))
-    with pytest.raises(TypeError, match="runtime_directory"):
-        dagent.Runner(workspace="sdk-workspace", provider=MockProvider([]))
+def test_runner_defaults_to_home_workspace_and_private_runtime_directory() -> None:
+    runner = dagent.Runner(provider=MockProvider([]))
+
+    try:
+        assert runner.workspace == Path.home() / ".dagent"
+        assert runner.runtime.capability_catalog.workspace_root == (
+            Path.home() / ".dagent"
+        )
+        assert runner.runtime_directory == ".runtime"
+    finally:
+        runner.close()
 
 
 @pytest.mark.parametrize(

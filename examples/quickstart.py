@@ -25,11 +25,7 @@ async def main() -> None:
         content="You are a helpful assistant.",
     )
     agent = dagent.ToolAgent(profile=profile)
-    runner = dagent.Runner(
-        workspace="agent-workspace",
-        runtime_directory=".runtime",
-        provider=provider,
-    )
+    runner = dagent.Runner(provider=provider)
     async for event in runner.stream(
         agent,
         input="当前目录有哪些文件？",

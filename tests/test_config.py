@@ -92,6 +92,31 @@ def test_load_config_parses_sdk_builder_planner_frontend(tmp_path: Path) -> None
         runner.close()
 
 
+def test_runner_from_config_uses_default_runtime_paths(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "provider:",
+                '  base_url: "http://localhost:8000/v1"',
+                '  model: "qwen3"',
+                '  api_key: "local-key"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runner = dagent.Runner.from_config(config_path)
+    try:
+        assert runner.workspace == Path.home() / ".dagent"
+        assert runner.runtime.capability_catalog.workspace_root == (
+            Path.home() / ".dagent"
+        )
+        assert runner.runtime_directory == ".runtime"
+    finally:
+        runner.close()
+
+
 def test_resolve_config_relative_path_uses_config_directory(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
 
