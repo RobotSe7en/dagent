@@ -190,4 +190,5 @@ checkpoint=checkpoint)` API. `run.finished` contains the same `RunResult` shape
 as non-streaming execution. Its serialized result includes `output_value`; for
 static runs this is the exact resolved `DAGSpec.output`, while `output_text`
 keeps the compatibility rendering. `RunStreamEvent.model_validate(...)` restores
-the same typed event payload.
+the same typed event payload and uses the envelope `type` to preserve the exact
+data class even when multiple event payloads have identical fields.

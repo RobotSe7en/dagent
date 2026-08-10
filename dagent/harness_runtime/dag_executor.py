@@ -31,7 +31,11 @@ from dagent.harness_runtime.capability_executor import (
 from dagent.harness_runtime.result_storage import normalize_capability_result
 from dagent.harness_runtime.execution_budget import ExecutionLimitExceeded
 from dagent.harness_runtime.runtime_events import ResponseStreamContext, response_token_stream
-from dagent.harness_runtime.dag_builder import compile_dag_spec, validate_dag
+from dagent.harness_runtime.dag_builder import (
+    compile_dag_spec,
+    validate_dag,
+    validate_dag_input,
+)
 from dagent.schemas import (
     Artifact,
     ArtifactState,
@@ -664,6 +668,7 @@ class DAGExecutor:
         on_event: Callable[[dict[str, Any]], None] | None,
     ) -> Any:
         """Run one embedded spec to completion; its trace nests under ``dag_node``."""
+        validate_dag_input(spec, graph_input)
         child_dag = compile_dag_spec(spec, task_id=dag.task_id)
         child_dag.status = "approved"
         executor = DAGExecutor(

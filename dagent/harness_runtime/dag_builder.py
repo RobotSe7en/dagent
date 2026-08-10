@@ -150,7 +150,7 @@ def validate_dag_input(
         raise TypeError("spec_or_schema must be a DAGSpec or JSON Schema object.")
     validator = _dag_input_validator(schema)
     instance = (
-        graph_input.model_dump(mode="json")
+        graph_input.model_dump(mode="json", by_alias=True)
         if isinstance(graph_input, BaseModel)
         else graph_input
     )

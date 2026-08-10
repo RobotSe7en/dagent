@@ -92,7 +92,14 @@ dagent.validate_dag_input(dag.to_dag_spec(), {"query": "dagent"})
 capability, or emitting `run.started`. Invalid instances raise
 `DAGInputValidationError`. Validation does not mutate the value or apply schema
 defaults. Scalar and array top-level schemas are supported, as are references
-to resources embedded in the same schema document.
+to resources embedded in the same schema document. Pydantic model instances are
+dumped with field aliases for validation so they match Pydantic's generated
+schema.
+
+Subgraphs validate their resolved input before starting child execution. Loop
+bodies perform the same validation before every iteration, including values
+returned by the previous iteration. An invalid embedded input fails the owning
+node before any child capability is called.
 
 Assign `dag.output` to a value expression to expose a structured result:
 

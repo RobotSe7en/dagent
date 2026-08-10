@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import field
 from typing import Any, Literal
 
@@ -346,13 +347,45 @@ class RunStreamEvent:
         """Restore a serialized stream event."""
         if isinstance(value, cls):
             return value
-        return _EVENT_ADAPTER.validate_python(value)
+        if not isinstance(value, Mapping):
+            return _EVENT_ADAPTER.validate_python(value)
+        event_type = value.get("type")
+        data_adapter = (
+            _EVENT_DATA_ADAPTERS.get(event_type)
+            if isinstance(event_type, str)
+            else None
+        )
+        if data_adapter is None:
+            return _EVENT_ADAPTER.validate_python(value)
+        payload = dict(value)
+        payload["data"] = data_adapter.validate_python(value.get("data"))
+        return _EVENT_ADAPTER.validate_python(payload)
 
     def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
         return _EVENT_ADAPTER.dump_python(self, mode=mode)
 
 
 _EVENT_ADAPTER = TypeAdapter(RunStreamEvent)
+_EVENT_DATA_ADAPTERS: dict[str, TypeAdapter[Any]] = {
+    "run.started": TypeAdapter(RunStartedData),
+    "response.started": TypeAdapter(ResponseStartedData),
+    "response.reasoning.delta": TypeAdapter(TextDeltaData),
+    "response.content.delta": TypeAdapter(TextDeltaData),
+    "response.finished": TypeAdapter(ResponseFinishedData),
+    "capability.call.started": TypeAdapter(CapabilityCallStartedData),
+    "capability.call.completed": TypeAdapter(CapabilityCallCompletedData),
+    "capability.call.failed": TypeAdapter(CapabilityCallFailedData),
+    "context.compaction.started": TypeAdapter(ContextCompactionStartedData),
+    "context.compaction.finished": TypeAdapter(ContextCompactionFinishedData),
+    "dag.updated": TypeAdapter(DagUpdatedData),
+    "trace.updated": TypeAdapter(TraceUpdatedData),
+    "validation.started": TypeAdapter(ValidationStartedData),
+    "validation.passed": TypeAdapter(ValidationPassedData),
+    "validation.retry": TypeAdapter(ValidationRetryData),
+    "review.required": TypeAdapter(ReviewRequiredData),
+    "run.finished": TypeAdapter(RunFinishedData),
+    "run.failed": TypeAdapter(RunFailedData),
+}
 
 
 def _node_trace(trace: RunTrace | None, node_id: str) -> RunTraceNode:

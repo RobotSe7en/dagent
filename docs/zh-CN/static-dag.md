@@ -89,6 +89,11 @@ dagent.validate_dag_input(dag.to_dag_spec(), {"query": "dagent"})
 `Runner` 会在创建 run workspace、执行 capability 或发送 `run.started` 之前执行相同
 检查。无效实例会抛出 `DAGInputValidationError`。验证不会修改输入，也不会应用 schema
 default。SDK 支持顶层 scalar 和 array schema，也支持引用同一 schema 文档中内嵌的资源。
+验证 Pydantic model instance 时会按字段 alias dump，从而与 Pydantic 生成的 schema 对齐。
+
+Subgraph 会在开始 child execution 前验证 resolved input。Loop body 会在每次迭代前执行
+相同验证，包括上一轮返回并传入下一轮的 value。内嵌 input 不合法时，所属 node 会在任何
+child capability call 之前失败。
 
 把 value expression 赋给 `dag.output` 即可暴露结构化结果：
 

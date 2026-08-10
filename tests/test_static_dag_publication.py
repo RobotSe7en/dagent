@@ -3,10 +3,20 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel, Field
 
 import dagent
 from dagent.harness_runtime.dag_builder import DAGValidationError
 from dagent.providers import ChatResponse, MockProvider
+from dagent.result import (
+    CapabilityCallCompletedData,
+    CapabilityCallFailedData,
+    ResponseFinishedData,
+    ResponseStartedData,
+    RunFailedData,
+    ValidationPassedData,
+    ValidationRetryData,
+)
 
 
 def run(coro):
@@ -75,6 +85,41 @@ def test_validate_dag_input_reports_typed_error_and_instance_path() -> None:
     assert raised.value.path == ("count",)
     assert raised.value.schema_path[-1] == "type"
     assert "$.count" in str(raised.value)
+
+
+def test_pydantic_graph_input_validation_uses_generated_schema_aliases(
+    tmp_path: Path,
+) -> None:
+    class AliasedInput(BaseModel):
+        value: str = Field(alias="externalValue")
+
+    @dagent.tool
+    def echo_alias(value: str) -> str:
+        return f"echo:{value}"
+
+    dag = dagent.Dag("aliased_input", input=AliasedInput)
+    node = dagent.Node(
+        "echo",
+        target=echo_alias,
+        inputs={"value": dag.input.value},
+    )
+    dag.add_node(node)
+    dag.output = node.output
+    spec = dag.to_dag_spec()
+    graph_input = AliasedInput(externalValue="dagent")
+
+    assert "externalValue" in spec.input_schema["properties"]
+    dagent.validate_dag_input(spec, graph_input)
+
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        runtime_directory=".runtime",
+        provider=MockProvider([]),
+    )
+    result = run(runner.run(dag, graph_input=graph_input))
+
+    assert result.status == "completed"
+    assert result.output_value == "echo:dagent"
 
 
 def test_runner_rejects_invalid_graph_input_before_workspace_events_or_capabilities(
@@ -197,3 +242,52 @@ def test_non_static_result_keeps_output_value_none_and_output_text_unchanged(
     assert result.output_text == "hello"
     assert result.output_value is None
     assert result.model_dump(mode="json")["output_value"] is None
+
+
+@pytest.mark.parametrize(
+    ("event_type", "data", "expected_type"),
+    [
+        ("response.started", ResponseStartedData(response_id="response_1"), ResponseStartedData),
+        ("response.finished", ResponseFinishedData(response_id="response_1"), ResponseFinishedData),
+        (
+            "capability.call.completed",
+            CapabilityCallCompletedData(
+                invocation_id="call_1",
+                capability_id="tool.echo",
+            ),
+            CapabilityCallCompletedData,
+        ),
+        (
+            "capability.call.failed",
+            CapabilityCallFailedData(
+                invocation_id="call_1",
+                capability_id="tool.echo",
+                content="failed",
+            ),
+            CapabilityCallFailedData,
+        ),
+        ("validation.passed", ValidationPassedData(summary="ok"), ValidationPassedData),
+        (
+            "validation.retry",
+            ValidationRetryData(summary="retry", reason="fix it"),
+            ValidationRetryData,
+        ),
+        (
+            "run.failed",
+            RunFailedData(message="failed", error_type="RuntimeError"),
+            RunFailedData,
+        ),
+    ],
+)
+def test_stream_event_model_validate_uses_envelope_type_for_payload(
+    event_type: str,
+    data,
+    expected_type: type,
+) -> None:
+    event = dagent.RunStreamEvent(type=event_type, data=data)
+    payload = event.model_dump(mode="json")
+
+    restored = dagent.RunStreamEvent.model_validate(payload)
+
+    assert type(restored.data) is expected_type
+    assert restored.model_dump(mode="json") == payload

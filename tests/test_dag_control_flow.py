@@ -263,6 +263,34 @@ def test_subgraph_input_can_reference_parent_nodes() -> None:
     assert result.node_value("make_report") == "published:page:page:root"
 
 
+def test_subgraph_rejects_invalid_resolved_input_before_capability_execution() -> None:
+    calls: list[str | int] = []
+
+    @dagent.tool
+    def accept_nested_input(value: str | int) -> str:
+        calls.append(value)
+        return str(value)
+
+    child = dagent.Dag("integer_child", input=int)
+    child_node = dagent.Node(
+        "accept",
+        target=accept_nested_input,
+        inputs={"value": child.input},
+    )
+    child.add_node(child_node)
+    child.output = child_node.output
+
+    outer = dagent.Dag("outer_string", input=str)
+    outer.add_node(dagent.Node("child", target=child, inputs=outer.input))
+
+    result = run_dag(outer, "not-an-integer", [])
+
+    assert result.status == "failed"
+    assert calls == []
+    assert result.trace.root.error is not None
+    assert result.trace.root.error.code == "DAGInputValidationError"
+
+
 def test_spec_output_must_reference_known_node() -> None:
     dag = dagent.Dag("bad_output", input=str)
     dag.add_node(dagent.Node("publish", target=publish, inputs={"content": dag.input}))
@@ -321,6 +349,42 @@ def test_loop_node_stops_at_max_iterations_with_last_value() -> None:
 
     assert result.status == "completed"
     assert result.node_value("count_up") == 4
+
+
+def test_loop_validates_each_iteration_input_before_capability_execution() -> None:
+    calls: list[int] = []
+
+    @dagent.tool
+    def stringify_iteration(value: int) -> str:
+        calls.append(value)
+        return str(value)
+
+    body = dagent.Dag("integer_to_string", input=int)
+    stringify = dagent.Node(
+        "stringify",
+        target=stringify_iteration,
+        inputs={"value": body.input},
+    )
+    body.add_node(stringify)
+    body.output = stringify.output
+
+    dag = dagent.Dag("invalid_second_iteration", input=int)
+    loop = dagent.LoopNode(
+        "repeat",
+        body=body,
+        until=dagent.item == "stop",
+        max_iterations=2,
+        input=dag.input,
+    )
+    dag.add_node(loop)
+
+    result = run_dag(dag, 1, [])
+
+    assert result.status == "failed"
+    assert calls == [1]
+    assert result.trace.root.error is not None
+    assert result.trace.root.error.code == "DAGInputValidationError"
+    assert len(result.trace.dag_node_traces()["repeat"].children) == 1
 
 
 def test_loop_requires_positive_max_iterations() -> None:

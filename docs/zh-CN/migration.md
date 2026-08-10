@@ -4,9 +4,44 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.8.5`。
+当前包版本是 `0.8.6`。
 
 ## Unreleased
+
+## 0.8.6
+
+### 修复
+
+- 使用 Pydantic 生成的 alias schema 验证 graph input 时，现在会按字段 alias dump
+  Pydantic model。合法的 aliased model instance 不再在静态 run 前被错误拒绝。
+- Subgraph 的 resolved input 以及 loop body 的每次迭代 input，现在都会在执行 child
+  capability 前依据内嵌 `DAGSpec.input_schema` 验证。
+- `RunStreamEvent.model_validate(...)` 现在根据 event envelope type 选择精确的 data
+  model。即使 `response.started`/`response.finished` 或 capability completed/failed
+  具有相同 payload shape，也会 round-trip 为正确的公开类型。
+
+### 行为与兼容性
+
+- 内嵌 input 验证失败继续使用现有 `DAGInputValidationError` contract；所属静态 DAG
+  node 会失败，child capability 不会执行。
+- Input validation 仍不会修改 value 或应用 JSON Schema default。`RunResult`、event
+  envelope、checkpoint 和 review 行为保持不变。
+
+### 破坏性变化
+
+- 无。
+
+### 迁移步骤
+
+- 将 `dagent-ai` 从 `0.8.5` 升级到 `0.8.6`。不需要迁移数据或配置。
+
+### 验证与已知限制
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv run --extra dev --frozen ruff check dagent tests`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
 
 ## 0.8.5
 
