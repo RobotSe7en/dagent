@@ -5,9 +5,51 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.8.4`.
+The current package version is `0.8.5`.
 
 ## Unreleased
+
+## 0.8.5
+
+### Added
+
+- `validate_dag_spec(...)` now checks every `DAGSpec.input_schema` as a valid,
+  self-contained JSON Schema Draft 2020-12 document.
+- `validate_dag_input(spec_or_schema, graph_input)` validates an instance before
+  static execution. Instance failures raise the public
+  `DAGInputValidationError`, including the instance and schema paths.
+- `RunResult.output_value` exposes the exact resolved static `DAGSpec.output`,
+  including scalar, list, and object values. Serialized results and
+  `run.finished` events include the field.
+
+### Behavior and compatibility
+
+- Invalid static graph input is rejected before workspace creation, capability
+  execution, or `run.started` emission. Validation does not mutate input or
+  apply JSON Schema defaults.
+- SDK schemas are not restricted to top-level objects or one spelling of local
+  references. Any Draft 2020-12 schema whose referenced resources are embedded
+  in the same document remains valid.
+- `output_text` formatting is unchanged. Non-static runs set `output_value` to
+  `None`; static checkpoints continue to carry the resolved value in the run
+  trace.
+
+### Breaking changes
+
+- None.
+
+### Migration steps
+
+- Upgrade the `dagent-ai` dependency to `0.8.5`.
+- Consumers that need structured static output can read `result.output_value`;
+  existing consumers can continue reading `result.output_text` unchanged.
+
+### Verification and known limitations
+
+- `uv run --extra dev pytest`
+- `git diff --check`
+- JSON Schema references must resolve from resources embedded in the schema;
+  the SDK does not fetch external schemas during validation.
 
 ## 0.8.4
 

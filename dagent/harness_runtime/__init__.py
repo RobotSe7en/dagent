@@ -6,8 +6,12 @@ from dagent.harness_runtime.dag_executor import (
     DAGExecutor,
 )
 from dagent.harness_runtime.dag_agent import DAGAgent, DAGAgentLoop
-from dagent.harness_runtime.dag_builder import DAGCreationError
-from dagent.harness_runtime.dag_builder import validate_dag_spec
+from dagent.harness_runtime.dag_builder import (
+    DAGCreationError,
+    DAGInputValidationError,
+    validate_dag_input,
+    validate_dag_spec,
+)
 from dagent.harness_runtime.validator_agent import (
     ValidatorAgent,
     format_validation_feedback,
@@ -30,6 +34,7 @@ __all__ = [
     "ToolAgent",
     "ControlToolResult",
     "DAGCreationError",
+    "DAGInputValidationError",
     "ArtifactUpload",
     "CapabilityScope",
     "DEFAULT_CAPABILITY_SCOPE",
@@ -51,4 +56,5 @@ __all__ = [
     "ConversationResourceError",
     "RuntimeMode",
     "validate_dag_spec",
+    "validate_dag_input",
 ]

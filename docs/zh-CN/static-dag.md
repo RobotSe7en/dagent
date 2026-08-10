@@ -79,6 +79,33 @@ found = dagent.Node("search", target=search, inputs={"q": dag.input.query})
 await runner.run(dag, graph_input=ResearchInput(query="dagent"))
 ```
 
+`input_schema` 是一个 self-contained JSON Schema Draft 2020-12 文档。需要单独验证
+实例时，可以调用：
+
+```python
+dagent.validate_dag_input(dag.to_dag_spec(), {"query": "dagent"})
+```
+
+`Runner` 会在创建 run workspace、执行 capability 或发送 `run.started` 之前执行相同
+检查。无效实例会抛出 `DAGInputValidationError`。验证不会修改输入，也不会应用 schema
+default。SDK 支持顶层 scalar 和 array schema，也支持引用同一 schema 文档中内嵌的资源。
+
+把 value expression 赋给 `dag.output` 即可暴露结构化结果：
+
+```python
+dag.output = {
+    "title": found.output.title,
+    "url": found.output.url,
+}
+
+result = await runner.run(dag, graph_input={"query": "dagent"})
+print(result.output_value)  # {"title": "...", "url": "..."}
+```
+
+对于静态 `Dag` 和 `DAGSpec` run，`output_value` 是精确解析得到的 scalar、list 或
+object。为保持兼容，`output_text` 继续使用原有的文本/JSON rendering；其他 run kind 的
+`output_value` 为 `None`。
+
 ## Value References
 
 静态 DAG 参数可以包含 value references。它们会序列化为 `DAGSpec` 中的结构化 `$expr`

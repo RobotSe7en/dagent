@@ -172,4 +172,6 @@ async for event in runner.stream(agent, input="准备答案。"):
 ```
 
 审核续跑对应 `resume_stream(decision, checkpoint=checkpoint)`。
-`run.finished` 中的 `RunResult` 与非流式调用一致。
+`run.finished` 中的 `RunResult` 与非流式调用一致。序列化 result 包含
+`output_value`；静态 run 中它是 `DAGSpec.output` 的精确解析值，而 `output_text` 保持
+兼容 rendering。`RunStreamEvent.model_validate(...)` 会恢复同样的 typed event payload。

@@ -31,6 +31,7 @@ from dagent.harness_runtime.capability_scope import (
     capability_scope_to_state,
 )
 from dagent.harness_runtime.dag_agent import DAGAgent
+from dagent.harness_runtime.dag_builder import validate_dag_input
 from dagent.harness_runtime.dag_executor import DAGExecutor
 from dagent.harness_runtime.conversation_resources import ConversationResourceStore
 from dagent.harness_runtime.execution_budget import (
@@ -850,6 +851,7 @@ class HarnessRuntime:
     ) -> RunResult:
         if run_id is not None:
             validate_run_id(run_id)
+        validate_dag_input(spec, graph_input)
         resolved_run_id = run_id or _new_run_id_for_mode("dag_spec")
         resolved_workspace_root = self._resolve_run_workspace_root(workspace_root)
         _emit_run_started(on_event, run_id=resolved_run_id, kind="static_dag")
@@ -873,6 +875,11 @@ class HarnessRuntime:
         return RunResult(
             state=state,
             output_text=outcome.output_text.strip() or _fallback_output_text(outcome),
+            output_value=(
+                state.trace.root.value
+                if state.status == "completed" and spec.output is not None
+                else None
+            ),
             new_items=outcome.new_items,
         )
 

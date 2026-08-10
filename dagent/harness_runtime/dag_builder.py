@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+import json
 from typing import Any
 from uuid import uuid4
+
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError, best_match
+from pydantic import BaseModel
+from referencing import Registry
+from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 
 from dagent.harness_runtime.artifacts import validate_artifact_paths
 from dagent.schemas.dag import iter_dag_invocations
@@ -37,6 +45,21 @@ class DAGValidationError(ValueError):
     """Raised when a DAG violates structural validation rules."""
 
 
+class DAGInputValidationError(ValueError):
+    """Raised when graph input does not satisfy a DAG's declared input schema."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: tuple[str | int, ...] = (),
+        schema_path: tuple[str | int, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.path = path
+        self.schema_path = schema_path
+
+
 def compile_dag_spec(
     spec: DAGSpec,
     *,
@@ -67,6 +90,8 @@ def compile_dag_spec(
 
 
 def validate_dag_spec(spec: DAGSpec) -> None:
+    _dag_input_validator(spec.input_schema)
+
     for artifact_id, artifact in spec.artifacts.items():
         if artifact.id != artifact_id:
             raise DAGValidationError(
@@ -108,6 +133,80 @@ def validate_dag_spec(spec: DAGSpec) -> None:
             validate_dag_spec(embedded)
         except DAGValidationError as exc:
             raise DAGValidationError(f"Node '{node.id}' embedded DAG: {exc}") from exc
+
+
+def validate_dag_input(
+    spec_or_schema: DAGSpec | dict[str, Any],
+    graph_input: Any,
+) -> None:
+    """Validate graph input without coercion, mutation, or applying schema defaults."""
+
+    schema = (
+        spec_or_schema.input_schema
+        if isinstance(spec_or_schema, DAGSpec)
+        else spec_or_schema
+    )
+    if not isinstance(schema, dict):
+        raise TypeError("spec_or_schema must be a DAGSpec or JSON Schema object.")
+    validator = _dag_input_validator(schema)
+    instance = (
+        graph_input.model_dump(mode="json")
+        if isinstance(graph_input, BaseModel)
+        else graph_input
+    )
+    error = best_match(validator.iter_errors(instance))
+    if error is None:
+        return
+    path = tuple(error.absolute_path)
+    schema_path = tuple(error.absolute_schema_path)
+    raise DAGInputValidationError(
+        f"Graph input does not match input_schema at {error.json_path}: {error.message}",
+        path=path,
+        schema_path=schema_path,
+    ) from error
+
+
+def _dag_input_validator(schema: dict[str, Any]) -> Draft202012Validator:
+    try:
+        json.dumps(schema, allow_nan=False)
+        Draft202012Validator.check_schema(schema)
+        resource = DRAFT202012.create_resource(schema)
+        root_uri = DRAFT202012.id_of(schema) or "urn:dagent:dag-input-schema"
+        registry = Registry().with_resource(root_uri, resource).crawl()
+        _validate_schema_references(
+            schema,
+            resolver=registry.resolver(root_uri),
+        )
+    except (TypeError, ValueError) as exc:
+        raise DAGValidationError(
+            "DAG input_schema is not a valid JSON document: "
+            f"{exc}."
+        ) from exc
+    except SchemaError as exc:
+        raise DAGValidationError(
+            "DAG input_schema is not a valid JSON Schema Draft 2020-12 "
+            f"document: {exc.message}"
+        ) from exc
+    except Unresolvable as exc:
+        raise DAGValidationError(
+            "DAG input_schema is not self-contained: "
+            f"reference '{exc.ref}' cannot be resolved."
+        ) from exc
+    return Draft202012Validator(schema, registry=registry)
+
+
+def _validate_schema_references(schema: Any, *, resolver: Any) -> None:
+    if isinstance(schema, dict):
+        for keyword in ("$ref", "$dynamicRef"):
+            reference = schema.get(keyword)
+            if isinstance(reference, str):
+                resolver.lookup(reference)
+    for subresource_schema in DRAFT202012.subresources_of(schema):
+        subresource = DRAFT202012.create_resource(subresource_schema)
+        _validate_schema_references(
+            subresource_schema,
+            resolver=resolver.in_subresource(subresource),
+        )
 
 
 def _embedded_spec(payload: Any) -> DAGSpec | None:

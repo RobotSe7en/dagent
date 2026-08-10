@@ -81,6 +81,35 @@ Runtime input is converted to JSON-like data before path lookup:
 await runner.run(dag, graph_input=ResearchInput(query="dagent"))
 ```
 
+`input_schema` is a self-contained JSON Schema Draft 2020-12 document. Validate
+an instance independently when needed:
+
+```python
+dagent.validate_dag_input(dag.to_dag_spec(), {"query": "dagent"})
+```
+
+`Runner` performs the same check before creating a run workspace, executing a
+capability, or emitting `run.started`. Invalid instances raise
+`DAGInputValidationError`. Validation does not mutate the value or apply schema
+defaults. Scalar and array top-level schemas are supported, as are references
+to resources embedded in the same schema document.
+
+Assign `dag.output` to a value expression to expose a structured result:
+
+```python
+dag.output = {
+    "title": found.output.title,
+    "url": found.output.url,
+}
+
+result = await runner.run(dag, graph_input={"query": "dagent"})
+print(result.output_value)  # {"title": "...", "url": "..."}
+```
+
+For static `Dag` and `DAGSpec` runs, `output_value` is the exact resolved
+scalar, list, or object. `output_text` retains its existing text/JSON rendering
+for compatibility. Other run kinds leave `output_value` as `None`.
+
 ## Value References
 
 Static DAG arguments can contain value references. They serialize as structured

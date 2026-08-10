@@ -37,6 +37,8 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "load_builtin_profile")
     assert hasattr(dagent, "list_builtin_profiles")
     assert hasattr(dagent, "validate_dag_spec")
+    assert hasattr(dagent, "validate_dag_input")
+    assert hasattr(dagent, "DAGInputValidationError")
     assert hasattr(dagent, "Node")
     assert hasattr(dagent.Runner, "stream")
     assert hasattr(dagent.Runner, "resume_stream")

@@ -64,6 +64,7 @@ class RunResult:
     usage: ExecutionUsage = PydanticField(
         default_factory=ExecutionUsage,
     )
+    output_value: Any = None
 
     @classmethod
     def model_validate(cls, value: Any) -> "RunResult":
@@ -339,6 +340,13 @@ class RunStreamEvent:
     data: RunStreamEventData
     sequence: int = 0
     run_id: str | None = None
+
+    @classmethod
+    def model_validate(cls, value: Any) -> "RunStreamEvent":
+        """Restore a serialized stream event."""
+        if isinstance(value, cls):
+            return value
+        return _EVENT_ADAPTER.validate_python(value)
 
     def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
         return _EVENT_ADAPTER.dump_python(self, mode=mode)

@@ -187,4 +187,7 @@ async for event in runner.stream(agent, input="Prepare the answer."):
 
 Review continuation has the parallel `resume_stream(decision,
 checkpoint=checkpoint)` API. `run.finished` contains the same `RunResult` shape
-as non-streaming execution.
+as non-streaming execution. Its serialized result includes `output_value`; for
+static runs this is the exact resolved `DAGSpec.output`, while `output_text`
+keeps the compatibility rendering. `RunStreamEvent.model_validate(...)` restores
+the same typed event payload.

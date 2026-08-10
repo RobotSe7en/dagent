@@ -31,7 +31,9 @@ from dagent.harness_runtime import (
     ArtifactUpload,
     CapabilityScope,
     ConversationResourceError,
+    DAGInputValidationError,
     ExecutionLimitExceeded,
+    validate_dag_input,
     validate_dag_spec,
 )
 from dagent.profiles import AgentProfile, ProfileStore, list_builtin_profiles, load_builtin_profile
@@ -77,7 +79,7 @@ from dagent.schemas import (
     UserMessage,
 )
 
-__version__ = "0.8.4"
+__version__ = "0.8.5"
 
 __all__ = [
     "__version__",
@@ -104,6 +106,7 @@ __all__ = [
     "ConversationState",
     "ConversationResourceError",
     "DAG",
+    "DAGInputValidationError",
     "DAGRun",
     "DAGSpec",
     "DagAgent",
@@ -157,5 +160,6 @@ __all__ = [
     "default_managed_skill_root",
     "default_skill_roots",
     "tool",
+    "validate_dag_input",
     "validate_dag_spec",
 ]

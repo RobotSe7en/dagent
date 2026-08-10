@@ -4658,7 +4658,13 @@ def _stream_result(event: dict) -> dict:
 
 
 def _assert_result_shape(result: dict) -> None:
-    assert set(result) == {"new_items", "output_text", "state", "usage"}
+    assert set(result) == {
+        "new_items",
+        "output_text",
+        "output_value",
+        "state",
+        "usage",
+    }
 
 
 def _result_review(result: dict) -> dict | None:

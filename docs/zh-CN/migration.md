@@ -4,9 +4,46 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.8.4`。
+当前包版本是 `0.8.5`。
 
 ## Unreleased
+
+## 0.8.5
+
+### 新增
+
+- `validate_dag_spec(...)` 现在会检查每个 `DAGSpec.input_schema` 是否为有效且
+  self-contained 的 JSON Schema Draft 2020-12 文档。
+- `validate_dag_input(spec_or_schema, graph_input)` 会在静态执行前验证实例。实例不合法时
+  抛出公开的 `DAGInputValidationError`，其中包含实例路径和 schema 路径。
+- `RunResult.output_value` 暴露静态 `DAGSpec.output` 的精确解析值，包括 scalar、list 和
+  object。序列化 result 与 `run.finished` event 都包含该字段。
+
+### 行为与兼容性
+
+- 无效静态 graph input 会在创建 workspace、执行 capability 或发送 `run.started` 之前被
+  拒绝。验证不会修改输入，也不会应用 JSON Schema default。
+- SDK schema 不限制顶层必须是 object，也不限制只能使用某一种 local reference 写法。
+  只要引用资源内嵌在同一文档中，任意 Draft 2020-12 schema 都可以使用。
+- `output_text` 的格式保持不变。非静态 run 的 `output_value` 为 `None`；静态 checkpoint
+  仍通过 run trace 携带解析值。
+
+### 破坏性变化
+
+- 无。
+
+### 迁移步骤
+
+- 将 `dagent-ai` 依赖升级到 `0.8.5`。
+- 需要结构化静态输出的 consumer 可以读取 `result.output_value`；现有 consumer 可以继续
+  原样读取 `result.output_text`。
+
+### 验证与已知限制
+
+- `uv run --extra dev pytest`
+- `git diff --check`
+- JSON Schema reference 必须能从 schema 内嵌资源中解析；SDK 在验证期间不会获取外部
+  schema。
 
 ## 0.8.4
 
