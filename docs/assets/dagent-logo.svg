@@ -1,89 +1,84 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 720" role="img" aria-labelledby="title desc">
-  <title id="title">Dagent logo</title>
-  <desc id="desc">The Dagent logo with a polished uppercase D agent mark and custom wordmark.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 720" role="img" aria-labelledby="title description">
+  <title id="title">DAgent logo</title>
+  <desc id="description">The DAgent circular agent mark with the dagent wordmark.</desc>
   <defs>
-    <linearGradient id="d-body" x1="98" y1="70" x2="430" y2="438" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1558ff"/>
-      <stop offset="0.44" stop-color="#18c9df"/>
-      <stop offset="0.74" stop-color="#1786ff"/>
-      <stop offset="1" stop-color="#173fff"/>
+    <linearGradient id="mark-blue" x1="260" y1="220" x2="720" y2="1035" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0A4B61"/>
+      <stop offset="1" stop-color="#075873"/>
     </linearGradient>
-    <linearGradient id="d-tail" x1="92" y1="426" x2="282" y2="230" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#862cff"/>
-      <stop offset="0.52" stop-color="#2b47ff"/>
-      <stop offset="1" stop-color="#16d7df"/>
+    <linearGradient id="mark-coral" x1="575" y1="150" x2="1000" y2="930" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F45145"/>
+      <stop offset="1" stop-color="#EE4B3E"/>
     </linearGradient>
-    <linearGradient id="eye-fill" x1="200" y1="206" x2="326" y2="272" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#24f1e8"/>
-      <stop offset="1" stop-color="#16b8ff"/>
+    <linearGradient id="word-coral" x1="104" y1="624" x2="240" y2="492" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#EE4B3E"/>
+      <stop offset="1" stop-color="#F45145"/>
     </linearGradient>
-    <linearGradient id="word-d" x1="104" y1="624" x2="240" y2="492" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#862cff"/>
-      <stop offset="0.52" stop-color="#2454ff"/>
-      <stop offset="1" stop-color="#17cfe0"/>
-    </linearGradient>
-    <filter id="mark-shadow" x="-18%" y="-18%" width="136%" height="136%">
-      <feDropShadow dx="0" dy="15" stdDeviation="13" flood-color="#071a56" flood-opacity="0.14"/>
-    </filter>
   </defs>
 
   <rect width="960" height="720" fill="#fff"/>
 
-  <g transform="translate(234 0) scale(.96)" filter="url(#mark-shadow)">
+  <svg x="230" y="0" width="500" height="500" viewBox="96 73 1062 1062" aria-hidden="true">
     <path
-      fill="url(#d-tail)"
-      d="M112 447V303c0-48 39-87 88-87h57c28 0 51 23 51 51v78c0 28-23 51-51 51h-20c-28 0-56 10-77 29l-38 35c-4 4-10 1-10-5v-8z"/>
+      fill="url(#mark-blue)"
+      d="
+        M 395 201.628314
+        A 460 460 0 0 0 712.772138 1051.548504
+        C 739 1048 750 1022 734 996
+        C 717 963 707 924 725 883
+        C 747 805 774 754 780 705
+        C 790 630 772 572 725 538
+        C 695 516 659 510 638 520
+        C 615 532 622 555 642 578
+        C 665 603 670 631 658 653
+        C 644 680 624 685 601 680
+        C 521 661 468 608 443 544
+        C 419 484 431 420 455 365
+        C 482 307 503 263 484 228
+        C 468 199 433 187 395 201.628314
+        Z
+      "/>
     <path
-      fill="url(#d-body)"
-      fill-rule="evenodd"
-      d="M151 58h131c116 0 207 88 207 198S398 454 282 454H161c-19 0-28-24-13-36l55-45c17-15 39-23 62-23h24c57 0 101-41 101-94s-44-94-101-94h-68c-12 0-19 14-12 24l5 6c9 12 1 29-14 29h-49c-33 0-60-27-60-60v-42c0-34 27-61 60-61zm92 139c-24 0-43 19-43 43v76h87c39 0 68-27 68-60s-29-59-68-59h-44z"/>
-    <path
-      fill="#07154c"
-      d="M186 207h133c26 0 48 21 48 48s-22 48-48 48H186c-20 0-36-16-36-36v-24c0-20 16-36 36-36z"/>
-    <path
-      stroke="#10216c"
-      stroke-linecap="round"
-      stroke-width="10"
-      d="M256 207v-29"/>
-    <circle cx="256" cy="166" r="18" fill="url(#eye-fill)"/>
-    <rect width="25" height="48" x="207" y="230" fill="url(#eye-fill)" rx="13"/>
-    <rect width="25" height="48" x="284" y="230" fill="url(#eye-fill)" rx="13"/>
-  </g>
+      fill="url(#mark-coral)"
+      d="
+        M 537.227862 148.451496
+        A 460 460 0 0 1 855 998.371686
+        C 817 1013 782 1001 766 972
+        C 747 937 768 893 795 835
+        C 806 812 815 765 820 707
+        C 827 629 803 554 748 511
+        C 713 483 670 471 637 478
+        C 601 486 580 514 588 548
+        C 592 565 606 578 616 593
+        C 630 613 625 632 612 638
+        C 598 646 577 632 558 619
+        C 504 580 479 523 478 470
+        C 477 413 505 363 525 317
+        C 543 276 533 237 516 204
+        C 500 178 511 152 537.227862 148.451496
+        Z
+      "/>
+  </svg>
 
   <g aria-label="dagent" transform="translate(92 105) scale(.78)" fill="none" stroke-linecap="round" stroke-linejoin="round">
     <path
-      stroke="url(#word-d)"
+      stroke="url(#word-coral)"
       stroke-width="35"
       d="M225 478v132h-62c-34 0-57-22-57-53s23-52 57-52h62"/>
     <g transform="translate(58 0)">
-      <path
-        stroke="#07154c"
-        stroke-width="35"
-        d="M340 610V505h-58c-33 0-55 22-55 52s22 53 55 53h58"/>
+      <path stroke="#07536B" stroke-width="35" d="M340 610V505h-58c-33 0-55 22-55 52s22 53 55 53h58"/>
     </g>
     <g transform="translate(111 0)">
-      <path
-        stroke="#07154c"
-        stroke-width="35"
-        d="M458 505h-59c-33 0-55 22-55 52s22 53 55 53h59v18c0 27-21 43-53 43h-36"/>
+      <path stroke="#07536B" stroke-width="35" d="M458 505h-59c-33 0-55 22-55 52s22 53 55 53h59v18c0 27-21 43-53 43h-36"/>
     </g>
     <g transform="translate(148 0)">
-      <path
-        stroke="#07154c"
-        stroke-width="35"
-        d="M481 557h112v-16c0-22-18-36-43-36h-16c-34 0-56 22-56 52s22 53 57 53h58"/>
+      <path stroke="#07536B" stroke-width="35" d="M481 557h112v-16c0-22-18-36-43-36h-16c-34 0-56 22-56 52s22 53 57 53h58"/>
     </g>
     <g transform="translate(165 0)">
-      <path
-        stroke="#07154c"
-        stroke-width="35"
-        d="M633 610V505h58c31 0 50 20 50 51v54"/>
+      <path stroke="#07536B" stroke-width="35" d="M633 610V505h58c31 0 50 20 50 51v54"/>
     </g>
     <g transform="translate(184 0)">
-      <path
-        stroke="#07154c"
-        stroke-width="35"
-        d="M815 476v101c0 22 15 33 39 33h17M779 505h92"/>
+      <path stroke="#07536B" stroke-width="35" d="M815 476v101c0 22 15 33 39 33h17M779 505h92"/>
     </g>
   </g>
 </svg>
