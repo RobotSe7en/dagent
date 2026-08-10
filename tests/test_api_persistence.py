@@ -2438,6 +2438,7 @@ def test_api_saved_dag_crud_persists_static_dag_spec(persistence_client) -> None
     spec = {
         "id": "project_report",
         "name": "Project Report",
+        "output": {"kind": "project_report"},
         "nodes": [
             {
                 "id": "write",
@@ -2480,6 +2481,7 @@ def test_api_saved_dag_crud_persists_static_dag_spec(persistence_client) -> None
     assert saved["project_id"] == project["id"]
     assert saved["spec"]["id"] == spec["id"]
     assert saved["spec"]["name"] == spec["name"]
+    assert saved["spec"]["output"] == spec["output"]
     assert saved["spec"]["nodes"][0]["id"] == "write"
     assert saved["spec"]["nodes"][0]["target"] == "tool.write_file"
     assert saved["spec"]["nodes"][0]["inputs"] == {"path": "reports/summary.md", "content": "hello"}
@@ -2489,8 +2491,10 @@ def test_api_saved_dag_crud_persists_static_dag_spec(persistence_client) -> None
     assert [item["id"] for item in listed.json()["saved_dags"]] == [saved["id"]]
     assert fetched.status_code == 200
     assert fetched.json()["saved_dag"]["spec"]["id"] == spec["id"]
+    assert fetched.json()["saved_dag"]["spec"]["output"] == spec["output"]
     assert updated.status_code == 200
     assert updated.json()["saved_dag"]["name"] == "Project Report v2"
+    assert updated.json()["saved_dag"]["spec"]["output"] == spec["output"]
     assert updated.json()["saved_dag"]["revision"] == 2
     assert archived.status_code == 200
     assert listed_after_delete.json()["saved_dags"] == []
@@ -2548,6 +2552,7 @@ def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(
     spec = {
         "id": "write_static_note",
         "name": "Write Static Note",
+        "output": {"kind": "static_note"},
         "nodes": [
             {
                 "id": "write",
@@ -2586,6 +2591,7 @@ def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(
 
     assert response.status_code == 200
     assert result["state"]["kind"] == "static_dag"
+    assert result["output_value"] == {"kind": "static_note"}
     assert result["state"]["workspace_path"] == str(workspace_path)
     assert (workspace_path / "reports" / "static.md").read_text(encoding="utf-8") == "static"
     assert persisted_run is not None

@@ -4,9 +4,18 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.8.6`。
+当前包版本是 `0.8.7`。
 
 ## Unreleased
+
+## 0.8.7
+
+### 新增
+
+- 本地 FastAPI backend 的 `UserDAG` 请求 contract 现在接受 JSON `output` value 或
+  expression，并通过公开 `Dag.output` builder contract 传入 SDK。直接或已保存的静态
+  DAG run 因此可以通过 `RunResult.output_value` 返回解析后的结构。
+- Saved DAG 的创建、读取和更新流程会在现有 `spec_json` 文档中保留声明的 output。
 
 ### 变更
 
@@ -15,14 +24,33 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - 显式传入的值保持原有行为。`runtime_directory` 仍必须是 runner 或 run workspace 内的
   安全相对路径。
 
+### 行为与兼容性
+
+- 没有 `output` 的现有 saved DAG 文档会以 `output=None` 加载；不需要 API 数据库迁移或
+  stored-spec 转换。
+- 已显式传入运行路径的 host 会保留完全相同的存储布局。本地 FastAPI backend 继续显式
+  传入自己的路径。
+- `output_text` 和非静态 result 行为保持不变。持久化的 `run.finished` event 包含
+  `output_value`；run summary 仍只直接暴露 `output_text`。
+
 ### 破坏性变化
 
 - 无。
 
 ### 迁移步骤
 
-- 现有 host 无需修改。希望由 SDK 管理本地存储的应用可以省略其中任意一个或两个运行路径
-  参数。
+- 将 `dagent-ai` 从 `0.8.6` 升级到 `0.8.7`。不需要迁移数据或配置。
+- 希望由 SDK 管理本地存储的应用可以省略其中任意一个或两个运行路径参数。
+
+### 验证与已知限制
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv run --extra dev --frozen ruff check dagent api tests`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+- 本地 WebUI 尚未提供声明静态 DAG output expression 的编辑器，run summary 也未直接投影
+  `output_value`。
 
 ## 0.8.6
 

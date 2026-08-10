@@ -27,7 +27,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
 
 from api.agent_presets import (
     AgentPreset,
@@ -317,6 +317,7 @@ class UserDAG(BaseModel):
     artifacts: dict[str, Artifact] = Field(default_factory=dict)
     nodes: list[UserDAGNode] = Field(default_factory=list)
     edges: list[DAGEdge] = Field(default_factory=list)
+    output: JsonValue | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -2212,6 +2213,7 @@ def _compile_user_dag(dag: UserDAG) -> Dag:
         ))
     for edge in dag.edges:
         builder.add_edge(edge.source, edge.target, reason=edge.reason, when=edge.when)
+    builder.output = dag.output
     return builder
 
 

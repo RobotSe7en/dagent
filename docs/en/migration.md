@@ -5,9 +5,20 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.8.6`.
+The current package version is `0.8.7`.
 
 ## Unreleased
+
+## 0.8.7
+
+### Added
+
+- The local FastAPI backend's `UserDAG` request contract now accepts a JSON
+  `output` value or expression and passes it through the public `Dag.output`
+  builder contract. Direct and saved static DAG runs can therefore return the
+  resolved structure through `RunResult.output_value`.
+- Saved DAG create, read, and update flows preserve the declared output in the
+  existing `spec_json` document.
 
 ### Changed
 
@@ -16,14 +27,36 @@ The current package version is `0.8.6`.
 - Explicit values keep their existing behavior. `runtime_directory` remains a
   safe relative path inside the runner or run workspace.
 
+### Behavior and compatibility
+
+- Existing saved DAG documents without `output` load with `output=None`; no API
+  database migration or stored-spec conversion is required.
+- Existing hosts that pass runtime paths explicitly retain their exact storage
+  layout. The local FastAPI backend continues to pass its paths explicitly.
+- `output_text` and non-static result behavior are unchanged. Persisted
+  `run.finished` events contain `output_value`; run summaries continue to expose
+  `output_text` only.
+
 ### Breaking changes
 
 - None.
 
 ### Migration steps
 
-- Existing hosts do not need to change. Applications that want SDK-managed
-  local storage may omit either or both runtime-path arguments.
+- Upgrade `dagent-ai` from `0.8.6` to `0.8.7`. No data or configuration
+  migration is required.
+- Applications that want SDK-managed local storage may omit either or both
+  runtime-path arguments.
+
+### Verification and known limitations
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv run --extra dev --frozen ruff check dagent api tests`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+- The local WebUI does not yet provide an editor for declaring static DAG
+  output expressions, and run summaries do not project `output_value` directly.
 
 ## 0.8.6
 

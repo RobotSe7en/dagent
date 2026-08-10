@@ -2417,6 +2417,44 @@ def test_validate_static_dag_accepts_node_output_reference_with_dependency() -> 
     assert "valid_binding" not in state.dags
 
 
+def test_static_dag_api_returns_declared_output_value() -> None:
+    state.dags.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    output = {
+        "echoed": {
+            "$expr": {
+                "type": "node_output",
+                "node_id": "echo",
+                "field": "content",
+            }
+        }
+    }
+    spec = {
+        "id": "structured_output",
+        "name": "Structured output",
+        "nodes": [
+            {
+                "id": "echo",
+                "target": "tool.echo",
+                "inputs": {"text": "dagent"},
+            }
+        ],
+        "edges": [],
+        "output": output,
+    }
+
+    created = client.post("/dags", json=spec)
+    run_response = client.post("/dags/structured_output/run")
+
+    assert created.status_code == 200
+    assert created.json()["dag"]["output"] == output
+    assert run_response.status_code == 200
+    assert run_response.json()["result"]["output_value"] == {
+        "echoed": "echo:dagent"
+    }
+
+
 def test_validate_static_dag_reports_node_output_dependency_errors() -> None:
     state.dags.clear()
     client = TestClient(app)
