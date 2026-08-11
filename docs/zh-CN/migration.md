@@ -1,6 +1,6 @@
 # 迁移说明
 
-dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用户采取行动的面向用户变化。
+达智已经发布公开 SDK contracts。本页记录升级时可能需要用户采取行动的面向用户变化。
 
 ## 当前发布线
 
@@ -729,7 +729,7 @@ Host 必须为待审核 run 持久化完整 V3 checkpoint，并为聊天 continu
 
 ### 改变
 
-- dagent 重新保持为进程内 SDK library。进程生命周期、命令协议、健康检查、持久化、
+- 达智重新保持为进程内 SDK library。进程生命周期、命令协议、健康检查、持久化、
   凭证、调度和容器生命周期由调用方 host 负责。
 - 调用方提供的 Run ID、带版本的 `RunState`、capability reference 校验、MCP
   snapshots、lazy MCP 连接和 `Runner` 清理继续作为公共 library 行为保留。
@@ -767,7 +767,7 @@ Host 必须为待审核 run 持久化完整 V3 checkpoint，并为聊天 continu
 
 ### 已知限制
 
-- dagent 不提供 process host、service loop、durable store 或活跃 Run 的透明恢复。
+- 达智不提供 process host、service loop、durable store 或活跃 Run 的透明恢复。
 
 ## 0.6.8
 

@@ -1,9 +1,9 @@
 # 快速开始
 
-本指南给出 dagent 的第一条完整路径：安装包、注册 Python 工具、运行
+本指南给出达智的第一条完整路径：安装包、注册 Python 工具、运行
 `ToolAgent`、构建一个很小的静态 DAG，再从仓库 checkout 启动终端界面。
 
-## 1. 安装 dagent
+## 1. 安装达智
 
 ```bash
 pip install dagent-ai
@@ -17,7 +17,7 @@ pip install "dagent-ai[mcp]"
 
 ## 2. 配置 Provider
 
-dagent 面向 OpenAI-compatible `/v1/chat/completions` provider：
+达智面向 OpenAI-compatible `/v1/chat/completions` provider：
 
 ```python
 import dagent
@@ -139,7 +139,7 @@ async def main():
     dagent.validate_dag_spec(dag.to_dag_spec())
 
     runner = dagent.Runner(provider=provider)
-    result = await runner.run(dag, graph_input="dagent")
+    result = await runner.run(dag, graph_input="达智")
     print(result.output_text)
     runner.close()
 
@@ -156,7 +156,7 @@ uv run python -m examples.static_dag
 ## 6. 使用终端界面
 
 仓库包含基于 Textual 的 `dagent-tui`，它直接运行在终端中，不是浏览器应用。TUI
-通过 HTTP 和 SSE 请求连接本地 FastAPI 后端；后端使用 dagent SDK，并负责会话、运行
+通过 HTTP 和 SSE 请求连接本地 FastAPI 后端；后端使用达智 SDK，并负责会话、运行
 状态、Review 恢复和持久化。
 
 这个流程需要仓库 checkout、Python 3.11 或更新版本，以及
@@ -205,7 +205,7 @@ artifact 预览以及 provider、MCP 和 skill 管理仍由 WebUI 提供。当�
 
 ## 接下来读什么
 
-- 在[核心概念](concepts.md)中理解 dagent 的模型。
+- 在[核心概念](concepts.md)中理解达智的模型。
 - 在 [Agents](agents.md) 中选择 `ToolAgent`、`AutoAgent` 或 `DagAgent`。
 - 在 [Capabilities](capabilities.md) 中注册 Python tools、MCP tools 和结构化结果。
 - 在[静态 DAG](static-dag.md) 中构建类型化静态 DAG。

@@ -1,6 +1,6 @@
 # SDK 0.8 Host 迁移
 
-本文是基于 dagent 的 host 实施规范。内置 API 是一份参考实现；enterprise 和第三方
+本文是基于达智的 host 实施规范。内置 API 是一份参考实现；enterprise 和第三方
 host 仍需在自己的持久化与鉴权层落实这些边界。
 
 ## 持久化边界

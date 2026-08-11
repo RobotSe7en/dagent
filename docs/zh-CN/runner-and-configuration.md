@@ -29,7 +29,7 @@ runner = dagent.Runner(
 )
 ```
 
-dagent 是进程内 SDK。请在你控制的进程中构造并关闭 `Runner`。进程命令、健康检查、
+达智是进程内 SDK。请在你控制的进程中构造并关闭 `Runner`。进程命令、健康检查、
 凭证、持久化、调度和容器生命周期由 host 负责；SDK 不提供 worker 或 service loop。
 
 `Runner(...)` 不会隐式读取 `config.yaml`。省略时，`workspace` 默认为
@@ -49,7 +49,7 @@ DagAgent message run 中，内置 file 和 shell tool 的相对路径从当前 r
 这些目录按需创建。只构造 runner、执行纯文本轮次或保持小结果内联都不会创建它们。
 
 如果应用已经拥有执行目录，可以给 `Runner.run(...)` 或 `Runner.stream(...)` 传入
-`workspace_path=...`。dagent 会直接使用这个目录运行，不再创建 `<run_id>` 子目录。
+`workspace_path=...`。达智会直接使用这个目录运行，不再创建 `<run_id>` 子目录。
 这是运行时 workspace 选择能力，不是持久化能力；调用方仍然负责在 SDK 之外保存 run
 的 conversation 和 review 状态。会话续聊会创建新的 run，也可以选择不同 workspace。
 review 续跑使用 `RunCheckpoint` 中冻结的 workspace；`Runner.resume(...)` 不接受替换
@@ -115,14 +115,14 @@ OpenAI-compatible endpoint 不会报告模型限制，因此需要显式配置�
 `capture="field_and_tags"` 会记录专用 reasoning 字段和 tag 内容；
 `capture="field"` 只信任专用字段并丢弃 tag 内容；tag 不会残留在可见正文中。
 
-对于 structured planner call，dagent 会把 runtime JSON Schema 计入请求预算，并在本地
+对于 structured planner call，达智会把 runtime JSON Schema 计入请求预算，并在本地
 校验返回对象。内置 OpenAI-compatible provider 固定请求
 `{"type": "json_object"}`，不再发送 `response_format.type="json_schema"`，也不会根据
 provider 或 model 名称选择不同路径。
 
 `timeout_seconds` 控制 provider request timeout。Tool-agent 和动态 DAG 的 planning/replanning
 LLM 调用会在请求失败或超时时最多重试 5 次，重试前分别等待 `1`、`2`、`5`、`10`、`30` 秒。
-如果 streaming response 已经输出 token，dagent 不会重试这次请求，以避免重复输出部分内容。
+如果 streaming response 已经输出 token，达智不会重试这次请求，以避免重复输出部分内容。
 MCP server 的 `tool_timeout` 是单独配置，只控制 MCP 工具调用。
 
 ## 配置文件
@@ -298,10 +298,10 @@ runner = dagent.Runner(
 )
 ```
 
-MCP server name 是 dagent 的本地 workspace key，不是第三方 MCP tool 名。本地
+MCP server name 是达智的本地 workspace key，不是第三方 MCP tool 名。本地
 `/mcp/servers` API 会强制这个 key 只能包含字母、数字和下划线，例如 `remote_docs`；
 `mcp_servers` 和 `runner.add_mcp_server(...)` 也建议使用同样约定，让 id 保持可预测。
-第三方 MCP tool 原始名称会保存在 capability config 中，并在 dagent 生成 `mcp.*`
+第三方 MCP tool 原始名称会保存在 capability config 中，并在达智生成 `mcp.*`
 capability ids 时 canonicalize。
 
 也可以在构造后注册资源：
@@ -375,7 +375,7 @@ WebUI backend 这类 host 可以管理 raw capability definitions：
 runner.register_capability(definition, handler, supports_context=False)
 runner.replace_capability(definition, handler)
 runner.set_capability_enabled("tool.search", False)
-result = await runner.test_capability("tool.search", {"q": "dagent"})
+result = await runner.test_capability("tool.search", {"q": "达智"})
 runner.remove_capability("tool.search")
 
 for definition in runner.list_capabilities(kind="mcp"):

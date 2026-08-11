@@ -17,7 +17,7 @@ Capability ids 是公开行为。不要依赖这里未记录的 legacy aliases�
 
 Raw `CapabilityDefinition.id` 必须以受支持的 kind 前缀开头（`tool`、`mcp`、
 `agent`、`skill`、`memory`），并且至少包含两个 dotted segments。每个 segment
-只能包含字母、数字和下划线；首尾空白会被拒绝。上表列出的是 dagent 默认使用的
+只能包含字母、数字和下划线；首尾空白会被拒绝。上表列出的是达智默认使用的
 常见形式，不表示所有自定义 capability 都必须固定为同样的 segment 数量。
 
 ## 内置工具
@@ -41,7 +41,7 @@ review resume 流程；静态 DAG 和 fast no-review 的 DAG revision 仍会执�
 每个 capability 有三个名字。`id` 是稳定执行身份，用于 scopes、traces、reviews 和
 DAG invocation payloads。`name` 是 LLM 可见函数名，用于 provider tool calls；
 类型化 dynamic DAG plan 直接引用稳定 `id`。`display_name` 只用于
-UI 展示。省略 `name` 时，dagent 默认把 capability id 中的点替换为下划线；省略
+UI 展示。省略 `name` 时，达智默认把 capability id 中的点替换为下划线；省略
 `display_name` 时，默认等于 `name`。
 
 `tool_read_file` 的输出不带行号前缀，从读取结果中复制的文本可以原样作为
@@ -206,7 +206,7 @@ shell 危险模式（例如破坏性系统命令）不可通过 review 放行。
 MCP stdio 和 Streamable HTTP server tools 在 server 注册后会变成普通
 `mcp.<server>.<tool>` capabilities：
 
-这里的 `<server>` 和 `<tool>` segment 是 dagent 的公开 key。原始 MCP server 和 tool
+这里的 `<server>` 和 `<tool>` segment 是达智的公开 key。原始 MCP server 和 tool
 名称会保存在 capability `config` 中；不安全的原始名称会通过稳定短 hash canonicalize，
 避免不同外部名称在 normalize 后发生碰撞。第三方工具的 id 请通过
 `runner.add_mcp_server(...)` 返回值或 `/capabilities` 查看，不要手写猜测。
@@ -278,7 +278,7 @@ MCP server。
 使用 `Runner.test_capability(...)` 单独执行一个 capability 进行检查：
 
 ```python
-result = await runner.test_capability("tool.search", {"q": "dagent"})
+result = await runner.test_capability("tool.search", {"q": "达智"})
 print(result.status)
 print(result.value)
 ```

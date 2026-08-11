@@ -33,7 +33,7 @@ async def main():
 
     dagent.validate_dag_spec(dag.to_dag_spec())
 
-    result = await runner.run(dag, graph_input="dagent")
+    result = await runner.run(dag, graph_input="达智")
     print(result.output_text)
 
 
@@ -76,14 +76,14 @@ found = dagent.Node("search", target=search, inputs={"q": dag.input.query})
 运行时 input 会在 path lookup 前转换成 JSON-like data：
 
 ```python
-await runner.run(dag, graph_input=ResearchInput(query="dagent"))
+await runner.run(dag, graph_input=ResearchInput(query="达智"))
 ```
 
 `input_schema` 是一个 self-contained JSON Schema Draft 2020-12 文档。需要单独验证
 实例时，可以调用：
 
 ```python
-dagent.validate_dag_input(dag.to_dag_spec(), {"query": "dagent"})
+dagent.validate_dag_input(dag.to_dag_spec(), {"query": "达智"})
 ```
 
 `Runner` 会在创建 run workspace、执行 capability 或发送 `run.started` 之前执行相同
@@ -103,7 +103,7 @@ dag.output = {
     "url": found.output.url,
 }
 
-result = await runner.run(dag, graph_input={"query": "dagent"})
+result = await runner.run(dag, graph_input={"query": "达智"})
 print(result.output_value)  # {"title": "...", "url": "..."}
 ```
 
