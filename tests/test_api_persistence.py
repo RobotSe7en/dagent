@@ -2500,8 +2500,16 @@ def test_api_saved_dag_crud_persists_static_dag_spec(persistence_client) -> None
     assert listed_after_delete.json()["saved_dags"] == []
 
 
-def test_api_saved_dag_payload_falls_back_to_valid_empty_spec(
+@pytest.mark.parametrize(
+    "invalid_spec_json",
+    [
+        "{bad json",
+        json.dumps({"id": "invalid", "name": "Invalid", "unknown": True}),
+    ],
+)
+def test_api_saved_dag_payload_rejects_invalid_stored_spec_without_mutation(
     persistence_client,
+    invalid_spec_json: str,
 ) -> None:
     created = persistence_client.post(
         "/saved-dags",
@@ -2524,17 +2532,17 @@ def test_api_saved_dag_payload_falls_back_to_valid_empty_spec(
     )
     saved = created.json()["saved_dag"]
     store = state.get_store()
-    store._conn.execute("UPDATE saved_dags SET spec_json = ? WHERE id = ?", ("{bad json", saved["id"]))
+    store._conn.execute(
+        "UPDATE saved_dags SET spec_json = ? WHERE id = ?",
+        (invalid_spec_json, saved["id"]),
+    )
     store._conn.commit()
 
     response = persistence_client.get(f"/saved-dags/{saved['id']}")
-    payload = response.json()["saved_dag"]["spec"]
 
-    assert response.status_code == 200
-    assert payload["id"] == saved["id"]
-    assert payload["name"] == "Corruptible"
-    assert payload["nodes"] == []
-    assert payload["edges"] == []
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Stored DAG spec is invalid."}
+    assert store.get_saved_dag(saved["id"]).spec_json == invalid_spec_json
 
 
 def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(

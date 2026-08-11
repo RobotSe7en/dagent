@@ -2428,22 +2428,11 @@ def _user_dag_from_saved(saved: SavedDag) -> UserDAG:
         raise HTTPException(status_code=500, detail="Stored DAG spec is invalid.") from exc
 
 
-def _empty_user_dag_payload(saved: SavedDag) -> dict[str, Any]:
-    return UserDAG(id=saved.id, name=saved.name or "Untitled DAG").model_dump(mode="json")
-
-
 def _saved_dag_payload(saved: SavedDag) -> dict[str, Any]:
     payload = saved.model_dump(mode="json")
     payload.pop("spec_json")
     payload.pop("layout_json")
-    stored_spec = _json_from_storage(
-        saved.spec_json,
-        fallback=_empty_user_dag_payload(saved),
-    )
-    try:
-        payload["spec"] = UserDAG.model_validate(stored_spec).model_dump(mode="json")
-    except ValidationError:
-        payload["spec"] = _empty_user_dag_payload(saved)
+    payload["spec"] = _user_dag_from_saved(saved).model_dump(mode="json")
     payload["layout"] = _json_from_storage(saved.layout_json, fallback={})
     return payload
 

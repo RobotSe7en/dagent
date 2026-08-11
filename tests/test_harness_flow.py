@@ -140,7 +140,7 @@ def dag_agent_for(dag_loop: DAGAgentLoop) -> DAGAgent:
     )
 
 
-def test_typed_planner_system_message_references_provider_response_schema_once() -> None:
+def test_typed_planner_system_message_includes_response_schema() -> None:
     agent = dag_agent_for(dag_loop_for(MockProvider([])))
 
     compact_schema = json.dumps(
@@ -149,9 +149,8 @@ def test_typed_planner_system_message_references_provider_response_schema_once()
         sort_keys=True,
         separators=(",", ":"),
     )
-    assert "## Required Planner Response Contract" in agent.system_message["content"]
-    assert "dagent_dynamic_dag_response" in agent.system_message["content"]
-    assert compact_schema not in agent.system_message["content"]
+    assert "## Required Planner Response JSON Schema" in agent.system_message["content"]
+    assert compact_schema in agent.system_message["content"]
 
 
 def dag_response_from_dag(

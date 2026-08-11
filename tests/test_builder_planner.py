@@ -520,9 +520,8 @@ dag.output = work.output
         sort_keys=True,
         separators=(",", ":"),
     )
-    assert "## Required Planner Response Contract" in system_prompt
-    assert "dagent_dynamic_dag_builder_response" in system_prompt
-    assert compact_schema not in system_prompt
+    assert "## Required Planner Response JSON Schema" in system_prompt
+    assert compact_schema in system_prompt
 
 
 def test_builder_checkpoint_resume_uses_frozen_frontend_and_skill(tmp_path) -> None:

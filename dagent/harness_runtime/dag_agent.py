@@ -496,7 +496,6 @@ class DAGAgentLoop:
         prepared = await self.context_assembler.prepare(
             system_message=messages[0],
             conversation=planner_thread,
-            tools=({"response_format": response_format.schema},),
             policy=self.context_policy,
             compact=lambda summary, items, limit: self._compact_history(
                 summary,
@@ -2414,9 +2413,14 @@ def _planner_response_format_for_frontend(
 
 def _planner_response_schema_context(response_format: StructuredOutputFormat) -> str:
     return (
-        "## Required Planner Response Contract\n"
-        f"The runtime provides the complete strict JSON Schema as response_format "
-        f"'{response_format.name}'. Return exactly one object that conforms to it."
+        "## Required Planner Response JSON Schema\n"
+        "Return one JSON object that conforms exactly to this schema.\n\n"
+        + json.dumps(
+            response_format.schema,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     )
 
 
