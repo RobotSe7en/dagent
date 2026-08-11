@@ -6055,12 +6055,12 @@ function WorkspaceSidebar({
   return (
     <aside className="workspace-sidebar" data-collapsed={collapsed}>
       <div className="sidebar-brand-row">
-        <button className="brand-mark" onClick={collapsed ? onToggleCollapsed : undefined} title={collapsed ? '展开侧栏' : 'dagent'} type="button">
-          <img className="brand-logo-glyph" src={dagentMark} alt="dagent" />
+        <button className="brand-mark" onClick={collapsed ? onToggleCollapsed : undefined} title={collapsed ? '展开侧栏' : '达智'} type="button">
+          <img className="brand-logo-glyph" src={dagentMark} alt="达智" />
           <ChevronRight className="brand-logo-expand" size={19} />
         </button>
         <div className="sidebar-brand-copy">
-          <strong>dagent</strong>
+          <strong>达智</strong>
           <span>Agent DAG Harness</span>
         </div>
       </div>

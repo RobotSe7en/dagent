@@ -1,6 +1,6 @@
 # 核心概念
 
-dagent 将声明式配置和运行时所有权分离。这样 agent 对象保持轻量，而执行状态、
+达智将声明式配置和运行时所有权分离。这样 agent 对象保持轻量，而执行状态、
 capabilities、review 和 continuation 都是显式的。
 
 ## Runner
@@ -66,7 +66,7 @@ Skills 是从 skill roots 或 managed installs 中发现的可读 instruction as
 OpenAI-compatible `messages`；静态 DAG runs 接收 `graph_input`。
 
 `RunResult.messages` 只包含当前 run 生成的 messages。调用方拥有 conversation list，
-并且在继续 agent conversation 时应追加这些 messages。`RunResult.state` 包含 dagent
+并且在继续 agent conversation 时应追加这些 messages。`RunResult.state` 包含达智
 可恢复的内部状态，包括 trace data 和 pending review checkpoints。
 
 当工作需要 review 时，用 `Runner.resume(...)` 或 `Runner.resume_stream(...)` 批准或拒绝。

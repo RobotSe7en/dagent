@@ -1,6 +1,6 @@
-# dagent 中文文档
+# 达智中文文档
 
-本目录是 dagent 的简体中文用户文档。项目根目录的
+本目录是达智的简体中文用户文档。项目根目录的
 [`README.md`](../../README.md) 仍然是项目门面，包含项目介绍和核心架构；
 这里的页面聚焦安装、SDK 使用、功能指南和已发布行为。
 
@@ -8,7 +8,7 @@
 
 ## 从这里开始
 
-- 第一次使用 dagent：阅读[快速开始](quick-start.md)。
+- 第一次使用达智：阅读[快速开始](quick-start.md)。
 - 配置环境：阅读[安装](installation.md)。
 - 先理解模型：阅读[核心概念](concepts.md)。
 - 查询公开 SDK 名称：阅读 [Python SDK 参考地图](python-sdk.md)。

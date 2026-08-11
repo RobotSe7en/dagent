@@ -1,6 +1,6 @@
 # Agents
 
-dagent 有三种公开 agent 配置：`ToolAgent`、`AutoAgent` 和 `DagAgent`。它们都是声明式
+达智有三种公开 agent 配置：`ToolAgent`、`AutoAgent` 和 `DagAgent`。它们都是声明式
 run targets。`Runner` 拥有 provider clients、capabilities、runtime state、review
 continuation 和 execution dispatch。
 
@@ -152,7 +152,7 @@ agent = dagent.DagAgent(
 
 result = await runner.run(
     agent,
-    input="Research dagent and write a note.",
+    input="Research 达智 and write a note.",
 )
 
 if result.requires_review and result.review is not None:

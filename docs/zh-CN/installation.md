@@ -1,6 +1,6 @@
 # 安装
 
-dagent 在 PyPI 上的包名是 `dagent-ai`，在 Python 中导入时使用 `dagent`。
+达智在 PyPI 上的包名是 `dagent-ai`，在 Python 中导入时使用 `dagent`。
 
 ## 环境要求
 
