@@ -136,6 +136,25 @@ uv run python -m examples.static_dag
 uv run python -m examples.streaming
 ```
 
+### Terminal UI
+
+The repository also includes an API-backed terminal UI. It runs directly in
+your terminal, not in a browser. Start the FastAPI host from the repository root:
+
+```bash
+uv run --extra dev uvicorn api.app:app --port 8001
+```
+
+Then launch the TUI in a second terminal:
+
+```bash
+uv run --project tui dagent-tui --api-url http://127.0.0.1:8001
+```
+
+Set the provider credential required by `config.yaml` before sending a prompt.
+See the [Quick Start](docs/en/quick-start.md#6-use-the-terminal-ui) and
+[TUI guide](tui/README.md) for configuration, controls, and current limitations.
+
 ## Architecture
 
 ```mermaid
@@ -197,6 +216,7 @@ dagent/
   state/            prompt assembly
 docs/              user-facing documentation
 examples/          runnable SDK examples
+tui/               Textual terminal client for the local API
 web/               React + Vite frontend
 tests/             pytest suite
 ```

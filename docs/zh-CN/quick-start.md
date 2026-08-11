@@ -1,7 +1,7 @@
 # 快速开始
 
 本指南给出 dagent 的第一条完整路径：安装包、注册 Python 工具、运行
-`ToolAgent`，再构建一个很小的静态 DAG。
+`ToolAgent`、构建一个很小的静态 DAG，再从仓库 checkout 启动终端界面。
 
 ## 1. 安装 dagent
 
@@ -152,6 +152,56 @@ asyncio.run(main())
 ```bash
 uv run python -m examples.static_dag
 ```
+
+## 6. 使用终端界面
+
+仓库包含基于 Textual 的 `dagent-tui`，它直接运行在终端中，不是浏览器应用。TUI
+通过 HTTP 和 SSE 请求连接本地 FastAPI 后端；后端使用 dagent SDK，并负责会话、运行
+状态、Review 恢复和持久化。
+
+这个流程需要仓库 checkout、Python 3.11 或更新版本，以及
+[`uv`](https://docs.astral.sh/uv/)。先在根目录的 `config.yaml` 中配置 provider，并导出
+其中 `api_key_env` 指定的环境变量。当前仓库配置使用 `API_KEY`：
+
+```bash
+export API_KEY="你的 provider key"
+```
+
+在仓库根目录的第一个终端中启动 API：
+
+```bash
+uv run --extra dev uvicorn api.app:app --port 8001
+```
+
+在第二个终端中启动 TUI：
+
+```bash
+uv run --project tui dagent-tui --api-url http://127.0.0.1:8001
+```
+
+`http://127.0.0.1:8001` 是 TUI 使用的后端地址，不需要在浏览器中打开。也可以通过
+环境变量设置该地址：
+
+```bash
+export DAGENT_API_URL="http://127.0.0.1:8001"
+uv run --project tui dagent-tui
+```
+
+在输入框上方选择 `Auto`、`Tool` 或 `DAG` 运行目标，并选择 `Fast review` 或
+`Careful review`。左侧显示持久化会话，中间是对话区，右侧显示 capability 活动以及
+DAG 和 trace 摘要。
+
+| 按键 | 操作 |
+| --- | --- |
+| `Ctrl+N` | 新建独立会话 |
+| `Ctrl+R` | 重试上一条请求 |
+| `Ctrl+C` | 取消当前运行 |
+| `F5` | 刷新项目和会话 |
+| `Ctrl+Q` | 退出 |
+
+当前 TUI 可以继续已有项目会话，但新建的会话是独立会话。图形编辑、文件上传、富
+artifact 预览以及 provider、MCP 和 skill 管理仍由 WebUI 提供。当前功能范围和限制见
+[TUI 使用说明](../../tui/README.md)。
 
 ## 接下来读什么
 

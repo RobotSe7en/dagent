@@ -1,7 +1,8 @@
 # Quick Start
 
 This guide gives you a complete first path through dagent: install the package,
-register a Python tool, run a `ToolAgent`, and build a tiny static DAG.
+register a Python tool, run a `ToolAgent`, build a tiny static DAG, and launch
+the terminal UI from a repository checkout.
 
 ## 1. Install dagent
 
@@ -154,6 +155,60 @@ For an offline static DAG with artifact output, run:
 ```bash
 uv run python -m examples.static_dag
 ```
+
+## 6. Use the Terminal UI
+
+The repository includes `dagent-tui`, a Textual client that runs directly in a
+terminal. It is not a browser application. The TUI sends HTTP and SSE requests
+to the local FastAPI host, and that host uses the dagent SDK and owns
+conversations, run state, review continuation, and persistence.
+
+This workflow requires a repository checkout, Python 3.11 or newer, and
+[`uv`](https://docs.astral.sh/uv/). Configure the provider in the root
+`config.yaml` and export the environment variable named by its `api_key_env`.
+The checked-in configuration currently uses `API_KEY`:
+
+```bash
+export API_KEY="your-provider-key"
+```
+
+From the repository root, start the API in the first terminal:
+
+```bash
+uv run --extra dev uvicorn api.app:app --port 8001
+```
+
+In a second terminal, launch the TUI:
+
+```bash
+uv run --project tui dagent-tui --api-url http://127.0.0.1:8001
+```
+
+`http://127.0.0.1:8001` is the backend address used by the TUI; you do not need
+to open it in a browser. You can also set the address through the environment:
+
+```bash
+export DAGENT_API_URL="http://127.0.0.1:8001"
+uv run --project tui dagent-tui
+```
+
+Use the target selector above the prompt to choose `Auto`, `Tool`, or `DAG`, and
+choose either `Fast review` or `Careful review`. The left pane lists persisted
+conversations, the center pane contains the conversation, and the right pane
+shows capability activity plus DAG and trace summaries.
+
+| Key | Action |
+| --- | --- |
+| `Ctrl+N` | Start a new standalone conversation |
+| `Ctrl+R` | Retry the last prompt |
+| `Ctrl+C` | Cancel the active run |
+| `F5` | Refresh projects and conversations |
+| `Ctrl+Q` | Quit |
+
+The current TUI can continue existing project conversations, but it creates new
+conversations as standalone conversations. Graph editing, uploads, rich artifact
+previews, and provider/MCP/skill administration remain in the WebUI. See the
+[TUI guide](../../tui/README.md) for the current scope and limitations.
 
 ## Where to Go Next
 
