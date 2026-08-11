@@ -51,12 +51,13 @@ Restricted SDK builder（阶段二）──┘        ├─ review
   - `final_answer`
 - planner-facing spec 与 `DAGSpec` 尽量一一对应，但排除 graph name/description、node
   title 和 edge reason 等 host-owned identity/display 字段。
-- typed response contract 只保留 capability/agent invocation node；固定并行任务使用多个
-  capability node 表达。Map fan-out、embedded Subgraph 和 bounded Loop 继续通过
+- typed response contract 保留 capability/agent invocation node 和一等 condition node；
+  固定并行任务使用多个 capability node 表达。Map fan-out、embedded Subgraph 和 bounded Loop 继续通过
   `sdk_builder` 与 public static-DAG SDK 提供。
-- edge 支持结构化 `when` condition。
-- 支持 graph input、node output/content/status/steps、artifact、format 和 comparison value
-  expressions。
+- 互斥 condition routing 使用 `branch` edge，普通 edge gate 使用结构化 `when`；同时使用
+  两者的 edge 会被拒绝。
+- 支持 graph input、node output/content/status/steps、artifact、format、comparison、
+  `all`、`any` 和 `not` value expressions。
 - 支持显式 DAG output 和 artifact producer/consumer 声明。
 
 ### Capability 上下文

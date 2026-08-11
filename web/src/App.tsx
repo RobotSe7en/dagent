@@ -160,6 +160,7 @@ import type {
   CapabilityKind,
   CompareOperator,
   CapabilityNodePayload,
+  ConditionNodePayload,
   CapabilityResult,
   Dag,
   DagEdge,
@@ -196,6 +197,7 @@ import type {
   SkillSummary,
   BoundaryValue,
   UserDagAgentConfig,
+  UserDagCapabilityNode,
   UserDagNode,
   ValueBinding,
 } from './types';
@@ -523,6 +525,10 @@ function isCapabilityNode(node: DagNode): node is DagNode & { payload: Capabilit
   return node.payload.type === 'capability';
 }
 
+function isConditionNode(node: DagNode): node is DagNode & { payload: ConditionNodePayload } {
+  return node.payload.type === 'condition';
+}
+
 interface NodeReviewInfo {
   risk: RiskLevel;
   hasBoundary: boolean;
@@ -583,6 +589,17 @@ function normalizeNode(node: DagNode): DagNode {
       status: node.status ?? 'planned',
     };
   }
+  if (node.payload.type === 'condition') {
+    return {
+      ...node,
+      payload: {
+        type: 'condition',
+        cases: node.payload.cases ?? [],
+        default_branch: node.payload.default_branch ?? '',
+      },
+      status: node.status ?? 'planned',
+    };
+  }
   return {
     ...node,
     payload: { type: 'start' },
@@ -596,6 +613,111 @@ function normalizeDagSpec(spec: DagSpec): DagSpec {
     nodes: (spec.nodes ?? []).map(normalizeNode),
     edges: spec.edges ?? [],
   };
+}
+
+function rewriteDagNodeOutputReferences(node: DagNode, previousId: string, nextId: string): DagNode {
+  const normalized = normalizeNode(node);
+  const payload = normalized.payload;
+  if (payload.type === 'capability') {
+    return {
+      ...normalized,
+      payload: {
+        ...payload,
+        invocation: {
+          ...payload.invocation,
+          arguments: rewriteNodeOutputRefs(payload.invocation.arguments ?? {}, previousId, nextId),
+        },
+      },
+    };
+  }
+  if (payload.type === 'map') {
+    return {
+      ...normalized,
+      payload: {
+        ...payload,
+        items: rewriteNodeOutputRefs(payload.items, previousId, nextId),
+        invocation: {
+          ...payload.invocation,
+          arguments: rewriteNodeOutputRefs(payload.invocation.arguments ?? {}, previousId, nextId),
+        },
+      },
+    };
+  }
+  if (payload.type === 'condition') {
+    return {
+      ...normalized,
+      payload: {
+        ...payload,
+        cases: payload.cases.map((conditionCase) => ({
+          ...conditionCase,
+          when: rewriteNodeOutputRefs(conditionCase.when, previousId, nextId),
+        })),
+      },
+    };
+  }
+  if (payload.type === 'subgraph') {
+    return { ...normalized, payload: { ...payload, input: rewriteNodeOutputRefs(payload.input, previousId, nextId) } };
+  }
+  if (payload.type === 'loop') {
+    return {
+      ...normalized,
+      payload: {
+        ...payload,
+        input: rewriteNodeOutputRefs(payload.input, previousId, nextId),
+        until: rewriteNodeOutputRefs(payload.until, previousId, nextId),
+      },
+    };
+  }
+  return normalized;
+}
+
+function removeDagNodeOutputReferences(node: DagNode, removedId: string): DagNode {
+  const normalized = normalizeNode(node);
+  const payload = normalized.payload;
+  if (payload.type === 'capability') {
+    return {
+      ...normalized,
+      payload: {
+        ...payload,
+        invocation: {
+          ...payload.invocation,
+          arguments: removeNodeOutputRefs(payload.invocation.arguments ?? {}, removedId),
+        },
+      },
+    };
+  }
+  if (payload.type === 'map') {
+    return {
+      ...normalized,
+      payload: {
+        ...payload,
+        items: removeNodeOutputRefs(payload.items, removedId),
+        invocation: {
+          ...payload.invocation,
+          arguments: removeNodeOutputRefs(payload.invocation.arguments ?? {}, removedId),
+        },
+      },
+    };
+  }
+  if (payload.type === 'condition') {
+    return {
+      ...normalized,
+      payload: {
+        ...payload,
+        cases: payload.cases.map((conditionCase) => ({
+          ...conditionCase,
+          when: collectNodeOutputRefs(conditionCase.when).some((reference) => reference.nodeId === removedId)
+            ? alwaysFalseValueBinding()
+            : conditionCase.when,
+        })),
+      },
+    };
+  }
+  return normalized;
+}
+
+function alwaysFalseValueBinding(): ValueBinding {
+  return { $expr: { type: 'compare', op: 'eq', left: false, right: true } };
 }
 
 function nodeReviewInfo(node: DagNode): NodeReviewInfo {
@@ -647,7 +769,17 @@ function mergeReviewInfo(left: NodeReviewInfo, right: NodeReviewInfo): NodeRevie
 }
 
 function normalizeUserDagNode(node: UserDagNode): UserDagNode {
+  if (node.type === 'condition') {
+    return {
+      type: 'condition',
+      id: node.id,
+      title: node.title ?? '',
+      cases: node.cases ?? [],
+      default_branch: node.default_branch ?? '',
+    };
+  }
   return {
+    type: 'capability',
     id: node.id,
     target: node.target ?? '',
     inputs: node.inputs ?? {},
@@ -725,6 +857,20 @@ function riskFromTarget(target: string): RiskLevel {
 
 function dagNodeFromUserNode(node: UserDagNode): DagNode {
   const normalized = normalizeUserDagNode(node);
+  if (normalized.type === 'condition') {
+    return normalizeNode({
+      id: normalized.id,
+      title: normalized.title,
+      payload: {
+        type: 'condition',
+        cases: normalized.cases,
+        default_branch: normalized.default_branch,
+      },
+      inputs: [],
+      outputs: [],
+      status: 'planned',
+    });
+  }
   return normalizeNode({
     id: normalized.id,
     title: normalized.title,
@@ -746,18 +892,31 @@ function dagNodeFromUserNode(node: UserDagNode): DagNode {
   });
 }
 
-function userNodeFromDagNode(node: DagNode & { payload: CapabilityNodePayload }): UserDagNode {
-  const normalized = normalizeNode(node) as DagNode & { payload: CapabilityNodePayload };
-  const invocation = normalizeInvocation(normalized.payload.invocation);
-  return {
-    id: normalized.id,
-    title: normalized.title ?? '',
-    target: invocation.capability_id,
-    inputs: invocation.arguments ?? {},
-    artifact_inputs: normalized.inputs ?? [],
-    artifact_outputs: normalized.outputs ?? [],
-    boundary: invocation.boundary ?? null,
-  };
+function userNodeFromDagNode(node: DagNode): UserDagNode | null {
+  const normalized = normalizeNode(node);
+  if (isCapabilityNode(normalized)) {
+    const invocation = normalizeInvocation(normalized.payload.invocation);
+    return {
+      type: 'capability',
+      id: normalized.id,
+      title: normalized.title ?? '',
+      target: invocation.capability_id,
+      inputs: invocation.arguments ?? {},
+      artifact_inputs: normalized.inputs ?? [],
+      artifact_outputs: normalized.outputs ?? [],
+      boundary: invocation.boundary ?? null,
+    };
+  }
+  if (isConditionNode(normalized)) {
+    return {
+      type: 'condition',
+      id: normalized.id,
+      title: normalized.title ?? '',
+      cases: normalized.payload.cases,
+      default_branch: normalized.payload.default_branch,
+    };
+  }
+  return null;
 }
 
 function createEmptyUserDag(): UserDag {
@@ -803,12 +962,17 @@ function runtimeDagFromUnknown(value: unknown): Dag | null {
 
 function userDagFromRuntimeDag(spec: UserDag, dag: Dag): UserDag {
   const agentConfigByNodeId = new Map(
-    (spec.nodes ?? []).map((node) => [node.id, normalizeUserDagAgentConfig(node.agent)]),
+    (spec.nodes ?? []).map((node) => [
+      node.id,
+      normalizeUserDagAgentConfig(node.type === 'condition' ? undefined : node.agent),
+    ]),
   );
-  const nodes = dag.nodes.filter(isCapabilityNode).map((node) => {
+  const nodes: UserDagNode[] = dag.nodes.flatMap<UserDagNode>((node) => {
     const userNode = userNodeFromDagNode(node);
+    if (!userNode) return [];
+    if (userNode.type === 'condition') return [userNode];
     const agent = isAgentTarget(userNode.target) ? agentConfigByNodeId.get(userNode.id) : undefined;
-    return { ...userNode, agent };
+    return [{ ...userNode, agent } satisfies UserDagCapabilityNode];
   });
   const nodeIds = new Set(nodes.map((node) => node.id));
   return {
@@ -829,6 +993,19 @@ function validateUserDagDraft(spec: UserDag): string | null {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(node.id)) return `Node '${node.id}' has an invalid id.`;
     if (nodeIds.has(node.id)) return `Node '${node.id}' is duplicated.`;
     nodeIds.add(node.id);
+    if (node.type === 'condition') {
+      const branches = new Set<string>();
+      for (const item of node.cases) {
+        const branch = item.branch.trim();
+        if (!branch) return `Condition node '${node.id}' has an empty case branch.`;
+        if (branches.has(branch)) return `Condition node '${node.id}' duplicates branch '${branch}'.`;
+        branches.add(branch);
+      }
+      const defaultBranch = node.default_branch.trim();
+      if (!defaultBranch) return `Condition node '${node.id}' needs a default branch.`;
+      if (branches.has(defaultBranch)) return `Condition node '${node.id}' reuses case branch '${defaultBranch}' as its default.`;
+      continue;
+    }
     const target = node.target.trim();
     const kind = capabilityKindFromTarget(target);
     if (!target) return `Node '${node.id}' needs a target.`;
@@ -842,6 +1019,16 @@ function validateUserDagDraft(spec: UserDag): string | null {
   for (const edge of spec.edges) {
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
       return `Edge ${edge.source} -> ${edge.target} references a missing node.`;
+    }
+    if (edge.when && edge.branch) return `Edge ${edge.source} -> ${edge.target} cannot use both when and branch.`;
+    const source = spec.nodes.find((node) => node.id === edge.source);
+    if (source?.type === 'condition') {
+      const branches = new Set([...source.cases.map((item) => item.branch), source.default_branch]);
+      if (!edge.branch || !branches.has(edge.branch)) {
+        return `Edge ${edge.source} -> ${edge.target} needs a declared condition branch.`;
+      }
+    } else if (edge.branch) {
+      return `Edge ${edge.source} -> ${edge.target} uses branch but its source is not a condition node.`;
     }
   }
   return null;
@@ -966,6 +1153,7 @@ interface DesignDagNodeData {
   risk: RiskLevel;
   reviewAttention: boolean;
   status: string;
+  branches?: Array<{ id: string; label: string }>;
 }
 
 function graphFromDag(dag: Dag, layoutPositions: Record<string, XYPosition> = {}): { nodes: Node[]; edges: Edge[] } {
@@ -982,6 +1170,16 @@ function graphFromDag(dag: Dag, layoutPositions: Record<string, XYPosition> = {}
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
     const detail = nodeDisplayDetail(item);
+    const branches = payload.type === 'condition'
+      ? [
+        ...payload.cases.map((conditionCase, index) => ({
+          id: conditionCase.branch,
+          label: `${index === 0 ? 'IF' : 'ELIF'} · ${conditionCase.branch}`,
+        })),
+        { id: payload.default_branch, label: `ELSE · ${payload.default_branch}` },
+      ]
+      : undefined;
+    const nodeHeight = branches ? Math.max(88, 54 + branches.length * 26) : 64;
     laneCounts.set(depth, lane + 1);
     return {
       id: item.id,
@@ -995,41 +1193,77 @@ function graphFromDag(dag: Dag, layoutPositions: Record<string, XYPosition> = {}
         risk,
         reviewAttention,
         status,
+        branches,
       },
       type: 'designDag',
       width: 192,
-      height: 64,
+      height: nodeHeight,
       handles: [
-        { id: 'in', type: 'target' as const, position: Position.Left, x: -4, y: 28, width: 8, height: 8 },
-        { id: 'out', type: 'source' as const, position: Position.Right, x: 188, y: 28, width: 8, height: 8 },
+        { id: 'in', type: 'target' as const, position: Position.Left, x: -4, y: nodeHeight / 2 - 4, width: 8, height: 8 },
+        ...(branches ?? [{ id: 'out', label: '' }]).map((branch, index, items) => ({
+          id: branch.id,
+          type: 'source' as const,
+          position: Position.Right,
+          x: 188,
+          y: branches ? 50 + index * 26 : nodeHeight / 2 - 4,
+          width: 8,
+          height: 8,
+        })),
       ],
     };
   });
   const edges = dag.edges.map((edge, edgeIndex) => {
     const conditional = Boolean(edge.when);
+    const branching = Boolean(edge.branch);
     const fullConditionLabel = conditionLabel(edge.when);
-    const label = clipText(fullConditionLabel || edge.reason, 88);
+    const label = clipText(edge.branch ? edge.branch : fullConditionLabel || edge.reason, 88);
     return {
       id: `dag-edge-${edgeIndex}`,
       source: edge.source,
-      sourceHandle: 'out',
+      sourceHandle: edge.branch ?? 'out',
       target: edge.target,
       targetHandle: 'in',
       label,
-      className: conditional ? 'condition-edge' : 'dependency-edge',
+      className: branching ? 'branch-edge' : conditional ? 'condition-edge' : 'dependency-edge',
       data: { dagEdge: edge, dagEdgeIndex: edgeIndex, conditionLabel: fullConditionLabel },
       animated: dag.status === 'running',
       style: {
-        stroke: conditional ? '#5b5bd6' : '#94a3b8',
-        strokeWidth: conditional ? 1.8 : 1.5,
+        stroke: branching ? '#0891b2' : conditional ? '#5b5bd6' : '#94a3b8',
+        strokeWidth: conditional || branching ? 1.8 : 1.5,
       },
-      labelStyle: conditional ? { fill: '#3730a3', fontSize: 11, fontWeight: 650 } : undefined,
-      labelBgStyle: conditional ? { fill: '#eef2ff', fillOpacity: 0.96 } : undefined,
-      labelBgPadding: conditional ? [6, 4] as [number, number] : undefined,
-      labelBgBorderRadius: conditional ? 6 : undefined,
+      labelStyle: conditional || branching ? { fill: branching ? '#155e75' : '#3730a3', fontSize: 11, fontWeight: 650 } : undefined,
+      labelBgStyle: conditional || branching ? { fill: branching ? '#ecfeff' : '#eef2ff', fillOpacity: 0.96 } : undefined,
+      labelBgPadding: conditional || branching ? [6, 4] as [number, number] : undefined,
+      labelBgBorderRadius: conditional || branching ? 6 : undefined,
     };
   });
   return { nodes, edges };
+}
+
+function dagEdgeFromConnection(dag: Dag, connection: Connection): DagEdge | null {
+  if (!connection.source || !connection.target || connection.source === connection.target) return null;
+  const source = dag.nodes.find((node) => node.id === connection.source);
+  if (!source) return null;
+  const payload = normalizeNode(source).payload;
+  if (payload.type === 'condition') {
+    const branch = connection.sourceHandle ?? '';
+    const declared = payload.cases.some((item) => item.branch === branch) || payload.default_branch === branch;
+    if (!declared) return null;
+    return {
+      source: connection.source,
+      target: connection.target,
+      reason: 'Condition branch.',
+      when: null,
+      branch,
+    };
+  }
+  return {
+    source: connection.source,
+    target: connection.target,
+    reason: 'User dependency.',
+    when: null,
+    branch: null,
+  };
 }
 
 function nextHorizontalNodePosition(nodes: Node[]): XYPosition {
@@ -1106,7 +1340,18 @@ function DesignDagNode({ data, selected }: any) {
         <em title={nodeData.detail}>{nodeData.detail}</em>
       </span>
       {nodeData.reviewAttention ? <span className={`risk-chip risk-${nodeData.risk}`}>{nodeData.risk}</span> : null}
-      <Handle className="orchestration-handle" id="out" position={Position.Right} type="source" />
+      {nodeData.branches?.length ? (
+        <span className="orchestration-branch-list">
+          {nodeData.branches.map((branch) => (
+            <span className="orchestration-branch-row" key={branch.id}>
+              <span title={branch.label}>{branch.label}</span>
+              <Handle className="orchestration-handle orchestration-branch-handle" id={branch.id} position={Position.Right} type="source" />
+            </span>
+          ))}
+        </span>
+      ) : (
+        <Handle className="orchestration-handle" id="out" position={Position.Right} type="source" />
+      )}
     </div>
   );
 }
@@ -1121,6 +1366,7 @@ function nodeDisplayTitle(node: DagNode): string {
   if (node.payload.type === 'capability') {
     return node.payload.invocation.capability_id || '未命名节点';
   }
+  if (node.payload.type === 'condition') return '条件分支';
   return node.payload.type === 'start' ? '入口节点' : '未命名节点';
 }
 
@@ -1141,6 +1387,9 @@ function nodeDisplayDetail(node: DagNode): string {
   }
   if (payload.type === 'loop') {
     return `loop ${payload.body.name || payload.body.id}`;
+  }
+  if (payload.type === 'condition') {
+    return `${payload.cases.length} cases · ELSE ${payload.default_branch}`;
   }
   return 'internal start';
 }
@@ -2845,18 +3094,21 @@ export function App() {
     });
   }, [editorDag]);
   const onEditorConnect = useCallback((connection: Connection) => {
-    if (!connection.source || !connection.target || connection.source === connection.target) return;
-    const nextEdge = {
-      source: connection.source,
-      target: connection.target,
-      reason: 'User dependency.',
-      when: null,
-    };
-    setEditorEdges((eds) => addEdge({ ...connection, id: `${connection.source}-${connection.target}` }, eds));
+    const nextEdge = dagEdgeFromConnection(editorDag, connection);
+    if (!nextEdge) return;
+    setEditorEdges((eds) => addEdge({
+      ...connection,
+      id: `${nextEdge.source}-${nextEdge.branch ?? 'out'}-${nextEdge.target}`,
+      data: { dagEdge: nextEdge },
+    }, eds));
     updateEditorDag((current) => ({
       ...current,
       edges: [
-        ...current.edges.filter((edge) => !(edge.source === nextEdge.source && edge.target === nextEdge.target)),
+        ...current.edges.filter((edge) => !(
+          edge.source === nextEdge.source
+          && edge.target === nextEdge.target
+          && (edge.branch ?? null) === (nextEdge.branch ?? null)
+        )),
         nextEdge,
       ],
     }));
@@ -3071,18 +3323,17 @@ export function App() {
   }, [dynamicGraph.edges]);
 
   const onDynamicConnect = useCallback((connection: Connection) => {
-    if (!connection.source || !connection.target || connection.source === connection.target) return;
-    const nextEdge = {
-      source: connection.source,
-      target: connection.target,
-      reason: 'User dependency.',
-      when: null,
-    };
+    const nextEdge = dagEdgeFromConnection(dynamicDagRef.current, connection);
+    if (!nextEdge) return;
     updateDynamicDag((current) => ({
       ...current,
       status: 'draft',
       edges: [
-        ...current.edges.filter((edge) => !(edge.source === nextEdge.source && edge.target === nextEdge.target)),
+        ...current.edges.filter((edge) => !(
+          edge.source === nextEdge.source
+          && edge.target === nextEdge.target
+          && (edge.branch ?? null) === (nextEdge.branch ?? null)
+        )),
         nextEdge,
       ],
     }));
@@ -3123,22 +3374,37 @@ export function App() {
     setDynamicSelectedId('');
   };
 
+  const onAddDynamicConditionNode = (position?: XYPosition) => {
+    const id = uniqueNodeId(dynamicDag, 'condition');
+    const nodePosition = position ?? nextHorizontalNodePosition(dynamicGraph.nodes);
+    setDynamicLayoutPositions({
+      ...dynamicLayoutPositionsRef.current,
+      [id]: nodePosition,
+    });
+    updateDynamicDag((current) => ({
+      ...current,
+      status: 'draft',
+      nodes: [...current.nodes, createConditionDagNode(id)],
+    }));
+    setDynamicSelectedId(id);
+  };
+
   const onPatchDynamicNode = (nodeId: string, patch: Partial<DagNode>, nextEdges?: DagEdge[]) => {
+    const nextNodeId = patch.id && patch.id !== nodeId ? patch.id : null;
     updateDynamicDag((current) => {
       const updatedNodes = current.nodes.map((node) => {
-        if (node.id !== nodeId) return node;
-        const merged = normalizeNode({ ...node, ...patch });
-        if (patch.id && patch.id !== nodeId) {
-          setDynamicSelectedId(patch.id);
+        const merged = node.id === nodeId ? normalizeNode({ ...node, ...patch }) : node;
+        if (node.id === nodeId && nextNodeId) {
+          setDynamicSelectedId(nextNodeId);
           const positions = { ...dynamicLayoutPositionsRef.current };
-          positions[patch.id] = positions[nodeId] ?? dynamicGraph.nodes.find((item) => item.id === nodeId)?.position ?? nextHorizontalNodePosition(dynamicGraph.nodes);
+          positions[nextNodeId] = positions[nodeId] ?? dynamicGraph.nodes.find((item) => item.id === nodeId)?.position ?? nextHorizontalNodePosition(dynamicGraph.nodes);
           delete positions[nodeId];
           setDynamicLayoutPositions(positions);
         }
-        return merged;
+        return nextNodeId ? rewriteDagNodeOutputReferences(merged, nodeId, nextNodeId) : merged;
       });
-      const edgesForRename = patch.id && patch.id !== nodeId
-        ? rewriteDagEdgeNodeReferences(current.edges, nodeId, patch.id)
+      const edgesForRename = nextNodeId
+        ? rewriteDagEdgeNodeReferences(current.edges, nodeId, nextNodeId)
         : current.edges;
       return {
         ...current,
@@ -3154,7 +3420,9 @@ export function App() {
     updateDynamicDag((current) => ({
       ...current,
       status: 'draft',
-      nodes: current.nodes.filter((node) => node.id !== nodeId),
+      nodes: current.nodes
+        .filter((node) => node.id !== nodeId)
+        .map((node) => removeDagNodeOutputReferences(node, nodeId)),
       edges: removeDagEdgesForNode(current.edges, nodeId),
     }));
     setDynamicSelectedId('');
@@ -3367,27 +3635,28 @@ export function App() {
     setEditorSelectedId(id);
   };
 
+  const addEditorConditionNode = (position?: XYPosition) => {
+    const id = uniqueNodeId(editorDag, 'condition');
+    const nodePosition = position ?? nextHorizontalNodePosition(editorNodes);
+    setEditorLayoutPositions({
+      ...editorLayoutPositionsRef.current,
+      [id]: nodePosition,
+    });
+    updateEditorDag((current) => ({
+      ...current,
+      status: 'draft',
+      nodes: [...current.nodes, createConditionDagNode(id)],
+    }));
+    setEditorSelectedId(id);
+  };
+
   const patchEditorNode = (nodeId: string, patch: Partial<DagNode>, nextEdges?: DagEdge[]) => {
     const nextNodeId = patch.id && patch.id !== nodeId ? patch.id : null;
     if (nextNodeId) setEditorSelectedId(nextNodeId);
     updateEditorDag((current) => {
       const nodes = current.nodes.map((node) => {
         const merged = node.id === nodeId ? normalizeNode({ ...node, ...patch }) : node;
-        if (!nextNodeId || !isCapabilityNode(merged)) return merged;
-        return {
-          ...merged,
-          payload: {
-            type: 'capability' as const,
-            invocation: {
-              ...merged.payload.invocation,
-              arguments: rewriteNodeOutputRefs(
-                merged.payload.invocation.arguments ?? {},
-                nodeId,
-                nextNodeId,
-              ) as Record<string, unknown>,
-            },
-          },
-        };
+        return nextNodeId ? rewriteDagNodeOutputReferences(merged, nodeId, nextNodeId) : merged;
       });
       const baseEdges = nextEdges ?? current.edges;
       return {
@@ -3416,20 +3685,7 @@ export function App() {
       status: 'draft',
       nodes: current.nodes
         .filter((node) => node.id !== nodeId)
-        .map((node) => {
-          if (!isCapabilityNode(node)) return node;
-          const invocation = node.payload.invocation;
-          return {
-            ...node,
-            payload: {
-              type: 'capability' as const,
-              invocation: {
-                ...invocation,
-                arguments: removeNodeOutputRefs(invocation.arguments ?? {}, nodeId) as Record<string, unknown>,
-              },
-            },
-          };
-        }),
+        .map((node) => removeDagNodeOutputReferences(node, nodeId)),
       edges: removeDagEdgesForNode(current.edges, nodeId),
     }));
   };
@@ -4903,6 +5159,7 @@ export function App() {
             runHistoryCollapsed={dynamicRunHistoryCollapsed}
             onToggleRunHistory={() => setDynamicRunHistoryCollapsed((collapsed) => !collapsed)}
             onAddNode={onAddDynamicNode}
+            onAddConditionNode={onAddDynamicConditionNode}
             onPatchNode={onPatchDynamicNode}
             onDeleteNode={onDeleteDynamicNode}
             onNodesChange={onDynamicNodesChange}
@@ -4960,6 +5217,7 @@ export function App() {
             onPatchDag={patchEditorUserDag}
             onRunInputTextChange={setEditorRunInputText}
             onAddNode={addEditorNode}
+            onAddConditionNode={addEditorConditionNode}
             onPatchNode={patchEditorNode}
             onPatchEdges={patchEditorEdges}
             onDeleteNode={deleteEditorNode}
@@ -9123,15 +9381,31 @@ function conversationTitleFromPrompt(prompt: string): string {
   return clipText(prompt.trim(), 40) || '新对话';
 }
 
-function uniqueNodeId(dag: Dag) {
+function uniqueNodeId(dag: Dag, prefix = 'node') {
   let index = dag.nodes.length + 1;
-  let id = `node_${index}`;
+  let id = `${prefix}_${index}`;
   const existing = new Set(dag.nodes.map((node) => node.id));
   while (existing.has(id)) {
     index += 1;
-    id = `node_${index}`;
+    id = `${prefix}_${index}`;
   }
   return id;
+}
+
+function createConditionDagNode(id: string): DagNode {
+  return normalizeNode({
+    id,
+    title: '条件分支',
+    payload: {
+      type: 'condition',
+      cases: [{
+        branch: 'case_1',
+        when: makeCompareBinding({ $expr: { type: 'graph_input', path: [] } }, 'eq', true),
+      }],
+      default_branch: 'else',
+    },
+    status: 'planned',
+  });
 }
 
 function dagNameInputCh(value: string) {
@@ -9891,6 +10165,7 @@ function DynamicOrchestrationWorkspace({
   runHistoryCollapsed,
   onToggleRunHistory,
   onAddNode,
+  onAddConditionNode,
   onPatchNode,
   onDeleteNode,
   onNodesChange,
@@ -9923,6 +10198,7 @@ function DynamicOrchestrationWorkspace({
   runHistoryCollapsed: boolean;
   onToggleRunHistory: () => void;
   onAddNode: (capability?: CapabilityDefinition, position?: XYPosition) => void;
+  onAddConditionNode: (position?: XYPosition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -10035,6 +10311,10 @@ function DynamicOrchestrationWorkspace({
               <Plus size={14} />
               添加节点
             </button>
+            <button className="secondary-button compact-button" onClick={() => onAddConditionNode(firstNodePosition())} type="button">
+              <GitBranch size={14} />
+              添加条件
+            </button>
           </div>
         </div>
 
@@ -10091,7 +10371,14 @@ function DynamicOrchestrationWorkspace({
                     onChange={(event) => onPatchNode(selectedNormalized.id, { title: event.target.value })}
                   />
                 </div>
-                {selectedInvocation ? (
+                {selectedNormalized.payload.type === 'condition' ? (
+                  <ConditionNodeEditor
+                    nodeId={selectedNormalized.id}
+                    payload={selectedNormalized.payload}
+                    edges={dag.edges}
+                    onChange={(payload, nextEdges) => onPatchNode(selectedNormalized.id, { payload }, nextEdges)}
+                  />
+                ) : selectedInvocation ? (
                   <>
                     <div className="inspector-field">
                       <label>能力</label>
@@ -10386,6 +10673,7 @@ function OrchestrationWorkspace({
   onPatchDag,
   onRunInputTextChange,
   onAddNode,
+  onAddConditionNode,
   onPatchNode,
   onPatchEdges,
   onDeleteNode,
@@ -10418,6 +10706,7 @@ function OrchestrationWorkspace({
   onPatchDag: (patch: Partial<UserDag>) => void;
   onRunInputTextChange: (value: string) => void;
   onAddNode: (capability?: CapabilityDefinition, position?: XYPosition) => void;
+  onAddConditionNode: (position?: XYPosition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onPatchEdges: (edges: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
@@ -10497,6 +10786,11 @@ function OrchestrationWorkspace({
     }
     setContextMenu(null);
   };
+  const addConditionFromContext = () => {
+    if (!contextMenu) return;
+    onAddConditionNode(contextMenu.flowPosition);
+    setContextMenu(null);
+  };
   const deleteFromContext = () => {
     if (contextMenu?.nodeId) onDeleteNode(contextMenu.nodeId);
     setContextMenu(null);
@@ -10514,7 +10808,7 @@ function OrchestrationWorkspace({
     if (!selectedNode) return;
     onPatchDag({
       nodes: spec.nodes.map((node) =>
-        node.id === selectedNode.id
+        node.id === selectedNode.id && node.type !== 'condition'
           ? normalizeUserDagNode({ ...node, agent })
           : node,
       ),
@@ -10584,7 +10878,11 @@ function OrchestrationWorkspace({
           />
           <span className="orchestration-version">v{spec.version ?? 1}</span>
           <StatusBadge status={dag.status} />
-          <div className="orchestration-actions">
+            <div className="orchestration-actions">
+            <button className="secondary-button compact-button" onClick={() => onAddConditionNode(firstNodePosition())} type="button">
+              <GitBranch size={14} />
+              条件
+            </button>
             <button className="secondary-button compact-button" onClick={onSave} type="button">
               <Save size={15} />
               保存
@@ -10658,6 +10956,10 @@ function OrchestrationWorkspace({
               <Plus size={15} />
               添加节点
             </button>
+            <button className="context-menu-item" onClick={addConditionFromContext} type="button">
+              <GitBranch size={15} />
+              添加条件节点
+            </button>
             {contextMenu.nodeId ? (
               <button className="context-menu-item danger" onClick={deleteFromContext} type="button">
                 <Trash2 size={15} />
@@ -10709,7 +11011,14 @@ function OrchestrationWorkspace({
                 placeholder={selectedDisplayTitle}
               />
             </div>
-            {selectedInvocation ? (
+            {selectedNormalized.payload.type === 'condition' ? (
+              <ConditionNodeEditor
+                nodeId={selectedNormalized.id}
+                payload={selectedNormalized.payload}
+                edges={dag.edges}
+                onChange={(payload, nextEdges) => onPatchNode(selectedNormalized.id, { payload }, nextEdges)}
+              />
+            ) : selectedInvocation ? (
               <>
                 <div className="inspector-field">
                   <label>能力</label>
@@ -10779,7 +11088,7 @@ function OrchestrationWorkspace({
                     capabilities={capabilities}
                     skills={skills}
                     mcpServers={mcpServers}
-                    config={selectedUserNode?.agent}
+                    config={selectedUserNode?.type === 'condition' ? undefined : selectedUserNode?.agent}
                     onChange={patchSelectedAgentConfig}
                   />
                 ) : null}
@@ -10887,6 +11196,235 @@ function ConditionLiteralInput({
   );
 }
 
+function ConditionExpressionInput({
+  value,
+  onChange,
+}: {
+  value: ValueBinding;
+  onChange: (value: ValueBinding) => void;
+}) {
+  const formatted = JSON.stringify(value, null, 2);
+  const [draft, setDraft] = useState(formatted);
+  const [invalid, setInvalid] = useState(false);
+
+  useEffect(() => {
+    setDraft(formatted);
+    setInvalid(false);
+  }, [formatted]);
+
+  return (
+    <textarea
+      className={invalid ? 'invalid condition-expression-input' : 'condition-expression-input'}
+      value={draft}
+      aria-invalid={invalid}
+      spellCheck={false}
+      onChange={(event) => {
+        const nextDraft = event.target.value;
+        setDraft(nextDraft);
+        try {
+          const parsed = JSON.parse(nextDraft);
+          if (!isValueBinding(parsed)) throw new Error('not a value binding');
+          setInvalid(false);
+          onChange(parsed);
+        } catch {
+          setInvalid(true);
+        }
+      }}
+      onBlur={() => {
+        if (!invalid) return;
+        setDraft(formatted);
+        setInvalid(false);
+      }}
+    />
+  );
+}
+
+function ConditionBranchNameInput({
+  value,
+  branches,
+  onCommit,
+}: {
+  value: string;
+  branches: string[];
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [invalid, setInvalid] = useState(false);
+  useEffect(() => {
+    setDraft(value);
+    setInvalid(false);
+  }, [value]);
+  const commit = () => {
+    const clean = draft.trim();
+    const valid = Boolean(clean) && (clean === value || !branches.includes(clean));
+    setInvalid(!valid);
+    if (!valid) return;
+    if (clean !== value) onCommit(clean);
+  };
+  return (
+    <input
+      className={invalid ? 'invalid' : undefined}
+      value={draft}
+      aria-invalid={invalid}
+      onChange={(event) => {
+        setDraft(event.target.value);
+        setInvalid(false);
+      }}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commit();
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+function ConditionNodeEditor({
+  nodeId,
+  payload,
+  edges,
+  onChange,
+}: {
+  nodeId: string;
+  payload: ConditionNodePayload;
+  edges: DagEdge[];
+  onChange: (payload: ConditionNodePayload, edges: DagEdge[]) => void;
+}) {
+  const branchNames = [...payload.cases.map((item) => item.branch), payload.default_branch];
+  const patchPayload = (nextPayload: ConditionNodePayload, nextEdges = edges) => onChange(nextPayload, nextEdges);
+  const renameBranch = (previous: string, next: string) => {
+    const nextPayload: ConditionNodePayload = {
+      ...payload,
+      cases: payload.cases.map((item) => item.branch === previous ? { ...item, branch: next } : item),
+      default_branch: payload.default_branch === previous ? next : payload.default_branch,
+    };
+    patchPayload(nextPayload, edges.map((edge) => (
+      edge.source === nodeId && edge.branch === previous ? { ...edge, branch: next } : edge
+    )));
+  };
+  const freshBranch = () => {
+    let index = payload.cases.length + 1;
+    let branch = `case_${index}`;
+    while (branchNames.includes(branch)) {
+      index += 1;
+      branch = `case_${index}`;
+    }
+    return branch;
+  };
+  const defaultWhen = () => makeCompareBinding({ $expr: { type: 'graph_input', path: [] } }, 'eq', true);
+
+  return (
+    <div className="condition-node-editor">
+      <div className="inspector-section-head">
+        <span>按顺序匹配 IF / ELIF</span>
+        <button
+          className="secondary-button compact-button"
+          onClick={() => patchPayload({
+            ...payload,
+            cases: [...payload.cases, { branch: freshBranch(), when: defaultWhen() }],
+          })}
+          type="button"
+        >
+          <Plus size={13} />
+          添加分支
+        </button>
+      </div>
+      {payload.cases.map((conditionCase, index) => (
+        <div className="condition-case-card" key={`${conditionCase.branch}-${index}`}>
+          <div className="condition-case-head">
+            <strong>{index === 0 ? 'IF' : 'ELIF'} {index + 1}</strong>
+            <div className="condition-case-actions">
+              <button
+                disabled={index === 0}
+                onClick={() => {
+                  const cases = [...payload.cases];
+                  [cases[index - 1], cases[index]] = [cases[index], cases[index - 1]];
+                  patchPayload({ ...payload, cases });
+                }}
+                title="上移"
+                type="button"
+              >↑</button>
+              <button
+                disabled={index === payload.cases.length - 1}
+                onClick={() => {
+                  const cases = [...payload.cases];
+                  [cases[index], cases[index + 1]] = [cases[index + 1], cases[index]];
+                  patchPayload({ ...payload, cases });
+                }}
+                title="下移"
+                type="button"
+              >↓</button>
+              <button
+                disabled={payload.cases.length === 1}
+                onClick={() => patchPayload(
+                  { ...payload, cases: payload.cases.filter((_, itemIndex) => itemIndex !== index) },
+                  edges.filter((edge) => !(edge.source === nodeId && edge.branch === conditionCase.branch)),
+                )}
+                title="删除分支"
+                type="button"
+              ><Trash2 size={12} /></button>
+            </div>
+          </div>
+          <label className="condition-branch-name">
+            分支 ID
+            <ConditionBranchNameInput
+              value={conditionCase.branch}
+              branches={branchNames}
+              onCommit={(value) => renameBranch(conditionCase.branch, value)}
+            />
+          </label>
+          <div className="condition-expression-actions">
+            <span>组合</span>
+            <button onClick={() => patchPayload({
+              ...payload,
+              cases: payload.cases.map((item, itemIndex) => itemIndex === index ? {
+                ...item,
+                when: { $expr: { type: 'all', values: [item.when, defaultWhen()] } },
+              } : item),
+            })} type="button">AND</button>
+            <button onClick={() => patchPayload({
+              ...payload,
+              cases: payload.cases.map((item, itemIndex) => itemIndex === index ? {
+                ...item,
+                when: { $expr: { type: 'any', values: [item.when, defaultWhen()] } },
+              } : item),
+            })} type="button">OR</button>
+            <button onClick={() => patchPayload({
+              ...payload,
+              cases: payload.cases.map((item, itemIndex) => itemIndex === index ? {
+                ...item,
+                when: { $expr: { type: 'not', value: item.when } },
+              } : item),
+            })} type="button">NOT</button>
+          </div>
+          <ConditionExpressionInput
+            value={conditionCase.when}
+            onChange={(when) => patchPayload({
+              ...payload,
+              cases: payload.cases.map((item, itemIndex) => itemIndex === index ? { ...item, when } : item),
+            })}
+          />
+        </div>
+      ))}
+      <div className="condition-case-card default-condition-case">
+        <strong>ELSE</strong>
+        <label className="condition-branch-name">
+          默认分支 ID
+          <ConditionBranchNameInput
+            value={payload.default_branch}
+            branches={branchNames}
+            onCommit={(value) => renameBranch(payload.default_branch, value)}
+          />
+        </label>
+      </div>
+      <p className="inspector-help">只激活第一个匹配分支；都不匹配时走 ELSE。未连线的选中分支会正常结束该路径。</p>
+    </div>
+  );
+}
+
 function EdgeConditionEditor({
   edge,
   edgeIndex,
@@ -10906,6 +11444,27 @@ function EdgeConditionEditor({
   onChange: (edge: DagEdge) => void;
   onDelete: () => void;
 }) {
+  if (edge.branch) {
+    return (
+      <aside className="node-inspector static-node-inspector edge-inspector" aria-label="分支边检查器">
+        <div className="node-inspector-body">
+          <div className="node-inspector-title">
+            <span>分支边</span>
+            <strong>{edge.source} → {edge.target}</strong>
+          </div>
+          <div className="inspector-field">
+            <label>分支</label>
+            <input value={edge.branch} disabled />
+          </div>
+          <p className="inspector-help">分支由条件节点选择；分支边不能再配置 when 条件。</p>
+          <button className="danger-line-button" onClick={onDelete} type="button">
+            <Trash2 size={14} />
+            删除分支边
+          </button>
+        </div>
+      </aside>
+    );
+  }
   const catalog = buildConditionVariableCatalog(
     dag,
     edge,
@@ -11172,8 +11731,14 @@ function ReviewEdgeInspector({ edge, edgeIndex, dag }: { edge: DagEdge; edgeInde
       </div>
       <div className="inspector-field">
         <label>依赖类型</label>
-        <input value={edge.when ? '条件依赖' : '普通依赖'} disabled />
+        <input value={edge.branch ? '条件分支' : edge.when ? '条件依赖' : '普通依赖'} disabled />
       </div>
+      {edge.branch ? (
+        <div className="condition-preview">
+          <span>分支</span>
+          <code>{edge.branch}</code>
+        </div>
+      ) : null}
       {edge.reason ? (
         <div className="inspector-field">
           <label>说明</label>
@@ -11199,7 +11764,9 @@ function ReviewEdgeInspector({ edge, edgeIndex, dag }: { edge: DagEdge; edgeInde
         </div>
       ) : null}
       <p className="condition-semantics-note">
-        条件只控制当前连线。目标节点会等待所有入口结束，并在至少一条入口成立时执行。
+        {edge.branch
+          ? '条件节点一次只选择一个 branch；同一 branch 的多条出边会一起激活。'
+          : '条件只控制当前连线。目标节点会等待所有入口结束，并在至少一条入口成立时执行。'}
       </p>
     </div>
   );
@@ -14743,6 +15310,27 @@ function NodeEditor({
   onDelete: () => void;
 }) {
   const dependsOn = dag.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
+  if (isConditionNode(node)) {
+    return (
+      <div className="node-editor">
+        <label>
+          Node ID
+          <input value={node.id} disabled />
+        </label>
+        <ConditionNodeEditor
+          nodeId={node.id}
+          payload={node.payload}
+          edges={dag.edges}
+          onChange={(payload, nextEdges) => onPatch({ payload }, nextEdges)}
+        />
+        <button className="secondary-button danger-button" onClick={() => onDelete()} type="button">
+          <Trash2 size={16} />
+          Delete Node
+        </button>
+        <NodeExecutionLog logs={logs} />
+      </div>
+    );
+  }
   if (!isCapabilityNode(node)) {
     return (
       <div className="node-editor">

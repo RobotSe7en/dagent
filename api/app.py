@@ -54,6 +54,7 @@ from dagent import (
     ArtifactUpload,
     AutoAgent,
     Boundary,
+    Case,
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityPolicy,
@@ -63,6 +64,7 @@ from dagent import (
     DAGRun,
     Dag,
     DagAgent,
+    ConditionNode,
     Node,
     ProfileStore,
     ReviewDecision,
@@ -109,7 +111,7 @@ from dagent.harness_runtime.artifacts import (
     validate_upload_filename,
 )
 from dagent.profiles import AgentProfile, list_builtin_profiles, load_builtin_profile
-from dagent.schemas import Artifact, DAGEdge, validate_capability_id_segment
+from dagent.schemas import Artifact, ConditionCase, DAGEdge, validate_capability_id_segment
 
 from api.stream_gate import gate_chat_display
 
@@ -293,9 +295,10 @@ class UserDAGAgentConfig(BaseModel):
     skills: list[str] | None = None
 
 
-class UserDAGNode(BaseModel):
+class UserDAGCapabilityNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    type: Literal["capability"] = "capability"
     id: str
     target: str
     inputs: dict[str, Any] = Field(default_factory=dict)
@@ -304,6 +307,19 @@ class UserDAGNode(BaseModel):
     title: str = ""
     boundary: Boundary | None = None
     agent: UserDAGAgentConfig | None = None
+
+
+class UserDAGConditionNode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["condition"]
+    id: str
+    title: str = ""
+    cases: list[ConditionCase] = Field(min_length=1)
+    default_branch: str
+
+
+UserDAGNode = UserDAGCapabilityNode | UserDAGConditionNode
 
 
 class UserDAG(BaseModel):
@@ -2202,22 +2218,39 @@ def _compile_user_dag(dag: UserDAG) -> Dag:
     for artifact in dag.artifacts.values():
         builder.add_artifact(artifact)
     for node in dag.nodes:
-        builder.add_node(Node(
-            node.id,
-            target=_compile_user_dag_target(node),
-            inputs=dict(node.inputs),
-            artifact_inputs=list(node.artifact_inputs),
-            artifact_outputs=list(node.artifact_outputs),
-            title=node.title or None,
-            boundary=node.boundary,
-        ))
+        if isinstance(node, UserDAGConditionNode):
+            builder.add_node(ConditionNode(
+                node.id,
+                cases=[
+                    Case(case.branch, case.when)
+                    for case in node.cases
+                ],
+                default_branch=node.default_branch,
+                title=node.title or None,
+            ))
+        else:
+            builder.add_node(Node(
+                node.id,
+                target=_compile_user_dag_target(node),
+                inputs=dict(node.inputs),
+                artifact_inputs=list(node.artifact_inputs),
+                artifact_outputs=list(node.artifact_outputs),
+                title=node.title or None,
+                boundary=node.boundary,
+            ))
     for edge in dag.edges:
-        builder.add_edge(edge.source, edge.target, reason=edge.reason, when=edge.when)
+        builder.add_edge(
+            edge.source,
+            edge.target,
+            reason=edge.reason,
+            when=edge.when,
+            branch=edge.branch,
+        )
     builder.output = dag.output
     return builder
 
 
-def _compile_user_dag_target(node: UserDAGNode) -> str | ToolAgent:
+def _compile_user_dag_target(node: UserDAGCapabilityNode) -> str | ToolAgent:
     capability_id = node.target.strip()
     if not capability_id.startswith("agent."):
         if node.agent is not None:
@@ -2403,7 +2436,14 @@ def _saved_dag_payload(saved: SavedDag) -> dict[str, Any]:
     payload = saved.model_dump(mode="json")
     payload.pop("spec_json")
     payload.pop("layout_json")
-    payload["spec"] = _json_from_storage(saved.spec_json, fallback=_empty_user_dag_payload(saved))
+    stored_spec = _json_from_storage(
+        saved.spec_json,
+        fallback=_empty_user_dag_payload(saved),
+    )
+    try:
+        payload["spec"] = UserDAG.model_validate(stored_spec).model_dump(mode="json")
+    except ValidationError:
+        payload["spec"] = _empty_user_dag_payload(saved)
     payload["layout"] = _json_from_storage(saved.layout_json, fallback={})
     return payload
 

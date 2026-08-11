@@ -22,6 +22,7 @@ from dagent.schemas import (
     DAGNode,
     DAGSpec,
     CapabilityNodePayload,
+    ConditionNodePayload,
     CapabilityDefinition,
     LoopNodePayload,
     MapNodePayload,
@@ -236,6 +237,8 @@ def _payload_value_sources(payload: Any) -> list[tuple[Any, bool]]:
         return [(payload.input, False)]
     if isinstance(payload, LoopNodePayload):
         return [(payload.input, False), (payload.until, True)]
+    if isinstance(payload, ConditionNodePayload):
+        return [(case.when, False) for case in payload.cases]
     return []
 
 
@@ -390,6 +393,35 @@ def validate_dag(dag: DAG) -> None:
             raise DAGValidationError(f"Node '{node.id}' must declare a capability.")
 
     node_id_set = set(node_ids)
+    nodes_by_id = {node.id: node for node in dag.nodes}
+    condition_branches: dict[str, set[str]] = {}
+    for node in dag.nodes:
+        if not isinstance(node.payload, ConditionNodePayload):
+            continue
+        branches = [case.branch for case in node.payload.cases]
+        if any(not branch.strip() for branch in branches):
+            raise DAGValidationError(
+                f"Condition node '{node.id}' case branches must be non-empty."
+            )
+        duplicates = sorted({branch for branch in branches if branches.count(branch) > 1})
+        if duplicates:
+            raise DAGValidationError(
+                f"Condition node '{node.id}' has duplicate case branches: "
+                + ", ".join(duplicates)
+                + "."
+            )
+        default_branch = node.payload.default_branch
+        if not default_branch.strip():
+            raise DAGValidationError(
+                f"Condition node '{node.id}' default_branch must be non-empty."
+            )
+        if default_branch in branches:
+            raise DAGValidationError(
+                f"Condition node '{node.id}' default branch '{default_branch}' "
+                "duplicates a case branch."
+            )
+        condition_branches[node.id] = {*branches, default_branch}
+
     connected_ids: set[str] = set()
     for edge in dag.edges:
         if edge.source not in node_id_set:
@@ -399,6 +431,27 @@ def validate_dag(dag: DAG) -> None:
         if edge.target not in node_id_set:
             raise DAGValidationError(
                 f"Edge target '{edge.target}' does not reference an existing node."
+            )
+        if edge.when is not None and edge.branch is not None:
+            raise DAGValidationError(
+                f"Edge '{edge.source}->{edge.target}' cannot declare both when and branch."
+            )
+        source_payload = nodes_by_id[edge.source].payload
+        if isinstance(source_payload, ConditionNodePayload):
+            if edge.branch is None:
+                raise DAGValidationError(
+                    f"Condition node '{edge.source}' outgoing edge to '{edge.target}' "
+                    "must declare a branch."
+                )
+            if edge.branch not in condition_branches[edge.source]:
+                raise DAGValidationError(
+                    f"Condition node '{edge.source}' outgoing edge to '{edge.target}' "
+                    f"references unknown branch '{edge.branch}'."
+                )
+        elif edge.branch is not None:
+            raise DAGValidationError(
+                f"Edge '{edge.source}->{edge.target}' declares branch '{edge.branch}', "
+                "but its source is not a condition node."
             )
         connected_ids.add(edge.source)
         connected_ids.add(edge.target)

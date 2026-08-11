@@ -35,7 +35,7 @@ import dagent
 | --- | --- |
 | Runner and tools | `Runner`, `tool`, `CapabilityBinding`；`dagent.capabilities.python_tools` 提供配置化 Python tool source loading helpers |
 | Agents | `AutoAgent`, `ToolAgent`, `DagAgent` |
-| Static DAGs | `Dag`, `Node`, `MapNode`, `LoopNode`, `item`, `InputRef`, `NodeOutputRef`, `ItemRef`, `CompareRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec`, `validate_dag_input`, `DAGInputValidationError` |
+| Static DAGs | `Dag`, `Node`, `ConditionNode`, `Case`, `MapNode`, `LoopNode`, `item`, `InputRef`, `NodeOutputRef`, `ItemRef`, `CompareRef`, `LogicalRef`, `all_of`, `any_of`, `not_`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec`, `validate_dag_input`, `DAGInputValidationError` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ModelTokenUsage`, `ResultStoragePolicy` |

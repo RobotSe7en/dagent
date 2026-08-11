@@ -26,6 +26,8 @@ from dagent.schemas.edge import DAGEdge
 from dagent.schemas.feedback import Feedback
 from dagent.schemas.node import (
     CapabilityNodePayload,
+    ConditionCase,
+    ConditionNodePayload,
     DAGNode,
     LoopNodePayload,
     MapNodePayload,
@@ -133,6 +135,8 @@ __all__ = [
     "SandboxConfig",
     "CapabilityDefinition",
     "CapabilityNodePayload",
+    "ConditionCase",
+    "ConditionNodePayload",
     "CapabilityInvocation",
     "CapabilityKind",
     "CapabilityPolicy",

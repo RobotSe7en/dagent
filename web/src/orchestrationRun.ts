@@ -42,6 +42,7 @@ export function buildRunDialogSummary(spec: UserDag): RunDialogSummary {
   const riskyNodes: RunRiskSummary[] = [];
 
   for (const node of spec.nodes ?? []) {
+    if (node.type === 'condition') continue;
     const target = node.target?.trim() ?? '';
     const risk = riskFromTarget(target);
     if (!target) {
@@ -160,6 +161,7 @@ function collectArtifactReferences(
   ids: Set<string>,
   issues: RunDialogIssue[],
 ) {
+  if (node.type === 'condition') return;
   for (const artifactId of node[field] ?? []) {
     if (artifacts[artifactId]) {
       ids.add(artifactId);

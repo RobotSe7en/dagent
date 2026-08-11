@@ -78,6 +78,21 @@ class PlannerCompareValue(_PlannerModel):
     right: "PlannerValue"
 
 
+class PlannerAllValue(_PlannerModel):
+    type: Literal["all"]
+    values: list["PlannerValue"] = Field(min_length=1)
+
+
+class PlannerAnyValue(_PlannerModel):
+    type: Literal["any"]
+    values: list["PlannerValue"] = Field(min_length=1)
+
+
+class PlannerNotValue(_PlannerModel):
+    type: Literal["not"]
+    value: "PlannerValue"
+
+
 PlannerValue: TypeAlias = Annotated[
     PlannerLiteralValue
     | PlannerListValue
@@ -86,7 +101,10 @@ PlannerValue: TypeAlias = Annotated[
     | PlannerNodeOutputValue
     | PlannerArtifactValue
     | PlannerFormatValue
-    | PlannerCompareValue,
+    | PlannerCompareValue
+    | PlannerAllValue
+    | PlannerAnyValue
+    | PlannerNotValue,
     Field(discriminator="type"),
 ]
 
@@ -112,15 +130,61 @@ class PlannerCapabilityNode(_PlannerModel):
         return self
 
 
+class PlannerConditionCase(_PlannerModel):
+    branch: str = Field(min_length=1)
+    when: PlannerValue
+
+    @model_validator(mode="after")
+    def validate_binding_condition(self) -> "PlannerConditionCase":
+        if isinstance(
+            self.when,
+            (PlannerLiteralValue, PlannerListValue, PlannerObjectValue),
+        ):
+            raise ValueError("Condition case when must be a runtime expression.")
+        return self
+
+
+class PlannerConditionNode(_PlannerModel):
+    id: PlannerId
+    type: Literal["condition"]
+    cases: list[PlannerConditionCase] = Field(min_length=1)
+    default_branch: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_branches(self) -> "PlannerConditionNode":
+        branches = [case.branch for case in self.cases]
+        if any(not branch.strip() for branch in branches):
+            raise ValueError("Condition case branches must be non-empty.")
+        _ensure_unique(branches, "Condition case branches")
+        if not self.default_branch.strip():
+            raise ValueError("Condition default_branch must be non-empty.")
+        if self.default_branch in branches:
+            raise ValueError("Condition default_branch must differ from case branches.")
+        return self
+
+
+PlannerNode: TypeAlias = Annotated[
+    PlannerCapabilityNode | PlannerConditionNode,
+    Field(discriminator="type"),
+]
+
+
 class PlannerEdge(_PlannerModel):
     source: PlannerId
     target: PlannerId
     when: PlannerValue | None
+    branch: str | None
+
+    @model_validator(mode="after")
+    def validate_route(self) -> "PlannerEdge":
+        if self.when is not None and self.branch is not None:
+            raise ValueError("Planner edge cannot declare both when and branch.")
+        return self
 
 
 class PlannerGraph(_PlannerModel):
     artifacts: list[PlannerArtifact]
-    nodes: list[PlannerCapabilityNode]
+    nodes: list[PlannerNode]
     edges: list[PlannerEdge]
     output: PlannerValue | None
 
@@ -264,5 +328,8 @@ PlannerNamedValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
 PlannerObjectValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
 PlannerFormatValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
 PlannerCompareValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
+PlannerAllValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
+PlannerAnyValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
+PlannerNotValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
 PlannerGraph.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
 PlannerResponse.model_rebuild(_types_namespace={"PlannerGraph": PlannerGraph})

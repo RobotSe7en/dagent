@@ -63,13 +63,15 @@ DSL.
 - Keep the planner-facing spec as close to `DAGSpec` as practical while
   excluding host-owned identity and display fields such as graph names and
   descriptions, node titles, and edge reasons.
-- Keep the typed response contract to capability or agent invocation nodes.
+- Keep the typed response contract to capability/agent invocation nodes and
+  first-class condition nodes.
   Fixed parallelism is expressed as multiple capability nodes. Map fan-out,
   embedded subgraphs, and bounded loops remain available through
   `sdk_builder` and the public static-DAG SDK.
-- Support structured `when` conditions on edges.
-- Support graph-input, node-output/content/status/steps, artifact, format, and
-  comparison value expressions.
+- Support `branch` edges for exclusive condition routing and structured `when`
+  conditions as ordinary edge gates; reject edges that use both.
+- Support graph-input, node-output/content/status/steps, artifact, format,
+  comparison, `all`, `any`, and `not` value expressions.
 - Support explicit DAG output and artifact producer/consumer declarations.
 
 ### Capability Context

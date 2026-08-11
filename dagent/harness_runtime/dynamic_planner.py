@@ -15,8 +15,12 @@ from dagent.harness_runtime.dag_builder import (
     validate_dag_spec,
 )
 from dagent.harness_runtime.planner_schema import (
+    PlannerAllValue,
     PlannerArtifactValue,
+    PlannerAnyValue,
+    PlannerCapabilityNode,
     PlannerCompareValue,
+    PlannerConditionNode,
     PlannerFormatValue,
     PlannerGraph,
     PlannerGraphInputValue,
@@ -24,6 +28,7 @@ from dagent.harness_runtime.planner_schema import (
     PlannerLiteralValue,
     PlannerNamedValue,
     PlannerNodeOutputValue,
+    PlannerNotValue,
     PlannerObjectValue,
     PlannerValue,
 )
@@ -32,6 +37,8 @@ from dagent.schemas import (
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityNodePayload,
+    ConditionCase,
+    ConditionNodePayload,
     DAGEdge,
     DAGNode,
     DAGSpec,
@@ -41,13 +48,17 @@ from dagent.schemas import (
     SubgraphNodePayload,
 )
 from dagent.schemas.value import (
+    AllExpr,
+    AnyExpr,
     ArtifactExpr,
     CompareExpr,
     FormatExpr,
     GraphInputExpr,
     ItemExpr,
+    NotExpr,
     NodeOutputExpr,
     bind_value_expr,
+    iter_artifact_exprs,
     iter_value_exprs,
     parse_value_binding,
 )
@@ -175,6 +186,21 @@ def planner_value_to_native(value: PlannerValue) -> Any:
             "left": planner_value_to_native(value.left),
             "right": planner_value_to_native(value.right),
         })
+    if isinstance(value, PlannerAllValue):
+        return bind_value_expr({
+            "type": "all",
+            "values": [planner_value_to_native(item) for item in value.values],
+        })
+    if isinstance(value, PlannerAnyValue):
+        return bind_value_expr({
+            "type": "any",
+            "values": [planner_value_to_native(item) for item in value.values],
+        })
+    if isinstance(value, PlannerNotValue):
+        return bind_value_expr({
+            "type": "not",
+            "value": planner_value_to_native(value.value),
+        })
     raise TypeError(f"Unsupported planner value: {type(value).__name__}.")
 
 
@@ -192,23 +218,51 @@ def _normalize_graph(
     current_nodes = {node.id: node for node in current.nodes} if current is not None else {}
     nodes: list[DAGNode] = []
     for planner_node in graph.nodes:
-        current_node = current_nodes.get(planner_node.id)
-        definition = _definition(definitions, planner_node.capability_id)
-        arguments = _normalized_arguments(planner_node.arguments, definition)
-        invocation = _invocation(
-            definition,
-            arguments,
-            current_node=current_node,
-            map_node=False,
-        )
-        payload = CapabilityNodePayload(type="capability", invocation=invocation)
-        nodes.append(DAGNode(
-            id=planner_node.id,
-            payload=payload,
-            status="planned",
-            inputs=list(planner_node.inputs),
-            outputs=list(planner_node.outputs),
-        ))
+        if isinstance(planner_node, PlannerCapabilityNode):
+            current_node = current_nodes.get(planner_node.id)
+            definition = _definition(definitions, planner_node.capability_id)
+            arguments = _normalized_arguments(planner_node.arguments, definition)
+            invocation = _invocation(
+                definition,
+                arguments,
+                current_node=current_node,
+                map_node=False,
+            )
+            payload = CapabilityNodePayload(type="capability", invocation=invocation)
+            nodes.append(DAGNode(
+                id=planner_node.id,
+                payload=payload,
+                status="planned",
+                inputs=list(planner_node.inputs),
+                outputs=list(planner_node.outputs),
+            ))
+            continue
+        if isinstance(planner_node, PlannerConditionNode):
+            cases = [
+                ConditionCase(
+                    branch=case.branch,
+                    when=planner_value_to_native(case.when),
+                )
+                for case in planner_node.cases
+            ]
+            payload = ConditionNodePayload(
+                type="condition",
+                cases=cases,
+                default_branch=planner_node.default_branch,
+            )
+            artifact_inputs = sorted({
+                expression.artifact_id
+                for case in cases
+                for expression in iter_artifact_exprs(case.when)
+            })
+            nodes.append(DAGNode(
+                id=planner_node.id,
+                payload=payload,
+                status="planned",
+                inputs=artifact_inputs,
+            ))
+            continue
+        raise TypeError(f"Unsupported planner node: {type(planner_node).__name__}.")
 
     artifacts = {
         artifact.id: Artifact(
@@ -225,6 +279,7 @@ def _normalize_graph(
             source=edge.source,
             target=edge.target,
             when=None if edge.when is None else planner_value_to_native(edge.when),
+            branch=edge.branch,
         )
         for edge in graph.edges
     ]
@@ -539,6 +594,11 @@ def _validate_output_paths(
                 (f"Loop node '{node.id}' condition", payload.until),
             ])
             _validate_output_paths(payload.body, definitions)
+        elif isinstance(payload, ConditionNodePayload):
+            sources.extend(
+                (f"Condition node '{node.id}' case '{case.branch}'", case.when)
+                for case in payload.cases
+            )
     sources.extend(
         (f"Edge '{edge.source}->{edge.target}' condition", edge.when)
         for edge in spec.edges
@@ -581,6 +641,13 @@ def _node_field_schema(
         return _spec_output_schema(payload.spec, definitions)
     if isinstance(payload, LoopNodePayload):
         return _spec_output_schema(payload.body, definitions)
+    if isinstance(payload, ConditionNodePayload):
+        return {
+            "type": "object",
+            "properties": {"branch": {"type": "string"}},
+            "required": ["branch"],
+            "additionalProperties": False,
+        }
     return {}
 
 
@@ -696,6 +763,8 @@ def _native_value_schema(
     if isinstance(expression, FormatExpr):
         return {"type": "string"}
     if isinstance(expression, CompareExpr):
+        return {"type": "boolean"}
+    if isinstance(expression, (AllExpr, AnyExpr, NotExpr)):
         return {"type": "boolean"}
     if isinstance(expression, ItemExpr):
         return {}

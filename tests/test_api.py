@@ -2561,6 +2561,97 @@ def test_static_dag_api_preserves_edge_conditions_during_validation_and_run() ->
     assert node_statuses == {"prepare": "completed", "publish": "skipped"}
 
 
+def test_static_dag_api_accepts_condition_nodes_and_canonicalizes_node_types() -> None:
+    state.dags.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    spec = {
+        "id": "condition_static_dag",
+        "name": "Condition static DAG",
+        "nodes": [
+            {
+                "type": "condition",
+                "id": "route",
+                "title": "Route",
+                "cases": [{
+                    "branch": "publish",
+                    "when": {"$expr": {"type": "graph_input", "path": ["publish"]}},
+                }],
+                "default_branch": "end",
+            },
+            {
+                "id": "publish",
+                "target": "tool.echo",
+                "inputs": {"text": "published"},
+            },
+        ],
+        "edges": [{
+            "source": "route",
+            "target": "publish",
+            "reason": "Publish branch.",
+            "branch": "publish",
+        }],
+    }
+
+    validate_response = client.post("/dags/validate", json=spec)
+    create_response = client.post("/dags", json=spec)
+    run_response = client.post(
+        "/dags/condition_static_dag/run",
+        json={"graph_input": {"publish": True}},
+    )
+
+    assert validate_response.json() == {"valid": True, "issues": []}
+    assert create_response.status_code == 200
+    saved_nodes = create_response.json()["dag"]["nodes"]
+    assert saved_nodes[0]["type"] == "condition"
+    assert saved_nodes[1]["type"] == "capability"
+    assert create_response.json()["dag"]["edges"][0]["branch"] == "publish"
+    assert run_response.status_code == 200
+    run_payload = _result_dag_run(run_response.json()["result"])
+    traces = {
+        trace["ref"]["node_id"]: trace
+        for trace in run_payload["trace"]["root"]["children"]
+        if trace["kind"] == "dag_node"
+    }
+    assert traces["route"]["selected_branch"] == "publish"
+    assert {node["id"]: node["status"] for node in run_payload["dag"]["nodes"]} == {
+        "route": "completed",
+        "publish": "completed",
+    }
+
+
+def test_static_dag_api_rejects_branch_and_when_on_same_edge() -> None:
+    client = TestClient(app)
+    spec = {
+        "id": "invalid_condition_edge",
+        "name": "Invalid condition edge",
+        "nodes": [
+            {
+                "type": "condition",
+                "id": "route",
+                "cases": [{
+                    "branch": "go",
+                    "when": {"$expr": {"type": "graph_input", "path": ["go"]}},
+                }],
+                "default_branch": "stop",
+            },
+            {"id": "target", "target": "tool.echo", "inputs": {"text": "x"}},
+        ],
+        "edges": [{
+            "source": "route",
+            "target": "target",
+            "branch": "go",
+            "when": {"$expr": {"type": "graph_input", "path": ["go"]}},
+        }],
+    }
+
+    response = client.post("/dags/validate", json=spec)
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is False
+    assert "cannot declare both when and branch" in response.json()["issues"][0]["message"]
+
+
 def test_static_dag_runs_managed_profile_agent_node(monkeypatch, tmp_path) -> None:
     state.close_runner()
     managed_dir = tmp_path / "managed-profiles"

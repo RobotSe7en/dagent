@@ -12,3 +12,4 @@ class DAGEdge(BaseModel):
     target: str
     reason: str = ""
     when: ValueBinding | None = None
+    branch: str | None = None

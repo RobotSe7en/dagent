@@ -74,6 +74,33 @@ class CompareExpr(BaseModel):
     right: Any
 
 
+class AllExpr(BaseModel):
+    """Resolve values in order and require every value to be truthy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["all"]
+    values: list[Any] = Field(min_length=1)
+
+
+class AnyExpr(BaseModel):
+    """Resolve values in order and require at least one truthy value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["any"]
+    values: list[Any] = Field(min_length=1)
+
+
+class NotExpr(BaseModel):
+    """Negate the truthiness of one resolved value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["not"]
+    value: Any
+
+
 class ItemExpr(BaseModel):
     """The current map item or loop body output, valid only in those scopes."""
 
@@ -84,7 +111,15 @@ class ItemExpr(BaseModel):
 
 
 ValueExpr = Annotated[
-    GraphInputExpr | NodeOutputExpr | ArtifactExpr | FormatExpr | CompareExpr | ItemExpr,
+    GraphInputExpr
+    | NodeOutputExpr
+    | ArtifactExpr
+    | FormatExpr
+    | CompareExpr
+    | AllExpr
+    | AnyExpr
+    | NotExpr
+    | ItemExpr,
     Field(discriminator="type"),
 ]
 
@@ -141,6 +176,11 @@ def iter_value_exprs(value: Any):
         elif isinstance(expr, CompareExpr):
             yield from iter_value_exprs(expr.left)
             yield from iter_value_exprs(expr.right)
+        elif isinstance(expr, (AllExpr, AnyExpr)):
+            for item in expr.values:
+                yield from iter_value_exprs(item)
+        elif isinstance(expr, NotExpr):
+            yield from iter_value_exprs(expr.value)
         return
     if isinstance(value, dict):
         for item in value.values():

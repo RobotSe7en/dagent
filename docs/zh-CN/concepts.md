@@ -31,7 +31,8 @@ provider clients、sessions 或 capability handlers。
 
 `DagAgent` 会让模型生成 strict typed plan，将其规范化为 `DAGSpec`，执行 ready layers，
 观察结果，并在需要时进行局部 replan。默认 `typed_spec` frontend 把模型输出限制为
-capability node、条件边、artifact 和 value expression；optional `sdk_builder` frontend
+capability/condition node、branch edge、条件边 gate、artifact 和 value expression；
+optional `sdk_builder` frontend
 还可以构造 Map、Subgraph 和 bounded Loop。两者最终使用相同的静态 DAG 执行 contract。
 
 `AutoAgent` 让 runtime 针对每个请求在直接 tool use 和 dynamic DAG planning 之间选择。
@@ -40,7 +41,7 @@ capability node、条件边、artifact 和 value expression；optional `sdk_buil
 
 当 workflow 的图结构属于代码时，使用 `Dag`。静态 DAG 使用类型化 graph input、
 显式 `dag.add_edge(...)` 依赖、结构化 `$expr` value references、artifact 声明、
-boundaries、conditional edges、map fan-out、subgraphs 和 bounded loops。
+boundaries、互斥 condition node、条件边 gate、map fan-out、subgraphs 和 bounded loops。
 
 ## Capabilities
 

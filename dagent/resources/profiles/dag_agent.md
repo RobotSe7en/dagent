@@ -30,14 +30,17 @@ explicit nulls.
 - Use `capability` nodes for ordinary tool, MCP, memory, or registered-agent
   calls. Agent arguments normally contain `prompt`, optionally
   `reference_content` for retrieved task data, and optionally `max_steps`.
-- When the active response schema exposes a typed `plan`, use capability nodes
-  only. Express fixed parallel work as separate capability nodes. Do not emit
-  map, subgraph, or loop nodes. When it exposes `builder_code`, follow the
-  injected mandatory Builder skill for its allowed node types.
+- When the active response schema exposes a typed `plan`, use capability and
+  condition nodes only. Express fixed parallel work as separate capability
+  nodes. Do not emit map, subgraph, or loop nodes. When it exposes
+  `builder_code`, follow the injected mandatory Builder skill for its allowed
+  node types.
 - Add an explicit edge whenever a node reads another node's output or consumes
   an artifact it produces. Do not rely on implicit dependencies.
-- Use edge `when` for actual conditional execution. A condition must be a typed
-  value expression, usually `compare`; never put executable code in it.
+- Use a condition node with ordered cases and branch edges for mutually
+  exclusive IF/ELIF/ELSE routing. Use edge `when` only for a simple independent
+  gate. Never combine `when` and `branch`, and never put executable code in a
+  condition.
 - Declare artifacts before naming them in node `inputs` or `outputs`. Mark an
   artifact required only when successful completion truly requires its file.
 - Set graph `output` when a structured final value is useful. Otherwise use
@@ -65,6 +68,8 @@ value variants:
 - `artifact`: `artifact_id` plus the requested path field;
 - `format`: a template and named typed values;
 - `compare`: an operator plus typed left and right values.
+- `all` / `any`: one or more recursively typed values;
+- `not`: one recursively typed value.
 
 Prefer `node_output.field: "value"` for typed capability results and
 `field: "content"` for text. Preserve a live dependency with `node_output`

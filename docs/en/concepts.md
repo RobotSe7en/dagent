@@ -33,8 +33,8 @@ action depends on the latest observation.
 
 `DagAgent` asks the model for a strict typed plan, normalizes it to `DAGSpec`,
 executes ready layers, observes results, and replans locally when needed.
-The default `typed_spec` frontend keeps model output to capability nodes,
-conditional edges, artifacts, and value expressions. The optional
+The default `typed_spec` frontend keeps model output to capability and condition
+nodes, branch or conditional-gate edges, artifacts, and value expressions. The optional
 `sdk_builder` frontend can additionally author maps, subgraphs, and bounded
 loops. Both normalize to the same static-DAG execution contracts.
 
@@ -45,7 +45,8 @@ each request.
 
 `Dag` is for workflows whose graph shape belongs in code. Static DAGs use typed
 graph input, explicit `dag.add_edge(...)` dependencies, structured `$expr` value
-references, artifact declarations, boundaries, conditional edges, map fan-out,
+references, artifact declarations, boundaries, exclusive condition nodes,
+conditional edge gates, map fan-out,
 subgraphs, and bounded loops.
 
 ## Capabilities

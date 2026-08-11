@@ -9,6 +9,7 @@ from dagent.schemas import DAG, DAGSpec
 from dagent.schemas import CapabilityInvocation, DAGNode
 from dagent.schemas.node import (
     CapabilityNodePayload,
+    ConditionNodePayload,
     StartNodePayload,
 )
 from dagent.schemas.value import parse_value_binding
@@ -27,6 +28,10 @@ def planner_value(value: Any) -> dict[str, Any]:
         elif expr_type == "compare":
             payload["left"] = planner_value(payload["left"])
             payload["right"] = planner_value(payload["right"])
+        elif expr_type in {"all", "any"}:
+            payload["values"] = [planner_value(item) for item in payload["values"]]
+        elif expr_type == "not":
+            payload["value"] = planner_value(payload["value"])
         return {"type": expr_type, **payload}
     if isinstance(value, list):
         return {"type": "list", "items": [planner_value(item) for item in value]}
@@ -153,6 +158,7 @@ def _graph(
                 "source": edge.source,
                 "target": edge.target,
                 "when": None if edge.when is None else planner_value(edge.when),
+                "branch": edge.branch,
             }
             for edge in edges
             if edge.source != "start" and edge.target != "start"
@@ -174,6 +180,16 @@ def _node(node) -> dict[str, Any]:
             **base,
             "capability_id": payload.invocation.capability_id,
             "arguments": _arguments(payload.invocation.arguments),
+        }
+    if isinstance(payload, ConditionNodePayload):
+        return {
+            "type": "condition",
+            "id": node.id,
+            "cases": [
+                {"branch": case.branch, "when": planner_value(case.when)}
+                for case in payload.cases
+            ],
+            "default_branch": payload.default_branch,
         }
     raise TypeError(f"Unsupported planner fixture node: {type(payload).__name__}")
 

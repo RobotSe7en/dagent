@@ -138,8 +138,9 @@ validation, review, and execution. Capability nodes reference stable ids such
 as `tool.search`; the host supplies kind, risk, boundaries, defaults, and
 invocation identity.
 
-Typed dynamic plans contain capability/agent nodes, explicit conditional edges,
-artifacts, graph output, and structured value references. Map, subgraph, and
+Typed dynamic plans contain capability/agent nodes, ordered condition nodes,
+branch and conditional-gate edges, artifacts, graph output, and structured value
+references. Map, subgraph, and
 loop authoring stays out of this compact model-facing contract. The host
 supplies graph identity and leaves display-only graph descriptions, node titles,
 and edge reasons out of model output. Normalized plans still use the same
@@ -149,7 +150,8 @@ validator and executor as static DAGs.
 the runner with `planner_frontend="sdk_builder"`. The generated source uses a
 straight-line allowlisted Builder subset and is never passed to `exec` or
 `eval`. It may additionally express maps, subgraphs, bounded loops, artifacts,
-references, outputs, and conditional edges; canonical `DAGSpec`, not source, is
+references, outputs, condition nodes, branch edges, and conditional edge gates;
+canonical `DAGSpec`, not source, is
 the review and persistence object.
 
 ```python

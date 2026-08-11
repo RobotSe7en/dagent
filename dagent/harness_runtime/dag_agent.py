@@ -75,6 +75,7 @@ from dagent.schemas import (
     PlannerSkillSnapshot,
     CapabilityDefinition,
     CapabilityNodePayload,
+    ConditionNodePayload,
     ContextPolicy,
     ContextSummary,
     ContextUsage,
@@ -2263,6 +2264,8 @@ def _node_artifact_ids(node: DAGNode) -> set[str]:
         values.append(payload.input)
     elif isinstance(payload, LoopNodePayload):
         values.extend([payload.input, payload.until])
+    elif isinstance(payload, ConditionNodePayload):
+        values.extend(case.when for case in payload.cases)
     for value in values:
         artifact_ids.update(
             expression.artifact_id
@@ -2411,14 +2414,9 @@ def _planner_response_format_for_frontend(
 
 def _planner_response_schema_context(response_format: StructuredOutputFormat) -> str:
     return (
-        "## Required Planner Response JSON Schema\n"
-        "Return one JSON object that conforms exactly to this schema.\n\n"
-        + json.dumps(
-            response_format.schema,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        "## Required Planner Response Contract\n"
+        f"The runtime provides the complete strict JSON Schema as response_format "
+        f"'{response_format.name}'. Return exactly one object that conforms to it."
     )
 
 
