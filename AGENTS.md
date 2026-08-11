@@ -15,6 +15,11 @@ public APIs, capability ids, documented request shapes, config semantics, or
 example workflows casually. Public breaking changes must be deliberate,
 documented, covered by tests, and accompanied by migration guidance.
 
+For every change, assess backward-compatibility impact before implementation.
+Preserve released public behavior by default; if a compatibility break is
+necessary, make it explicit and include migration guidance, documentation, and
+test coverage in the same change.
+
 Do not add hidden compatibility shims, legacy aliases, conversion layers, or
 duplicate code paths as a reflex. If compatibility is necessary for a released
 surface, make the compatibility policy explicit in the design, tests, and docs.
