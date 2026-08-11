@@ -28,6 +28,7 @@ export type CompareBinding = ValueBinding & {
 export interface FlowEdgeLike {
   source: string;
   target: string;
+  sourceHandle?: string | null;
   data?: unknown;
 }
 
@@ -142,6 +143,7 @@ export function hasUnconditionalSiblingEdge(edges: DagEdge[], edgeIndex: number)
     candidateIndex !== edgeIndex
     && candidate.target === selected.target
     && !candidate.when
+    && !candidate.branch
   ));
 }
 
@@ -151,8 +153,13 @@ export function dagEdgesFromFlowEdges(
 ): DagEdge[] {
   return flowEdges.map((flowEdge) => {
     const fromData = dagEdgeFromData(flowEdge.data);
+    const branch = fromData?.branch ?? (flowEdge.sourceHandle && flowEdge.sourceHandle !== 'out'
+      ? flowEdge.sourceHandle
+      : null);
     const current = currentEdges.find((edge) => (
-      edge.source === flowEdge.source && edge.target === flowEdge.target
+      edge.source === flowEdge.source
+      && edge.target === flowEdge.target
+      && (edge.branch ?? null) === branch
     ));
     const original = fromData ?? current;
     return {
@@ -160,6 +167,7 @@ export function dagEdgesFromFlowEdges(
       target: flowEdge.target,
       reason: original?.reason ?? 'User dependency.',
       when: original?.when ?? null,
+      ...((original?.branch ?? branch) ? { branch: original?.branch ?? branch } : {}),
     };
   });
 }
@@ -239,5 +247,6 @@ function dagEdgeFromData(value: unknown): DagEdge | null {
     target: candidate.target,
     reason: typeof candidate.reason === 'string' ? candidate.reason : '',
     when: candidate.when ?? null,
+    ...(candidate.branch ? { branch: candidate.branch } : {}),
   };
 }

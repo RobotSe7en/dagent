@@ -13,6 +13,7 @@ from dagent.harness_runtime.planner_schema import (
 from dagent.schemas import CapabilityDefinition
 from dagent.schemas.node import (
     CapabilityNodePayload,
+    ConditionNodePayload,
     StartNodePayload,
 )
 from dagent.schemas.value import CompareExpr, NodeOutputExpr, parse_value_binding
@@ -50,6 +51,7 @@ def test_planner_response_format_preserves_fields_and_normalizes_unions() -> Non
     assert "PlannerMapNode" not in schema["$defs"]
     assert "PlannerSubgraphNode" not in schema["$defs"]
     assert "PlannerLoopNode" not in schema["$defs"]
+    assert "PlannerConditionNode" in schema["$defs"]
     assert "PlannerItemValue" not in schema["$defs"]
     assert not _schema_contains_key(schema, "oneOf")
     assert not _schema_contains_key(schema, "discriminator")
@@ -118,6 +120,84 @@ def test_typed_planner_normalizes_capability_graph_to_canonical_dag_spec() -> No
     assert dag.nodes[2].payload.invocation.risk == "medium"
     text = dag.nodes[2].payload.invocation.arguments["text"]
     assert isinstance(parse_value_binding(text), NodeOutputExpr)
+
+
+def test_typed_planner_normalizes_condition_node_and_branch_edges() -> None:
+    graph = {
+        "artifacts": [],
+        "nodes": [
+            {
+                **_node_base("seed"),
+                "type": "capability",
+                "capability_id": "tool.seed",
+                "arguments": [],
+            },
+            {
+                "id": "route",
+                "type": "condition",
+                "cases": [{
+                    "branch": "ready",
+                    "when": {
+                        "type": "all",
+                        "values": [
+                            {
+                                "type": "compare",
+                                "op": "eq",
+                                "left": _node_output("seed", path=["ready"]),
+                                "right": _literal(True),
+                            },
+                            {
+                                "type": "not",
+                                "value": {
+                                    "type": "compare",
+                                    "op": "eq",
+                                    "left": _node_output("seed", path=["ready"]),
+                                    "right": _literal(False),
+                                },
+                            },
+                        ],
+                    },
+                }],
+                "default_branch": "not_ready",
+            },
+            {
+                **_node_base("echo"),
+                "type": "capability",
+                "capability_id": "tool.echo",
+                "arguments": [{"name": "text", "value": _literal("ready")}],
+            },
+        ],
+        "edges": [
+            {"source": "seed", "target": "route", "when": None, "branch": None},
+            {"source": "route", "target": "echo", "when": None, "branch": "ready"},
+        ],
+        "output": _node_output("route", path=["branch"]),
+    }
+
+    spec = normalize_planner_graph(
+        PlannerGraph.model_validate(graph),
+        spec_id="condition",
+        version=1,
+        capabilities=_capabilities(),
+    )
+
+    route = next(node for node in spec.nodes if node.id == "route")
+    assert isinstance(route.payload, ConditionNodePayload)
+    assert route.payload.default_branch == "not_ready"
+    assert next(edge for edge in spec.edges if edge.source == "route").branch == "ready"
+
+
+def test_typed_planner_condition_requires_runtime_expression() -> None:
+    graph = _single_node_graph()
+    graph["nodes"] = [{
+        "id": "route",
+        "type": "condition",
+        "cases": [{"branch": "yes", "when": _literal(True)}],
+        "default_branch": "no",
+    }]
+
+    with pytest.raises(ValueError, match="runtime expression"):
+        PlannerGraph.model_validate(graph)
 
 
 def test_planner_argument_schema_validation_fails_closed_but_allows_expressions() -> None:
@@ -256,6 +336,7 @@ def _capability_graph() -> dict:
                     "left": _node_output("seed", path=["ready"]),
                     "right": _literal(True),
                 },
+                "branch": None,
             },
         ],
         "output": _node_output("echo"),

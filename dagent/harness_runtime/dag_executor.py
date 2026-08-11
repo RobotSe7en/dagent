@@ -41,6 +41,7 @@ from dagent.schemas import (
     ArtifactState,
     CapabilityInvocation,
     CapabilityNodePayload,
+    ConditionNodePayload,
     CapabilityResult,
     ContentReference,
     InlineContent,
@@ -59,11 +60,14 @@ from dagent.schemas import (
     iter_dag_invocations,
 )
 from dagent.schemas.value import (
+    AllExpr,
+    AnyExpr,
     ArtifactExpr,
     CompareExpr,
     FormatExpr,
     GraphInputExpr,
     ItemExpr,
+    NotExpr,
     NodeOutputExpr,
     parse_value_binding,
 )
@@ -306,6 +310,7 @@ class DAGExecutor:
         if scope is None:
             scope = self._scope({})
         try:
+            selected_branch: str | None = None
             if isinstance(payload, MapNodePayload):
                 value = await self._execute_map_node(
                     node, dag, payload, dag_node=dag_node, scope=scope,
@@ -324,6 +329,8 @@ class DAGExecutor:
                     approve_node_boundaries=approve_node_boundaries,
                     skills=skills, on_token=on_token, on_event=on_event,
                 )
+            elif isinstance(payload, ConditionNodePayload):
+                value, selected_branch = self._execute_condition_node(payload, scope)
             else:
                 raise DAGExecutionError(f"Node '{node.id}' has unsupported payload type.")
         except Exception as exc:
@@ -344,9 +351,22 @@ class DAGExecutor:
         dag_node.status = "completed"
         dag_node.output = value
         dag_node.value = value
+        dag_node.selected_branch = selected_branch
         dag_node.step_count = max(len(dag_node.children), 1)
         dag_node.ended_at = _now()
         return dag_node
+
+    @staticmethod
+    def _execute_condition_node(
+        payload: ConditionNodePayload,
+        scope: _ValueScope,
+    ) -> tuple[dict[str, str], str]:
+        selected = payload.default_branch
+        for case in payload.cases:
+            if bool(_resolve_value(case.when, scope)):
+                selected = case.branch
+                break
+        return {"branch": selected}, selected
 
     async def execute_capability_node(
         self,
@@ -870,6 +890,8 @@ def _edge_live(
     source = node_traces.get(edge.source)
     if source is None or source.status != "completed":
         return False
+    if edge.branch is not None:
+        return source.selected_branch == edge.branch
     if edge.when is None:
         return True
     return bool(_resolve_value(edge.when, scope))
@@ -906,6 +928,12 @@ def _resolve_value(value: Any, scope: _ValueScope) -> Any:
             _resolve_value(expr.left, scope),
             _resolve_value(expr.right, scope),
         )
+    if isinstance(expr, AllExpr):
+        return all(bool(_resolve_value(item, scope)) for item in expr.values)
+    if isinstance(expr, AnyExpr):
+        return any(bool(_resolve_value(item, scope)) for item in expr.values)
+    if isinstance(expr, NotExpr):
+        return not bool(_resolve_value(expr.value, scope))
     if isinstance(expr, ItemExpr):
         if scope.item is _NO_ITEM:
             raise DAGExecutionError(

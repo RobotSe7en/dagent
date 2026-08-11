@@ -13,6 +13,8 @@ from dagent.schemas import (
     CapabilityInvocation,
     CapabilityKind,
     CapabilityNodePayload,
+    ConditionCase,
+    ConditionNodePayload,
     DAGEdge,
     DAGNode,
     DAGSpec,
@@ -23,12 +25,15 @@ from dagent.schemas import (
 )
 from dagent.schemas.common import json_schema_for_type
 from dagent.schemas.value import (
+    AllExpr,
+    AnyExpr,
     ArtifactExpr,
     CompareExpr,
     CompareOp,
     FormatExpr,
     GraphInputExpr,
     ItemExpr,
+    NotExpr,
     NodeOutputExpr,
     bind_value_expr,
     iter_artifact_exprs,
@@ -147,6 +152,51 @@ class CompareRef:
                 right=_normalize_value(self.right),
             )
         )
+
+
+@dataclass(frozen=True)
+class LogicalRef:
+    """A structured boolean operation over runtime-resolved values."""
+
+    op: Literal["all", "any", "not"]
+    values: tuple[Any, ...]
+
+    def __post_init__(self) -> None:
+        if self.op not in {"all", "any", "not"}:
+            raise ValueError(f"Unsupported logical operation '{self.op}'.")
+        if self.op == "not" and len(self.values) != 1:
+            raise ValueError("Logical NOT requires exactly one value.")
+        if self.op in {"all", "any"} and not self.values:
+            raise ValueError(f"Logical {self.op.upper()} requires at least one value.")
+
+    def as_expr(self) -> dict[str, Any]:
+        normalized = [_normalize_value(value) for value in self.values]
+        if self.op == "all":
+            expression = AllExpr(type="all", values=normalized)
+        elif self.op == "any":
+            expression = AnyExpr(type="any", values=normalized)
+        else:
+            expression = NotExpr(type="not", value=normalized[0])
+        return bind_value_expr(expression)
+
+
+def all_of(*values: Any) -> LogicalRef:
+    """Build a short-circuiting logical ALL expression."""
+    if not values:
+        raise ValueError("all_of requires at least one value.")
+    return LogicalRef("all", tuple(values))
+
+
+def any_of(*values: Any) -> LogicalRef:
+    """Build a short-circuiting logical ANY expression."""
+    if not values:
+        raise ValueError("any_of requires at least one value.")
+    return LogicalRef("any", tuple(values))
+
+
+def not_(value: Any) -> LogicalRef:
+    """Build a logical NOT expression."""
+    return LogicalRef("not", (value,))
 
 
 @dataclass(frozen=True)
@@ -309,6 +359,37 @@ class LoopNode(Node):
         self.max_iterations = max_iterations
 
 
+@dataclass(frozen=True)
+class Case:
+    """An ordered ConditionNode case."""
+
+    branch: str
+    when: Any
+
+
+_CONDITION_TARGET = object()
+
+
+class ConditionNode(Node):
+    """Select one outgoing branch using ordered IF/ELIF/ELSE semantics."""
+
+    def __init__(
+        self,
+        id: str,
+        *,
+        cases: list[Case],
+        default_branch: str,
+        title: str | None = None,
+    ) -> None:
+        super().__init__(
+            id,
+            target=_CONDITION_TARGET,  # type: ignore[arg-type]
+            title=title,
+        )
+        self.cases = list(cases)
+        self.default_branch = default_branch
+
+
 class Dag:
     """Builder for static DAGSpec definitions."""
 
@@ -397,6 +478,7 @@ class Dag:
         target: Node | str,
         *,
         when: Any = None,
+        branch: str | None = None,
         reason: str = "",
     ) -> "Dag":
         source_id = _node_id(source)
@@ -408,6 +490,7 @@ class Dag:
             target=target_id,
             reason=reason,
             when=None if when is None else _normalize_value(when),
+            branch=branch,
         )
         if edge not in self._edges:
             self._edges.append(edge)
@@ -444,6 +527,25 @@ class Dag:
 
     def _node_payload(self, node: Node) -> tuple[NodePayload, list[Any]]:
         """Build the node payload and the values used for artifact-input inference."""
+        if isinstance(node, ConditionNode):
+            cases: list[ConditionCase] = []
+            sources: list[Any] = []
+            for case in node.cases:
+                if not isinstance(case, Case):
+                    raise TypeError(
+                        f"Condition node '{node.id}' cases must contain dagent.Case values."
+                    )
+                condition = _normalize_value(case.when)
+                cases.append(ConditionCase(branch=case.branch, when=condition))
+                sources.append(condition)
+            return (
+                ConditionNodePayload(
+                    type="condition",
+                    cases=cases,
+                    default_branch=node.default_branch,
+                ),
+                sources,
+            )
         if isinstance(node, LoopNode):
             if node.boundary is not None:
                 raise ValueError("Loop nodes do not accept a boundary; set boundaries on body nodes.")
@@ -557,7 +659,18 @@ def _normalize_value(value: Any) -> Any:
         return value.output.as_expr()
     if isinstance(value, ArtifactRef):
         return value.path.as_expr()
-    if isinstance(value, (InputRef, NodeOutputRef, ArtifactValueRef, FormatRef, ItemRef, CompareRef)):
+    if isinstance(
+        value,
+        (
+            InputRef,
+            NodeOutputRef,
+            ArtifactValueRef,
+            FormatRef,
+            ItemRef,
+            CompareRef,
+            LogicalRef,
+        ),
+    ):
         return value.as_expr()
     if isinstance(value, dict):
         return {key: _normalize_value(item) for key, item in value.items()}

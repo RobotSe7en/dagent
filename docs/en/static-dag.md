@@ -246,18 +246,72 @@ write_node = dagent.Node(
 
 Artifact path escapes are rejected by runtime boundary checks.
 
-## Conditional Edges
+## Exclusive Condition Nodes
 
-`add_edge(..., when=...)` gates an edge on a runtime condition. Reference
-comparisons build the condition; a plain reference is tested for truthiness.
+Use `ConditionNode` when the workflow must choose exactly one ordered
+IF/ELIF/ELSE branch. Each `Case` declares a stable branch id and an expression;
+the first truthy case wins, otherwise the required default branch wins.
 
 ```python
 score_node = dagent.Node("score", target=score, inputs={"text": dag.input})
+route_node = dagent.ConditionNode(
+    "route",
+    cases=[
+        dagent.Case("high", score_node.output["score"] >= 0.8),
+        dagent.Case("medium", score_node.output["score"] >= 0.5),
+    ],
+    default_branch="low",
+)
 publish_node = dagent.Node("publish", target=publish, inputs={"content": dag.input})
 revise_node = dagent.Node("revise", target=revise, inputs={"content": dag.input})
 
+dag.add_node(score_node)
+dag.add_node(route_node)
+dag.add_node(publish_node)
+dag.add_node(revise_node)
+dag.add_edge(score_node, route_node)
+dag.add_edge(route_node, publish_node, branch="high")
+dag.add_edge(route_node, revise_node, branch="medium")
+# The unconnected "low" branch deliberately ends this path.
+```
+
+Condition output is `{"branch": "<selected id>"}` and its trace node exposes
+the same choice as `selected_branch`. Multiple outgoing edges may use the same
+branch id for deliberate fan-out. Outgoing edges from a condition node must use
+`branch`; other nodes cannot emit branch edges. A branch edge cannot also use
+`when`.
+
+Compose structured boolean expressions with `all_of`, `any_of`, and `not_`:
+
+```python
+ready = dagent.all_of(
+    score_node.output["score"] >= 0.8,
+    dagent.not_(score_node.output["blocked"]),
+)
+route_node = dagent.ConditionNode(
+    "route",
+    cases=[dagent.Case("publish", ready)],
+    default_branch="revise",
+)
+```
+
+Expressions may read graph input, artifacts, or upstream node output through
+the existing structured value bindings. A node-output read still requires an
+explicit dependency edge; the SDK never infers graph edges from expressions.
+
+The WebUI static and dynamic canvases expose one source handle per case plus an
+ELSE handle. The condition inspector supports ordered case editing, stable
+branch ids, branch rename propagation, and structured `ALL`/`ANY`/`NOT`
+expressions.
+
+## Conditional Edge Gates
+
+`add_edge(..., when=...)` remains available for a simple independent gate on
+one ordinary edge. Reference comparisons build the condition; a plain reference
+is tested for truthiness.
+
+```python
 dag.add_edge(score_node, publish_node, when=score_node.output["score"] >= 0.8)
-dag.add_edge(score_node, revise_node, when=score_node.output["score"] < 0.8)
 ```
 
 A node whose live incoming edges all fail is marked `skipped`, and skips cascade
@@ -269,11 +323,11 @@ edge can be changed between an unconditional dependency, a truthiness check,
 and a comparison against a literal or another available variable. The picker
 only offers graph input, artifacts, and nodes upstream of the target, so a
 condition cannot read output that is unavailable when the edge is evaluated.
-Conditional edges use a distinct color and carry a compact `IF ...`
+Conditional edge gates use a distinct color and carry a compact `IF ...`
 label on static, dynamic, and review canvases. Expressions outside the visual
 editor's supported subset remain visible and are preserved as read-only JSON.
 
-Conditions gate individual incoming edges, not the target node globally. A
+`when` conditions gate individual incoming edges, not the target node globally. A
 target waits for all incoming edges to settle and runs when at least one remains
 live. In particular, an unconditional incoming edge can make another conditional
 incoming edge irrelevant; the inspector warns about this arrangement.

@@ -1,4 +1,4 @@
-"""Static DAG control flow: conditional branches, map fan-out, a subgraph, and a loop.
+"""Static DAG control flow: exclusive branches, map fan-out, a subgraph, and a loop.
 
 Run from the repository root:
 
@@ -61,6 +61,11 @@ def build_dag() -> dagent.Dag:
     dag = dagent.Dag("control_flow", input=str)
 
     research = dagent.Node("research", target=find_urls, inputs={"topic": dag.input})
+    route = dagent.ConditionNode(
+        "route",
+        cases=[dagent.Case("confident", research.output["score"] >= 0.5)],
+        default_branch="fallback",
+    )
     fetch_all = dagent.MapNode(
         "fetch_all",
         target=fetch,
@@ -78,13 +83,15 @@ def build_dag() -> dagent.Dag:
     )
 
     dag.add_node(research)
+    dag.add_node(route)
     dag.add_node(fetch_all)
     dag.add_node(summarize_node)
     dag.add_node(escalate_node)
     dag.add_node(refine)
-    # Branch: fan out only when confident, otherwise escalate; skips cascade.
-    dag.add_edge(research, fetch_all, when=research.output["score"] >= 0.5)
-    dag.add_edge(research, escalate_node, when=research.output["score"] < 0.5)
+    # The condition reads research output, so the dependency remains explicit.
+    dag.add_edge(research, route)
+    dag.add_edge(route, fetch_all, branch="confident")
+    dag.add_edge(route, escalate_node, branch="fallback")
     dag.add_edge(fetch_all, summarize_node)
     dag.add_edge(summarize_node, refine)
     return dag
@@ -102,6 +109,7 @@ async def main() -> None:
     result = await runner.run(dag, graph_input="topic")
 
     print(result.status)
+    print(result.node_value("route"))
     print(result.node_value("fetch_all"))
     print(result.trace.dag_node_traces()["escalate"].status)
     print(result.node_value("refine"))

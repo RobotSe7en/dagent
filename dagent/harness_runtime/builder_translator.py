@@ -10,16 +10,22 @@ from typing import Any, Iterable
 from dagent.dag_builder import (
     ArtifactRef,
     ArtifactValueRef,
+    Case,
     CompareRef,
+    ConditionNode,
     Dag,
     FormatRef,
     InputRef,
     ItemRef,
+    LogicalRef,
     LoopNode,
     MapNode,
     Node,
     NodeOutputRef,
+    all_of,
+    any_of,
     item,
+    not_,
 )
 from dagent.harness_runtime.dag_builder import DAGCreationError
 
@@ -44,6 +50,13 @@ _CONSTRUCTORS = {
     "Node": Node,
     "MapNode": MapNode,
     "LoopNode": LoopNode,
+    "ConditionNode": ConditionNode,
+    "Case": Case,
+}
+_FUNCTIONS = {
+    "all_of": all_of,
+    "any_of": any_of,
+    "not_": not_,
 }
 _DAG_METHODS = {"artifact", "add_node", "add_edge", "format"}
 _NODE_ATTRIBUTES = {"output", "content", "status", "steps"}
@@ -67,6 +80,9 @@ _VALUE_TYPES = (
     ItemRef,
     FormatRef,
     CompareRef,
+    LogicalRef,
+    Case,
+    ConditionNode,
 )
 
 
@@ -228,12 +244,14 @@ class _BuilderTranslator:
         if owner is _DAGENT:
             if expression.attr in _CONSTRUCTORS:
                 return _CONSTRUCTORS[expression.attr]
+            if expression.attr in _FUNCTIONS:
+                return _FUNCTIONS[expression.attr]
             if expression.attr == "item":
                 return item
             self._fail(expression, f"dagent.{expression.attr} is not available to Builder source.")
         if type(owner) is Dag and expression.attr == "input":
             return owner.input
-        if type(owner) in {Node, MapNode, LoopNode} and expression.attr in _NODE_ATTRIBUTES:
+        if type(owner) in {Node, MapNode, LoopNode, ConditionNode} and expression.attr in _NODE_ATTRIBUTES:
             return getattr(owner, expression.attr)
         if isinstance(owner, _REF_TYPES):
             return getattr(owner, expression.attr)
@@ -283,6 +301,8 @@ class _BuilderTranslator:
             name = expression.func.attr
             if owner is _DAGENT and name in _CONSTRUCTORS:
                 return self._construct(expression, name, positional, keywords)
+            if owner is _DAGENT and name in _FUNCTIONS:
+                return self._function_call(expression, name, positional, keywords)
             if type(owner) is Dag and name in _DAG_METHODS:
                 return self._dag_call(expression, owner, name, positional, keywords)
         self._fail(expression, "Only approved dagent constructors and Dag methods may be called.")
@@ -308,8 +328,16 @@ class _BuilderTranslator:
                 "title",
             },
             "LoopNode": {"body", "until", "max_iterations", "input", "title"},
+            "ConditionNode": {"cases", "default_branch", "title"},
+            "Case": {"branch", "when"},
         }[name]
-        self._check_call_shape(expression, positional, keywords, max_positional=1, allowed=allowed)
+        self._check_call_shape(
+            expression,
+            positional,
+            keywords,
+            max_positional=2 if name == "Case" else 1,
+            allowed=allowed,
+        )
         if name in {"Node", "MapNode"}:
             target = keywords.get("target")
             if isinstance(target, str):
@@ -328,6 +356,21 @@ class _BuilderTranslator:
                 self._fail(expression, f"{name} target must be a catalog capability id string.")
         constructor = _CONSTRUCTORS[name]
         return self._invoke(expression, constructor, positional, keywords)
+
+    def _function_call(
+        self,
+        expression: ast.Call,
+        name: str,
+        positional: list[Any],
+        keywords: dict[str, Any],
+    ) -> Any:
+        if keywords:
+            self._fail(expression, f"dagent.{name} accepts positional values only.")
+        if name == "not_" and len(positional) != 1:
+            self._fail(expression, "dagent.not_ requires exactly one value.")
+        if name in {"all_of", "any_of"} and not positional:
+            self._fail(expression, f"dagent.{name} requires at least one value.")
+        return self._invoke(expression, _FUNCTIONS[name], positional, keywords)
 
     def _dag_call(
         self,
@@ -353,7 +396,7 @@ class _BuilderTranslator:
                 positional,
                 keywords,
                 max_positional=2,
-                allowed={"when", "reason"},
+                allowed={"when", "branch", "reason"},
             )
         else:
             self._check_call_shape(

@@ -5,9 +5,71 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.8.7`.
+The current package version is `0.9.0`.
 
 ## Unreleased
+
+## 0.9.0
+
+### Added
+
+- Static and dynamically planned DAGs can use the first-class `ConditionNode`
+  and `Case` builder contracts for ordered, exclusive IF/ELIF/ELSE routing.
+- `DAGEdge.branch` connects a declared condition branch to downstream nodes.
+  One selected branch may fan out to multiple targets; an unconnected selected
+  branch ends that path normally.
+- `all_of`, `any_of`, and `not_` add structured, short-circuiting boolean value
+  expressions without introducing script evaluation.
+- Condition execution records `{"branch": ...}` as the node value and
+  `selected_branch` on the trace node.
+- The typed planner, builder-source planner, local FastAPI saved-DAG contract,
+  and WebUI static/dynamic editors understand condition nodes and branch edges.
+
+### Changed
+
+- `when` remains an ordinary edge gate for simple independent dependencies.
+  It is not used to encode exclusive branch selection.
+- Outgoing edges from a condition node must declare one of that node's branches.
+  `branch` is invalid on other sources, and one edge cannot declare both
+  `branch` and `when`.
+- The local API continues accepting the released capability-node request shape
+  without `type`; newly serialized saved DAGs write the canonical
+  `type: "capability"` discriminator.
+
+### Behavior and compatibility
+
+- Existing `Node`, `MapNode`, `LoopNode`, and `add_edge(..., when=...)`
+  workflows retain their behavior.
+- Condition cases are checked in declaration order. Exactly one branch id is
+  selected, with the required `default_branch` used when no case matches.
+- Node-output references inside cases still require explicit upstream edges.
+  Branch declarations do not infer dependencies.
+
+### Breaking changes
+
+- No existing Python builder call is removed. Hosts with exhaustive JSON union
+  decoders must accept `payload.type == "condition"`, optional
+  `DAGEdge.branch`, and optional trace-node `selected_branch` before consuming
+  DAGs produced by 0.9.0.
+
+### Migration steps
+
+- Upgrade `dagent-ai` from `0.8.x` to `0.9.0`.
+- Enterprise hosts using an upper bound below 0.9 must update it, for example to
+  `dagent-ai>=0.9.0,<0.10.0`.
+- Update workflow UIs to create branch edges from a condition node's declared
+  handles. Keep `when` available only as the existing ordinary-edge gate.
+
+### Verification and known limitations
+
+- `uv run --extra dev pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+- `git diff --check`
+- Condition nodes deliberately provide structured expressions, not arbitrary
+  scripts.
+- This release does not introduce separate LLM, HTTP request, or human-input
+  node contracts.
 
 ## 0.8.7
 

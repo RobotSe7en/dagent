@@ -20,7 +20,7 @@ NodeStatus = Literal[
     "skipped",
 ]
 
-NodePayloadType = Literal["capability", "start", "map", "subgraph", "loop"]
+NodePayloadType = Literal["capability", "start", "map", "subgraph", "loop", "condition"]
 
 
 class CapabilityNodePayload(BaseModel):
@@ -74,8 +74,32 @@ class LoopNodePayload(BaseModel):
     input: Any = None
 
 
+class ConditionCase(BaseModel):
+    """One ordered condition and the branch selected when it is truthy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    branch: str
+    when: ValueBinding
+
+
+class ConditionNodePayload(BaseModel):
+    """Select exactly one outgoing branch using ordered IF/ELIF/ELSE semantics."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["condition"]
+    cases: list[ConditionCase] = Field(min_length=1)
+    default_branch: str
+
+
 NodePayload = Annotated[
-    CapabilityNodePayload | StartNodePayload | MapNodePayload | SubgraphNodePayload | LoopNodePayload,
+    CapabilityNodePayload
+    | StartNodePayload
+    | MapNodePayload
+    | SubgraphNodePayload
+    | LoopNodePayload
+    | ConditionNodePayload,
     Field(discriminator="type"),
 ]
 

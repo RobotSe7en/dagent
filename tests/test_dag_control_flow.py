@@ -145,6 +145,196 @@ def test_edge_condition_must_reference_upstream_nodes() -> None:
         validate_dag_spec(dag.to_dag_spec())
 
 
+def _condition_branching_dag() -> dagent.Dag:
+    dag = dagent.Dag("condition_branching", input=str)
+    score_node = dagent.Node("score", target=score, inputs={"text": dag.input})
+    route = dagent.ConditionNode(
+        "route",
+        cases=[dagent.Case("publish", score_node.output["score"] >= 0.8)],
+        default_branch="revise",
+    )
+    publish_node = dagent.Node("publish", target=publish, inputs={"content": dag.input})
+    revise_node = dagent.Node("revise", target=revise, inputs={"content": dag.input})
+    join_node = dagent.Node(
+        "join",
+        target=render,
+        inputs={"a": publish_node.output, "b": revise_node.output},
+    )
+    for node in (score_node, route, publish_node, revise_node, join_node):
+        dag.add_node(node)
+    dag.add_edge(score_node, route)
+    dag.add_edge(route, publish_node, branch="publish")
+    dag.add_edge(route, revise_node, branch="revise")
+    dag.add_edge(publish_node, join_node)
+    dag.add_edge(revise_node, join_node)
+    return dag
+
+
+def test_condition_node_selects_case_and_records_branch() -> None:
+    result = run_dag(
+        _condition_branching_dag(),
+        "good text",
+        [score, publish, revise, render],
+    )
+
+    route_trace = result.trace.dag_node_traces()["route"]
+    assert route_trace.selected_branch == "publish"
+    assert result.node_value("route") == {"branch": "publish"}
+    assert result.node_value("publish") == "published:good text"
+    assert result.trace.dag_node_traces()["revise"].status == "skipped"
+    assert result.node_value("join") == "published:good text|None"
+
+
+def test_condition_node_selects_default_branch() -> None:
+    result = run_dag(
+        _condition_branching_dag(),
+        "bad text",
+        [score, publish, revise, render],
+    )
+
+    assert result.trace.dag_node_traces()["route"].selected_branch == "revise"
+    assert result.node_value("revise") == "revised:bad text"
+    assert result.trace.dag_node_traces()["publish"].status == "skipped"
+
+
+def test_condition_node_uses_first_matching_case_and_logical_expressions() -> None:
+    dag = dagent.Dag("ordered_condition", input=str)
+    score_node = dagent.Node("score", target=score, inputs={"text": dag.input})
+    route = dagent.ConditionNode(
+        "route",
+        cases=[
+            dagent.Case(
+                "first",
+                dagent.all_of(
+                    score_node.output["score"] >= 0.5,
+                    dagent.any_of(
+                        score_node.output["score"] == 0.9,
+                        score_node.output["score"] == 1.0,
+                    ),
+                    dagent.not_(score_node.output["score"] < 0.5),
+                ),
+            ),
+            dagent.Case("second", score_node.output["score"] >= 0.8),
+        ],
+        default_branch="none",
+    )
+    first = dagent.Node("first", target=publish, inputs={"content": "first"})
+    second = dagent.Node("second", target=publish, inputs={"content": "second"})
+    for node in (score_node, route, first, second):
+        dag.add_node(node)
+    dag.add_edge(score_node, route)
+    dag.add_edge(route, first, branch="first")
+    dag.add_edge(route, second, branch="second")
+
+    result = run_dag(dag, "good text", [score, publish])
+
+    assert result.trace.dag_node_traces()["route"].selected_branch == "first"
+    assert result.node_value("first") == "published:first"
+    assert result.trace.dag_node_traces()["second"].status == "skipped"
+
+
+def test_condition_branch_can_fan_out() -> None:
+    dag = dagent.Dag("condition_fanout", input=str)
+    route = dagent.ConditionNode(
+        "route",
+        cases=[dagent.Case("go", dag.input == "go")],
+        default_branch="stop",
+    )
+    first = dagent.Node("first", target=publish, inputs={"content": "a"})
+    second = dagent.Node("second", target=publish, inputs={"content": "b"})
+    for node in (route, first, second):
+        dag.add_node(node)
+    dag.add_edge(route, first, branch="go")
+    dag.add_edge(route, second, branch="go")
+
+    result = run_dag(dag, "go", [publish])
+
+    assert result.node_value("first") == "published:a"
+    assert result.node_value("second") == "published:b"
+
+
+def test_unconnected_condition_branch_ends_path() -> None:
+    dag = dagent.Dag("condition_early_end", input=str)
+    route = dagent.ConditionNode(
+        "route",
+        cases=[dagent.Case("continue", dag.input == "go")],
+        default_branch="end",
+    )
+    publish_node = dagent.Node("publish", target=publish, inputs={"content": dag.input})
+    dag.add_node(route)
+    dag.add_node(publish_node)
+    dag.add_edge(route, publish_node, branch="continue")
+
+    result = run_dag(dag, "stop", [publish])
+
+    assert result.status == "completed"
+    assert result.trace.dag_node_traces()["route"].selected_branch == "end"
+    assert result.trace.dag_node_traces()["publish"].status == "skipped"
+
+
+@pytest.mark.parametrize(
+    ("edge_kwargs", "message"),
+    [
+        ({}, "must declare a branch"),
+        ({"branch": "unknown"}, "unknown branch 'unknown'"),
+        (
+            {"branch": "go", "when": dagent.InputRef().as_expr()},
+            "cannot declare both when and branch",
+        ),
+    ],
+)
+def test_condition_outgoing_edge_validation(edge_kwargs, message) -> None:
+    dag = dagent.Dag("invalid_condition_edge", input=bool)
+    route = dagent.ConditionNode(
+        "route",
+        cases=[dagent.Case("go", dag.input)],
+        default_branch="stop",
+    )
+    target = dagent.Node("target", target=publish, inputs={"content": "x"})
+    dag.add_node(route)
+    dag.add_node(target)
+    dag.add_edge(route, target, **edge_kwargs)
+
+    with pytest.raises(DAGValidationError, match=message):
+        validate_dag_spec(dag.to_dag_spec())
+
+
+def test_branch_edge_requires_condition_source() -> None:
+    dag = dagent.Dag("invalid_branch_source", input=str)
+    first = dagent.Node("first", target=publish, inputs={"content": dag.input})
+    second = dagent.Node("second", target=publish, inputs={"content": dag.input})
+    dag.add_node(first)
+    dag.add_node(second)
+    dag.add_edge(first, second, branch="go")
+
+    with pytest.raises(DAGValidationError, match="source is not a condition node"):
+        validate_dag_spec(dag.to_dag_spec())
+
+
+def test_condition_branches_are_unique_and_default_is_distinct() -> None:
+    duplicate = dagent.Dag("duplicate_condition", input=bool)
+    duplicate.add_node(
+        dagent.ConditionNode(
+            "route",
+            cases=[dagent.Case("same", duplicate.input), dagent.Case("same", duplicate.input)],
+            default_branch="other",
+        )
+    )
+    with pytest.raises(DAGValidationError, match="duplicate case branches: same"):
+        validate_dag_spec(duplicate.to_dag_spec())
+
+    conflicting = dagent.Dag("conflicting_condition", input=bool)
+    conflicting.add_node(
+        dagent.ConditionNode(
+            "route",
+            cases=[dagent.Case("same", conflicting.input)],
+            default_branch="same",
+        )
+    )
+    with pytest.raises(DAGValidationError, match="duplicates a case branch"):
+        validate_dag_spec(conflicting.to_dag_spec())
+
+
 @dagent.tool
 def fetch(url: str) -> str:
     """Fetch a url."""

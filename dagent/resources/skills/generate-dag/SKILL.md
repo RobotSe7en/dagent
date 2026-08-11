@@ -15,8 +15,9 @@ source without executing Python and converts the root variable `dag` to a
   comments outside the source.
 - Assign every graph, artifact, and node to a descriptive snake_case variable.
 - Assign the root graph to the variable `dag`.
-- Use `dagent.Dag`, `dagent.Node`, `dagent.MapNode`, `dagent.LoopNode`, and
-  `dagent.item` only. Do not construct tools, agents, boundaries, or providers.
+- Use `dagent.Dag`, `dagent.Node`, `dagent.ConditionNode`, `dagent.Case`,
+  `dagent.MapNode`, `dagent.LoopNode`, boolean helpers, and `dagent.item` only.
+  Do not construct tools, agents, boundaries, or providers.
 - Use only stable capability IDs from the injected Capability Catalog as node
   targets. Business skills belong to registered agents and are not node targets.
 - Add every node with `add_node` and every data dependency with `add_edge`.
@@ -45,11 +46,32 @@ dag.output = write.output
 - Use `dag.input`, `node.output`, `node.content`, `node.status`, and `node.steps`
   with attribute or literal index paths.
 - Use `dag.format(template, name=value)` for runtime string formatting.
-- Use `==`, `!=`, `<`, `<=`, `>`, or `>=` to build edge and loop conditions.
+- Use `==`, `!=`, `<`, `<=`, `>`, or `>=` to build conditions. Combine them
+  with `dagent.all_of(...)`, `dagent.any_of(...)`, and `dagent.not_(...)`.
 - References never create edges; add the corresponding edge explicitly.
 
 ```python
 dag.add_edge(check, publish, when=check.output.score >= 0.8)
+```
+
+Use a `ConditionNode` for ordered, mutually exclusive IF/ELIF/ELSE routing.
+Every outgoing edge from it uses `branch=...`; keep `when=...` for simple
+independent edge gates only.
+
+```python
+route = dagent.ConditionNode(
+    "route",
+    cases=[
+        dagent.Case("high", check.output.score >= 0.8),
+        dagent.Case("medium", check.output.score >= 0.5),
+    ],
+    default_branch="low",
+)
+dag.add_node(route)
+dag.add_edge(check, route)
+dag.add_edge(route, high, branch="high")
+dag.add_edge(route, medium, branch="medium")
+dag.add_edge(route, low, branch="low")
 ```
 
 ## Use artifacts

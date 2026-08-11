@@ -57,6 +57,9 @@ export type ValueExpr =
   | { type: 'artifact'; artifact_id: string; field?: 'path' | 'paths' | 'absolute_path' | 'absolute_paths' }
   | { type: 'format'; template: string; values?: Record<string, unknown> }
   | { type: 'compare'; op: CompareOperator; left: unknown; right: unknown }
+  | { type: 'all'; values: unknown[] }
+  | { type: 'any'; values: unknown[] }
+  | { type: 'not'; value: unknown }
   | { type: 'item'; path?: ValuePathItem[] };
 
 export interface ValueBinding {
@@ -132,12 +135,24 @@ export interface LoopNodePayload {
   input?: unknown;
 }
 
+export interface ConditionCase {
+  branch: string;
+  when: ValueBinding;
+}
+
+export interface ConditionNodePayload {
+  type: 'condition';
+  cases: ConditionCase[];
+  default_branch: string;
+}
+
 export type DagNodePayload =
   | CapabilityNodePayload
   | StartNodePayload
   | MapNodePayload
   | SubgraphNodePayload
-  | LoopNodePayload;
+  | LoopNodePayload
+  | ConditionNodePayload;
 
 export interface DagNode {
   id: string;
@@ -153,6 +168,7 @@ export interface DagEdge {
   target: string;
   reason: string;
   when?: ValueBinding | null;
+  branch?: string | null;
 }
 
 export interface DagSpec {
@@ -225,7 +241,8 @@ export interface OrchestrationSession {
   updated_at: number;
 }
 
-export interface UserDagNode {
+export interface UserDagCapabilityNode {
+  type?: 'capability';
   id: string;
   target: string;
   inputs?: Record<string, unknown>;
@@ -235,6 +252,16 @@ export interface UserDagNode {
   boundary?: Boundary | null;
   agent?: UserDagAgentConfig | null;
 }
+
+export interface UserDagConditionNode {
+  type: 'condition';
+  id: string;
+  title?: string;
+  cases: ConditionCase[];
+  default_branch: string;
+}
+
+export type UserDagNode = UserDagCapabilityNode | UserDagConditionNode;
 
 export interface UserDagAgentConfig {
   capabilities?: string[] | null;
@@ -423,6 +450,7 @@ export interface RunTraceNode {
   input: Record<string, unknown>;
   output?: unknown;
   value?: unknown;
+  selected_branch?: string | null;
   error?: RunTraceError | null;
   capability_execution?: CapabilityExecution | null;
   children: RunTraceNode[];

@@ -75,6 +75,7 @@ from dagent.schemas import (
     PlannerSkillSnapshot,
     CapabilityDefinition,
     CapabilityNodePayload,
+    ConditionNodePayload,
     ContextPolicy,
     ContextSummary,
     ContextUsage,
@@ -495,7 +496,6 @@ class DAGAgentLoop:
         prepared = await self.context_assembler.prepare(
             system_message=messages[0],
             conversation=planner_thread,
-            tools=({"response_format": response_format.schema},),
             policy=self.context_policy,
             compact=lambda summary, items, limit: self._compact_history(
                 summary,
@@ -2263,6 +2263,8 @@ def _node_artifact_ids(node: DAGNode) -> set[str]:
         values.append(payload.input)
     elif isinstance(payload, LoopNodePayload):
         values.extend([payload.input, payload.until])
+    elif isinstance(payload, ConditionNodePayload):
+        values.extend(case.when for case in payload.cases)
     for value in values:
         artifact_ids.update(
             expression.artifact_id

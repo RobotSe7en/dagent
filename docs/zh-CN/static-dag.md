@@ -228,18 +228,68 @@ write_node = dagent.Node(
 
 Artifact path escape 会被 runtime boundary checks 拒绝。
 
-## Conditional Edges
+## 互斥条件节点
 
-`add_edge(..., when=...)` 根据 runtime condition 控制一条 edge。Reference comparisons
-会构造 condition；普通 reference 会按 truthiness 测试。
+当 workflow 必须在有序的 IF/ELIF/ELSE 中只选择一个分支时，使用 `ConditionNode`。
+每个 `Case` 声明稳定的 branch id 和表达式；第一个 truthy case 胜出，否则选择必填的
+default branch。
 
 ```python
 score_node = dagent.Node("score", target=score, inputs={"text": dag.input})
+route_node = dagent.ConditionNode(
+    "route",
+    cases=[
+        dagent.Case("high", score_node.output["score"] >= 0.8),
+        dagent.Case("medium", score_node.output["score"] >= 0.5),
+    ],
+    default_branch="low",
+)
 publish_node = dagent.Node("publish", target=publish, inputs={"content": dag.input})
 revise_node = dagent.Node("revise", target=revise, inputs={"content": dag.input})
 
+dag.add_node(score_node)
+dag.add_node(route_node)
+dag.add_node(publish_node)
+dag.add_node(revise_node)
+dag.add_edge(score_node, route_node)
+dag.add_edge(route_node, publish_node, branch="high")
+dag.add_edge(route_node, revise_node, branch="medium")
+# 未连线的 "low" 分支会按设计结束这条路径。
+```
+
+Condition 的节点 output 是 `{"branch": "<selected id>"}`，trace node 同时通过
+`selected_branch` 暴露选择结果。同一个 branch id 可以连接多个出边，以支持显式 fan-out。
+Condition 节点的出边必须使用 `branch`；其他节点不能发出 branch edge。Branch edge 也不能
+同时使用 `when`。
+
+可通过 `all_of`、`any_of` 和 `not_` 组合结构化布尔表达式：
+
+```python
+ready = dagent.all_of(
+    score_node.output["score"] >= 0.8,
+    dagent.not_(score_node.output["blocked"]),
+)
+route_node = dagent.ConditionNode(
+    "route",
+    cases=[dagent.Case("publish", ready)],
+    default_branch="revise",
+)
+```
+
+表达式可以通过现有结构化 value bindings 读取 graph input、artifact 或上游节点 output。
+读取节点 output 仍必须存在显式依赖边；SDK 不会根据表达式推断 DAG edge。
+
+WebUI 的静态和动态画布会为每个 case 显示一个出线端口，并额外显示 ELSE 端口。条件检查器
+支持有序 case 编辑、稳定 branch id、branch 改名时同步连线，以及结构化
+`ALL`/`ANY`/`NOT` 表达式。
+
+## 条件边门控
+
+`add_edge(..., when=...)` 继续用于给一条普通边添加简单、独立的 gate。Reference
+comparisons 会构造 condition；普通 reference 会按 truthiness 测试。
+
+```python
 dag.add_edge(score_node, publish_node, when=score_node.output["score"] >= 0.8)
-dag.add_edge(score_node, revise_node, when=score_node.output["score"] < 0.8)
 ```
 
 如果一个节点所有 live incoming edges 都失败，它会被标记为 `skipped`，并且 skip 会向下游
@@ -249,10 +299,10 @@ cascade。读取 skipped node 的 output 会解析为 `None`；`node.status` 会
 在 WebUI 静态 DAG 编辑器中，选择一条连线即可打开边检查器。连线可以设为无条件依赖、
 变量真值判断，或者与字面量/另一个可用变量进行比较。变量选择器只提供 graph input、
 artifacts 及目标节点的上游节点，因此条件不会读取到边求值时尚不可用的输出。
-条件边会使用不同颜色，并在静态、动态和审核画布上显示简短的 `IF ...` 标签。超出当前
+条件边门控会使用不同颜色，并在静态、动态和审核画布上显示简短的 `IF ...` 标签。超出当前
 可视化编辑器支持范围的表达式仍会显示，并以只读 JSON 原样保留。
 
-条件控制的是单条入边，而不是全局控制目标节点。目标节点会等待所有入边完成判断，只要
+`when` 控制的是单条入边，而不是全局控制目标节点。目标节点会等待所有入边完成判断，只要
 至少一条入边仍然成立就会执行。因此，如果目标节点同时存在无条件入边，另一条条件入边
 可能不会起到阻断作用；边检查器会对此给出提示。
 

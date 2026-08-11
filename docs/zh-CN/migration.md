@@ -4,9 +4,62 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.8.7`。
+当前包版本是 `0.9.0`。
 
 ## Unreleased
+
+## 0.9.0
+
+### 新增
+
+- 静态 DAG 和动态 planner 生成的 DAG 现在可以使用一等 `ConditionNode` 和 `Case`
+  builder contract，实现有序、互斥的 IF/ELIF/ELSE 路由。
+- `DAGEdge.branch` 把条件节点声明的 branch 连接到下游节点。一个选中 branch 可以 fan out
+  到多个目标；选中但未连线的 branch 会正常结束该路径。
+- `all_of`、`any_of` 和 `not_` 提供结构化、短路求值的布尔 value expressions，不引入
+  script evaluation。
+- Condition 执行会把 `{"branch": ...}` 记为节点 value，并把 `selected_branch` 写入
+  trace node。
+- Typed planner、builder-source planner、本地 FastAPI saved-DAG contract，以及 WebUI
+  静态/动态编辑器都支持 condition node 和 branch edge。
+
+### 变更
+
+- `when` 继续作为普通边的简单独立 gate，不再用它模拟互斥分支选择。
+- Condition 节点的出边必须声明该节点已有的 branch。其他 source 不能使用 `branch`，同一
+  edge 也不能同时声明 `branch` 和 `when`。
+- 本地 API 继续接受已发布的、没有 `type` 的 capability node request shape；新序列化的
+  saved DAG 会写入规范的 `type: "capability"` discriminator。
+
+### 行为与兼容性
+
+- 现有 `Node`、`MapNode`、`LoopNode` 和 `add_edge(..., when=...)` workflow 保持原行为。
+- Condition cases 按声明顺序检查，只选择一个 branch id；没有 case 匹配时使用必填的
+  `default_branch`。
+- Case 内的 node-output reference 仍要求显式上游 edge；branch 声明不会推断依赖。
+
+### 破坏性变化
+
+- 没有删除现有 Python builder call。使用穷举 JSON union decoder 的 host 在消费 0.9.0
+  产生的 DAG 前，必须支持 `payload.type == "condition"`、可选 `DAGEdge.branch` 和可选的
+  trace-node `selected_branch`。
+
+### 迁移步骤
+
+- 将 `dagent-ai` 从 `0.8.x` 升级到 `0.9.0`。
+- 依赖上限低于 0.9 的 Enterprise host 需要更新范围，例如
+  `dagent-ai>=0.9.0,<0.10.0`。
+- Workflow UI 应从 condition node 声明的 handle 创建 branch edge；`when` 只保留为现有
+  普通边 gate。
+
+### 验证与已知限制
+
+- `uv run --extra dev pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+- `git diff --check`
+- Condition node 有意只支持结构化表达式，不支持任意 script。
+- 本版本不新增独立的 LLM、HTTP request 或 human-input node contract。
 
 ## 0.8.7
 

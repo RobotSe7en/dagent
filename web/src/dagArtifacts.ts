@@ -75,15 +75,28 @@ export function removeArtifactBinding(spec: UserDag, artifactId: string): UserDa
   return {
     ...spec,
     artifacts,
-    nodes: spec.nodes.map((node) => ({
-      ...node,
-      inputs: removeArtifactValueRefs(node.inputs ?? {}, artifactId) as Record<string, unknown>,
-      ...(node.boundary === undefined ? {} : {
-        boundary: removeArtifactValueRefs(node.boundary, artifactId) as UserDag['nodes'][number]['boundary'],
-      }),
-      artifact_inputs: (node.artifact_inputs ?? []).filter((id) => id !== artifactId),
-      artifact_outputs: (node.artifact_outputs ?? []).filter((id) => id !== artifactId),
-    })),
+    nodes: spec.nodes.map((node) => {
+      if (node.type === 'condition') {
+        return {
+          ...node,
+          cases: node.cases.map((conditionCase) => ({
+            ...conditionCase,
+            when: containsArtifactReference(conditionCase.when, artifactId)
+              ? alwaysFalseBinding()
+              : conditionCase.when,
+          })),
+        };
+      }
+      return {
+        ...node,
+        inputs: removeArtifactValueRefs(node.inputs ?? {}, artifactId) as Record<string, unknown>,
+        ...(node.boundary === undefined ? {} : {
+          boundary: removeArtifactValueRefs(node.boundary, artifactId) as typeof node.boundary,
+        }),
+        artifact_inputs: (node.artifact_inputs ?? []).filter((id) => id !== artifactId),
+        artifact_outputs: (node.artifact_outputs ?? []).filter((id) => id !== artifactId),
+      };
+    }),
   };
 }
 
@@ -93,15 +106,30 @@ export function updateArtifactBinding(spec: UserDag, previousId: string, artifac
   return {
     ...spec,
     artifacts: upsertArtifact(spec.artifacts ?? {}, normalized, previousId),
-    nodes: spec.nodes.map((node) => ({
-      ...node,
-      inputs: rewriteArtifactValueRefs(node.inputs ?? {}, previousId, normalized.id) as Record<string, unknown>,
-      ...(node.boundary === undefined ? {} : {
-        boundary: rewriteArtifactValueRefs(node.boundary, previousId, normalized.id) as UserDag['nodes'][number]['boundary'],
-      }),
-      artifact_inputs: rewriteArtifactIds(node.artifact_inputs ?? [], previousId, normalized.id),
-      artifact_outputs: rewriteArtifactIds(node.artifact_outputs ?? [], previousId, normalized.id),
-    })),
+    nodes: spec.nodes.map((node) => {
+      if (node.type === 'condition') {
+        return {
+          ...node,
+          cases: node.cases.map((conditionCase) => ({
+            ...conditionCase,
+            when: rewriteArtifactValueRefs(
+              conditionCase.when,
+              previousId,
+              normalized.id,
+            ) as ValueBinding,
+          })),
+        };
+      }
+      return {
+        ...node,
+        inputs: rewriteArtifactValueRefs(node.inputs ?? {}, previousId, normalized.id) as Record<string, unknown>,
+        ...(node.boundary === undefined ? {} : {
+          boundary: rewriteArtifactValueRefs(node.boundary, previousId, normalized.id) as typeof node.boundary,
+        }),
+        artifact_inputs: rewriteArtifactIds(node.artifact_inputs ?? [], previousId, normalized.id),
+        artifact_outputs: rewriteArtifactIds(node.artifact_outputs ?? [], previousId, normalized.id),
+      };
+    }),
   };
 }
 
@@ -295,6 +323,31 @@ function rewriteArtifactValueRefs(value: unknown, previousId: string, nextId: st
         },
       };
     }
+    if (typedExpr.type === 'compare') {
+      return {
+        $expr: {
+          ...typedExpr,
+          left: rewriteArtifactValueRefs(typedExpr.left, previousId, nextId),
+          right: rewriteArtifactValueRefs(typedExpr.right, previousId, nextId),
+        },
+      };
+    }
+    if (typedExpr.type === 'all' || typedExpr.type === 'any') {
+      return {
+        $expr: {
+          ...typedExpr,
+          values: rewriteArtifactValueRefs(typedExpr.values ?? [], previousId, nextId),
+        },
+      };
+    }
+    if (typedExpr.type === 'not') {
+      return {
+        $expr: {
+          ...typedExpr,
+          value: rewriteArtifactValueRefs(typedExpr.value, previousId, nextId),
+        },
+      };
+    }
     return record;
   }
 
@@ -302,6 +355,29 @@ function rewriteArtifactValueRefs(value: unknown, previousId: string, nextId: st
     Object.entries(record)
       .map(([key, item]) => [key, rewriteArtifactValueRefs(item, previousId, nextId)] as const),
   );
+}
+
+function containsArtifactReference(value: unknown, artifactId: string): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some((item) => containsArtifactReference(item, artifactId));
+  const record = value as Record<string, unknown>;
+  const expr = record.$expr;
+  if (expr && typeof expr === 'object' && !Array.isArray(expr)) {
+    const typedExpr = expr as Record<string, unknown>;
+    if (typedExpr.type === 'artifact' && typedExpr.artifact_id === artifactId) return true;
+  }
+  return Object.values(record).some((item) => containsArtifactReference(item, artifactId));
+}
+
+function alwaysFalseBinding(): ValueBinding {
+  return {
+    $expr: {
+      type: 'compare',
+      op: 'eq',
+      left: false,
+      right: true,
+    },
+  };
 }
 
 function rewriteArtifactIds(ids: string[], previousId: string, nextId: string): string[] {

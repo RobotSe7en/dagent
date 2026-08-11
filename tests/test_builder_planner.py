@@ -29,7 +29,12 @@ from dagent.schemas import (
     DAGNode,
     DAGSpec,
 )
-from dagent.schemas.node import LoopNodePayload, MapNodePayload, SubgraphNodePayload
+from dagent.schemas.node import (
+    ConditionNodePayload,
+    LoopNodePayload,
+    MapNodePayload,
+    SubgraphNodePayload,
+)
 from dagent.schemas.value import bind_value_expr
 
 
@@ -187,6 +192,49 @@ dag.output = repeat.output
         ("fanout", "subgraph"),
         ("subgraph", "repeat"),
     }
+
+
+def test_builder_translation_supports_condition_nodes_and_logical_helpers() -> None:
+    source = '''
+dag = dagent.Dag("condition")
+seed = dagent.Node("seed", target="tool.seed", inputs={})
+route = dagent.ConditionNode(
+    "route",
+    cases=[
+        dagent.Case(
+            "ready",
+            dagent.all_of(
+                seed.output.ready == True,
+                dagent.not_(seed.output.ready == False),
+            ),
+        ),
+    ],
+    default_branch="not_ready",
+)
+echo = dagent.Node("echo", target="tool.echo", inputs={"text": "ready"})
+dag.add_node(seed)
+dag.add_node(route)
+dag.add_node(echo)
+dag.add_edge(seed, route)
+dag.add_edge(route, echo, branch="ready")
+dag.output = route.output.branch
+'''
+
+    translated = translate_builder_source(
+        source,
+        capability_ids=[definition.id for definition in _capabilities()],
+    )
+    spec = normalize_builder_dag(
+        translated,
+        spec_id="condition",
+        version=1,
+        capabilities=_capabilities(),
+    )
+
+    route = next(node for node in spec.nodes if node.id == "route")
+    assert isinstance(route.payload, ConditionNodePayload)
+    assert route.payload.default_branch == "not_ready"
+    assert next(edge for edge in spec.edges if edge.source == "route").branch == "ready"
 
 
 def test_builder_full_spec_replan_preserves_invocation_identity() -> None:
@@ -472,11 +520,8 @@ dag.output = work.output
         sort_keys=True,
         separators=(",", ":"),
     )
-    assert (
-        "## Required Planner Response JSON Schema\n"
-        "Return one JSON object that conforms exactly to this schema.\n\n"
-        + compact_schema
-    ) in system_prompt
+    assert "## Required Planner Response JSON Schema" in system_prompt
+    assert compact_schema in system_prompt
 
 
 def test_builder_checkpoint_resume_uses_frozen_frontend_and_skill(tmp_path) -> None:

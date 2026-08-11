@@ -129,9 +129,11 @@ def test_dag_node_payload_discriminator_is_required_in_json_schema() -> None:
     schema = DAGNode.model_json_schema()
 
     capability_schema = schema["$defs"]["CapabilityNodePayload"]
+    condition_schema = schema["$defs"]["ConditionNodePayload"]
     start_schema = schema["$defs"]["StartNodePayload"]
 
     assert "type" in capability_schema["required"]
+    assert "type" in condition_schema["required"]
     assert "type" in start_schema["required"]
 
 

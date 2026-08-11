@@ -17,7 +17,7 @@ credentials.
 | `dynamic_dag_builder_agent.py` | Use the restricted SDK Builder planner frontend without executing generated Python. | [Agents](../docs/en/agents.md), [Runner and Configuration](../docs/en/runner-and-configuration.md) |
 | `static_dag.py` | Build and execute a static DAG with artifacts and a context-aware tool. | [Static DAGs](../docs/en/static-dag.md), [Capabilities](../docs/en/capabilities.md) |
 | `static_rag.py` | Feed retrieval output into an agent node through optional reference content. | [Static DAGs](../docs/en/static-dag.md) |
-| `control_flow.py` | Use conditional edges, map fan-out, an embedded subgraph, and a bounded loop in one static DAG. | [Static DAGs](../docs/en/static-dag.md) |
+| `control_flow.py` | Use an exclusive condition node, map fan-out, an embedded subgraph, and a bounded loop in one static DAG. | [Static DAGs](../docs/en/static-dag.md) |
 | `streaming.py` | Consume `Runner.stream(...)` typed events and read the final `RunResult`. | [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
 | `runtime_registration_and_skills.py` | Add tools and skill roots at runtime, then use `SkillStore` directly. | [Runner and Configuration](../docs/en/runner-and-configuration.md), [Skills](../docs/en/skills.md) |
 | `local_test_mcp.py` | Run a local stdio MCP server for registration and tool-call diagnostics. | [Runner and Configuration](../docs/en/runner-and-configuration.md), [Capabilities](../docs/en/capabilities.md) |

@@ -16,16 +16,22 @@ from dagent.capabilities.decorator import CapabilityBinding, tool
 from dagent.dag_builder import (
     ArtifactRef,
     ArtifactValueRef,
+    Case,
     CompareRef,
+    ConditionNode,
     Dag,
     FormatRef,
     InputRef,
     ItemRef,
+    LogicalRef,
     LoopNode,
     MapNode,
     Node,
     NodeOutputRef,
+    all_of,
+    any_of,
     item,
+    not_,
 )
 from dagent.harness_runtime import (
     ArtifactUpload,
@@ -79,7 +85,7 @@ from dagent.schemas import (
     UserMessage,
 )
 
-__version__ = "0.8.7"
+__version__ = "0.9.0"
 
 __all__ = [
     "__version__",
@@ -91,9 +97,11 @@ __all__ = [
     "ArtifactValueRef",
     "AutoAgent",
     "Boundary",
+    "Case",
     "CapabilityBinding",
     "CapabilityDefinition",
     "CompareRef",
+    "ConditionNode",
     "CapabilityInvocation",
     "CapabilityPolicy",
     "CapabilityResult",
@@ -118,7 +126,11 @@ __all__ = [
     "InputRef",
     "InlineContent",
     "ItemRef",
+    "LogicalRef",
+    "all_of",
+    "any_of",
     "item",
+    "not_",
     "list_builtin_profiles",
     "load_builtin_profile",
     "LoopNode",

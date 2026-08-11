@@ -1209,6 +1209,18 @@ test('condition bindings remain valid, readable, and rewrite nested node referen
     'ge',
     0.8,
   ));
+  const logical = {
+    $expr: {
+      type: 'all',
+      values: [condition, { $expr: { type: 'not', value: makeNodeOutputBinding('blocked') } }],
+    },
+  };
+  assert.equal(isValueBinding(logical), true);
+  assert.deepEqual(collectNodeOutputRefs(logical).map((item) => item.nodeId), ['score', 'blocked']);
+  assert.deepEqual(
+    collectNodeOutputRefs(rewriteNodeOutputRefs(logical, 'blocked', 'review')).map((item) => item.nodeId),
+    ['score', 'review'],
+  );
 });
 
 test('flow edge changes preserve conditions and dependency source edits keep surviving edges intact', () => {
@@ -1224,6 +1236,10 @@ test('flow edge changes preserve conditions and dependency source edits keep sur
   assert.deepEqual(dagEdgesFromFlowEdges([
     { source: 'score', target: 'publish', data: { dagEdge: currentEdges[0] } },
   ], []), [currentEdges[0]]);
+  const branchEdge = { source: 'route', target: 'publish', reason: 'high branch', when: null, branch: 'high' };
+  assert.deepEqual(dagEdgesFromFlowEdges([
+    { source: 'route', sourceHandle: 'high', target: 'publish', data: { dagEdge: branchEdge } },
+  ], []), [branchEdge]);
   assert.deepEqual(replaceIncomingEdgeSources(currentEdges, 'publish', ['score', 'review']), [
     currentEdges[0],
     { source: 'review', target: 'publish', reason: 'User dependency.', when: null },
@@ -1582,7 +1598,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*artifacts=\{editorArtifacts\}[\s\S]*onCreateArtifact=\{createEditorArtifact\}[\s\S]*onUploadFiles=\{\(files\) => void uploadEditorFiles\(files\)\}/);
   assert.match(appSource, /<OrchestrationWorkspace[\s\S]*capabilities=\{capabilities\}[\s\S]*skills=\{skills\}[\s\S]*mcpServers=\{mcpServers\}[\s\S]*spec=\{editorUserDag\}[\s\S]*dag=\{editorDag\}[\s\S]*onSave=\{\(\) => void persistEditorUserDag\(\)\}[\s\S]*onRun=\{\(\) => void runEditorSpec\(\)\}/);
   assert.match(orchestrationSource, /function AgentNodeScopeEditor/);
-  assert.match(orchestrationSource, /config=\{selectedUserNode\?\.agent\}/);
+  assert.match(orchestrationSource, /config=\{selectedUserNode\?\.type === 'condition' \? undefined : selectedUserNode\?\.agent\}/);
   assert.match(orchestrationSource, /node\.id === selectedNode\.id[\s\S]*normalizeUserDagNode\(\{ \.\.\.node, agent \}\)/);
   assert.match(orchestrationSource, /capability\.enabled && capability\.kind !== 'agent' && capability\.kind !== 'skill'/);
   assert.match(typesSource, /export interface UserDagAgentConfig/);
@@ -1725,13 +1741,13 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.doesNotMatch(orchestrationSource, /console-grid orchestration-grid|flow-workbench|className="orchestration-edges"|<Controls|orchestration-summary-strip/);
   assert.match(appSource, /function DesignDagNode/);
   assert.match(appSource, /type: 'designDag'/);
-  assert.match(appSource, /type: 'designDag',[\s\S]*width:\s*192,[\s\S]*height:\s*64,/);
+  assert.match(appSource, /type: 'designDag',[\s\S]*width:\s*192,[\s\S]*height:\s*nodeHeight,/);
+  assert.match(appSource, /sourceHandle: edge\.branch \?\? 'out'/);
   assert.match(dagReviewSource, /nodeTypes=\{designNodeTypes\}/);
   assert.match(dagReviewSource, /className="orchestration-flow"/);
   assert.match(appSource, /handles:\s*\[[\s\S]*id:\s*'in'[\s\S]*type:\s*'target'[\s\S]*id:\s*'out'[\s\S]*type:\s*'source'/);
   assert.match(appSource, /<Handle[\s\S]*id="in"[\s\S]*position=\{Position\.Left\}[\s\S]*type="target"/);
   assert.match(appSource, /<Handle[\s\S]*id="out"[\s\S]*position=\{Position\.Right\}[\s\S]*type="source"/);
-  assert.match(appSource, /sourceHandle:\s*'out'/);
   assert.match(appSource, /targetHandle:\s*'in'/);
   assert.match(appSource, /function nextHorizontalNodePosition/);
   assert.match(appSource, /onAddNode: \(capability\?: CapabilityDefinition, position\?: XYPosition\) => void;/);
@@ -4288,6 +4304,12 @@ test('removeArtifactBinding deletes artifacts and node input/output references',
         inputs: { path: artifactPathExpr('report') },
         artifact_inputs: ['report'],
       },
+      {
+        type: 'condition',
+        id: 'route',
+        cases: [{ branch: 'has_report', when: artifactPathExpr('report') }],
+        default_branch: 'missing',
+      },
     ],
     edges: [],
   };
@@ -4300,6 +4322,13 @@ test('removeArtifactBinding deletes artifacts and node input/output references',
     nodes: [
       { ...spec.nodes[0], artifact_outputs: [] },
       { ...spec.nodes[1], inputs: {}, artifact_inputs: [], artifact_outputs: [] },
+      {
+        ...spec.nodes[2],
+        cases: [{
+          branch: 'has_report',
+          when: { $expr: { type: 'compare', op: 'eq', left: false, right: true } },
+        }],
+      },
     ],
   });
 });
@@ -4332,6 +4361,20 @@ test('updateArtifactBinding renames artifacts and rewrites node references', () 
           allowed_paths: [artifactPathExpr('report')],
         },
       },
+      {
+        type: 'condition',
+        id: 'route',
+        cases: [{
+          branch: 'ready',
+          when: {
+            $expr: {
+              type: 'all',
+              values: [artifactPathExpr('report')],
+            },
+          },
+        }],
+        default_branch: 'missing',
+      },
     ],
     edges: [],
   };
@@ -4356,6 +4399,7 @@ test('updateArtifactBinding renames artifacts and rewrites node references', () 
   assert.deepEqual(next.nodes[0].inputs.path, artifactPathExpr('final_report'));
   assert.deepEqual(next.nodes[0].inputs.message.$expr.values.file, artifactPathExpr('final_report'));
   assert.deepEqual(next.nodes[0].boundary.allowed_paths, [artifactPathExpr('final_report')]);
+  assert.deepEqual(next.nodes[1].cases[0].when.$expr.values, [artifactPathExpr('final_report')]);
 });
 
 test('artifactPathExpr builds structured executor artifact value expressions', () => {

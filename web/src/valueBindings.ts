@@ -229,6 +229,9 @@ export function bindingLabel(binding: ValueBinding, _context: BindingLabelContex
   if (expr.type === 'compare') {
     return 'comparison';
   }
+  if (expr.type === 'all') return `all(${expr.values.length})`;
+  if (expr.type === 'any') return `any(${expr.values.length})`;
+  if (expr.type === 'not') return 'not(...)';
   if (expr.type === 'item') {
     return pathLabel('item', expr.path);
   }
@@ -275,6 +278,22 @@ export function rewriteNodeOutputRefs<T>(value: T, oldNodeId: string, nextNodeId
           ...expr,
           left: rewriteNodeOutputRefs(expr.left, oldNodeId, nextNodeId),
           right: rewriteNodeOutputRefs(expr.right, oldNodeId, nextNodeId),
+        },
+      } as T;
+    }
+    if (expr.type === 'all' || expr.type === 'any') {
+      return {
+        $expr: {
+          ...expr,
+          values: rewriteNodeOutputRefs(expr.values, oldNodeId, nextNodeId),
+        },
+      } as T;
+    }
+    if (expr.type === 'not') {
+      return {
+        $expr: {
+          ...expr,
+          value: rewriteNodeOutputRefs(expr.value, oldNodeId, nextNodeId),
         },
       } as T;
     }
@@ -349,6 +368,17 @@ function removeNodeOutputRefsInner(value: unknown, nodeId: string): unknown {
           right,
         },
       };
+    }
+    if (expr.type === 'all' || expr.type === 'any') {
+      const values = expr.values
+        .map((item) => removeNodeOutputRefsInner(item, nodeId))
+        .filter((item) => item !== undefined);
+      if (!values.length) return undefined;
+      return { $expr: { ...expr, values } };
+    }
+    if (expr.type === 'not') {
+      const cleaned = removeNodeOutputRefsInner(expr.value, nodeId);
+      return cleaned === undefined ? undefined : { $expr: { ...expr, value: cleaned } };
     }
     return value;
   }
@@ -561,6 +591,10 @@ function visitValues(value: unknown, visitor: (value: unknown) => void): void {
     } else if (expr.type === 'compare') {
       visitValues(expr.left, visitor);
       visitValues(expr.right, visitor);
+    } else if (expr.type === 'all' || expr.type === 'any') {
+      visitValues(expr.values, visitor);
+    } else if (expr.type === 'not') {
+      visitValues(expr.value, visitor);
     }
     return;
   }
@@ -596,6 +630,10 @@ function isValueExpr(value: unknown): value is ValueExpr {
       && Object.prototype.hasOwnProperty.call(value, 'left')
       && Object.prototype.hasOwnProperty.call(value, 'right');
   }
+  if (value.type === 'all' || value.type === 'any') {
+    return Array.isArray(value.values) && value.values.length > 0;
+  }
+  if (value.type === 'not') return Object.prototype.hasOwnProperty.call(value, 'value');
   if (value.type === 'item') return optionalPath(value.path);
   return false;
 }
