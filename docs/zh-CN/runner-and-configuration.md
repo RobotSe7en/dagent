@@ -68,7 +68,7 @@ validator。Profile Markdown 本身保持不变；runtime path 不会写入 prof
 
 `extra_system_prompt` 用一个普通字符串统一追加宿主指令，不会替换 Agent Profile 或
 `Runtime Context`。SDK 的组装顺序是：Profile、Runtime Context、Extra System Prompt，
-然后才是动态 tool、capability catalog 和 DAG schema 内容。它适用于 `ToolAgent`、
+然后才是动态 skill index、tool、capability catalog 和 DAG schema 内容。它适用于 `ToolAgent`、
 `AutoAgent` 实际选择的 tool 或 DAG 执行路径、DAG 初始规划与 replan，以及 registered
 agent；不适用于 `ValidatorAgent`、`FeedbackLearnerAgent` 和 AutoAgent 的路由分类器。
 

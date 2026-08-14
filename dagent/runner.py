@@ -130,6 +130,7 @@ from dagent.schemas.common import (
     validate_extra_system_prompt,
     validate_runtime_directory,
 )
+from dagent.state.prompt_builder import PromptSkill
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
@@ -1894,6 +1895,7 @@ class Runner:
             context_window_tokens=plan.context_window_tokens,
             output_reserve_tokens=plan.output_reserve_tokens,
             extra_system_prompt=plan.extra_system_prompt,
+            skill_prompt_resolver=self._runtime.tool_agent.skill_prompt_resolver,
         )
         runtime.session = self._runtime.session
         runtime.runs = self._runtime.runs
@@ -2078,6 +2080,7 @@ class Runner:
         AgentCapabilityProvider(
             {name: config},
             runtime_directory=self.runtime_directory,
+            skill_prompt_resolver=self._runtime.tool_agent.skill_prompt_resolver,
         ).register_into(self._runtime.capability_catalog)
         self._registered_agent_configs[name] = agent
         self._registered_agent_runtime_configs[name] = config
@@ -2200,6 +2203,10 @@ def _assemble_runtime(
     context_window_tokens: int | None = None,
     output_reserve_tokens: int | None = None,
     extra_system_prompt: str | None = None,
+    skill_prompt_resolver: Callable[
+        [tuple[str, ...] | None], tuple[PromptSkill, ...]
+    ]
+    | None = None,
 ) -> HarnessRuntime:
     resolved_context_policy = context_policy or ContextPolicy()
     resolved_result_storage_policy = result_storage_policy or ResultStoragePolicy()
@@ -2221,6 +2228,7 @@ def _assemble_runtime(
         profile=_resolve_profile(tool_profile, profile_root=profile_root),
         max_steps=tool_max_steps,
         extra_system_prompt=extra_system_prompt,
+        skill_prompt_resolver=skill_prompt_resolver,
         context_policy=resolved_context_policy,
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
@@ -2286,9 +2294,10 @@ def _create_runtime(
     workspace_path = Path(workspace)
     if provider is None:
         raise ValueError("No provider configured. Pass provider=... or use Runner.from_config(...).")
+    resolved_skills_provider = skills_provider or SkillsCapabilityProvider()
     catalog = create_default_capability_catalog(
         workspace_root=workspace_path,
-        skills_provider=skills_provider,
+        skills_provider=resolved_skills_provider,
     )
     capability_executor = CapabilityExecutor(catalog)
     for capability in capabilities:
@@ -2313,6 +2322,9 @@ def _create_runtime(
         planner_skill=planner_skill,
         result_storage_policy=result_storage_policy,
         extra_system_prompt=extra_system_prompt,
+        skill_prompt_resolver=_skill_prompt_resolver(
+            resolved_skills_provider.store
+        ),
     )
 
 
@@ -2347,6 +2359,7 @@ def _runtime_from_existing(
         context_policy=context_policy,
         result_storage_policy=base.tool_agent.result_storage_policy,
         extra_system_prompt=extra_system_prompt,
+        skill_prompt_resolver=base.tool_agent.skill_prompt_resolver,
     )
     runtime.session = base.session
     runtime.runs = base.runs
@@ -2358,6 +2371,21 @@ def _tool_adapter(catalog, capability_ids: tuple[str, ...]) -> CapabilityToolAda
         catalog,
         toolsets=[CapabilityToolset("builtin", tuple(capability_ids))],
     )
+
+
+def _skill_prompt_resolver(
+    store: SkillStore,
+) -> Callable[[tuple[str, ...] | None], tuple[PromptSkill, ...]]:
+    def resolve(names: tuple[str, ...] | None) -> tuple[PromptSkill, ...]:
+        return tuple(
+            PromptSkill(
+                name=entry.qualified_name,
+                description=entry.description,
+            )
+            for entry in visible_skills(store.list(), names)
+        )
+
+    return resolve
 
 
 def _require_input(

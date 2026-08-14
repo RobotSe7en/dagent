@@ -216,12 +216,16 @@ user-message 区块。
 | `profile` | Tool-loop system prompt，可以是内置名称、用户 profile 名称或 `AgentProfile`。 |
 | `planner_profile` | `AutoAgent` 和 `DagAgent` 使用的 dynamic DAG planner profile。 |
 | `capabilities` | 对 agent 可见的 capability ids 或 `@dagent.tool` bindings。 |
-| `skills` | 通过 `skill.list` 和 `skill.view` 可见的具体 skills。 |
+| `skills` | 在 tool-loop prompt 中建立索引，并可通过 `skill.list` 和 `skill.view` 读取的具体 skills。 |
 | `agents` | 顶层 run 可见的子 agent capabilities：`None`、`"registered"`、`ToolAgent` 对象或 `agent.<name>` ids。 |
 | `review` | risky work 的 review level。 |
 | `max_steps` | `ToolAgent` 和 `AutoAgent` 的 tool-loop bound。 |
 | `max_cycles` | `AutoAgent` 和 `DagAgent` 的 dynamic DAG replan bound。 |
 | `dynamic_adjust` | `AutoAgent` 和 `DagAgent` 生成初始 DAG 后是否允许继续动态 replan，默认 `True`。 |
+
+Skill 索引遵循每个 tool agent 最终解析出的 scope，因此顶层会话和注册子 agent 可以暴露
+不同技能，且不会互相泄漏 prompt。加载规则、prompt 预算和缓存稳定性见
+[Skills](skills.md)。
 
 传入 `capabilities=None` 会使用 runner 默认可见 capabilities。传入显式列表会将 agent
 限制到该集合。

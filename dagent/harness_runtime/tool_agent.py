@@ -71,6 +71,7 @@ from dagent.schemas import (
     UserMessage,
 )
 from dagent.state import PromptBuilder, PromptRequest
+from dagent.state.prompt_builder import PromptSkill
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import normalize_capability_result
 from dagent.schemas.conversation import (
@@ -103,6 +104,7 @@ class ControlToolResult:
 
 
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
+SkillPromptResolver = Callable[[tuple[str, ...] | None], Sequence[PromptSkill]]
 
 
 class ToolAgent:
@@ -116,6 +118,7 @@ class ToolAgent:
         prompt_builder: PromptBuilder | None = None,
         max_steps: int = 8,
         extra_system_prompt: str | None = None,
+        skill_prompt_resolver: SkillPromptResolver | None = None,
         context_policy: ContextPolicy | None = None,
         result_storage_policy: ResultStoragePolicy | None = None,
         context_assembler: ContextAssembler | None = None,
@@ -125,6 +128,7 @@ class ToolAgent:
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_steps = max_steps
         self.extra_system_prompt = extra_system_prompt
+        self.skill_prompt_resolver = skill_prompt_resolver
         self.context_policy = context_policy or ContextPolicy()
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
         self.context_assembler = context_assembler or ContextAssembler(
@@ -142,10 +146,16 @@ class ToolAgent:
         *,
         workspace_path: str | Path | None = None,
     ) -> dict[str, str]:
+        skills = (
+            []
+            if self.skill_prompt_resolver is None
+            else list(self.skill_prompt_resolver(capability_scope.skills))
+        )
         return self.prompt_builder.build_system_message(
             PromptRequest(
                 profile=self.profile,
                 task_content="",
+                skills=skills,
                 extra_system_prompt=self.extra_system_prompt,
                 workspace_path=workspace_path,
             )

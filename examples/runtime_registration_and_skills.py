@@ -38,6 +38,15 @@ async def main() -> None:
                     tool_calls=[
                         ToolCall(
                             id="call_1",
+                            name="skill_view",
+                            arguments={"name": "terse"},
+                        )
+                    ]
+                ),
+                ChatResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_2",
                             name="tool_summarize",
                             arguments={"text": "One sentence. Another sentence."},
                         )

@@ -234,12 +234,17 @@ supplied to the agent as task data in a separate user-message section.
 | `profile` | Tool-loop system prompt, either a built-in name, user profile name, or `AgentProfile`. |
 | `planner_profile` | Dynamic DAG planner profile for `AutoAgent` and `DagAgent`. |
 | `capabilities` | Capability ids or `@dagent.tool` bindings visible to the agent. |
-| `skills` | Concrete skills visible through `skill.list` and `skill.view`. |
+| `skills` | Concrete skills indexed in tool-loop prompts and readable through `skill.list` and `skill.view`. |
 | `agents` | Subagent capabilities visible to a top-level run: `None`, `"registered"`, `ToolAgent` objects, or `agent.<name>` ids. |
 | `review` | Review level for risky work. |
 | `max_steps` | Tool-loop bound for `ToolAgent` and `AutoAgent`. |
 | `max_cycles` | Dynamic DAG replan bound for `AutoAgent` and `DagAgent`. |
 | `dynamic_adjust` | Whether `AutoAgent` and `DagAgent` may replan the dynamic DAG after the initial DAG is generated. Defaults to `True`. |
+
+Skill indexes follow each tool agent's resolved scope. A top-level conversation
+and a registered subagent can therefore expose different skills without prompt
+leakage. See [Skills](skills.md) for loading rules, prompt budgets, and cache
+stability.
 
 Passing `capabilities=None` uses the runner's default visible capabilities.
 Passing an explicit list narrows the agent to that set.

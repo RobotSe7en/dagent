@@ -84,8 +84,9 @@ backing store.
 
 `extra_system_prompt` adds one literal, runner-wide instruction string without
 replacing the agent profile or `Runtime Context`. The SDK assembles profile,
-runtime context, extra prompt, and then dynamic tool, capability-catalog, and DAG
-schema content in that order. The value applies to `ToolAgent`, the selected
+runtime context, extra prompt, and then dynamic skill-index, tool,
+capability-catalog, and DAG schema content in that order. The value applies to
+`ToolAgent`, the selected
 tool or DAG execution path of `AutoAgent`, initial DAG planning and replanning,
 and registered agents. It does not apply to `ValidatorAgent`,
 `FeedbackLearnerAgent`, or AutoAgent's routing classifier.
