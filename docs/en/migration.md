@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.0`.
+The current package version is `0.9.1`.
 
 ## Unreleased
+
+## 0.9.1
 
 ### Changed
 
@@ -29,6 +31,28 @@ The current package version is `0.9.0`.
   conversation turns while the selected scope and skill metadata are unchanged.
 - The index applies to tool loops and skill-bound subagents. Dynamic DAG planner
   prompts remain unchanged.
+
+### Breaking changes
+
+- None.
+
+### Migration steps
+
+- Upgrade `dagent-ai` from `0.9.0` to `0.9.1`. No data or configuration
+  migration is required.
+- Hosts that snapshot exact tool-loop system messages should update those
+  snapshots to include the deterministic `Available Skills` block whenever the
+  resolved skill scope is non-empty.
+
+### Verification and known limitations
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv run --extra dev --frozen ruff check dagent api tests`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+- Dynamic DAG planner prompts deliberately do not receive the business-skill
+  index. Skill-bound tool subagents receive their own resolved index when run.
 
 ## 0.9.0
 

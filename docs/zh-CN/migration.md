@@ -4,9 +4,11 @@
 
 ## 当前发布线
 
-当前包版本是 `0.9.0`。
+当前包版本是 `0.9.1`。
 
 ## Unreleased
+
+## 0.9.1
 
 ### 变更
 
@@ -25,6 +27,26 @@
 - Qualified name 使用稳定排序；会话中选择范围和 skill metadata 不变时，system prompt
   也保持不变。
 - 索引应用于 tool loop 和绑定技能的子 agent；dynamic DAG planner prompt 保持不变。
+
+### 破坏性变化
+
+- 无。
+
+### 迁移步骤
+
+- 将 `dagent-ai` 从 `0.9.0` 升级到 `0.9.1`；不需要迁移数据或配置。
+- 对 tool-loop system message 做精确快照的 host，需要在最终解析出的 skill scope 非空时，
+  更新快照以包含确定性的 `Available Skills` 区块。
+
+### 验证与已知限制
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv run --extra dev --frozen ruff check dagent api tests`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+- Dynamic DAG planner prompt 有意不接收业务 skill 索引；绑定 skill 的 tool 子 agent 会在
+  执行时收到自己最终解析出的索引。
 
 ## 0.9.0
 
