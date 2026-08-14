@@ -8,6 +8,24 @@
 
 ## Unreleased
 
+### 变更
+
+- Tool-loop system prompt 现在会为最终解析出的 skill scope 注入确定性的路由元数据。
+  用户显式指定或与 description 明确匹配的技能会通过 `skill.view` 加载；完整
+  `SKILL.md` 正文仍按需读取。
+- 完整名称和 description 条目使用 8,000 字符预算；之后的仅名称条目使用独立的
+  2,000 字符预算。必要时会报告省略数量，并以 `skill.list` 作为完整目录回退。
+- Skill 路由条目使用紧凑 JSON array：完整条目为 `[qualified_name, description]`，
+  仅名称回退为 `[qualified_name]`。
+
+### 行为与兼容性
+
+- `skills=None`、`skills=[]` 和显式 skill filter 保持已发布的可见性语义；request、
+  checkpoint、配置和 capability id shape 均未改变。
+- Qualified name 使用稳定排序；会话中选择范围和 skill metadata 不变时，system prompt
+  也保持不变。
+- 索引应用于 tool loop 和绑定技能的子 agent；dynamic DAG planner prompt 保持不变。
+
 ## 0.9.0
 
 ### 新增

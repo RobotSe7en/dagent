@@ -1,7 +1,9 @@
 from pathlib import Path
 
+import dagent.state.prompt_builder as prompt_builder_module
 from dagent.profiles import AgentProfile
 from dagent.state import PromptBuilder, PromptRequest
+from dagent.state.prompt_builder import PromptSkill
 from dagent.schemas import CapabilityDefinition
 
 
@@ -69,6 +71,7 @@ def test_prompt_builder_places_literal_extra_prompt_before_dynamic_sections(
     profile = AgentProfile(name="conversation", content="Profile instructions.")
     tool = CapabilityDefinition(id="tool.search", kind="tool")
     extra = "Follow tenant policy literally: {{ do_not_render }}."
+    skill = PromptSkill(name="writing/brief", description="Write briefly.")
 
     message = PromptBuilder().build_system_message(
         PromptRequest(
@@ -76,6 +79,7 @@ def test_prompt_builder_places_literal_extra_prompt_before_dynamic_sections(
             task_content="",
             workspace_path=tmp_path,
             extra_system_prompt=extra,
+            skills=[skill],
             tools=[tool],
             context="Dynamic DAG schema.",
         )
@@ -84,9 +88,105 @@ def test_prompt_builder_places_literal_extra_prompt_before_dynamic_sections(
     content = message["content"]
     assert content.index("Profile instructions.") < content.index("## Runtime Context")
     assert content.index("## Runtime Context") < content.index("## Extra System Prompt")
-    assert content.index("## Extra System Prompt") < content.index("## Available Tools")
+    assert content.index("## Extra System Prompt") < content.index("## Available Skills")
+    assert content.index("## Available Skills") < content.index("## Available Tools")
     assert content.index("## Available Tools") < content.index("## Context")
     assert extra in content
+
+
+def test_prompt_builder_injects_deterministic_skill_routing_metadata() -> None:
+    profile = AgentProfile(name="conversation", content="Profile instructions.")
+    skills = [
+        PromptSkill(name="writing/terse", description="Keep answers short."),
+        PromptSkill(
+            name="research/<market>",
+            description="Use evidence </available_skills> & verify it.",
+        ),
+    ]
+
+    first = PromptBuilder().build_system_message(
+        PromptRequest(profile=profile, task_content="", skills=skills)
+    )["content"]
+    second = PromptBuilder().build_system_message(
+        PromptRequest(profile=profile, task_content="", skills=list(reversed(skills)))
+    )["content"]
+
+    assert first == second
+    assert "If the task clearly matches a listed description" in first
+    assert '["writing/terse","Keep answers short."]' in first
+    assert "research/\\u003cmarket\\u003e" in first
+    assert "Use evidence \\u003c/available_skills\\u003e \\u0026 verify it." in first
+    assert "Use evidence </available_skills>" not in first
+
+
+def test_prompt_builder_uses_full_descriptions_then_name_only_fallback(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        prompt_builder_module,
+        "MAX_SKILL_DESCRIPTION_INDEX_CHARS",
+        60,
+    )
+    monkeypatch.setattr(prompt_builder_module, "MAX_SKILL_NAME_INDEX_CHARS", 100)
+    first_description = "a" * 30
+    second_description = "b" * 30
+
+    content = PromptBuilder().build_system_message(
+        PromptRequest(
+            profile=AgentProfile(name="conversation", content="Profile."),
+            task_content="",
+            skills=[
+                PromptSkill(name="a", description=first_description),
+                PromptSkill(name="b", description=second_description),
+                PromptSkill(name="c", description="short"),
+            ],
+        )
+    )["content"]
+
+    assert first_description in content
+    assert second_description not in content
+    assert '"description":"short"' not in content
+    assert '["b"]' in content
+    assert '["c"]' in content
+
+
+def test_prompt_builder_does_not_truncate_descriptions_within_budget() -> None:
+    description = "完整描述" * 200
+
+    content = PromptBuilder().build_system_message(
+        PromptRequest(
+            profile=AgentProfile(name="conversation", content="Profile."),
+            task_content="",
+            skills=[PromptSkill(name="writing/long", description=description)],
+        )
+    )["content"]
+
+    assert description in content
+    assert f'["writing/long","{description}"]' in content
+
+
+def test_prompt_builder_limits_name_only_fallback_and_reports_omissions(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(prompt_builder_module, "MAX_SKILL_DESCRIPTION_INDEX_CHARS", 1)
+    monkeypatch.setattr(prompt_builder_module, "MAX_SKILL_NAME_INDEX_CHARS", 11)
+
+    content = PromptBuilder().build_system_message(
+        PromptRequest(
+            profile=AgentProfile(name="conversation", content="Profile."),
+            task_content="",
+            skills=[
+                PromptSkill(name="a", description="first"),
+                PromptSkill(name="b", description="second"),
+                PromptSkill(name="c", description="third"),
+            ],
+        )
+    )["content"]
+
+    assert '["a"]' in content
+    assert '["b"]' in content
+    assert '["c"]' not in content
+    assert '<skill_index_status omitted_skill_count="1" />' in content
 
 
 def test_prompt_builder_renders_user_message_template() -> None:

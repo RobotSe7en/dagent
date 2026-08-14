@@ -9,6 +9,27 @@ The current package version is `0.9.0`.
 
 ## Unreleased
 
+### Changed
+
+- Tool-loop system prompts now include deterministic routing metadata for the
+  resolved skill scope. Explicitly requested or clearly matching skills are
+  loaded through `skill.view`; full `SKILL.md` bodies remain on demand.
+- Complete name-and-description entries use an 8,000-character budget. Later
+  name-only entries use a separate 2,000-character budget, followed by an
+  omitted count and `skill.list` fallback when necessary.
+- Skill routing entries use compact JSON arrays: `[qualified_name, description]`
+  for complete entries and `[qualified_name]` for name-only fallbacks.
+
+### Behavior and compatibility
+
+- `skills=None`, `skills=[]`, and explicit skill filters retain their released
+  visibility semantics. No request, checkpoint, configuration, or capability-id
+  shape changed.
+- Stable qualified-name ordering keeps the system prompt identical across
+  conversation turns while the selected scope and skill metadata are unchanged.
+- The index applies to tool loops and skill-bound subagents. Dynamic DAG planner
+  prompts remain unchanged.
+
 ## 0.9.0
 
 ### Added

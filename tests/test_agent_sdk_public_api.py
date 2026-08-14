@@ -587,6 +587,36 @@ def test_runner_auto_agent_routes_to_tool_result(tmp_path) -> None:
     assert "General-Purpose Agent" in provider.requests[1]["messages"][0]["content"]
 
 
+def test_runner_auto_agent_injects_skills_only_after_tool_routing(tmp_path) -> None:
+    skill_root = tmp_path / "skills" / "writing" / "brief"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: brief\ndescription: Write concise answers.\n---\nKeep it short.",
+        encoding="utf-8",
+    )
+    provider = MockProvider([
+        ChatResponse(content="tool"),
+        ChatResponse(content="done"),
+    ])
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[tmp_path / "skills"],
+    )
+
+    result = run(
+        runner.run(
+            dagent.AutoAgent(capabilities=[], skills=["writing/brief"]),
+            input="answer briefly",
+        )
+    )
+
+    assert result.kind == "tool"
+    assert "## Available Skills" not in provider.requests[0]["messages"][0]["content"]
+    assert '["writing/brief","Write concise answers."]' in provider.requests[1]["messages"][0]["content"]
+
+
 def test_runner_extra_system_prompt_applies_after_auto_tool_routing(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(content="tool"),
@@ -1187,7 +1217,7 @@ def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
     assert _tool_names(provider.requests[0]) == {"tool_search"}
 
 
-def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_path) -> None:
+def test_runner_agent_skills_inject_scoped_routing_metadata_without_skill_body(tmp_path) -> None:
     skill_root = tmp_path / "skills"
     for category, name in (("writing", "brief"), ("research", "market")):
         skill_dir = skill_root / category / name
@@ -1211,6 +1241,8 @@ def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_pat
         "skill_view",
     ]
     system_message = provider.requests[0]["messages"][0]["content"]
+    assert '["writing/brief","brief skill."]' in system_message
+    assert "research/market" not in system_message
     assert "Use brief." not in system_message
     tool_content = provider.requests[1]["messages"][-1]["content"]
     assert "brief" in tool_content
@@ -1225,6 +1257,85 @@ def test_runner_agent_empty_skills_disables_skill_tools(tmp_path) -> None:
     run(runner.run(agent, input="no tools"))
 
     assert provider.requests[0]["tools"] == []
+    assert "## Available Skills" not in provider.requests[0]["messages"][0]["content"]
+
+
+def test_runner_default_skill_scope_injects_all_visible_skill_metadata(tmp_path) -> None:
+    skill_root = tmp_path / "skills"
+    for category, name in (("writing", "brief"), ("research", "market")):
+        skill_dir = skill_root / category / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} skill.\n---\nUse {name}.",
+            encoding="utf-8",
+        )
+    provider = MockProvider([ChatResponse(content="done")])
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[skill_root],
+    )
+
+    run(
+        runner.run(
+            dagent.ToolAgent(profile="conversation", capabilities=[]),
+            input="answer",
+        )
+    )
+
+    system_message = provider.requests[0]["messages"][0]["content"]
+    assert '["research/market","market skill."]' in system_message
+    assert '["writing/brief","brief skill."]' in system_message
+
+
+def test_runner_skill_prompt_is_stable_across_conversation_turns_and_scope_order(
+    tmp_path,
+) -> None:
+    skill_root = tmp_path / "skills"
+    for category, name in (("writing", "brief"), ("research", "market")):
+        skill_dir = skill_root / category / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} skill.\n---\nUse {name}.",
+            encoding="utf-8",
+        )
+    provider = MockProvider([
+        ChatResponse(content="first"),
+        ChatResponse(content="second"),
+    ])
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[skill_root],
+    )
+    first_agent = dagent.ToolAgent(
+        profile="conversation",
+        capabilities=[],
+        skills=["writing/brief", "research/market"],
+    )
+    second_agent = dagent.ToolAgent(
+        profile="conversation",
+        capabilities=[],
+        skills=["research/market", "writing/brief"],
+    )
+
+    first = run(
+        runner.run(first_agent, input="first", workspace_path=tmp_path)
+    )
+    run(
+        runner.run(
+            second_agent,
+            input="second",
+            conversation=first.state.model_thread,
+            workspace_path=tmp_path,
+        )
+    )
+
+    first_system = provider.requests[0]["messages"][0]["content"]
+    second_system = provider.requests[1]["messages"][0]["content"]
+    assert first_system == second_system
 
 
 def test_runner_default_agent_capabilities_exclude_registered_agent_capabilities(tmp_path) -> None:

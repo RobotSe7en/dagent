@@ -684,6 +684,14 @@ def test_agent_node_uses_its_own_skill_scope(tmp_path: Path) -> None:
     result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
 
     assert result.status == "completed"
+    research_system = provider.requests[0]["messages"][0]["content"]
+    writer_system = provider.requests[2]["messages"][0]["content"]
+    assert '["research/market","market skill."]' in research_system
+    assert "writing/style" not in research_system
+    assert '["writing/style","style skill."]' in writer_system
+    assert "research/market" not in writer_system
+    assert "Use market." not in research_system
+    assert "Use style." not in writer_system
     research_tool_content = provider.requests[1]["messages"][-1]["content"]
     writer_tool_content = provider.requests[3]["messages"][-1]["content"]
     assert "market" in research_tool_content

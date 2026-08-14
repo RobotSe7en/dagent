@@ -814,7 +814,11 @@ def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path
 
     install_response = client.post(
         "/skills/install",
-        data={"name": "brief", "content": "Use brief responses."},
+        data={
+            "name": "brief",
+            "description": "Prefer concise answers.",
+            "content": "Use brief responses.",
+        },
     )
     response = client.post(
         "/messages/stream",
@@ -834,6 +838,7 @@ def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path
         "skill_view",
     ]
     system_content = provider.requests[0]["messages"][0]["content"]
+    assert '["brief","Prefer concise answers."]' in system_content
     assert "Use brief responses." not in system_content
     assert "fail_tool" not in system_content
     tool_content = provider.requests[1]["messages"][-1]["content"]
@@ -2188,7 +2193,15 @@ def test_api_agent_update_validates_registration_before_overwriting(monkeypatch,
 def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, tmp_path) -> None:
     state.close_runner()
     agent_root = tmp_path / "agents"
+    skill_root = tmp_path / "skills"
+    skill_dir = skill_root / "writing" / "brief"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: brief\ndescription: Prefer concise answers.\n---\nUse brief responses.",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [skill_root])
     provider = MockProvider([
         ChatResponse(
             tool_calls=[
@@ -2202,7 +2215,7 @@ def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, t
         ChatResponse(content="helper answer"),
         ChatResponse(content="done"),
     ])
-    state.runner = _runner(provider)
+    state.runner = _runner(provider, skill_roots=[skill_root])
     client = TestClient(app)
 
     create_response = client.post(
@@ -2212,7 +2225,7 @@ def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, t
             "profile": "conversation",
             "max_steps": 1,
             "capabilities": [],
-            "skills": [],
+            "skills": ["writing/brief"],
         },
     )
     stream_response = client.post(
@@ -2233,7 +2246,16 @@ def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, t
     result = _stream_result(events[-1])
     assert result["output_text"] == "done"
     assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"agent_helper"}
-    assert provider.requests[1]["tools"] == []
+    assert {tool["function"]["name"] for tool in provider.requests[1]["tools"]} == {
+        "skill_list",
+        "skill_view",
+    }
+    preset_system_message = provider.requests[1]["messages"][0]["content"]
+    assert (
+        '["writing/brief","Prefer concise answers."]'
+        in preset_system_message
+    )
+    assert "Use brief responses." not in preset_system_message
     state.close_runner()
 
 

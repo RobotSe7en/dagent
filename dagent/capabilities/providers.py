@@ -35,6 +35,7 @@ from dagent.capabilities.tools.boundary import (
     resolve_path_against_workspace,
 )
 from dagent.state import PromptBuilder, PromptRequest
+from dagent.state.prompt_builder import PromptSkill
 from dagent.capabilities.tools.registry import (
     ToolRegistry,
     content_and_value_from_result,
@@ -173,11 +174,16 @@ class AgentCapabilityProvider:
         runtime_directory: str,
         session_store: AgentNodeSessionStore | None = None,
         prompt_builder: PromptBuilder | None = None,
+        skill_prompt_resolver: Callable[
+            [tuple[str, ...] | None], tuple[PromptSkill, ...]
+        ]
+        | None = None,
     ) -> None:
         self.agents = agents
         self.runtime_directory = validate_runtime_directory(runtime_directory)
         self.session_store = session_store or AgentNodeSessionStore()
         self.prompt_builder = prompt_builder or PromptBuilder()
+        self.skill_prompt_resolver = skill_prompt_resolver
 
     def register_into(self, catalog: CapabilityCatalog) -> None:
         for name, config in sorted(self.agents.items()):
@@ -260,10 +266,16 @@ class AgentCapabilityProvider:
             fingerprint=fingerprint,
         )
         reference_content = _reference_content(invocation)
+        prompt_skills = (
+            []
+            if self.skill_prompt_resolver is None
+            else list(self.skill_prompt_resolver(config.get("skills")))
+        )
         system_message = self.prompt_builder.build_system_message(
             PromptRequest(
                 profile=profile,
                 task_content="",
+                skills=prompt_skills,
                 context=_agent_runtime_context(
                     context,
                     has_reference_content=bool(reference_content),
