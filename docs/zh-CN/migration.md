@@ -748,8 +748,9 @@ Host 必须为待审核 run 持久化完整 V3 checkpoint，并为聊天 continu
 - Checkpoint 描述执行语义，不包含可执行 handlers 或 provider connections。恢复它的
   host 必须构造兼容的 `Runner`。
 - Plan fingerprint 用于发现意外修改，不是签名；checkpoint authenticity 仍由 host 负责。
-- 静态 DAG result 会携带用于检查的 checkpoint 和 usage，但暂不支持静态 DAG review
-  或 crash continuation。
+- 静态 DAG result 现在可通过 `Runner.resume(..., checkpoint=...)` 恢复受支持的直接
+  Agent 节点工具审核。`MapNode`、`Subgraph` 和 `LoopNode` 中的 Agent 组合会被明确拒绝；
+  通用静态 DAG crash continuation 仍不受支持。
 
 ## 0.7.0
 

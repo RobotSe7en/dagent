@@ -46,6 +46,28 @@ asyncio.run(main())
 uv run python -m examples.static_dag
 ```
 
+## Agent 节点工具审核
+
+直接使用 `Node(..., target=ToolAgent(...))` 的静态 DAG 节点，可以在其内部工具调用需要
+审核时暂停。将通常的运行级策略传给 `Runner.run`：
+
+```python
+result = await runner.run(dag, review="careful")
+if result.requires_review:
+    result = await runner.resume(result.review.approve(), checkpoint=result.checkpoint)
+```
+
+`careful` 会审核 Agent 内部的中、高风险工具。任意策略下，内部工具超出节点 boundary 时，
+都会暂停以请求仅针对该 invocation 的 boundary override。批准或拒绝会续跑同一个
+`ToolAgent` conversation；拒绝不会执行工具，而会将决定反馈给模型。
+
+普通 capability node（包括高风险 node）仍被视为 DAG 作者已授权，直接执行。该 continuation
+只支持顶层直接 Agent capability node；`MapNode`、`Subgraph` 或 `LoopNode` 内的 Agent 会在
+执行前被明确拒绝，因为这些嵌套进度暂不支持恢复；已注册 Agent 也必须是叶子，不能再暴露
+其他 Agent。和其他审核续跑一样，应持久化 `result.checkpoint`，并用兼容的 Runner 恢复。
+直接 Agent 节点的执行配置会写入指纹，因此 profile、步骤上限、策略、skill 或内部工具范围
+变更时会被拒绝，而不会悄然改变恢复后的运行语义。
+
 ## 类型化 Input 和 Output
 
 Pydantic graph inputs 和 Pydantic tool return values 是类型化参数传递的推荐路径：

@@ -844,8 +844,10 @@ complete bounded `ConversationState` for chat continuation. See
   `Runner`.
 - The plan fingerprint detects accidental mutation but is not a signature;
   checkpoint authenticity remains a host responsibility.
-- Static DAG results carry checkpoints and usage for inspection, but static DAG
-  review/crash continuation is not supported.
+- Static DAG results now resume supported direct agent-node tool reviews through
+  `Runner.resume(..., checkpoint=...)`. `MapNode`, `Subgraph`, and `LoopNode`
+  agent combinations are explicitly rejected; general static DAG crash
+  continuation remains unsupported.
 
 ## 0.7.0
 

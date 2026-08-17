@@ -171,6 +171,14 @@ usage so review cannot resume under different semantics. If a resumed run
 reaches another review gate, its replacement checkpoint keeps those same frozen
 limits even if provider settings changed meanwhile.
 
+The same checkpoint flow applies to supported static DAG agent-node reviews.
+The checkpoint includes the suspended node invocation and its internal
+tool-agent state; its resolved capability scope includes the registered agent's
+inner tools. The direct agent-node execution configuration is fingerprinted, so
+a changed profile or runtime setting cannot silently alter a resumed run. See
+[Static DAGs](static-dag.md#agent-node-tool-review) for the supported topology
+and policy behavior.
+
 ## Streaming
 
 ```python

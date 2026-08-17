@@ -478,6 +478,21 @@ class HarnessRuntime:
         pending_review = state.pending_review
         capability_scope = capability_scope_from_state(state.capability_scope)
         _emit_run_started(on_event, run_id=state.run_id, kind=state.kind)
+        if state.kind == "static_dag" and pending_review.kind == "capability_review":
+            if state.dag_spec is None:
+                raise ValueError("Static DAG review state requires its DAGSpec.")
+            outcome = await self.dag_agent.loop.resume_static_review(
+                state,
+                approved=approved,
+                feedback=feedback,
+                on_token=on_token,
+                on_event=on_event,
+                on_dag=_dag_event_emitter(on_event),
+            )
+            if outcome is None:
+                return None
+            self.session.discard_review(review_id)
+            return self._finish_static_dag_outcome(outcome, spec=state.dag_spec)
         if pending_review.kind == "capability_review":
             self.tool_agent.conversation = (
                 state.model_thread
@@ -766,6 +781,8 @@ class HarnessRuntime:
                 request,
                 run_id=run_id,
                 graph_input=graph_input,
+                review_level=review_level,
+                capability_scope=capability_scope,
                 workspace_root=workspace_root,
                 workspace_path=workspace_path,
                 artifact_uploads=artifact_uploads,
@@ -845,6 +862,8 @@ class HarnessRuntime:
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
         run_id: str | None = None,
+        review_level: ReviewLevel = "fast",
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
@@ -859,14 +878,23 @@ class HarnessRuntime:
             spec,
             run_id=resolved_run_id,
             mode="dag_spec",
-            review_level="fast",
+            review_level=review_level,
             on_token=on_token,
             on_event=on_event,
             workspace_root=resolved_workspace_root,
             workspace_path=workspace_path,
             artifact_uploads=artifact_uploads,
             graph_input=graph_input,
+            capability_scope=capability_scope,
         )
+        return self._finish_static_dag_outcome(outcome, spec=spec)
+
+    def _finish_static_dag_outcome(
+        self,
+        outcome: LoopOutcome,
+        *,
+        spec: DAGSpec,
+    ) -> RunResult:
         state = self.session.save_run_state(
             outcome.state.model_copy(update={"execution": current_run_execution()})
         )

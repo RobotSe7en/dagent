@@ -1374,20 +1374,25 @@ class Runner:
             )
 
         if isinstance(target, Dag):
-            if review is not None:
-                raise TypeError("review is not accepted for Dag targets.")
             if input is not None:
                 raise TypeError("input is not accepted for Dag targets.")
             if conversation is not None:
                 raise TypeError("conversation is not accepted for Dag targets.")
             self._ensure_dag_capabilities(target)
             spec = self._resolve_spec_capability_metadata(target.to_dag_spec())
+            review_level = review or "fast"
+            capability_ids = self._static_capability_ids(spec)
             result = await self._runtime.run_dag_spec(
                 spec,
                 graph_input=graph_input,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
                 run_id=run_id,
+                review_level=review_level,
+                capability_scope=CapabilityScope(
+                    capability_ids=capability_ids,
+                    skills=self._resolve_skill_ids(None),
+                ),
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -1395,24 +1400,30 @@ class Runner:
             return self._finalize_static_result(
                 result,
                 spec=spec,
+                review_level=review_level,
                 limits=limits,
                 usage=budget.snapshot(),
             )
 
         if isinstance(target, DAGSpec):
-            if review is not None:
-                raise TypeError("review is not accepted for DAGSpec targets.")
             if input is not None:
                 raise TypeError("input is not accepted for DAGSpec targets.")
             if conversation is not None:
                 raise TypeError("conversation is not accepted for DAGSpec targets.")
             spec = self._resolve_spec_capability_metadata(target)
+            review_level = review or "fast"
+            capability_ids = self._static_capability_ids(spec)
             result = await self._runtime.run_dag_spec(
                 spec,
                 graph_input=graph_input,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
                 run_id=run_id,
+                review_level=review_level,
+                capability_scope=CapabilityScope(
+                    capability_ids=capability_ids,
+                    skills=self._resolve_skill_ids(None),
+                ),
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -1420,6 +1431,7 @@ class Runner:
             return self._finalize_static_result(
                 result,
                 spec=spec,
+                review_level=review_level,
                 limits=limits,
                 usage=budget.snapshot(),
             )
@@ -1431,20 +1443,18 @@ class Runner:
         result: RunResult,
         *,
         spec: DAGSpec,
+        review_level: ReviewLevel,
         limits: ExecutionLimits,
         usage: ExecutionUsage,
     ) -> RunResult:
-        capability_ids = tuple(sorted({
-            invocation.capability_id
-            for invocation in iter_dag_invocations(spec.nodes)
-        }))
+        capability_ids = self._static_capability_ids(spec)
         skill_ids = self._resolve_skill_ids(None)
         return self._finalize_run_result(
             result,
             runtime=self._runtime,
             capability_ids=capability_ids,
             skill_ids=skill_ids,
-            review_level="fast",
+            review_level=review_level,
             dynamic_adjust=True,
             limits=limits,
             usage=usage,
@@ -1800,6 +1810,7 @@ class Runner:
                 "status": "failed",
                 "pending_review": None,
                 "pending_invocation": None,
+                "static_agent_continuation": None,
             }
             if (
                 resume_state.pending_review is not None
@@ -1825,8 +1836,6 @@ class Runner:
             raise
 
     def _validate_checkpoint_runtime(self, checkpoint: RunCheckpoint) -> None:
-        if checkpoint.plan.runtime_kind == "static_dag":
-            raise ValueError("Static DAG checkpoints do not support review resume.")
         catalog = self._runtime.capability_catalog
         for capability_id in checkpoint.plan.capability_ids:
             definition = catalog.get(capability_id)
@@ -2018,6 +2027,21 @@ class Runner:
         for agent in dag.agents:
             self.add_agent(agent)
 
+    def _static_capability_ids(self, spec: DAGSpec) -> tuple[str, ...]:
+        capability_ids = {
+            invocation.capability_id
+            for invocation in iter_dag_invocations(spec.nodes)
+        }
+        for capability_id in tuple(capability_ids):
+            if not capability_id.startswith("agent."):
+                continue
+            config = self._registered_agent_runtime_configs.get(
+                capability_id.removeprefix("agent.")
+            )
+            if config is not None:
+                capability_ids.update(config.get("capability_ids", ()))
+        return tuple(sorted(capability_ids))
+
     def _refresh_registered_agent_runtime_configs(self, *, collect_errors: bool = False) -> dict[str, str]:
         errors: dict[str, str] = {}
         for name, agent in list(self._registered_agent_configs.items()):
@@ -2045,6 +2069,7 @@ class Runner:
         config["skills"] = _agent_skills(agent)
         config["context_policy"] = agent.context
         config["result_storage_policy"] = self.result_storage_policy
+        config["capability_ids"] = capability_ids
         config["tool_adapter"] = _tool_adapter(self._runtime.capability_catalog, capability_ids)
 
     def _validate_agent_registration(self, agent: ToolAgent, *, replacing: bool) -> None:
@@ -2117,6 +2142,7 @@ class Runner:
             "result_storage_policy": self.result_storage_policy,
             "skills": _agent_skills(agent),
             "capability_executor": self._runtime.capability_executor,
+            "capability_ids": capability_ids,
             "tool_adapter": _tool_adapter(self._runtime.capability_catalog, capability_ids),
         }
 

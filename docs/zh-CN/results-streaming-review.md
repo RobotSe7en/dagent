@@ -157,6 +157,11 @@ capability definition 指纹、策略、限制、planner 模式和已消耗预�
 语义下恢复。其中包括 context window 和 output reserve；即使 provider 配置在恢复期间
 发生变化，续跑再次进入审核门时，新 checkpoint 仍沿用原先冻结的限制。
 
+同一 checkpoint 流程也适用于受支持的静态 DAG Agent 节点审核。checkpoint 会保存挂起的
+节点 invocation 和内部 tool-agent state，并将已注册 Agent 的内部工具纳入已解析 capability
+scope。直接 Agent 节点的执行配置会写入指纹，profile 或运行时设置变更时不会悄然改变续跑。
+支持的拓扑和策略行为见[静态 DAG](static-dag.md#agent-节点工具审核)。
+
 ## 流式调用
 
 ```python

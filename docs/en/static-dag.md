@@ -47,6 +47,34 @@ Run the artifact example:
 uv run python -m examples.static_dag
 ```
 
+## Agent-node tool review
+
+A direct `Node(..., target=ToolAgent(...))` can pause a static DAG when its
+inner tool call needs review. Pass the usual run-level policy to `Runner.run`:
+
+```python
+result = await runner.run(dag, review="careful")
+if result.requires_review:
+    result = await runner.resume(result.review.approve(), checkpoint=result.checkpoint)
+```
+
+With `careful`, the agent's medium- and high-risk inner tools pause for review.
+At either level, an inner tool that exceeds its node boundary can pause for a
+one-invocation boundary override. Approval or rejection resumes the same
+`ToolAgent` conversation; rejection feeds the decision back to the model and
+does not execute the tool.
+
+The DAG author already authorizes ordinary capability nodes, including
+high-risk ones, so they still execute directly. This continuation supports only
+top-level direct agent capability nodes. An agent in a `MapNode`, `Subgraph`,
+or `LoopNode` is rejected before execution because those nested progress states
+are not resumable yet; a registered agent is also a leaf and cannot expose
+another agent. Persist `result.checkpoint` and restore it with a compatible
+Runner just as for other review continuations. Its direct agent-node execution
+configuration is fingerprinted, so a changed profile, step limit, policy,
+skills, or inner tool scope is rejected rather than silently changing a
+resumed run.
+
 ## Typed Input and Output
 
 Pydantic graph inputs and Pydantic tool return values are the preferred path for

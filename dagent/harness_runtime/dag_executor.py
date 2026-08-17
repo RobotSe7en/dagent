@@ -30,6 +30,10 @@ from dagent.harness_runtime.capability_executor import (
 )
 from dagent.harness_runtime.result_storage import normalize_capability_result
 from dagent.harness_runtime.execution_budget import ExecutionLimitExceeded
+from dagent.harness_runtime.static_agent_review import (
+    StaticAgentExecutionControl,
+    StaticAgentReviewRequired,
+)
 from dagent.harness_runtime.runtime_events import ResponseStreamContext, response_token_stream
 from dagent.harness_runtime.dag_builder import (
     compile_dag_spec,
@@ -165,6 +169,7 @@ class DAGExecutor:
         *,
         initial_trace: RunTrace | None = None,
         approve_node_boundaries: bool = False,
+        agent_execution_control: StaticAgentExecutionControl | None = None,
         skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -185,6 +190,7 @@ class DAGExecutor:
                     trace,
                     node_traces,
                     approve_node_boundaries=approve_node_boundaries,
+                    agent_execution_control=agent_execution_control,
                     skills=skills,
                     on_token=on_token,
                     on_event=on_event,
@@ -211,6 +217,7 @@ class DAGExecutor:
         node_traces: dict[str, RunTraceNode],
         *,
         approve_node_boundaries: bool = False,
+        agent_execution_control: StaticAgentExecutionControl | None = None,
         skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -222,6 +229,12 @@ class DAGExecutor:
         for node in pending_nodes:
             if isinstance(node.payload, CapabilityNodePayload):
                 _resolve_invocation(node.payload.invocation, scope)
+        direct_agent_nodes = (
+            []
+            if agent_execution_control is None
+            else [node for node in pending_nodes if _is_direct_agent_node(node)]
+        )
+        other_nodes = [node for node in pending_nodes if node not in direct_agent_nodes]
         batch_results = await asyncio.gather(
             *[
                 self.execute_node(
@@ -234,10 +247,41 @@ class DAGExecutor:
                     on_token=on_token,
                     on_event=on_event,
                 )
-                for node in pending_nodes
+                for node in other_nodes
             ],
             return_exceptions=True,
         )
+        agent_results: list[RunTraceNode | Exception] = []
+        review_pause: StaticAgentReviewRequired | None = None
+        for node in direct_agent_nodes:
+            resume = (
+                agent_execution_control is not None
+                and agent_execution_control.agent_state is not None
+                and node.id == agent_execution_control.node_id
+            )
+            try:
+                agent_results.append(await self.execute_node(
+                    node,
+                    dag,
+                    parent_id=trace.root.id,
+                    scope=scope,
+                    approve_node_boundaries=approve_node_boundaries,
+                    agent_execution_control=(
+                        None
+                        if agent_execution_control is None
+                        else agent_execution_control.for_node(resume=resume)
+                    ),
+                    skills=skills,
+                    on_token=on_token,
+                    on_event=on_event,
+                ))
+            except StaticAgentReviewRequired as exc:
+                review_pause = exc
+                break
+            except Exception as exc:
+                agent_results.append(exc)
+        batch_results.extend(agent_results)
+
         for result in batch_results:
             if isinstance(result, RunTraceNode):
                 trace.root.upsert_child(result)
@@ -250,6 +294,9 @@ class DAGExecutor:
             if node_id not in node_traces:
                 trace.root.upsert_child(partial)
                 node_traces[node_id] = partial
+
+        if review_pause is not None:
+            raise review_pause.bind(trace=trace)
 
         for result in batch_results:
             if isinstance(result, Exception):
@@ -280,6 +327,7 @@ class DAGExecutor:
         parent_id: str,
         scope: _ValueScope | None = None,
         approve_node_boundaries: bool = False,
+        agent_execution_control: StaticAgentExecutionControl | None = None,
         skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -303,6 +351,7 @@ class DAGExecutor:
                 dag,
                 dag_node=dag_node,
                 approve_node_boundaries=approve_node_boundaries,
+                agent_execution_control=agent_execution_control,
                 skills=skills,
                 on_token=on_token,
                 on_event=on_event,
@@ -375,6 +424,7 @@ class DAGExecutor:
         *,
         dag_node: RunTraceNode,
         approve_node_boundaries: bool = False,
+        agent_execution_control: StaticAgentExecutionControl | None = None,
         skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -408,6 +458,7 @@ class DAGExecutor:
                     approved_boundary_invocation_id=(
                         invocation.invocation_id if approve_node_boundaries else None
                     ),
+                    agent_execution_control=agent_execution_control,
                     skills=skills,
                 ),
                 callbacks=CapabilityExecutionCallbacks(
@@ -423,6 +474,16 @@ class DAGExecutor:
             )
             capability_result = normalized.result
             stored_content = normalized.content
+        except StaticAgentReviewRequired as exc:
+            capability_node = RunTraceNode.capability_call(
+                parent_id=dag_node.id,
+                invocation=invocation,
+                status="awaiting_review",
+            )
+            dag_node.children.append(capability_node)
+            dag_node.status = "awaiting_review"
+            self.partial_node_traces[node.id] = dag_node
+            raise exc.bind(node_id=node.id, invocation=invocation)
         except Exception as exc:
             node.status = "failed"
             failed_result = CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__)
@@ -742,6 +803,7 @@ class DAGExecutor:
         node: DAGNode,
         *,
         approved_boundary_invocation_id: str | None = None,
+        agent_execution_control: StaticAgentExecutionControl | None = None,
         skills: tuple[str, ...] | None = None,
     ) -> CapabilityExecutionContext:
         input_artifacts: dict[str, list[Path]] = {}
@@ -764,6 +826,11 @@ class DAGExecutor:
             skills=skills,
             extra_system_prompt=self.extra_system_prompt,
             approved_boundary_invocation_id=approved_boundary_invocation_id,
+            metadata=(
+                {}
+                if agent_execution_control is None
+                else {"static_agent_execution_control": agent_execution_control}
+            ),
         )
 
     def _enforce_review_gate(self, dag: DAG) -> None:
@@ -782,6 +849,13 @@ def _resolve_invocation(invocation: CapabilityInvocation, scope: _ValueScope) ->
         update={
             "allowed_paths": _resolve_value_list(invocation.boundary.allowed_paths, scope),
         }
+    )
+
+
+def _is_direct_agent_node(node: DAGNode) -> bool:
+    return (
+        isinstance(node.payload, CapabilityNodePayload)
+        and node.payload.invocation.kind == "agent"
     )
 
 

@@ -671,12 +671,11 @@ def test_map_node_accepts_literal_list() -> None:
     assert result.node_value("fetch_all") == ["page:a", "page:b"]
 
 
-def test_map_over_agent_isolates_item_sessions_and_keeps_inner_traces() -> None:
-    provider = MockProvider([ChatResponse(content="r1"), ChatResponse(content="r2")])
+def test_map_over_agent_is_explicitly_rejected() -> None:
     runner = dagent.Runner(
         workspace=".",
         runtime_directory=".runtime",
-        provider=provider,
+        provider=MockProvider([]),
     )
     agent = dagent.ToolAgent(profile="conversation", name="writer", max_steps=1)
 
@@ -691,23 +690,10 @@ def test_map_over_agent_isolates_item_sessions_and_keeps_inner_traces() -> None:
     dag.add_node(map_node)
 
     try:
-        result = run(runner.run(dag, graph_input=["alpha", "beta"]))
+        with pytest.raises(DAGValidationError, match="cannot target an agent capability"):
+            run(runner.run(dag, graph_input=["alpha", "beta"]))
     finally:
         runner.close()
-
-    assert result.status == "completed"
-    assert result.node_value("write_all") == ["r1", "r2"]
-    user_texts = [
-        "\n".join(str(m.get("content")) for m in request["messages"] if m.get("role") == "user")
-        for request in provider.requests
-    ]
-    assert "alpha" in user_texts[0] and "alpha" not in user_texts[1]
-    assert "beta" in user_texts[1]
-    item_calls = result.trace.dag_node_traces()["write_all"].children
-    assert all(
-        any(grandchild.kind == "agent_loop" for grandchild in child.children)
-        for child in item_calls
-    )
 
 
 def test_edge_condition_rejects_unknown_artifact() -> None:
