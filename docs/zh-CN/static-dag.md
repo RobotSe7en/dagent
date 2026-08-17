@@ -63,8 +63,10 @@ if result.requires_review:
 
 普通 capability node（包括高风险 node）仍被视为 DAG 作者已授权，直接执行。该 continuation
 只支持顶层直接 Agent capability node；`MapNode`、`Subgraph` 或 `LoopNode` 内的 Agent 会在
-执行前被明确拒绝，因为这些嵌套进度暂不支持恢复。和其他审核续跑一样，应持久化
-`result.checkpoint`，并用兼容的 Runner 恢复。
+执行前被明确拒绝，因为这些嵌套进度暂不支持恢复；已注册 Agent 也必须是叶子，不能再暴露
+其他 Agent。和其他审核续跑一样，应持久化 `result.checkpoint`，并用兼容的 Runner 恢复。
+直接 Agent 节点的执行配置会写入指纹，因此 profile、步骤上限、策略、skill 或内部工具范围
+变更时会被拒绝，而不会悄然改变恢复后的运行语义。
 
 ## 类型化 Input 和 Output
 

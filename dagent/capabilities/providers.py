@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+import hashlib
 import inspect
 import json
 from pathlib import Path
@@ -191,19 +192,36 @@ class AgentCapabilityProvider:
             if not hasattr(provider, "chat"):
                 raise TypeError(f"Agent capability '{name}' requires a chat provider.")
             tool_adapter = config.get("tool_adapter")
+            enabled_toolsets = tuple(config.get("enabled_toolsets") or ("builtin",))
             if isinstance(tool_adapter, CapabilityToolAdapter):
                 _ensure_leaf_agent_adapter(
                     name,
                     tool_adapter,
-                    tuple(config.get("enabled_toolsets") or ("builtin",)),
+                    enabled_toolsets,
                 )
+            profile = _profile_from_config(name, config)
+            capability_ids = () if not isinstance(tool_adapter, CapabilityToolAdapter) else tuple(
+                definition.id
+                for definition in tool_adapter.capabilities(enabled_toolsets)
+            )
             definition = CapabilityDefinition(
                 id=f"agent.{name}",
                 kind="agent",
                 description=str(config.get("description", "")),
                 parameters=config.get("parameters") or agent_capability_parameters(),
                 policy=CapabilityPolicy(risk=config.get("risk", "medium"), sandbox_required=True),
-                config={"profile": _profile_from_config(name, config).name},
+                config={
+                    "profile": profile.name,
+                    "execution_fingerprint": _agent_config_fingerprint(
+                        profile=profile,
+                        max_steps=int(config.get("max_steps", 8)),
+                        context_policy=_context_policy_from_config(config),
+                        result_storage_policy=_result_storage_policy_from_config(config),
+                        capability_ids=capability_ids,
+                        skills=config.get("skills"),
+                        enabled_toolsets=enabled_toolsets,
+                    ),
+                },
             )
 
             async def execute(
@@ -271,12 +289,8 @@ class AgentCapabilityProvider:
             fingerprint=fingerprint,
         )
         reference_content = _reference_content(invocation)
-        context_policy = config.get("context_policy")
-        if not isinstance(context_policy, ContextPolicy):
-            context_policy = ContextPolicy()
-        result_storage_policy = config.get("result_storage_policy")
-        if not isinstance(result_storage_policy, ResultStoragePolicy):
-            result_storage_policy = ResultStoragePolicy()
+        context_policy = _context_policy_from_config(config)
+        result_storage_policy = _result_storage_policy_from_config(config)
         workspace_path = None if context is None else context.workspace_path
         capability_scope = CapabilityScope(
             capability_ids=tuple(
@@ -397,6 +411,46 @@ def _agent_invocation_fingerprint(invocation: CapabilityInvocation) -> str:
         default=str,
         sort_keys=True,
     )
+
+
+def _agent_config_fingerprint(
+    *,
+    profile: AgentProfile,
+    max_steps: int,
+    context_policy: ContextPolicy,
+    result_storage_policy: ResultStoragePolicy,
+    capability_ids: tuple[str, ...],
+    skills: tuple[str, ...] | None,
+    enabled_toolsets: tuple[str, ...],
+) -> str:
+    payload = {
+        "profile": profile.model_dump(mode="json"),
+        "max_steps": max_steps,
+        "context_policy": context_policy.model_dump(mode="json"),
+        "result_storage_policy": result_storage_policy.model_dump(mode="json"),
+        "capability_ids": capability_ids,
+        "skills": skills,
+        "enabled_toolsets": enabled_toolsets,
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _context_policy_from_config(config: dict[str, Any]) -> ContextPolicy:
+    value = config.get("context_policy")
+    return value if isinstance(value, ContextPolicy) else ContextPolicy()
+
+
+def _result_storage_policy_from_config(
+    config: dict[str, Any],
+) -> ResultStoragePolicy:
+    value = config.get("result_storage_policy")
+    return value if isinstance(value, ResultStoragePolicy) else ResultStoragePolicy()
 
 
 def _agent_capability_context(context: Any, skills: tuple[str, ...] | None) -> Any:

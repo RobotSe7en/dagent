@@ -867,7 +867,9 @@ class DAGAgentLoop:
             dag_executor=dag_executor,
             control=StaticAgentExecutionControl(
                 review_level=record.review_level,
-                agent_state=continuation.agent_state,
+                agent_state=continuation.agent_state.model_copy(
+                    update={"review_level": record.review_level}
+                ),
                 node_id=continuation.node_id,
                 approved=approved,
                 feedback=feedback,

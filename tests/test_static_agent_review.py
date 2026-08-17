@@ -122,6 +122,67 @@ def test_static_agent_fast_boundary_review_allows_only_pending_invocation(tmp_pa
     assert (Path(resumed.workspace_path) / "other.txt").read_text() == "approved"
 
 
+def test_static_agent_review_level_change_applies_to_later_tool_calls(tmp_path) -> None:
+    calls: list[str] = []
+
+    @dagent.tool(risk="high")
+    def publish(text: str) -> str:
+        calls.append(text)
+        return text
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(
+                id="call_1",
+                name="tool_write_file",
+                arguments={"path": "other.txt", "content": "approved"},
+            )
+        ]),
+        ChatResponse(tool_calls=[
+            ToolCall(
+                id="call_2",
+                name="tool_publish",
+                arguments={"text": "draft"},
+            )
+        ]),
+        ChatResponse(content="complete"),
+    ])
+    agent = dagent.ToolAgent(
+        name="helper",
+        profile="conversation",
+        capabilities=["tool.write_file", publish],
+    )
+    dag = dagent.Dag("review_level_change")
+    dag.add_node(dagent.Node(
+        "assistant",
+        target=agent,
+        inputs={"prompt": "Write and publish."},
+        boundary=dagent.Boundary(allowed_paths=["allowed.txt"]),
+    ))
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, skill_roots=[])
+
+    first = run(runner.run(dag, review="fast"))
+
+    assert first.pending_review is not None
+    assert first.pending_review.capability_call.capability_id == "tool.write_file"
+    second = run(runner.resume(
+        first.review.approve(review_level="careful"),
+        checkpoint=first.checkpoint,
+    ))
+
+    assert second is not None
+    assert second.status == "awaiting_review"
+    assert second.pending_review is not None
+    assert second.pending_review.capability_call.capability_id == "tool.publish"
+    assert calls == []
+
+    final = run(runner.resume(second.review.approve(), checkpoint=second.checkpoint))
+
+    assert final is not None
+    assert final.status == "completed"
+    assert calls == ["draft"]
+
+
 def test_static_agent_supports_multiple_review_cycles_and_new_runner_checkpoint(tmp_path) -> None:
     calls: list[str] = []
 
@@ -151,6 +212,78 @@ def test_static_agent_supports_multiple_review_cycles_and_new_runner_checkpoint(
     assert final is not None
     assert final.status == "completed"
     assert calls == ["one", "two"]
+
+
+def test_static_agent_checkpoint_rejects_changed_execution_configuration(tmp_path) -> None:
+    @dagent.tool(risk="high")
+    def publish(text: str) -> str:
+        return text
+
+    profile = dagent.AgentProfile(name="helper_profile", content="Original profile.")
+    agent = dagent.ToolAgent(name="helper", profile=profile, capabilities=[publish])
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(
+                id="call_1",
+                name="tool_publish",
+                arguments={"text": "draft"},
+            )
+        ]),
+    ])
+    first_runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, skill_roots=[])
+    first = run(first_runner.run(_agent_dag(agent), review="careful"))
+    checkpoint = dagent.RunCheckpoint.model_validate_json(first.checkpoint.model_dump_json())
+
+    changed_agent = dagent.ToolAgent(
+        name="helper",
+        profile=dagent.AgentProfile(
+            name="helper_profile",
+            content="Changed profile.",
+        ),
+        capabilities=[publish],
+    )
+    second_runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, skill_roots=[])
+    second_runner.add_agent(changed_agent)
+
+    with pytest.raises(ValueError, match="Checkpoint capability definition changed: agent.helper"):
+        run(second_runner.resume(first.review.approve(), checkpoint=checkpoint))
+
+
+def test_static_agent_resume_limit_failure_clears_continuation(tmp_path) -> None:
+    calls: list[str] = []
+
+    @dagent.tool(risk="high")
+    def publish(text: str) -> str:
+        calls.append(text)
+        return text
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(
+                id="call_1",
+                name="tool_publish",
+                arguments={"text": "draft"},
+            )
+        ]),
+        ChatResponse(content="not reached"),
+    ])
+    agent = dagent.ToolAgent(name="helper", profile="conversation", capabilities=[publish])
+    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, skill_roots=[])
+    first = run(runner.run(
+        _agent_dag(agent),
+        review="careful",
+        limits=dagent.ExecutionLimits(max_total_operations=2),
+    ))
+
+    with pytest.raises(dagent.ExecutionLimitExceeded) as raised:
+        run(runner.resume(first.review.approve(), checkpoint=first.checkpoint))
+
+    assert raised.value.checkpoint is not None
+    assert raised.value.checkpoint.state.status == "failed"
+    assert raised.value.checkpoint.state.pending_review is None
+    assert raised.value.checkpoint.state.static_agent_continuation is None
+    assert runner.run_checkpoint(first.run_id) == raised.value.checkpoint
+    assert calls == []
 
 
 def test_static_high_risk_capability_stays_direct_and_nested_agent_shapes_are_rejected(tmp_path) -> None:

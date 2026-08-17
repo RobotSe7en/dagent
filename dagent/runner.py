@@ -1810,6 +1810,7 @@ class Runner:
                 "status": "failed",
                 "pending_review": None,
                 "pending_invocation": None,
+                "static_agent_continuation": None,
             }
             if (
                 resume_state.pending_review is not None

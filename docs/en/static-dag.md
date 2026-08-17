@@ -68,8 +68,12 @@ The DAG author already authorizes ordinary capability nodes, including
 high-risk ones, so they still execute directly. This continuation supports only
 top-level direct agent capability nodes. An agent in a `MapNode`, `Subgraph`,
 or `LoopNode` is rejected before execution because those nested progress states
-are not resumable yet. Persist `result.checkpoint` and restore it with a
-compatible Runner just as for other review continuations.
+are not resumable yet; a registered agent is also a leaf and cannot expose
+another agent. Persist `result.checkpoint` and restore it with a compatible
+Runner just as for other review continuations. Its direct agent-node execution
+configuration is fingerprinted, so a changed profile, step limit, policy,
+skills, or inner tool scope is rejected rather than silently changing a
+resumed run.
 
 ## Typed Input and Output
 
