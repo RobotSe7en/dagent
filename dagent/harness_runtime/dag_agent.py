@@ -57,6 +57,10 @@ from dagent.harness_runtime.execution_budget import (
     ExecutionLimitExceeded,
     reserve_model_turn,
 )
+from dagent.harness_runtime.static_agent_review import (
+    StaticAgentExecutionControl,
+    StaticAgentReviewRequired,
+)
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, StructuredOutputFormat
 from dagent.providers.base import normalize_chat_response
@@ -74,6 +78,7 @@ from dagent.schemas import (
     PlannerFrontend,
     PlannerSkillSnapshot,
     CapabilityDefinition,
+    CapabilityInvocation,
     CapabilityNodePayload,
     ConditionNodePayload,
     ContextPolicy,
@@ -103,6 +108,7 @@ from dagent.schemas.value import iter_artifact_exprs
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.harness_runtime.context import ContextAssembler, user_content_for_model
 from dagent.schemas.conversation import inline_content, stored_content_text
+from dagent.schemas.results import _StaticDagAgentContinuation
 
 
 MAX_NODE_RESULT_CONTEXT_CHARS = 4000
@@ -733,6 +739,8 @@ class DAGAgentLoop:
         *,
         run_id: str | None = None,
         graph_input: Any = None,
+        review_level: ReviewLevel = "fast",
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
@@ -740,6 +748,7 @@ class DAGAgentLoop:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
+        _validate_static_agent_topology(spec)
         run_id = run_id or f"dag_run_{uuid4().hex}"
         dag = compile_dag_spec(
             spec,
@@ -780,11 +789,12 @@ class DAGAgentLoop:
             status="completed",
             user_request=f"Run DAGSpec {spec.id}",
             dag=dag,
-            review_level="fast",
+            dag_spec=spec.model_copy(deep=True),
+            review_level=review_level,
             runtime_mode="dag_spec",
             spec_id=spec.id,
             workspace_path=str(workspace),
-            capability_scope=capability_scope_to_state(DEFAULT_CAPABILITY_SCOPE),
+            capability_scope=capability_scope_to_state(capability_scope),
         )
         _emit_dag(on_dag, dag)
 
@@ -800,14 +810,129 @@ class DAGAgentLoop:
             spec_id=spec.id,
             graph_input=graph_input,
         )
-        trace = await self.execute(
+        return await self._execute_static_record(
             record,
-            replan=False,
+            spec=spec,
+            graph_input=graph_input,
             dag_executor=dag_executor,
+            control=StaticAgentExecutionControl(review_level=review_level),
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
         )
+
+    async def resume_static_review(
+        self,
+        state: RunState,
+        *,
+        approved: bool,
+        feedback: str | None = None,
+        on_token: Callable[[str], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+        on_dag: Callable[[DAG], None] | None = None,
+    ) -> LoopOutcome | None:
+        continuation = state.static_agent_continuation
+        if continuation is None or state.dag is None or state.dag_spec is None:
+            return None
+        _validate_static_agent_topology(state.dag_spec)
+        record = state.model_copy(deep=True)
+        node = _node_by_id(record.dag, continuation.node_id)
+        if not _is_direct_agent_node(node):
+            raise ValueError("Static agent continuation does not reference a direct agent node.")
+        node.payload.invocation = continuation.invocation.model_copy(deep=True)
+        record.trace = _without_dag_node_trace(record.trace, continuation.node_id)
+        record.pending_review = None
+        record.pending_invocation = None
+        record.static_agent_continuation = None
+        record.dag.status = "approved"
+        workspace = Path(record.workspace_path or "").expanduser().resolve()
+        dag_executor = DAGExecutor(
+            capability_executor=self.dag_executor.capability_executor,
+            workspace_path=workspace,
+            capability_workspace_root=workspace,
+            runtime_directory=self.dag_executor.runtime_directory,
+            result_storage_policy=self.result_storage_policy,
+            extra_system_prompt=self.dag_executor.extra_system_prompt,
+            artifacts=record.dag_spec.artifacts,
+            artifact_states=(
+                {} if record.trace is None else record.trace.artifacts
+            ),
+            spec_id=record.dag_spec.id,
+            graph_input=continuation.graph_input,
+        )
+        return await self._execute_static_record(
+            record,
+            spec=record.dag_spec,
+            graph_input=continuation.graph_input,
+            dag_executor=dag_executor,
+            control=StaticAgentExecutionControl(
+                review_level=record.review_level,
+                agent_state=continuation.agent_state,
+                node_id=continuation.node_id,
+                approved=approved,
+                feedback=feedback,
+            ),
+            on_token=on_token,
+            on_event=on_event,
+            on_dag=on_dag,
+        )
+
+    async def _execute_static_record(
+        self,
+        record: RunState,
+        *,
+        spec: DAGSpec,
+        graph_input: Any,
+        dag_executor: DAGExecutor,
+        control: StaticAgentExecutionControl,
+        on_token: Callable[[str], None] | None,
+        on_event: Callable[[dict[str, Any]], None] | None,
+        on_dag: Callable[[DAG], None] | None,
+    ) -> LoopOutcome:
+        try:
+            trace = await self.execute(
+                record,
+                replan=False,
+                dag_executor=dag_executor,
+                agent_execution_control=control,
+                on_token=on_token,
+                on_event=on_event,
+                on_dag=on_dag,
+            )
+        except StaticAgentReviewRequired as pause:
+            if pause.node_id is None or pause.invocation is None:
+                raise RuntimeError("Static agent review pause is missing node identity.")
+            trace = pause.trace or record.trace or _empty_run_trace(
+                run_id=record.run_id,
+                dag=record.dag,
+            )
+            record.trace = trace
+            record.pending_review = pause.agent_state.pending_review
+            record.pending_invocation = pause.agent_state.pending_invocation
+            record.static_agent_continuation = _StaticDagAgentContinuation(
+                node_id=pause.node_id,
+                invocation=pause.invocation,
+                agent_state=pause.agent_state,
+                graph_input=graph_input,
+            )
+            record.dag.status = "running"
+            _emit_dag(on_dag, record.dag)
+            return _dag_loop_outcome(
+                record=record,
+                status="awaiting_review",
+                final_response=(
+                    "Awaiting review."
+                    if record.pending_review is None
+                    else record.pending_review.message
+                ),
+                dag=record.dag,
+                trace=trace,
+                pending_review=record.pending_review,
+                pending_invocation=record.pending_invocation,
+            )
+
+        if trace is None:
+            raise RuntimeError("Static DAG execution completed without a run trace.")
         if trace.status == "completed" and _has_required_artifact_failure(
             spec.artifacts,
             trace.artifacts,
@@ -820,10 +945,7 @@ class DAGAgentLoop:
                 if trace.root.error is not None
                 else "DAG execution failed."
             )
-            _mark_planned_artifacts_failed(
-                dag_executor.artifact_states,
-                failure_message,
-            )
+            _mark_planned_artifacts_failed(dag_executor.artifact_states, failure_message)
             trace.artifacts = dict(dag_executor.artifact_states)
         final_response = dag_run_fallback_message(record, trace)
         if spec.output is not None and trace.status == "completed":
@@ -849,7 +971,7 @@ class DAGAgentLoop:
             dag=record.dag,
             trace=trace,
             spec_id=spec.id,
-            workspace_path=str(workspace),
+            workspace_path=record.workspace_path,
         )
 
     async def resume_review(
@@ -992,6 +1114,7 @@ class DAGAgentLoop:
         replan: bool = True,
         dag_executor: DAGExecutor | None = None,
         entry_observation: str | None = None,
+        agent_execution_control: StaticAgentExecutionControl | None = None,
     ) -> RunTrace | None:
         if record.pending_review is not None:
             raise DAGExecutionError("DAG is awaiting review and is not approved.")
@@ -1014,7 +1137,7 @@ class DAGAgentLoop:
         pending_observation: str | None = entry_observation
         trace = record.trace
         active_executor = dag_executor or self.dag_executor
-        if record.dag_spec is not None:
+        if record.kind == "dynamic_dag" and record.dag_spec is not None:
             active_executor.configure_spec(
                 record.dag_spec,
                 graph_input={"request": record.user_request},
@@ -1037,11 +1160,14 @@ class DAGAgentLoop:
                             record.dag_boundary_approved_version is not None
                             and record.dag_boundary_approved_version == record.dag.version
                         ),
+                        agent_execution_control=agent_execution_control,
                         skills=record.capability_scope.skills,
                         on_token=on_token,
                         on_event=on_event,
                     )
                 except ExecutionLimitExceeded:
+                    raise
+                except StaticAgentReviewRequired:
                     raise
                 except Exception as exc:
                     layer_failed = True
@@ -1670,6 +1796,58 @@ def dag_run_fallback_message(record: RunState, trace: RunTrace) -> str:
 # Utilities
 # ------------------------------------------------------------------
 
+
+def _is_direct_agent_node(node: DAGNode) -> bool:
+    return (
+        isinstance(node.payload, CapabilityNodePayload)
+        and node.payload.invocation.kind == "agent"
+    )
+
+
+def _without_dag_node_trace(trace: RunTrace | None, node_id: str) -> RunTrace | None:
+    if trace is None:
+        return None
+    restored = trace.model_copy(deep=True)
+    restored.root.children = [
+        child
+        for child in restored.root.children
+        if child.ref.get("node_id") != node_id
+    ]
+    return restored
+
+
+def _validate_static_agent_topology(spec: DAGSpec) -> None:
+    for node in spec.nodes:
+        payload = node.payload
+        if isinstance(payload, MapNodePayload) and payload.invocation.kind == "agent":
+            raise DAGValidationError(
+                f"Static DAG MapNode '{node.id}' cannot target an agent capability."
+            )
+        nested = (
+            payload.spec
+            if isinstance(payload, SubgraphNodePayload)
+            else payload.body if isinstance(payload, LoopNodePayload) else None
+        )
+        if nested is not None and _contains_agent_node(nested):
+            raise DAGValidationError(
+                f"Static DAG {payload.type.title()} node '{node.id}' cannot contain an agent capability."
+            )
+
+
+def _contains_agent_node(spec: DAGSpec) -> bool:
+    for node in spec.nodes:
+        payload = node.payload
+        if _is_direct_agent_node(node) or (
+            isinstance(payload, MapNodePayload) and payload.invocation.kind == "agent"
+        ):
+            return True
+        nested = payload.spec if isinstance(payload, SubgraphNodePayload) else (
+            payload.body if isinstance(payload, LoopNodePayload) else None
+        )
+        if nested is not None and _contains_agent_node(nested):
+            return True
+    return False
+
 def _dag_loop_outcome(
     *,
     record: RunState,
@@ -1680,13 +1858,14 @@ def _dag_loop_outcome(
     spec_id: str | None = None,
     workspace_path: str | None = None,
     pending_review: PendingReview | None = None,
+    pending_invocation: CapabilityInvocation | None = None,
 ) -> LoopOutcome:
     state = record.model_copy(update={
         "status": status,
         "dag": dag,
         "trace": trace,
         "pending_review": pending_review,
-        "pending_invocation": None,
+        "pending_invocation": pending_invocation,
         "spec_id": spec_id if spec_id is not None else record.spec_id,
         "workspace_path": workspace_path if workspace_path is not None else record.workspace_path,
     })

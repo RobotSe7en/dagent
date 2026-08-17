@@ -122,6 +122,7 @@ class ToolAgent:
         context_policy: ContextPolicy | None = None,
         result_storage_policy: ResultStoragePolicy | None = None,
         context_assembler: ContextAssembler | None = None,
+        prompt_context: str = "",
     ) -> None:
         self.loop = loop
         self.profile = profile
@@ -135,6 +136,7 @@ class ToolAgent:
             context_window_tokens=getattr(loop.provider, "context_window_tokens", 32768),
             output_reserve_tokens=getattr(loop.provider, "output_reserve_tokens", 4096),
         )
+        self.prompt_context = prompt_context
         self.tools = self.loop.available_capabilities()
         self.system_message = self._build_system_message(DEFAULT_CAPABILITY_SCOPE)
         self.conversation = ConversationState()
@@ -156,6 +158,7 @@ class ToolAgent:
                 profile=self.profile,
                 task_content="",
                 skills=skills,
+                context=self.prompt_context,
                 extra_system_prompt=self.extra_system_prompt,
                 workspace_path=workspace_path,
             )
@@ -166,7 +169,7 @@ class ToolAgent:
         message: str,
         *,
         run_id: str | None = None,
-        review_level: ReviewLevel = "fast",
+        review_level: ReviewLevel | None = "fast",
         capability_context: CapabilityExecutionContext | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
@@ -190,7 +193,7 @@ class ToolAgent:
         conversation: ConversationState,
         *,
         run_id: str | None = None,
-        review_level: ReviewLevel = "fast",
+        review_level: ReviewLevel | None = "fast",
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         boundary: Boundary | None = None,
         capability_context: CapabilityExecutionContext | None = None,
@@ -216,6 +219,7 @@ class ToolAgent:
         *,
         approved: bool,
         feedback: str | None = None,
+        capability_context: CapabilityExecutionContext | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome | None:
@@ -254,9 +258,16 @@ class ToolAgent:
                 pending_review.payload.get("reason") == "boundary_violation"
             )
             try:
+                resume_context = capability_context or CapabilityExecutionContext(
+                    task_id=state.run_id,
+                    workspace_path=state.workspace_path,
+                    skills=capability_scope.skills,
+                    extra_system_prompt=self.extra_system_prompt,
+                )
                 result = await self.loop.capability_executor.execute(
                     invocation,
-                    context=CapabilityExecutionContext(
+                    context=replace(
+                        resume_context,
                         task_id=state.run_id,
                         workspace_path=state.workspace_path,
                         skills=capability_scope.skills,
@@ -346,7 +357,9 @@ class ToolAgent:
             review_level=state.review_level,
             boundary=invocation.boundary,
             capability_scope=capability_scope,
-            capability_context=CapabilityExecutionContext(
+            capability_context=replace(
+                capability_context
+                or CapabilityExecutionContext(task_id=state.run_id),
                 task_id=state.run_id,
                 workspace_path=state.workspace_path,
                 skills=capability_scope.skills,
@@ -378,7 +391,7 @@ class ToolAgent:
         conversation: ConversationState,
         *,
         run_id: str | None = None,
-        review_level: ReviewLevel,
+        review_level: ReviewLevel | None,
         boundary: Boundary,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         capability_context: CapabilityExecutionContext | None = None,
@@ -391,11 +404,13 @@ class ToolAgent:
                 capability_context,
                 extra_system_prompt=self.extra_system_prompt,
             )
-        control_tool_names = self.reviewable_tool_names(capability_scope)
-        control_tool_names.update(
-            self.loop.tool_adapter.function_name(definition)
-            for definition in self.loop.available_capabilities(capability_scope.capability_ids)
-        )
+        control_tool_names: set[str] | None = None
+        if review_level is not None:
+            control_tool_names = self.reviewable_tool_names(capability_scope)
+            control_tool_names.update(
+                self.loop.tool_adapter.function_name(definition)
+                for definition in self.loop.available_capabilities(capability_scope.capability_ids)
+            )
         system_message = self._build_system_message(
             capability_scope,
             workspace_path=(
@@ -425,6 +440,14 @@ class ToolAgent:
             on_token=on_token,
             on_event=on_event,
         )
+        if review_level is not None:
+            outcome = outcome.model_copy(
+                update={
+                    "state": outcome.state.model_copy(
+                        update={"review_level": review_level}
+                    )
+                }
+            )
         self.conversation = outcome.state.model_thread or conversation
         self.trace = outcome.state.trace
         return outcome

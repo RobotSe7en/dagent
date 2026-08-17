@@ -253,6 +253,17 @@ class PendingReview(BaseModel):
         return self
 
 
+class _StaticDagAgentContinuation(BaseModel):
+    """Internal checkpoint data for one suspended direct static-DAG agent node."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    invocation: CapabilityInvocation
+    agent_state: "RunState"
+    graph_input: Any = None
+
+
 class RunState(BaseModel):
     """Serializable same-run state embedded in results and checkpoints."""
 
@@ -280,6 +291,7 @@ class RunState(BaseModel):
     spec_id: str | None = None
     workspace_path: str | None = None
     dag_boundary_approved_version: int | None = None
+    static_agent_continuation: _StaticDagAgentContinuation | None = None
 
 
 class RunCheckpoint(BaseModel):
@@ -354,6 +366,26 @@ class RunCheckpoint(BaseModel):
             raise ValueError(
                 "Checkpoint pending invocation requires a capability review."
             )
+        continuation = self.state.static_agent_continuation
+        if continuation is not None:
+            child = continuation.agent_state
+            if (
+                self.state.kind != "static_dag"
+                or child.status != "awaiting_review"
+                or child.pending_review != pending_review
+                or child.pending_invocation != pending_invocation
+            ):
+                raise ValueError(
+                    "Static agent continuation does not match its mirrored review state."
+                )
+            if continuation.invocation.capability_id not in self.plan.capability_ids:
+                raise ValueError(
+                    "Static agent continuation is outside the resolved scope."
+                )
+        elif self.state.kind == "static_dag" and pending_review is not None:
+            raise ValueError(
+                "Static DAG capability reviews require a static agent continuation."
+            )
         limits = self.plan.limits
         if (
             limits.max_total_operations is not None
@@ -371,6 +403,9 @@ class RunCheckpoint(BaseModel):
         ):
             raise ValueError("Checkpoint usage exceeds max_capability_calls.")
         return self
+
+
+_StaticDagAgentContinuation.model_rebuild()
 
 
 class LoopOutcome(BaseModel):

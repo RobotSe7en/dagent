@@ -34,7 +34,7 @@ from dagent.capabilities.tools.boundary import (
     enforce_path_allowed,
     resolve_path_against_workspace,
 )
-from dagent.state import PromptBuilder, PromptRequest
+from dagent.state import PromptBuilder
 from dagent.state.prompt_builder import PromptSkill
 from dagent.capabilities.tools.registry import (
     ToolRegistry,
@@ -165,7 +165,7 @@ class AgentNodeSessionStore:
 
 
 class AgentCapabilityProvider:
-    """Registers DAG agent-node capabilities backed by ToolAgentLoop."""
+    """Registers DAG agent-node capabilities backed by ``ToolAgent``."""
 
     def __init__(
         self,
@@ -238,7 +238,12 @@ class AgentCapabilityProvider:
     ) -> CapabilityResult:
         from dagent.harness_runtime.capability_executor import CapabilityExecutor
         from dagent.harness_runtime.context import ContextAssembler
-        from dagent.harness_runtime.tool_agent import ToolAgentLoop
+        from dagent.harness_runtime.capability_scope import CapabilityScope
+        from dagent.harness_runtime.static_agent_review import (
+            StaticAgentExecutionControl,
+            StaticAgentReviewRequired,
+        )
+        from dagent.harness_runtime.tool_agent import ToolAgent, ToolAgentLoop
 
         profile = _profile_from_config(agent_name, config)
         capability_executor = config.get("capability_executor")
@@ -266,26 +271,6 @@ class AgentCapabilityProvider:
             fingerprint=fingerprint,
         )
         reference_content = _reference_content(invocation)
-        prompt_skills = (
-            []
-            if self.skill_prompt_resolver is None
-            else list(self.skill_prompt_resolver(config.get("skills")))
-        )
-        system_message = self.prompt_builder.build_system_message(
-            PromptRequest(
-                profile=profile,
-                task_content="",
-                skills=prompt_skills,
-                context=_agent_runtime_context(
-                    context,
-                    has_reference_content=bool(reference_content),
-                ),
-                extra_system_prompt=(
-                    None if context is None else context.extra_system_prompt
-                ),
-                workspace_path=None if context is None else context.workspace_path,
-            )
-        )
         context_policy = config.get("context_policy")
         if not isinstance(context_policy, ContextPolicy):
             context_policy = ContextPolicy()
@@ -293,24 +278,56 @@ class AgentCapabilityProvider:
         if not isinstance(result_storage_policy, ResultStoragePolicy):
             result_storage_policy = ResultStoragePolicy()
         workspace_path = None if context is None else context.workspace_path
+        capability_scope = CapabilityScope(
+            capability_ids=tuple(
+                definition.id
+                for definition in tool_adapter.capabilities(enabled_toolsets)
+            ),
+            skills=config.get("skills"),
+        )
+        agent = ToolAgent(
+            loop=loop,
+            profile=profile,
+            prompt_builder=self.prompt_builder,
+            max_steps=max_steps,
+            extra_system_prompt=None if context is None else context.extra_system_prompt,
+            skill_prompt_resolver=self.skill_prompt_resolver,
+            context_policy=context_policy,
+            result_storage_policy=result_storage_policy,
+            context_assembler=ContextAssembler(
+                context_window_tokens=getattr(provider, "context_window_tokens", 32768),
+                output_reserve_tokens=getattr(provider, "output_reserve_tokens", 4096),
+            ),
+            prompt_context=_agent_runtime_context(
+                context,
+                has_reference_content=bool(reference_content),
+            ),
+        )
+        control = _static_agent_execution_control(context, StaticAgentExecutionControl)
+        capability_context = _agent_capability_context(context, config.get("skills"))
         with capability_executor.workspace_context(workspace_path):
-            outcome = await loop.run(
-                conversation,
-                run_id=context.task_id if context is not None else None,
-                boundary=invocation.boundary,
-                max_steps=max_steps,
-                system_message=system_message,
-                context_policy=context_policy,
-                result_storage_policy=result_storage_policy,
-                context_assembler=ContextAssembler(
-                    context_window_tokens=getattr(provider, "context_window_tokens", 32768),
-                    output_reserve_tokens=getattr(provider, "output_reserve_tokens", 4096),
-                ),
-                skills=config.get("skills"),
-                capability_context=_agent_capability_context(context, config.get("skills")),
-                on_token=callbacks.on_token,
-                on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
-            )
+            if control is not None and control.agent_state is not None:
+                outcome = await agent.resume_review(
+                    control.agent_state,
+                    approved=control.approved,
+                    feedback=control.feedback,
+                    capability_context=capability_context,
+                    on_token=callbacks.on_token,
+                    on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
+                )
+                if outcome is None:
+                    raise ValueError("Static agent continuation has no resumable tool review.")
+            else:
+                outcome = await agent.run_conversation(
+                    conversation,
+                    run_id=context.task_id if context is not None else None,
+                    review_level=None if control is None else control.review_level,
+                    capability_scope=capability_scope,
+                    boundary=invocation.boundary,
+                    capability_context=capability_context,
+                    on_token=callbacks.on_token,
+                    on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
+                )
         if context is not None and context.node is not None:
             self.session_store.save(
                 task_id=context.task_id,
@@ -318,6 +335,8 @@ class AgentCapabilityProvider:
                 fingerprint=fingerprint,
                 conversation=outcome.state.model_thread or conversation,
             )
+        if control is not None and outcome.state.status == "awaiting_review":
+            raise StaticAgentReviewRequired(outcome.state)
         if outcome.state.status == "completed":
             return _agent_result(
                 invocation,
@@ -384,6 +403,13 @@ def _agent_capability_context(context: Any, skills: tuple[str, ...] | None) -> A
     if context is None:
         return None
     return replace(context, skills=skills)
+
+
+def _static_agent_execution_control(context: Any, control_type: type[Any]) -> Any:
+    if context is None:
+        return None
+    control = context.metadata.get("static_agent_execution_control")
+    return control if isinstance(control, control_type) else None
 
 
 def _agent_event_emitter(
