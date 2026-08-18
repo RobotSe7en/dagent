@@ -5,9 +5,62 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.1`.
+The current package version is `0.9.2`.
 
 ## Unreleased
+
+## 0.9.2
+
+### Added
+
+- A top-level, direct `Node(..., target=ToolAgent(...))` in a static DAG now
+  uses the existing `ToolAgent` review and resume flow for its inner tool calls.
+  With `review="careful"`, medium- and high-risk inner tools pause for review;
+  under every policy, a boundary violation can pause for a one-invocation
+  boundary override.
+- Static-DAG agent review checkpoints persist the suspended node invocation and
+  inner tool-agent state. They can be restored by a compatible new `Runner`.
+  The direct agent configuration is fingerprinted so a changed profile, limits,
+  policy, skill scope, or inner-tool scope cannot silently alter a resumed run.
+- The WebUI now presents these static-DAG reviews, keeps the run in
+  `awaiting_review` until a decision is made, and can resume a saved static DAG
+  without a separate conversation-state record.
+- The `dev` extra now includes `pip`, so `uv sync --extra dev` and
+  `uv run --extra dev` provide `python -m pip` for development workflows.
+
+### Behavior and compatibility
+
+- Ordinary static capability nodes, including high-risk nodes, remain directly
+  authorized by the DAG author and do not gain a review prompt.
+- Only direct top-level agent capability nodes are supported. Agents in a
+  `MapNode`, `Subgraph`, or `LoopNode`, and registered agents that expose another
+  agent, are rejected before execution because their nested progress cannot yet
+  be restored safely.
+- Approval and rejection continue the same inner `ToolAgent` conversation;
+  rejection does not execute the reviewed tool and is returned to the model as
+  feedback.
+
+### Breaking changes
+
+- None.
+
+### Migration steps
+
+- Upgrade `dagent-ai` from `0.9.1` to `0.9.2`. No data or configuration
+  migration is required.
+- Contributors who need to run `pip` in the project environment should refresh
+  it with `uv sync --extra dev`.
+
+### Verification and known limitations
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+- Static agent review deliberately does not support `MapNode`, `Subgraph`, or
+  `LoopNode` continuations yet, and it does not change dynamic-DAG semantics.
 
 ## 0.9.1
 

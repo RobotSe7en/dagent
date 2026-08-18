@@ -4,9 +4,52 @@
 
 ## 当前发布线
 
-当前包版本是 `0.9.1`。
+当前包版本是 `0.9.2`。
 
 ## Unreleased
+
+## 0.9.2
+
+### 新增
+
+- 静态 DAG 中顶层、直接的 `Node(..., target=ToolAgent(...))` 现在会对其内部工具调用复用
+  既有的 `ToolAgent` 审核和恢复流程。`review="careful"` 会让中、高风险内部工具暂停等待
+  审核；任何策略下，boundary 越界都可以暂停，以请求仅针对该 invocation 的 boundary override。
+- 静态 DAG Agent 审核 checkpoint 会持久化挂起的节点 invocation 和内部 tool-agent state，
+  可由兼容的新 `Runner` 恢复。直接 Agent 的配置会写入 fingerprint，因此 profile、限制、
+  策略、skill scope 或内部工具范围变更时，不会悄然改变恢复后的运行语义。
+- WebUI 现在会显示这类静态 DAG 审核，在作出决定前保持 run 为 `awaiting_review`，并可在没有
+  独立 conversation-state record 的情况下恢复已保存的静态 DAG。
+- `dev` extra 现在包含 `pip`，所以 `uv sync --extra dev` 和 `uv run --extra dev` 会为开发流程
+  提供 `python -m pip`。
+
+### 行为与兼容性
+
+- 普通静态 capability node（包括高风险 node）仍由 DAG 作者直接授权，不会新增审核弹窗。
+- 只支持顶层直接 Agent capability node。`MapNode`、`Subgraph` 或 `LoopNode` 内的 Agent，
+  以及会暴露另一 Agent 的已注册 Agent，都会在执行前被拒绝，因为其嵌套进度尚不能安全恢复。
+- 批准和拒绝会继续同一个内部 `ToolAgent` conversation；拒绝不会执行待审工具，而是作为反馈
+  返回给模型。
+
+### 破坏性变化
+
+- 无。
+
+### 迁移步骤
+
+- 将 `dagent-ai` 从 `0.9.1` 升级到 `0.9.2`；不需要迁移数据或配置。
+- 需要在项目环境中运行 `pip` 的贡献者应执行 `uv sync --extra dev` 来刷新环境。
+
+### 验证与已知限制
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+- 静态 Agent 审核有意暂不支持 `MapNode`、`Subgraph` 或 `LoopNode` continuation，也不会改变
+  dynamic DAG 语义。
 
 ## 0.9.1
 
