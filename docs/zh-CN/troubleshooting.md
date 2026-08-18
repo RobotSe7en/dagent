@@ -16,6 +16,17 @@ import dagent
 
 确认你的 Python 版本是 3.11 或更新。
 
+## 仓库 checkout 中没有 `pip`
+
+本地 API 和 WebUI 使用 `dev` extra。请用下面的命令创建或修复项目 venv：
+
+```bash
+uv sync --extra dev
+```
+
+该命令会安装项目声明的 `pip` 依赖。不要依赖无关的系统 `pip`；启用 shell 的 agent 使用的是项目
+虚拟环境。
+
 ## Provider 认证失败
 
 确认传给 `api_key_env` 的环境变量存在于启动应用的同一个进程中：

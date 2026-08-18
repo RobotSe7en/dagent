@@ -16,6 +16,18 @@ import dagent
 
 Check that your Python version is 3.11 or newer.
 
+## `pip` Is Unavailable in a Repository Checkout
+
+The local API and WebUI use the `dev` extra. Create or repair the project venv
+with:
+
+```bash
+uv sync --extra dev
+```
+
+This installs the project's `pip` dependency. Do not rely on an unrelated
+system `pip`; shell-enabled agents run with the project's virtual environment.
+
 ## Provider Authentication Fails
 
 Make sure the environment variable passed to `api_key_env` exists in the same

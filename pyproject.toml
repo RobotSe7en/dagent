@@ -28,6 +28,7 @@ Issues = "https://github.com/RobotSe7en/dagent/issues"
 dev = [
     "fastapi>=0.115",
     "httpx[socks]>=0.28.1",
+    "pip>=24",
     "pytest-asyncio>=0.23",
     "pytest>=8.0",
     "python-multipart>=0.0.20",
