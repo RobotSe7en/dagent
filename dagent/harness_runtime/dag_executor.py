@@ -42,6 +42,7 @@ from dagent.harness_runtime.dag_builder import (
 )
 from dagent.schemas import (
     Artifact,
+    ArtifactFileManifest,
     ArtifactState,
     CapabilityInvocation,
     CapabilityNodePayload,
@@ -101,6 +102,7 @@ class _ValueScope:
     node_traces: dict[str, RunTraceNode]
     graph_input: Any = None
     artifacts: dict[str, Artifact] = field(default_factory=dict)
+    artifact_files: dict[str, tuple[dict[str, Any], ...]] = field(default_factory=dict)
     workspace_path: Path | None = None
     capability_workspace_root: Path | None = None
     item: Any = _NO_ITEM
@@ -116,6 +118,7 @@ class DAGExecutor:
         workspace_path: str | Path | None = None,
         capability_workspace_root: str | Path | None = None,
         artifacts: dict[str, Artifact] | None = None,
+        artifact_file_manifests: tuple[ArtifactFileManifest, ...] = (),
         artifact_states: dict[str, ArtifactState] | None = None,
         spec_id: str | None = None,
         graph_input: Any = None,
@@ -132,6 +135,12 @@ class DAGExecutor:
             else self.capability_executor.workspace_root
         )
         self.artifacts = artifacts or {}
+        self.artifact_files = {
+            manifest.artifact_id: tuple(
+                file.model_dump(mode="json") for file in manifest.files
+            )
+            for manifest in artifact_file_manifests
+        }
         self.artifact_states = artifact_states or init_artifact_states(self.artifacts)
         self.spec_id = spec_id
         self.graph_input = _normalize_graph_input(graph_input)
@@ -314,6 +323,7 @@ class DAGExecutor:
             node_traces=node_traces,
             graph_input=self.graph_input,
             artifacts=self.artifacts,
+            artifact_files=self.artifact_files,
             workspace_path=self.workspace_path,
             capability_workspace_root=self.capability_workspace_root,
             item=item,
@@ -991,6 +1001,7 @@ def _resolve_value(value: Any, scope: _ValueScope) -> Any:
         return _artifact_value(
             expr,
             artifacts=scope.artifacts,
+            artifact_files=scope.artifact_files,
             workspace_path=scope.workspace_path,
             capability_workspace_root=scope.capability_workspace_root,
         )
@@ -1148,6 +1159,7 @@ def _artifact_value(
     expr: ArtifactExpr,
     *,
     artifacts: dict[str, Artifact] | None,
+    artifact_files: dict[str, tuple[dict[str, Any], ...]],
     workspace_path: Path | None,
     capability_workspace_root: Path | None,
 ) -> Any:
@@ -1155,6 +1167,16 @@ def _artifact_value(
     if artifact is None:
         raise DAGExecutionError(f"Unknown artifact '{expr.artifact_id}'.")
 
+    if expr.field == "files":
+        return _extract_path(
+            list(artifact_files.get(expr.artifact_id, ())),
+            expr.path,
+        )
+
+    if expr.path:
+        raise DAGExecutionError(
+            f"Artifact field '{expr.field}' does not support a value path."
+        )
     if workspace_path is None:
         if expr.field == "path":
             return artifact.paths[0]

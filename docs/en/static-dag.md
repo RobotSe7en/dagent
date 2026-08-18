@@ -165,6 +165,7 @@ Static DAG arguments can contain value references. They serialize as structured
 | `artifact.paths` | All artifact paths relative to the capability workspace, for tool arguments |
 | `artifact.absolute_path` | First artifact path resolved inside the run workspace |
 | `artifact.absolute_paths` | All artifact paths resolved inside the run workspace |
+| `artifact.files` | Sorted `ArtifactFileRef` objects materialized for this artifact in the current static-DAG run |
 | `dag.format("Use {x}", x=node.output)` | Format string after nested refs resolve |
 | `node.output.score >= 0.8` | Runtime comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`) |
 | `dagent.item` / `dagent.item.url` | Current map element, or latest loop output in loop conditions |
@@ -273,6 +274,81 @@ write_node = dagent.Node(
 ```
 
 Artifact path escapes are rejected by runtime boundary checks.
+
+### Uploaded input-file manifests
+
+For a file-input artifact, pass the current run's bytes through
+`Runner.run(..., artifact_uploads=...)`. Each `ArtifactUpload` has a browser or
+host-supplied relative `filename`, `content`, and optional `media_type`. The
+SDK materializes those exact uploads, then freezes a JSON-safe
+`ArtifactFileManifest` in `RunState` and `RunCheckpoint`. It never derives this
+list by scanning the workspace.
+
+`artifact.files` resolves to a deterministic path-sorted list of
+`ArtifactFileRef` objects:
+
+```python
+ArtifactFileRef(
+    path="inputs/uploads/briefs/plan.md",  # workspace-relative
+    name="plan.md",
+    size=1234,
+    media_type="text/markdown",
+)
+```
+
+Use normal structured value paths to select an entry or a field. The existing
+artifact path expressions retain their behavior; `files` is additional:
+
+```python
+uploads = dag.artifact("uploads", "inputs/uploads/", required=False)
+
+first = dagent.Node(
+    "inspect_first",
+    target=inspect_file,
+    inputs={"path": uploads.files[0].path, "name": uploads.files[0].name},
+)
+```
+
+For multiple files, pass the list directly to `MapNode`. The map body receives
+the current `ArtifactFileRef` through `dagent.item`:
+
+```python
+process = dagent.MapNode(
+    "process_uploads",
+    target=inspect_file,
+    over=uploads.files,
+    inputs={
+        "path": dagent.item.path,
+        "name": dagent.item.name,
+        "size": dagent.item.size,
+        "media_type": dagent.item.media_type,
+    },
+)
+dag.add_node(process)
+
+result = await runner.run(
+    dag,
+    artifact_uploads={
+        "uploads": [
+            dagent.ArtifactUpload(
+                filename="briefs/plan.md",
+                content=b"...",
+                media_type="text/markdown",
+            )
+        ]
+    },
+)
+```
+
+An optional artifact with no uploads resolves `artifact.files` to `[]` and has
+no manifest entry. Each manifest is bounded to 256 files, 25 MiB per file, and
+100 MiB total; unsafe names, traversal, duplicate materialization targets, and
+symlinked upload paths are rejected before writes. Entries contain no absolute
+host paths and must remain under their declared artifact path. Checkpoint resume
+uses the frozen manifest, so files later added to the workspace—or left by a
+different run—are not included. See the runnable
+[`static_dag_artifact_files`](../../examples/static_dag_artifact_files.py)
+example.
 
 ## Exclusive Condition Nodes
 

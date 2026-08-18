@@ -20,7 +20,13 @@ from dagent.schemas.conversation import (
     ToolResultMessage,
     UserMessage,
 )
-from dagent.schemas.artifact import Artifact, ArtifactState, ArtifactStatus
+from dagent.schemas.artifact import (
+    Artifact,
+    ArtifactFileManifest,
+    ArtifactFileRef,
+    ArtifactState,
+    ArtifactStatus,
+)
 from dagent.schemas.dag import DAG, DAGRun, DAGRunStatus, DAGSpec, iter_dag_invocations
 from dagent.schemas.edge import DAGEdge
 from dagent.schemas.feedback import Feedback
@@ -103,6 +109,8 @@ __all__ = [
     "ToolResultMessage",
     "UserMessage",
     "Artifact",
+    "ArtifactFileManifest",
+    "ArtifactFileRef",
     "ArtifactState",
     "ArtifactStatus",
     "DAG",

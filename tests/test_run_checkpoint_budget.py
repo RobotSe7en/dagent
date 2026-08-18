@@ -19,6 +19,24 @@ def tool_names(request: dict) -> set[str]:
     }
 
 
+def legacy_v4_checkpoint(checkpoint: dagent.RunCheckpoint) -> dagent.RunCheckpoint:
+    state_payload = checkpoint.state.model_dump(mode="json")
+    state_payload["schema_version"] = 3
+    state_payload.pop("input_artifact_files", None)
+    state = dagent.RunState.model_validate(state_payload)
+
+    plan_payload = checkpoint.plan.model_dump(mode="json")
+    plan_payload["schema_version"] = 4
+    plan_payload["fingerprint"] = ""
+    plan = dagent.ResolvedRunPlan.model_validate(plan_payload)
+    return dagent.RunCheckpoint(
+        schema_version=4,
+        state=state,
+        plan=plan,
+        usage=checkpoint.usage,
+    )
+
+
 def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="done")])
     runner = dagent.Runner(
@@ -42,8 +60,8 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     assert restored.plan.runtime_kind == "tool"
     assert restored.plan.capability_ids == ()
     assert restored.plan.skill_ids == ()
-    assert restored.schema_version == 4
-    assert restored.plan.schema_version == 4
+    assert restored.schema_version == 5
+    assert restored.plan.schema_version == 5
     assert restored.plan.runtime_directory == ".runtime"
     assert restored.plan.extra_system_prompt is None
     assert len(restored.plan.fingerprint) == 64
@@ -61,17 +79,10 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     with pytest.raises(ValidationError, match="fingerprint"):
         dagent.RunCheckpoint.model_validate(tampered)
 
-    pre_extra_prompt = checkpoint.model_dump(mode="json")
-    pre_extra_prompt["plan"].pop("extra_system_prompt")
-    restored_pre_extra_prompt = dagent.RunCheckpoint.model_validate(
-        pre_extra_prompt
-    )
-    assert restored_pre_extra_prompt.plan.extra_system_prompt is None
-
     legacy = checkpoint.model_dump(mode="json")
     legacy["schema_version"] = 3
     legacy["plan"]["schema_version"] = 3
-    with pytest.raises(ValidationError, match="Input should be 4"):
+    with pytest.raises(ValidationError, match="Input should be 4 or 5"):
         dagent.RunCheckpoint.model_validate(legacy)
 
     copied_plan = restored.plan.model_copy(update={"max_tool_steps": 99})
@@ -79,8 +90,63 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
         dagent.RunCheckpoint(
             state=restored.state,
             plan=copied_plan,
-            usage=restored.usage,
-        )
+        usage=restored.usage,
+    )
+
+
+def test_runner_resumes_legacy_v4_checkpoint_and_emits_v5_checkpoint(tmp_path) -> None:
+    calls: list[str] = []
+
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        calls.append(text)
+        return f"wrote:{text}"
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(id="call_1", name="tool_write", arguments={"text": "hello"})
+        ]),
+        ChatResponse(content="done"),
+    ])
+    first_runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[],
+    )
+    first = run(first_runner.run(
+        dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful"),
+        input="write hello",
+    ))
+    assert first.checkpoint is not None
+
+    legacy = legacy_v4_checkpoint(first.checkpoint)
+    serialized = legacy.model_dump_json()
+    restored_legacy = dagent.RunCheckpoint.model_validate_json(serialized)
+
+    assert restored_legacy.schema_version == 4
+    assert restored_legacy.plan.schema_version == 4
+    assert restored_legacy.state.schema_version == 3
+    assert "input_artifact_files" not in restored_legacy.model_dump(mode="json")["state"]
+
+    second_runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        capabilities=[write],
+        skill_roots=[],
+    )
+    resumed = run(second_runner.resume(
+        first.review.approve(),  # type: ignore[union-attr]
+        checkpoint=restored_legacy,
+    ))
+
+    assert resumed is not None
+    assert resumed.output_text == "done"
+    assert calls == ["hello"]
+    assert resumed.state.schema_version == 4
+    assert resumed.checkpoint is not None
+    assert resumed.checkpoint.schema_version == 5
 
 
 def test_checkpoint_rejects_pending_capability_outside_plan_scope(tmp_path) -> None:

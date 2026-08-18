@@ -9,6 +9,56 @@ The current package version is `0.9.2`.
 
 ## Unreleased
 
+### Added
+
+- Static DAG input artifacts now expose `artifact.files`: a deterministic,
+  JSON-safe list of the `ArtifactFileRef` values materialized from this run's
+  `artifact_uploads`. Entries carry a workspace-relative `path`, `name`,
+  `size`, and optional caller-supplied `media_type`.
+- `ArtifactFileRef` and `ArtifactFileManifest` are public SDK contracts.
+  `MapNode(over=artifact.files, ...)` can process the current `dagent.item`
+  file entry directly.
+
+### Behavior and compatibility
+
+- The list is an upload-time snapshot, not a workspace scan. Empty optional
+  inputs resolve to `[]`; later files and files from other runs cannot appear
+  during checkpoint resume.
+- Materialization rejects unsafe names, traversal, duplicate targets,
+  symlinked upload paths, more than 256 files, a file over 25 MiB, or more than
+  100 MiB in total. Existing `artifact.path`, `artifact.paths`, and absolute
+  artifact expressions are unchanged.
+
+### Checkpoint versions and compatibility
+
+- New runs emit `RunState` V4 and `ResolvedRunPlan` / `RunCheckpoint` V5 so a
+  checkpoint persists the authoritative input-file snapshot.
+- Existing V4 checkpoints containing a V3 `RunState` remain restorable. They
+  explicitly have an empty input-file manifest: resume never scans the
+  workspace or derives files from it. A successful resumed result emits a new
+  V5 checkpoint.
+- Other version combinations remain invalid. In particular, V3 state cannot
+  claim to contain an input-file manifest, and the SDK does not transparently
+  manufacture one for an older checkpoint.
+
+### Migration steps
+
+- Hosts may continue restoring persisted V4 checkpoints. Persist the V5
+  checkpoint returned after a successful resume, and use V5 for all new runs.
+- For a file input, declare a directory artifact (for example
+  `inputs/workflow_input_files/`) and call `Runner.run(...,
+  artifact_uploads={artifact_id: [ArtifactUpload(...)]})`. Consume
+  `artifact.files`, a selected entry such as `artifact.files[0].path`, or map
+  over the list. Do not scan the run workspace to recreate this contract.
+
+### Verification and known limitations
+
+- `uv run --extra dev pytest tests/test_artifact_file_manifests.py`
+- `uv run --extra dev pytest`
+- `artifact.files` is available for static `Dag` and `DAGSpec` runs, where
+  `artifact_uploads` is accepted. It does not add a workflow-start protocol or
+  alter `StartNodePayload`.
+
 ## 0.9.2
 
 ### Added
