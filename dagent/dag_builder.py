@@ -42,7 +42,7 @@ from dagent.schemas.value import (
 
 ValuePathItem = str | int
 NodeOutputField = Literal["value", "content", "status", "steps"]
-ArtifactField = Literal["path", "paths", "absolute_path", "absolute_paths"]
+ArtifactField = Literal["path", "paths", "absolute_path", "absolute_paths", "files"]
 
 
 class _Comparable:
@@ -205,6 +205,15 @@ class ArtifactValueRef:
 
     _artifact_id: str
     _field: ArtifactField = "path"
+    _path: tuple[ValuePathItem, ...] = ()
+
+    def __getitem__(self, item: ValuePathItem) -> "ArtifactValueRef":
+        return replace(self, _path=(*self._path, item))
+
+    def __getattr__(self, name: str) -> "ArtifactValueRef":
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self[name]
 
     def as_expr(self) -> dict[str, Any]:
         return bind_value_expr(
@@ -212,6 +221,7 @@ class ArtifactValueRef:
                 type="artifact",
                 artifact_id=self._artifact_id,
                 field=self._field,
+                path=list(self._path),
             )
         )
 
@@ -254,6 +264,11 @@ class ArtifactRef:
     @property
     def absolute_paths(self) -> ArtifactValueRef:
         return ArtifactValueRef(self.id, "absolute_paths")
+
+    @property
+    def files(self) -> ArtifactValueRef:
+        """Files uploaded for this artifact during the current run."""
+        return ArtifactValueRef(self.id, "files")
 
 
 class Node:

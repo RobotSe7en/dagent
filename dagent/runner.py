@@ -1475,7 +1475,7 @@ class Runner:
         capability_ids = tuple(sorted(capability_ids))
         skill_ids = tuple(sorted(skill_ids))
         state = result.state.model_copy(update={
-            "schema_version": 3,
+            "schema_version": 4,
             "review_level": review_level,
             "dynamic_adjust": dynamic_adjust,
             "planner_frontend": runtime.dag_agent.loop.planner_frontend,
@@ -1491,7 +1491,7 @@ class Runner:
             else None
         )
         plan = ResolvedRunPlan(
-            schema_version=4,
+            schema_version=5,
             runtime_kind=state.kind,
             tool_profile=runtime.tool_agent.profile.model_copy(deep=True),
             planner_profile=runtime.dag_agent.profile.model_copy(deep=True),

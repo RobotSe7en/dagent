@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from dagent.profiles import AgentProfile
 from dagent.schemas.common import (
@@ -14,6 +22,7 @@ from dagent.schemas.common import (
     validate_runtime_directory,
 )
 from dagent.schemas.dag import DAG, DAGSpec
+from dagent.schemas.artifact import ArtifactFileManifest
 from dagent.schemas.capability import CapabilityInvocation
 from dagent.schemas.run_trace import RunTrace
 from dagent.schemas.sandbox import RunExecution
@@ -90,7 +99,7 @@ class ResolvedRunPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[4] = 4
+    schema_version: Literal[4, 5] = 5
     runtime_kind: RunStateKind
     tool_profile: AgentProfile
     planner_profile: AgentProfile
@@ -195,9 +204,9 @@ class ResolvedRunPlan(BaseModel):
         """Return the SDK-defined SHA-256 fingerprint for this plan payload."""
 
         payload = self.model_dump(mode="json", exclude={"fingerprint"})
-        if self.extra_system_prompt is None:
-            # Preserve fingerprints for V4 plans created before this optional
-            # field existed.
+        if self.schema_version == 4 and self.extra_system_prompt is None:
+            # V4 plans predate this optional field, so retain their published
+            # fingerprint representation when validating persisted checkpoints.
             payload.pop("extra_system_prompt", None)
         canonical = json.dumps(
             payload,
@@ -269,7 +278,7 @@ class RunState(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[3] = 3
+    schema_version: Literal[3, 4] = 4
     run_id: str
     kind: RunStateKind
     status: LoopStatus
@@ -292,6 +301,46 @@ class RunState(BaseModel):
     workspace_path: str | None = None
     dag_boundary_approved_version: int | None = None
     static_agent_continuation: _StaticDagAgentContinuation | None = None
+    input_artifact_files: tuple[ArtifactFileManifest, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def serialize_legacy_state_without_file_manifest(self, serializer):
+        payload = serializer(self)
+        if self.schema_version == 3:
+            payload.pop("input_artifact_files", None)
+        return payload
+
+    @model_validator(mode="after")
+    def validate_input_artifact_files(self) -> "RunState":
+        manifests = self.input_artifact_files
+        if self.schema_version == 3:
+            if manifests:
+                raise ValueError("RunState V3 cannot contain input artifact file manifests.")
+            return self
+        artifact_ids = [manifest.artifact_id for manifest in manifests]
+        if len(set(artifact_ids)) != len(artifact_ids):
+            raise ValueError("Run input artifact manifests must have unique artifact ids.")
+        if artifact_ids != sorted(artifact_ids):
+            raise ValueError("Run input artifact manifests must be sorted by artifact id.")
+        if not manifests:
+            return self
+        if self.kind != "static_dag" or self.dag_spec is None:
+            raise ValueError(
+                "Input artifact file manifests require a static DAG run with a DAGSpec."
+            )
+        for manifest in manifests:
+            artifact = self.dag_spec.artifacts.get(manifest.artifact_id)
+            if artifact is None:
+                raise ValueError(
+                    f"Input artifact manifest references unknown artifact '{manifest.artifact_id}'."
+                )
+            for file in manifest.files:
+                if not _artifact_declares_file_path(artifact.paths, file.path):
+                    raise ValueError(
+                        f"Artifact file '{file.path}' is outside declared artifact "
+                        f"'{manifest.artifact_id}' paths."
+                    )
+        return self
 
 
 class RunCheckpoint(BaseModel):
@@ -299,7 +348,7 @@ class RunCheckpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[4] = 4
+    schema_version: Literal[4, 5] = 5
     state: RunState
     plan: ResolvedRunPlan
     usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
@@ -309,8 +358,11 @@ class RunCheckpoint(BaseModel):
         self.plan.validate_fingerprint()
         if self.schema_version != self.plan.schema_version:
             raise ValueError("Checkpoint schema version does not match the resolved run plan.")
-        if self.state.schema_version != 3:
-            raise ValueError("Checkpoint V4 requires RunState V3.")
+        expected_state_version = {4: 3, 5: 4}[self.schema_version]
+        if self.state.schema_version != expected_state_version:
+            raise ValueError(
+                f"Checkpoint V{self.schema_version} requires RunState V{expected_state_version}."
+            )
         if self.state.planner_frontend != self.plan.planner_frontend:
             raise ValueError("Checkpoint planner frontend does not match the resolved run plan.")
         if self.state.kind != self.plan.runtime_kind:
@@ -403,6 +455,18 @@ class RunCheckpoint(BaseModel):
         ):
             raise ValueError("Checkpoint usage exceeds max_capability_calls.")
         return self
+
+
+def _artifact_declares_file_path(paths: list[str], file_path: str) -> bool:
+    candidate = PurePosixPath(file_path)
+    for declared_path in paths:
+        normalized = declared_path.replace("\\", "/").rstrip("/")
+        if not normalized:
+            continue
+        declared = PurePosixPath(normalized)
+        if candidate == declared or declared in candidate.parents:
+            return True
+    return False
 
 
 _StaticDagAgentContinuation.model_rebuild()

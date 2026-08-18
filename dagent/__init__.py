@@ -50,6 +50,8 @@ from dagent.runner import Runner
 from dagent.schemas import (
     AssistantMessage,
     Attachment,
+    ArtifactFileManifest,
+    ArtifactFileRef,
     Boundary,
     CapabilityDefinition,
     CapabilityInvocation,
@@ -93,6 +95,8 @@ __all__ = [
     "AssistantMessage",
     "Attachment",
     "ArtifactRef",
+    "ArtifactFileManifest",
+    "ArtifactFileRef",
     "ArtifactUpload",
     "ArtifactValueRef",
     "AutoAgent",

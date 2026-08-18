@@ -707,7 +707,7 @@ class DAGAgentLoop:
     ) -> LoopOutcome:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         record = RunState(
-            schema_version=3,
+            schema_version=4,
             run_id=resolved_task_id,
             kind="dynamic_dag",
             status="completed",
@@ -770,12 +770,13 @@ class DAGAgentLoop:
             workspace.mkdir(parents=True, exist_ok=True)
         capability_workspace_root = workspace
         artifact_states = init_artifact_states(spec.artifacts)
-        materialized_artifact_ids = materialize_artifact_uploads(
+        input_artifact_files = materialize_artifact_uploads(
             artifact_uploads or {},
             artifacts=spec.artifacts,
             workspace_path=workspace,
         )
-        for artifact_id in materialized_artifact_ids:
+        for manifest in input_artifact_files:
+            artifact_id = manifest.artifact_id
             artifact = spec.artifacts[artifact_id]
             artifact_states[artifact_id] = ArtifactState(
                 id=artifact.id,
@@ -795,6 +796,7 @@ class DAGAgentLoop:
             spec_id=spec.id,
             workspace_path=str(workspace),
             capability_scope=capability_scope_to_state(capability_scope),
+            input_artifact_files=input_artifact_files,
         )
         _emit_dag(on_dag, dag)
 
@@ -806,6 +808,7 @@ class DAGAgentLoop:
             result_storage_policy=self.result_storage_policy,
             extra_system_prompt=self.dag_executor.extra_system_prompt,
             artifacts=spec.artifacts,
+            artifact_file_manifests=input_artifact_files,
             artifact_states=artifact_states,
             spec_id=spec.id,
             graph_input=graph_input,
@@ -854,6 +857,7 @@ class DAGAgentLoop:
             result_storage_policy=self.result_storage_policy,
             extra_system_prompt=self.dag_executor.extra_system_prompt,
             artifacts=record.dag_spec.artifacts,
+            artifact_file_manifests=record.input_artifact_files,
             artifact_states=(
                 {} if record.trace is None else record.trace.artifacts
             ),

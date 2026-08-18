@@ -3,7 +3,16 @@ from pydantic import ValidationError
 
 from dagent import RunResult
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
-from dagent.schemas import DAG, PendingReview, RunState, RunTrace, RunTraceNode, ValidationIssue
+from dagent.schemas import (
+    ArtifactFileManifest,
+    ArtifactFileRef,
+    DAG,
+    PendingReview,
+    RunState,
+    RunTrace,
+    RunTraceNode,
+    ValidationIssue,
+)
 
 
 def test_session_saves_run_state_directly() -> None:
@@ -105,15 +114,15 @@ def test_pending_capability_review_requires_tool_name() -> None:
         RunResult.model_validate({"state": payload, "output_text": ""})
 
 
-def test_run_state_defaults_missing_schema_version_to_v3() -> None:
+def test_run_state_defaults_missing_schema_version_to_v4() -> None:
     state = RunState.model_validate({
         "run_id": "run_1",
         "kind": "tool",
         "status": "completed",
     })
 
-    assert state.schema_version == 3
-    assert state.model_dump(mode="json")["schema_version"] == 3
+    assert state.schema_version == 4
+    assert state.model_dump(mode="json")["schema_version"] == 4
 
 
 def test_run_state_rejects_unsupported_schema_version() -> None:
@@ -124,6 +133,28 @@ def test_run_state_rejects_unsupported_schema_version() -> None:
             "kind": "tool",
             "status": "completed",
         })
+
+
+def test_run_state_v3_rejects_input_artifact_file_manifests() -> None:
+    with pytest.raises(ValidationError, match="RunState V3"):
+        RunState(
+            schema_version=3,
+            run_id="run_1",
+            kind="static_dag",
+            status="completed",
+            input_artifact_files=(
+                ArtifactFileManifest(
+                    artifact_id="uploads",
+                    files=(
+                        ArtifactFileRef(
+                            path="inputs/uploads/file.txt",
+                            name="file.txt",
+                            size=1,
+                        ),
+                    ),
+                ),
+            ),
+        )
 
 
 def test_validation_issue_has_machine_readable_fields() -> None:

@@ -153,6 +153,7 @@ bindings，并在 capability call 前立即解析。
 | `artifact.paths` | 所有相对 capability workspace 的 artifact paths，可直接作为 tool 参数 |
 | `artifact.absolute_path` | 在 run workspace 内解析出的第一个 artifact path |
 | `artifact.absolute_paths` | 在 run workspace 内解析出的所有 artifact paths |
+| `artifact.files` | 当前静态 DAG run 中为该 artifact 物化的、已排序的 `ArtifactFileRef` 列表 |
 | `dag.format("Use {x}", x=node.output)` | nested refs 解析后的 format string |
 | `node.output.score >= 0.8` | runtime comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`) |
 | `dagent.item` / `dagent.item.url` | 当前 map element，或 loop condition 中的最新 loop output |
@@ -249,6 +250,77 @@ write_node = dagent.Node(
 ```
 
 Artifact path escape 会被 runtime boundary checks 拒绝。
+
+### 上传输入文件清单
+
+对于文件输入 artifact，通过 `Runner.run(..., artifact_uploads=...)` 传入本次 run 的
+文件字节。每个 `ArtifactUpload` 包含 browser 或 host 提供的相对 `filename`、`content`，
+以及可选 `media_type`。SDK 只物化这些明确传入的上传文件，并在 `RunState` 和
+`RunCheckpoint` 中冻结 JSON-safe 的 `ArtifactFileManifest`；不会扫描 workspace 来推断
+文件列表。
+
+`artifact.files` 会解析为按 path 确定排序的 `ArtifactFileRef` 列表：
+
+```python
+ArtifactFileRef(
+    path="inputs/uploads/briefs/plan.md",  # 相对 workspace
+    name="plan.md",
+    size=1234,
+    media_type="text/markdown",
+)
+```
+
+可使用普通的结构化 value path 选择条目或字段。已有 artifact path expression 的语义不变，
+`files` 是新增字段：
+
+```python
+uploads = dag.artifact("uploads", "inputs/uploads/", required=False)
+
+first = dagent.Node(
+    "inspect_first",
+    target=inspect_file,
+    inputs={"path": uploads.files[0].path, "name": uploads.files[0].name},
+)
+```
+
+多个文件可直接作为 `MapNode` 的输入。Map body 通过 `dagent.item` 获得当前
+`ArtifactFileRef`：
+
+```python
+process = dagent.MapNode(
+    "process_uploads",
+    target=inspect_file,
+    over=uploads.files,
+    inputs={
+        "path": dagent.item.path,
+        "name": dagent.item.name,
+        "size": dagent.item.size,
+        "media_type": dagent.item.media_type,
+    },
+)
+dag.add_node(process)
+
+result = await runner.run(
+    dag,
+    artifact_uploads={
+        "uploads": [
+            dagent.ArtifactUpload(
+                filename="briefs/plan.md",
+                content=b"...",
+                media_type="text/markdown",
+            )
+        ]
+    },
+)
+```
+
+没有上传文件的可选 artifact 会令 `artifact.files` 解析为 `[]`，也不会生成清单条目。
+每份清单最多 256 个文件、每文件最多 25 MiB、总计最多 100 MiB；不安全的文件名、目录
+穿越、重复物化目标和经过 symlink 的上传路径会在写入前拒绝。条目不含宿主机绝对路径，且
+必须位于对应 artifact 的声明路径内。checkpoint resume 使用冻结的清单，因此之后放进
+workspace 的文件或其他 run 遗留文件不会混入。可运行
+[`static_dag_artifact_files`](../../examples/static_dag_artifact_files.py)
+示例查看完整代码。
 
 ## 互斥条件节点
 

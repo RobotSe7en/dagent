@@ -5,7 +5,14 @@ from __future__ import annotations
 from string import Formatter
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 
 
 ValuePathItem: TypeAlias = str | int
@@ -36,7 +43,15 @@ class ArtifactExpr(BaseModel):
 
     type: Literal["artifact"]
     artifact_id: str
-    field: Literal["path", "paths", "absolute_path", "absolute_paths"] = "path"
+    field: Literal["path", "paths", "absolute_path", "absolute_paths", "files"] = "path"
+    path: list[ValuePathItem] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def serialize_without_empty_path(self, serializer):
+        payload = serializer(self)
+        if not self.path:
+            payload.pop("path", None)
+        return payload
 
 
 class FormatExpr(BaseModel):

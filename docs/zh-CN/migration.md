@@ -8,6 +8,48 @@
 
 ## Unreleased
 
+### 新增
+
+- 静态 DAG 输入 artifact 现在暴露 `artifact.files`：它是从当前 run 的
+  `artifact_uploads` 物化出的、确定顺序且 JSON-safe 的 `ArtifactFileRef` 列表。条目带有
+  相对 workspace 的 `path`、`name`、`size` 和调用方可选提供的 `media_type`。
+- `ArtifactFileRef` 和 `ArtifactFileManifest` 成为公开 SDK contract。
+  `MapNode(over=artifact.files, ...)` 可直接通过 `dagent.item` 处理当前文件条目。
+
+### 行为和兼容性
+
+- 该列表是上传时快照，不是 workspace 扫描。空的可选输入解析为 `[]`；checkpoint resume
+  时，之后写入的文件或其他 run 的文件不会出现。
+- 物化会拒绝不安全文件名、目录穿越、重复目标、经 symlink 的上传路径、超过 256 个文件、
+  单文件超过 25 MiB 或总量超过 100 MiB。现有 `artifact.path`、`artifact.paths` 和绝对
+  artifact expression 语义不变。
+
+### Checkpoint 版本与兼容性
+
+- 新 Run 生成 `RunState` V4，以及 `ResolvedRunPlan` / `RunCheckpoint` V5，以持久化权威的
+  输入文件快照。
+- 包含 V3 `RunState` 的既有 V4 checkpoint 仍可恢复。它们显式拥有空输入文件清单；resume
+  不会扫描 workspace，也不会从 workspace 推断文件。一次成功恢复后的结果会生成新的 V5
+  checkpoint。
+- 其它版本组合仍然无效。特别是 V3 state 不能声称包含输入文件清单，SDK 也不会为旧
+  checkpoint 透明地制造清单。
+
+### 迁移步骤
+
+- Host 可以继续恢复已持久化的 V4 checkpoint。成功 resume 后应持久化返回的 V5 checkpoint；
+  所有新 Run 均使用 V5。
+- 对文件输入，声明目录 artifact（例如 `inputs/workflow_input_files/`），并调用
+  `Runner.run(..., artifact_uploads={artifact_id: [ArtifactUpload(...)]})`。消费
+  `artifact.files`、如 `artifact.files[0].path` 的条目字段，或对列表使用 map。不要扫描
+  run workspace 来重建该 contract。
+
+### 验证与已知限制
+
+- `uv run --extra dev pytest tests/test_artifact_file_manifests.py`
+- `uv run --extra dev pytest`
+- `artifact.files` 适用于接受 `artifact_uploads` 的静态 `Dag` 和 `DAGSpec` run；它不会新增
+  workflow-start protocol，也不会改变 `StartNodePayload`。
+
 ## 0.9.2
 
 ### 新增
