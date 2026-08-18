@@ -375,7 +375,7 @@ export interface DagRun {
   workspace_path: string;
   dag: Dag;
   trace: RunTrace;
-  status: 'planned' | 'running' | 'completed' | 'failed';
+  status: 'planned' | 'running' | 'awaiting_review' | 'completed' | 'failed';
 }
 
 export interface TraceLogEvent {

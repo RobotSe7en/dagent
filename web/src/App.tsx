@@ -9269,10 +9269,11 @@ function splitThinking(content: string): Array<{ type: 'answer' | 'think'; conte
   return parts.length ? parts : [{ type: 'answer', content }];
 }
 
-function dagRunStatus(status: string): 'planned' | 'running' | 'completed' | 'failed' {
+function dagRunStatus(status: string): 'planned' | 'running' | 'awaiting_review' | 'completed' | 'failed' {
   if (status === 'failed') return 'failed';
   if (status === 'running') return 'running';
   if (status === 'planned') return 'planned';
+  if (status === 'awaiting_review') return 'awaiting_review';
   return 'completed';
 }
 
