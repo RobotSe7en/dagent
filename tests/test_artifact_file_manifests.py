@@ -141,6 +141,27 @@ def test_artifact_upload_materialization_rejects_unsafe_duplicate_and_bounded_in
         )
 
 
+def test_artifact_upload_materialization_rejects_symlinked_declared_root_before_writes(
+    tmp_path: Path,
+) -> None:
+    real_inputs = tmp_path / "real_inputs"
+    real_inputs.mkdir()
+    declared_root = tmp_path / "inputs"
+    try:
+        declared_root.symlink_to(real_inputs, target_is_directory=True)
+    except OSError:
+        pytest.skip("Symlink creation is not available in this environment.")
+
+    with pytest.raises(ArtifactPathError, match="crosses symlink"):
+        materialize_artifact_uploads(
+            {"uploads": [dagent.ArtifactUpload(filename="source.txt", content=b"source")]},
+            artifacts={"uploads": Artifact(id="uploads", paths=["inputs/"])},
+            workspace_path=tmp_path,
+        )
+
+    assert not (real_inputs / "source.txt").exists()
+
+
 def test_artifact_file_expressions_select_entries_and_empty_optional_inputs(tmp_path: Path) -> None:
     @dagent.tool
     def select(path: str, name: str, size: int, media_type: str | None) -> dict[str, object]:

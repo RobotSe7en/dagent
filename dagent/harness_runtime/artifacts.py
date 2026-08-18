@@ -129,6 +129,9 @@ def materialize_artifact_uploads(
         artifact = artifacts.get(artifact_id)
         if artifact is None:
             continue
+        validate_artifact_paths(artifact.paths)
+        declared_target_root = workspace / artifact.paths[0]
+        _reject_symlinked_upload_path(declared_target_root, workspace)
         target_paths = resolve_artifact_paths(artifact, workspace)
         target_root = target_paths[0]
         as_directory = (
