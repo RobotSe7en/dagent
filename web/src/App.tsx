@@ -1090,6 +1090,10 @@ type OrchestrationContext = {
   session: OrchestrationSession;
   request: { projectId?: string | null; conversationId: string };
 };
+type StaticCapabilityReviewContext = {
+  savedDagId: string;
+  conversation: OrchestrationContext['request'];
+};
 type ToolDirectoryTab = 'tools' | 'skills' | 'mcp';
 type ChatWorkspaceSub = 'conversations' | 'projects';
 type ProjectDraft = { name: string; slug: string; description: string };
@@ -1598,6 +1602,7 @@ export function App() {
   const [dagReviewFeedback, setDagReviewFeedback] = useState('');
   const [capabilityReview, setCapabilityReview] = useState<ReviewEventPayload | null>(null);
   const [capabilityReviewFeedback, setCapabilityReviewFeedback] = useState('');
+  const [staticCapabilityReviewContext, setStaticCapabilityReviewContext] = useState<StaticCapabilityReviewContext | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const validationRequestIdRef = useRef(0);
   const tokenQueueRef = useRef<QueuedAssistantToken[]>([]);
@@ -3571,6 +3576,15 @@ export function App() {
         syncEditorDag(nextDag);
         setEditorUserDag((current) => userDagFromRuntimeDag(current, nextDag));
       }
+      if (nextState?.pending_review?.kind === 'capability_review' && editorSavedDagId) {
+        showStaticCapabilityReview(nextState.pending_review, {
+          savedDagId: editorSavedDagId,
+          conversation: {
+            projectId: editorSavedDagProjectId,
+            conversationId: selectedConversation?.id ?? '',
+          },
+        });
+      }
     } catch (exc) {
       setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc));
     }
@@ -4049,34 +4063,16 @@ export function App() {
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, event.delta));
         },
         onReview: (review) => {
-          setEditorMessage(review.message);
+          showStaticCapabilityReview(review, {
+            savedDagId: saved.id,
+            conversation: context.request,
+          });
         },
         onDone: (payload) => {
-          const runState = payload.result.state;
-          if (!runState?.dag || !runState.trace || !runState.run_id) return;
-          const traceEvents = mapRunTrace(runState.trace);
-          setEditorTrace(traceEvents);
-          setEditorRunTimeline((items) => traceEvents.reduce((timeline, event) => appendRunTranscriptTraceEvent(timeline, event), items));
-          const dagRun = {
-            run_id: runState.run_id,
-            spec_id: runState.spec_id ?? null,
-            workspace_path: runState.workspace_path ?? '',
-            dag: runState.dag,
-            trace: runState.trace,
-            status: dagRunStatus(runState.status),
-          } as const;
-          setEditorRun(dagRun);
-          syncEditorDag(dagRun.dag);
-          void refreshConversations();
-          setStaticSelectedRunId(dagRun.run_id);
-          void listSavedDagRuns(saved.id)
-            .then((runs) => setStaticRunHistory(runs))
-            .catch((exc) => setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc)));
-          setEditorMessage(`Run ${dagRun.status}.`);
-          setEditorRunTimeline((items) => appendRunTranscriptToken(
-            items,
-            `\n\nRun ${dagRun.status}.`,
-          ));
+          applyStaticRunResult(payload.result, {
+            savedDagId: saved.id,
+            conversation: context.request,
+          });
         },
         onError: (message) => {
           setEditorMessage(message);
@@ -4088,6 +4084,102 @@ export function App() {
       });
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      editorRunInFlightRef.current = false;
+      setEditorRunning(false);
+    }
+  };
+
+  const showStaticCapabilityReview = (
+    review: ReviewEventPayload,
+    context: StaticCapabilityReviewContext,
+  ) => {
+    if (review.kind !== 'capability_review') return;
+    setCapabilityReviewFeedback('');
+    setCapabilityReview(review);
+    setStaticCapabilityReviewContext(context);
+    setEditorMessage(review.message);
+  };
+
+  const applyStaticRunResult = (
+    result: ApiRunResult,
+    context: StaticCapabilityReviewContext,
+  ) => {
+    const runState = result.state;
+    if (!runState?.dag || !runState.trace || !runState.run_id) return;
+    const traceEvents = mapRunTrace(runState.trace);
+    setEditorTrace(traceEvents);
+    setEditorRunTimeline((items) => traceEvents.reduce((timeline, event) => appendRunTranscriptTraceEvent(timeline, event), items));
+    const dagRun = {
+      run_id: runState.run_id,
+      spec_id: runState.spec_id ?? null,
+      workspace_path: runState.workspace_path ?? '',
+      dag: runState.dag,
+      trace: runState.trace,
+      status: dagRunStatus(runState.status),
+    } as const;
+    setEditorRun(dagRun);
+    syncEditorDag(dagRun.dag);
+    void refreshConversations();
+    setStaticSelectedRunId(dagRun.run_id);
+    void listSavedDagRuns(context.savedDagId)
+      .then((runs) => setStaticRunHistory(runs))
+      .catch((exc) => setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc)));
+    if (runState.pending_review?.kind === 'capability_review') {
+      showStaticCapabilityReview(runState.pending_review, context);
+    } else {
+      setStaticCapabilityReviewContext(null);
+      setEditorMessage(`Run ${dagRun.status}.`);
+    }
+    setEditorRunTimeline((items) => appendRunTranscriptToken(
+      items,
+      `\n\nRun ${dagRun.status}.`,
+    ));
+  };
+
+  const resumeStaticCapabilityReview = async (approved: boolean) => {
+    if (!capabilityReview || !staticCapabilityReviewContext || editorRunning) return;
+    const review = capabilityReview;
+    const context = staticCapabilityReviewContext;
+    const feedback = capabilityReviewFeedback.trim();
+    setCapabilityReview(null);
+    setCapabilityReviewFeedback('');
+    setStaticCapabilityReviewContext(null);
+    editorRunInFlightRef.current = true;
+    setEditorRunning(true);
+    setEditorMessage(approved ? '正在批准工具调用...' : '正在拒绝工具调用...');
+    if (!approved) {
+      setEditorRunTimeline((items) => appendRunTranscriptToken(
+        items,
+        `\n\nTool call rejected.${feedback ? ` ${feedback}` : ''}`,
+      ));
+    }
+    try {
+      await resumeCapabilityReview(review.review_id, approved, {
+        onTrace: (event) => {
+          setEditorTrace((items) => [...items, event]);
+          setEditorRunTimeline((items) => appendRunTranscriptTraceEvent(items, event));
+        },
+        onCapability: (event) => {
+          setEditorRunTimeline((items) => appendRunTranscriptCapability(items, event));
+        },
+        onContent: (event) => {
+          setEditorRunTimeline((items) => appendRunTranscriptToken(items, event.delta));
+        },
+        onReview: (nextReview) => showStaticCapabilityReview(nextReview, context),
+        onDone: (payload) => applyStaticRunResult(payload.result, context),
+        onError: (message) => {
+          setEditorMessage(message);
+          setEditorRunTimeline((items) => appendRunTranscriptToken(items, `\n\nRun error: ${message}`));
+        },
+      }, undefined, feedback, { conversation: context.conversation });
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc);
+      setEditorMessage(message);
+      setEditorRunTimeline((items) => appendRunTranscriptToken(items, `\n\nRun error: ${message}`));
+      setCapabilityReview(review);
+      setCapabilityReviewFeedback(feedback);
+      setStaticCapabilityReviewContext(context);
     } finally {
       editorRunInFlightRef.current = false;
       setEditorRunning(false);
@@ -4546,6 +4638,10 @@ export function App() {
 
   const confirmCapabilityReview = async (approved: boolean) => {
     if (!capabilityReview || streaming) return;
+    if (staticCapabilityReviewContext) {
+      await resumeStaticCapabilityReview(approved);
+      return;
+    }
     const previousCapabilityReview = capabilityReview;
     const previousCapabilityReviewFeedback = capabilityReviewFeedback;
     const previousMessages = messages;
@@ -5451,6 +5547,7 @@ export function App() {
           onClose={() => {
             setCapabilityReview(null);
             setCapabilityReviewFeedback('');
+            setStaticCapabilityReviewContext(null);
           }}
         />
       ) : null}

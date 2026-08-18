@@ -25,6 +25,7 @@ from dagent import (
     RunState,
     RunStreamEvent,
     Runner,
+    ToolAgent,
 )
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.result import RunFinishedData, RunStartedData
@@ -2611,6 +2612,71 @@ def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(
     assert persisted_state.kind == "static_dag"
     assert listed_runs.status_code == 200
     assert [item["id"] for item in listed_runs.json()["runs"]] == [run_id]
+
+
+def test_api_saved_dag_static_agent_review_resumes_without_conversation_state(
+    persistence_client,
+) -> None:
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(
+                id="call_1",
+                name="tool_write_file",
+                arguments={"path": "outside.txt", "content": "approved"},
+            )
+        ]),
+        ChatResponse(content="done"),
+    ])
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=provider)
+    state.runner.add_agent(ToolAgent(
+        name="helper",
+        profile="conversation",
+        capabilities=["tool.write_file"],
+        skills=[],
+    ))
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Static agent review", "kind": "static_dag"},
+    ).json()["conversation"]
+    saved = persistence_client.post(
+        "/saved-dags",
+        json={
+            "name": "Static agent review",
+            "spec": {
+                "id": "static_agent_review",
+                "name": "Static agent review",
+                "nodes": [{
+                    "id": "assistant",
+                    "target": "agent.helper",
+                    "inputs": {"prompt": "Write the file."},
+                    "boundary": {"allowed_paths": ["allowed.txt"]},
+                }],
+                "edges": [],
+            },
+        },
+    ).json()["saved_dag"]
+
+    initial_response = persistence_client.post(
+        f"/saved-dags/{saved['id']}/run/stream",
+        json={"conversation_id": conversation["id"]},
+    )
+    initial_result = _sse_events(initial_response.text)[-1]["data"]["result"]
+    review_id = initial_result["state"]["pending_review"]["review_id"]
+
+    assert initial_response.status_code == 200
+    assert initial_result["state"]["status"] == "awaiting_review"
+    assert state.get_store().get_conversation_state(conversation["id"]) is None
+
+    resume_response = persistence_client.post(
+        f"/reviews/{review_id}/resume",
+        json={"approved": True},
+    )
+    resumed_result = _sse_events(resume_response.text)[-1]["data"]["result"]
+
+    assert resume_response.status_code == 200
+    assert resumed_result["state"]["status"] == "completed"
+    assert "`assistant` (completed): done" in resumed_result["output_text"]
+    assert (Path(resumed_result["state"]["workspace_path"]) / "outside.txt").read_text() == "approved"
 
 
 def test_api_saved_dag_artifact_upload_persists_across_process_state_reset(persistence_client) -> None:

@@ -1591,6 +1591,13 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.doesNotMatch(appSource, /const defaultWorkspaceRoot = 'runs';/);
   assert.match(appSource, /ensureOrchestrationContext\(/);
   assert.match(appSource, /runSavedDagStream\(saved\.id/);
+  assert.match(appSource, /type StaticCapabilityReviewContext = \{[\s\S]*savedDagId: string;[\s\S]*conversation: OrchestrationContext\['request'\];/);
+  assert.match(appSource, /const showStaticCapabilityReview = \([\s\S]*setCapabilityReview\(review\);[\s\S]*setStaticCapabilityReviewContext\(context\);/);
+  assert.match(appSource, /onReview: \(review\) => \{[\s\S]*showStaticCapabilityReview\(review, \{[\s\S]*savedDagId: saved\.id,[\s\S]*conversation: context\.request,/);
+assert.match(appSource, /const resumeStaticCapabilityReview = async[\s\S]*resumeCapabilityReview\([\s\S]*conversation: context\.conversation/);
+assert.match(appSource, /selectStaticRunHistory[\s\S]*pending_review\?\.kind === 'capability_review'[\s\S]*showStaticCapabilityReview\(nextState\.pending_review/);
+assert.match(appSource, /resumeStaticCapabilityReview[\s\S]*catch \(exc\)[\s\S]*setCapabilityReview\(review\);[\s\S]*setStaticCapabilityReviewContext\(context\);/);
+assert.match(appSource, /const confirmCapabilityReview = async[\s\S]*if \(staticCapabilityReviewContext\) \{[\s\S]*await resumeStaticCapabilityReview\(approved\);/);
   assert.match(apiSource, /export async function runSavedDagStream/);
   assert.match(apiSource, /\/saved-dags\/\$\{encodeURIComponent\(savedDagId\)\}\/run\/stream/);
   assert.doesNotMatch(appSource, /selectedSidebarConversation|workspaceRootLabel|workspace-root-chip/);

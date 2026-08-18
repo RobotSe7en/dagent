@@ -4109,15 +4109,7 @@ async def _resume_persisted_review_stream(
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Run checkpoint not found.")
     run_state = checkpoint.state
-    conversation_state = await run_in_threadpool(
-        store.get_conversation_state,
-        conversation.id,
-    )
-    if conversation_state is None:
-        raise HTTPException(
-            status_code=409,
-            detail="Conversation state is unavailable for this review.",
-        )
+    conversation_state = await _conversation_state_for(conversation, store)
     workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, run.workspace_uri)
     orchestration_session = None
     if conversation.kind != "chat":
@@ -4712,6 +4704,34 @@ async def _persisted_context_from_message(request: MessageRequest) -> PersistedM
     )
 
 
+async def _conversation_state_for(
+    conversation: Conversation,
+    store: Store,
+) -> ConversationState:
+    conversation_state = await run_in_threadpool(
+        store.get_conversation_state,
+        conversation.id,
+    )
+    if conversation_state is None:
+        if conversation.conversation_revision != 0:
+            raise HTTPException(
+                status_code=409,
+                detail="Stored conversation revision has no V3 conversation state.",
+            )
+        return ConversationState(id=conversation.id)
+    if conversation_state.id != conversation.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Stored conversation state identity does not match its host record.",
+        )
+    if conversation_state.revision != conversation.conversation_revision:
+        raise HTTPException(
+            status_code=409,
+            detail="Stored conversation state revision is inconsistent.",
+        )
+    return conversation_state
+
+
 async def _persisted_context_from_conversation(
     project_id: str | None,
     conversation_id: str,
@@ -4764,27 +4784,7 @@ async def _persisted_context_from_conversation(
                 status_code=409,
                 detail="Conversation is awaiting review; resume the pending review before sending a new message.",
             )
-    conversation_state = await run_in_threadpool(
-        store.get_conversation_state,
-        conversation.id,
-    )
-    if conversation_state is None:
-        if conversation.conversation_revision != 0:
-            raise HTTPException(
-                status_code=409,
-                detail="Stored conversation revision has no V3 conversation state.",
-            )
-        conversation_state = ConversationState(id=conversation.id)
-    if conversation_state.id != conversation.id:
-        raise HTTPException(
-            status_code=409,
-            detail="Stored conversation state identity does not match its host record.",
-        )
-    if conversation_state.revision != conversation.conversation_revision:
-        raise HTTPException(
-            status_code=409,
-            detail="Stored conversation state revision is inconsistent.",
-        )
+    conversation_state = await _conversation_state_for(conversation, store)
     return PersistedMessageContext(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
