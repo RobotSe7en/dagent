@@ -54,6 +54,10 @@ uv sync --extra dev
 uv run --extra dev pytest
 ```
 
+The `dev` extra includes `pip`, so shell-enabled local agents can install a
+task-specific Python package after the configured review policy permits it.
+Do not create a venv manually and then skip `uv sync --extra dev`.
+
 Run offline examples from the repository root:
 
 ```bash

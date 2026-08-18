@@ -1591,6 +1591,13 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.doesNotMatch(appSource, /const defaultWorkspaceRoot = 'runs';/);
   assert.match(appSource, /ensureOrchestrationContext\(/);
   assert.match(appSource, /runSavedDagStream\(saved\.id/);
+  assert.match(appSource, /type StaticCapabilityReviewContext = \{[\s\S]*savedDagId: string;[\s\S]*conversation: OrchestrationContext\['request'\];/);
+  assert.match(appSource, /const showStaticCapabilityReview = \([\s\S]*setCapabilityReview\(review\);[\s\S]*setStaticCapabilityReviewContext\(context\);/);
+  assert.match(appSource, /onReview: \(review\) => \{[\s\S]*showStaticCapabilityReview\(review, \{[\s\S]*savedDagId: saved\.id,[\s\S]*conversation: context\.request,/);
+assert.match(appSource, /const resumeStaticCapabilityReview = async[\s\S]*resumeCapabilityReview\([\s\S]*conversation: context\.conversation/);
+assert.match(appSource, /selectStaticRunHistory[\s\S]*pending_review\?\.kind === 'capability_review'[\s\S]*showStaticCapabilityReview\(nextState\.pending_review/);
+assert.match(appSource, /resumeStaticCapabilityReview[\s\S]*catch \(exc\)[\s\S]*setCapabilityReview\(review\);[\s\S]*setStaticCapabilityReviewContext\(context\);/);
+assert.match(appSource, /const confirmCapabilityReview = async[\s\S]*if \(staticCapabilityReviewContext\) \{[\s\S]*await resumeStaticCapabilityReview\(approved\);/);
   assert.match(apiSource, /export async function runSavedDagStream/);
   assert.match(apiSource, /\/saved-dags\/\$\{encodeURIComponent\(savedDagId\)\}\/run\/stream/);
   assert.doesNotMatch(appSource, /selectedSidebarConversation|workspaceRootLabel|workspace-root-chip/);
@@ -1965,6 +1972,7 @@ test('dynamic orchestration sidebar manages persisted history', async () => {
 test('static orchestration sidebar supports saved DAG delete and run history', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const typesSource = await readFile(new URL('../src/types.ts', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
   const orchestrationSource = appSource.match(/function OrchestrationWorkspace[\s\S]*?\nfunction RunDagDialog/)?.[0] ?? '';
@@ -1996,6 +2004,8 @@ test('static orchestration sidebar supports saved DAG delete and run history', a
   assert.match(selectStaticRunSource, /setEditorTrace\(\[\]\);[\s\S]*setEditorRunTimeline\(\[\]\);[\s\S]*setEditorRun\(null\);/);
   assert.match(selectStaticRunSource, /const traceEvents = mapRunTrace\(nextState\.trace\);[\s\S]*setEditorTrace\(traceEvents\);[\s\S]*setEditorRunTimeline\(runTranscriptFromTraceEvents\(traceEvents\)\);/);
   assert.match(selectStaticRunSource, /const nextDag = nextState\.dag;[\s\S]*syncEditorDag\(nextDag\);[\s\S]*setEditorUserDag\(\(current\) => userDagFromRuntimeDag\(current, nextDag\)\);/);
+  assert.match(appSource, /function dagRunStatus\(status: string\): 'planned' \| 'running' \| 'awaiting_review' \| 'completed' \| 'failed'[\s\S]*if \(status === 'awaiting_review'\) return 'awaiting_review';/);
+  assert.match(typesSource, /export interface DagRun \{[\s\S]*status: 'planned' \| 'running' \| 'awaiting_review' \| 'completed' \| 'failed';/);
   assert.match(sidebarSource, /className=\{item\.savedDagId === selectedDagId \? 'sidebar-saved-dag-row active' : 'sidebar-saved-dag-row'\}/);
   assert.match(sidebarSource, /onDeleteSavedDag\(item\.savedDagId\)/);
   assert.match(appSource, /function SavedDagDeleteDialog/);

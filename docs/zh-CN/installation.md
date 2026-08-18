@@ -52,6 +52,9 @@ uv sync --extra dev
 uv run --extra dev pytest
 ```
 
+`dev` extra 包含 `pip`，因此启用 shell 的本地 agent 在通过配置的审核策略后，可以安装任务所需的
+Python 包。不要只手工创建 venv 而跳过 `uv sync --extra dev`。
+
 从仓库根目录运行离线示例：
 
 ```bash
