@@ -84,13 +84,20 @@ def test_static_agent_rejection_continues_without_executing_tool(tmp_path) -> No
     assert calls == []
 
 
-def test_static_agent_fast_boundary_review_allows_only_pending_invocation(tmp_path) -> None:
+def test_static_agent_fast_boundary_review_allows_reviewed_path_for_later_invocations(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(tool_calls=[
             ToolCall(
                 id="call_1",
                 name="tool_write_file",
                 arguments={"path": "other.txt", "content": "approved"},
+            )
+        ]),
+        ChatResponse(tool_calls=[
+            ToolCall(
+                id="call_2",
+                name="tool_write_file",
+                arguments={"path": "other.txt", "content": "updated"},
             )
         ]),
         ChatResponse(content="written"),
@@ -119,7 +126,7 @@ def test_static_agent_fast_boundary_review_allows_only_pending_invocation(tmp_pa
 
     assert resumed is not None
     assert resumed.status == "completed"
-    assert (Path(resumed.workspace_path) / "other.txt").read_text() == "approved"
+    assert (Path(resumed.workspace_path) / "other.txt").read_text() == "updated"
 
 
 def test_static_agent_review_level_change_applies_to_later_tool_calls(tmp_path) -> None:

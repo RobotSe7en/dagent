@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
-from dagent.capabilities.providers import check_tool_boundary
+from dagent.capabilities.providers import check_tool_boundary_for_review
 from dagent.capabilities.workspace import current_workspace_root
 from dagent.harness_runtime.dag_builder import (
     MAX_EXECUTION_CONTEXT_CHARS,
@@ -253,10 +253,16 @@ class ToolAgent:
         stored_content: StoredContent | None = None
         value_reference: ContentReference | None = None
         attachments: tuple[Any, ...] = ()
+        continuation_boundary = invocation.boundary
         if approved:
             boundary_review_approved = (
                 pending_review.payload.get("reason") == "boundary_violation"
             )
+            if boundary_review_approved:
+                continuation_boundary = _boundary_with_reviewed_paths(
+                    invocation.boundary,
+                    pending_review.payload,
+                )
             try:
                 resume_context = capability_context or CapabilityExecutionContext(
                     task_id=state.run_id,
@@ -355,7 +361,7 @@ class ToolAgent:
             conversation,
             run_id=state.run_id,
             review_level=state.review_level,
-            boundary=invocation.boundary,
+            boundary=continuation_boundary,
             capability_scope=capability_scope,
             capability_context=replace(
                 capability_context
@@ -517,7 +523,7 @@ class ToolAgentLoop:
                 enabled_toolsets=self.enabled_toolsets,
                 capability_ids=capability_ids,
             )
-            boundary_result = check_tool_boundary(
+            boundary_result, boundary_paths = check_tool_boundary_for_review(
                 definition,
                 invocation,
                 current_workspace_root(self.capability_executor.workspace_root),
@@ -536,6 +542,7 @@ class ToolAgentLoop:
                             "risk": risk,
                             "reason": "boundary_violation",
                             "error": boundary_result.error or boundary_result.content,
+                            "boundary_paths": list(boundary_paths),
                         },
                     )
                 return ControlToolResult(content=_tool_content(boundary_result))
@@ -1364,6 +1371,17 @@ def _tool_content(result: CapabilityResult) -> str:
         return result.content
     prefix = "[BOUNDARY_VIOLATION]" if result.stop_reason == "BoundaryViolation" else "[TOOL_ERROR]"
     return f"{prefix} {result.error or result.content}"
+
+
+def _boundary_with_reviewed_paths(boundary: Boundary, payload: dict[str, Any]) -> Boundary:
+    raw_paths = payload.get("boundary_paths")
+    if not isinstance(raw_paths, list):
+        return boundary
+    allowed_paths = list(boundary.allowed_paths)
+    for path in raw_paths:
+        if isinstance(path, str) and path and path not in allowed_paths:
+            allowed_paths.append(path)
+    return boundary.model_copy(update={"allowed_paths": allowed_paths})
 
 
 def _reviewable_boundary_result(result: CapabilityResult) -> bool:

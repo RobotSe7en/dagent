@@ -370,6 +370,7 @@ def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tm
         "arguments": {"path": "blocked/secret.txt"},
     }
     assert result.state.pending_review.payload["reason"] == "boundary_violation"
+    assert result.state.pending_review.payload["boundary_paths"] == ["blocked/secret.txt"]
     assert "outside allowed paths" in result.state.pending_review.payload["error"]
 
 
@@ -637,7 +638,7 @@ def test_tool_agent_review_resume_reuses_original_tool_call_name(tmp_path: Path)
     assert tool_message["name"] == "write"
 
 
-def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_path: Path) -> None:
+def test_tool_agent_boundary_review_approval_does_not_expand_to_different_paths(tmp_path: Path) -> None:
     first_file = tmp_path / "blocked" / "first.txt"
     second_file = tmp_path / "blocked" / "second.txt"
     provider = MockProvider(
@@ -685,6 +686,48 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
         "arguments": {"path": "blocked/second.txt", "content": "two"},
     }
     assert resumed.state.pending_review.payload["reason"] == "boundary_violation"
+
+
+def test_tool_agent_boundary_review_approval_allows_later_call_to_same_path(tmp_path: Path) -> None:
+    target = tmp_path / "blocked" / "note.txt"
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_write_file",
+                        arguments={"path": "blocked/note.txt", "content": "one"},
+                    )
+                ]
+            ),
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_2",
+                        name="tool_write_file",
+                        arguments={"path": "blocked/note.txt", "content": "two"},
+                    )
+                ]
+            ),
+            ChatResponse(content="done"),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+    first = run(
+        run_agent_message(
+            agent,
+            "Write the same file twice",
+            boundary=Boundary(allowed_paths=["allowed"]),
+            review_level="fast",
+        )
+    )
+
+    resumed = run(agent.resume_review(first.state, approved=True))
+
+    assert resumed.state.status == "completed"
+    assert resumed.state.pending_review is None
+    assert target.read_text(encoding="utf-8") == "two"
 
 
 def test_tool_agent_shell_cross_boundary_path_requires_review(tmp_path: Path) -> None:

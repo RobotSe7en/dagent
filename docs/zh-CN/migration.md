@@ -8,6 +8,15 @@
 
 ## Unreleased
 
+### 变更：已批准越界路径可在同一 run 内复用
+
+- 可审核的 boundary violation 现在包含规范化后的 `payload.boundary_paths`。批准后只会授权
+  这些已报告路径供同一 run 的后续 tool-agent 调用使用，因此 invocation id 改变不会让同一路径
+  重复审核。
+- 不同路径仍需审核；该授权不会成为 user、project 或跨 run 策略，硬性 boundary 拦截仍不可放行。
+- `RunState` 和 `RunCheckpoint` schema version 不变。新 checkpoint 通过既有 invocation
+  boundary 携带授权；不含 `boundary_paths` 的旧 checkpoint 继续保持单 invocation 批准语义。
+
 ### 变更：不绑定项目的静态编排运行
 
 - 内置 API/WebUI 现在把已保存静态 DAG 视为可复用定义，而不是 project 或 conversation

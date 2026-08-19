@@ -30,6 +30,8 @@ from dagent.schemas import (
 )
 from dagent.schemas.common import validate_runtime_directory
 from dagent.capabilities.tools.boundary import (
+    BoundaryViolation,
+    HardBoundaryViolation,
     enforce_command_allowed,
     enforce_command_paths_allowed,
     enforce_path_allowed,
@@ -708,6 +710,16 @@ def check_tool_boundary(
     call the tool handler, so risk review can preflight boundary failures without
     triggering side effects.
     """
+    result, _ = check_tool_boundary_for_review(definition, invocation, workspace_root)
+    return result
+
+
+def check_tool_boundary_for_review(
+    definition: CapabilityDefinition,
+    invocation: CapabilityInvocation,
+    workspace_root: Path,
+) -> tuple[CapabilityResult | None, tuple[str, ...]]:
+    """Preflight a tool boundary and retain its specific reviewable path."""
     config = definition.config
     checked_args = _merge_definition_arguments(definition, invocation.arguments)
     try:
@@ -727,8 +739,19 @@ def check_tool_boundary(
                     checked_args["cwd"],
                 )
     except Exception as exc:
-        return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
-    return None
+        result = _failed(invocation, str(exc), stop_reason=type(exc).__name__)
+        if isinstance(exc, HardBoundaryViolation) or not isinstance(exc, BoundaryViolation):
+            return result, ()
+        if exc.resolved_path is None:
+            return result, ()
+        resolved = Path(exc.resolved_path)
+        try:
+            relative = resolved.relative_to(workspace_root.resolve())
+        except ValueError:
+            return result, (str(resolved),)
+        value = relative.as_posix()
+        return result, (value or ".",)
+    return None, ()
 
 
 def _merge_tool_arguments(tool: Any, arguments: dict[str, Any]) -> dict[str, Any]:

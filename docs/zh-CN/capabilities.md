@@ -197,9 +197,10 @@ policy = dagent.CapabilityPolicy(
 
 Agents 和 runs 上的 review 设置决定 medium/high-risk 工作什么时候暂停等待批准。
 Boundary review 独立于 risk review：如果 tool-agent 调用试图读写 boundary 之外的路径，
-run 会以 `payload.reason == "boundary_violation"` 暂停。批准该 review 只会执行同一
-次调用一次，不会扩大整个 run 的 boundary；拒绝则把 denial 消息反馈给 agent。硬性拦截的
-shell 危险模式（例如破坏性系统命令）不可通过 review 放行。
+run 会以 `payload.reason == "boundary_violation"` 暂停。批准后会执行当前调用，并允许同一
+run 的后续工具调用继续访问 `payload.boundary_paths` 中已审核的具体路径；其它路径仍需审核，
+该授权也不会跨 run。拒绝则把 denial 消息反馈给 agent。硬性拦截的 shell 危险模式
+（例如破坏性系统命令）不可通过 review 放行。
 
 ## MCP Tools
 

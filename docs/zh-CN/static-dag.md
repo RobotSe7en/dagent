@@ -58,8 +58,9 @@ if result.requires_review:
 ```
 
 `careful` 会审核 Agent 内部的中、高风险工具。任意策略下，内部工具超出节点 boundary 时，
-都会暂停以请求仅针对该 invocation 的 boundary override。批准或拒绝会续跑同一个
-`ToolAgent` conversation；拒绝不会执行工具，而会将决定反馈给模型。
+都会暂停以请求针对具体路径的 boundary override。批准后，同一 run 内后续工具调用访问这个
+已审核路径时不再重复审核，其它路径仍会暂停。批准或拒绝会续跑同一个 `ToolAgent`
+conversation；拒绝不会执行工具，而会将决定反馈给模型。
 
 普通 capability node（包括高风险 node）仍被视为 DAG 作者已授权，直接执行。该 continuation
 只支持顶层直接 Agent capability node；`MapNode`、`Subgraph` 或 `LoopNode` 内的 Agent 会在
