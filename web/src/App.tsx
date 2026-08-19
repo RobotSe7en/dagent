@@ -1092,6 +1092,7 @@ type OrchestrationContext = {
 };
 type StaticCapabilityReviewContext = {
   savedDagId: string;
+  legacyConversation?: OrchestrationContext['request'];
 };
 type ToolDirectoryTab = 'tools' | 'skills' | 'mcp';
 type ChatWorkspaceSub = 'conversations' | 'projects';
@@ -3566,8 +3567,16 @@ export function App() {
         setEditorUserDag((current) => userDagFromRuntimeDag(current, nextDag));
       }
       if (nextState?.pending_review?.kind === 'capability_review' && editorSavedDagId) {
+        const selectedRun = staticRunHistory.find((run) => run.id === runId);
+        const legacyConversation = selectedRun?.conversation_id
+          ? {
+              projectId: selectedRun.project_id,
+              conversationId: selectedRun.conversation_id,
+            }
+          : undefined;
         showStaticCapabilityReview(nextState.pending_review, {
           savedDagId: editorSavedDagId,
+          ...(legacyConversation ? { legacyConversation } : {}),
         });
       }
     } catch (exc) {
@@ -4138,7 +4147,9 @@ export function App() {
           setEditorMessage(message);
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, `\n\nRun error: ${message}`));
         },
-      }, undefined, feedback, { persisted: true });
+      }, undefined, feedback, context.legacyConversation
+        ? { conversation: context.legacyConversation }
+        : { persisted: true });
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setEditorMessage(message);
