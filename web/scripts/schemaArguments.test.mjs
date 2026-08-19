@@ -967,7 +967,6 @@ test('saved DAG api helpers preserve metadata and layout', async () => {
   ]);
   const savedDag = {
     id: 'dag_saved',
-    project_id: 'proj_1',
     org_id: 'default',
     owner_user_id: 'default',
     name: 'Saved DAG',
@@ -999,9 +998,8 @@ test('saved DAG api helpers preserve metadata and layout', async () => {
   };
 
   try {
-    const listed = await listSavedDags({ projectId: 'proj_1' });
+    const listed = await listSavedDags();
     const created = await saveSavedDag({
-      projectId: 'proj_1',
       spec: savedDag.spec,
       layout: savedDag.layout,
     });
@@ -1032,10 +1030,9 @@ test('saved DAG api helpers preserve metadata and layout', async () => {
     globalThis.fetch = originalFetch;
   }
 
-  assert.equal(calls[0].url, '/api/saved-dags?project_id=proj_1');
+  assert.equal(calls[0].url, '/api/saved-dags');
   assert.equal(calls[1].url, '/api/saved-dags');
   assert.deepEqual(JSON.parse(calls[1].init.body), {
-    project_id: 'proj_1',
     name: 'Spec Name',
     description: '',
     spec: savedDag.spec,
@@ -1591,15 +1588,17 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.doesNotMatch(appSource, /const defaultWorkspaceRoot = 'runs';/);
   assert.match(appSource, /ensureOrchestrationContext\(/);
   assert.match(appSource, /runSavedDagStream\(saved\.id/);
-  assert.match(appSource, /type StaticCapabilityReviewContext = \{[\s\S]*savedDagId: string;[\s\S]*conversation: OrchestrationContext\['request'\];/);
+  assert.match(appSource, /type StaticCapabilityReviewContext = \{\s*savedDagId: string;\s*legacyConversation\?: OrchestrationContext\['request'\];\s*\};/);
   assert.match(appSource, /const showStaticCapabilityReview = \([\s\S]*setCapabilityReview\(review\);[\s\S]*setStaticCapabilityReviewContext\(context\);/);
-  assert.match(appSource, /onReview: \(review\) => \{[\s\S]*showStaticCapabilityReview\(review, \{[\s\S]*savedDagId: saved\.id,[\s\S]*conversation: context\.request,/);
-assert.match(appSource, /const resumeStaticCapabilityReview = async[\s\S]*resumeCapabilityReview\([\s\S]*conversation: context\.conversation/);
+  assert.match(appSource, /onReview: \(review\) => \{[\s\S]*showStaticCapabilityReview\(review, \{\s*savedDagId: saved\.id,\s*\}\);/);
+assert.match(appSource, /const resumeStaticCapabilityReview = async[\s\S]*resumeCapabilityReview\([\s\S]*persisted: true/);
 assert.match(appSource, /selectStaticRunHistory[\s\S]*pending_review\?\.kind === 'capability_review'[\s\S]*showStaticCapabilityReview\(nextState\.pending_review/);
+assert.match(appSource, /selectStaticRunHistory[\s\S]*selectedRun\?\.conversation_id[\s\S]*legacyConversation/);
 assert.match(appSource, /resumeStaticCapabilityReview[\s\S]*catch \(exc\)[\s\S]*setCapabilityReview\(review\);[\s\S]*setStaticCapabilityReviewContext\(context\);/);
 assert.match(appSource, /const confirmCapabilityReview = async[\s\S]*if \(staticCapabilityReviewContext\) \{[\s\S]*await resumeStaticCapabilityReview\(approved\);/);
   assert.match(apiSource, /export async function runSavedDagStream/);
   assert.match(apiSource, /\/saved-dags\/\$\{encodeURIComponent\(savedDagId\)\}\/run\/stream/);
+  assert.doesNotMatch(apiSource.match(/export async function runSavedDagStream[\s\S]*?\n\}/)?.[0] ?? '', /conversation_id|project_id/);
   assert.doesNotMatch(appSource, /selectedSidebarConversation|workspaceRootLabel|workspace-root-chip/);
   assert.match(appSource, /run\?\.workspace_path \|\| '\.dagent\/runs'/);
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*artifacts=\{editorArtifacts\}[\s\S]*onCreateArtifact=\{createEditorArtifact\}[\s\S]*onUploadFiles=\{\(files\) => void uploadEditorFiles\(files\)\}/);
@@ -1648,8 +1647,8 @@ assert.match(appSource, /const confirmCapabilityReview = async[\s\S]*if \(static
   const newEditorSource = appSource.match(/const newEditorUserDag = \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
   assert.ok(newEditorSource, 'newEditorUserDag function should exist');
   assert.match(newEditorSource, /setEditorUserDagAndRuntimeDag\(createEmptyUserDag\(\), \{\}\)/);
-  assert.match(newEditorSource, /setSelectedConversationId\(''\)/);
-  assert.match(newEditorSource, /orchestrationHydratedKeyRef\.current = ''/);
+  assert.doesNotMatch(newEditorSource, /setSelectedConversationId\(''\)/);
+  assert.doesNotMatch(newEditorSource, /orchestrationHydratedKeyRef\.current = ''/);
   const ensureContextSource = appSource.match(/const ensureOrchestrationContext = async \([\s\S]*?\n  const uploadEditorFiles/)?.[0] ?? '';
   assert.ok(ensureContextSource, 'ensureOrchestrationContext function should exist');
   assert.match(ensureContextSource, /catch \(exc\) \{[\s\S]*isOrchestrationSessionConflict\(exc\)[\s\S]*getOrchestrationSessionByConversation\(conversation\.id\)/);
@@ -1658,6 +1657,7 @@ assert.match(appSource, /const confirmCapabilityReview = async[\s\S]*if \(static
   assert.match(runEditorSpecSource, /if \(editorRunning \|\| editorRunInFlightRef\.current\) return;/);
   assert.match(runEditorSpecSource, /editorRunInFlightRef\.current = true;[\s\S]*setEditorRunning\(true\);[\s\S]*ensureEditorDagSavedForRun\(spec\)/);
   assert.match(runEditorSpecSource, /ensureEditorDagSavedForRun\(spec\)/);
+  assert.doesNotMatch(runEditorSpecSource, /ensureOrchestrationContext\(/);
   assert.doesNotMatch(runEditorSpecSource, /persistEditorUserDag\(\)/);
   assert.match(appSource, /targetProjectId\?: string \| null/);
   assert.match(appSource, /selectedConversation\?\.project_id === targetProjectId/);

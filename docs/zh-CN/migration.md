@@ -8,6 +8,39 @@
 
 ## Unreleased
 
+### 变更：不绑定项目的静态编排运行
+
+- 内置 API/WebUI 现在把已保存静态 DAG 视为可复用定义，而不是 project 或 conversation
+  资源。每次调用 `POST /saved-dags/{dag_id}/run/stream` 都会创建新的 run id 和隔离的
+  `.dagent/projects/_runs/<run_id>/workspace`。
+- 新静态 run 不获取 conversation lock；run 记录中的 `project_id`、`conversation_id` 均为
+  null，历史仍按 `saved_dag_id` 分组。
+- 归档 saved DAG 会删除其分组运行历史和隔离的 run workspace；存在 queued/running run
+  时返回 `409`，需等待运行结束。
+- 静态 review 通过 `POST /reviews/{review_id}/resume` 恢复，使用已持久化的
+  `RunCheckpoint` 和该 run 的专属 workspace；API 或 `Runner` 重启后语义保持确定。
+
+### 本地 API 与存储兼容性
+
+- `POST /saved-dags` 不再接受 `project_id`，saved-DAG 响应也不再包含该字段；
+  `GET /saved-dags` 不再按项目过滤。
+- `POST /saved-dags/{dag_id}/run/stream` 不再接受 `project_id` 或 `conversation_id`，只发送
+  可选的 `graph_input`。
+- SQLite migration version 2 会把旧 `saved_dags.project_id` 列设为 null，从而解除已有定义
+  的项目绑定；新数据库不再创建该列。删除项目也不再删除 saved DAG 定义或其上传输入。
+- 已存在的、基于 conversation 的静态 run 和 pending review 仍可读取，并可通过原来的
+  conversation/project 路由恢复。该兼容路径只服务已持久化 run，不用于新静态 run。
+- 这些是内置本地 API/WebUI contract 的变化；公开 Python SDK、`DAGSpec`、`RunState` 和
+  `RunCheckpoint` schema/version 均不受本次修改影响。
+
+### 迁移步骤
+
+- 从 saved-DAG 创建请求中移除 `project_id`。
+- 从 saved-DAG 运行请求中移除 `project_id` 和 `conversation_id`；通过
+  `GET /saved-dags/{dag_id}/runs` 获取该定义的运行历史，而不是按 conversation 分组。
+- 新静态 run 的 review 使用无项目 review endpoint 恢复；不要为新运行创建静态
+  conversation 或 orchestration session。
+
 ## 0.9.3
 
 ### 新增

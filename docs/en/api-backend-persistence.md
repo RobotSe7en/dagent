@@ -1,6 +1,6 @@
 # API Backend Persistence
 
-> Version note: this page describes the bundled 0.8 host implementation. For
+> Version note: this page describes the bundled local host implementation. For
 > the contract required of other hosts, see
 > [Host migration for 0.8](host-migration-0.8.md).
 
@@ -24,6 +24,10 @@ The Web UI and API backend support projects and conversations:
   crashed process cannot leave a conversation permanently busy.
 - Different conversations in the same project can run concurrently and may touch
   the same project files.
+- Saved static DAG definitions are not project or conversation resources. Each
+  explicit static run gets its own
+  `.dagent/projects/_runs/<run_id>/workspace` and does not acquire a
+  conversation lock.
 
 Message streams use `/messages/stream` with one `input` string and a
 `conversation_id`; project conversations also include `project_id`. The
@@ -52,10 +56,10 @@ The local backend uses SQLite through `api/storage/`:
   `smart_workbench` or `orchestration_workspace` surface.
 - `reviews`: pending/resuming/resolved review metadata. The review row is
   claimed atomically; resumable execution state lives in `runs.checkpoint_json`.
-- `saved_dags`: saved static DAG specs, layout metadata, revisions, and project
-  ownership.
-- `orchestration_sessions`: dynamic/static orchestration editor state attached
-  to a matching conversation kind.
+- `saved_dags`: reusable static DAG specs, layout metadata, and revisions.
+- `orchestration_sessions`: conversation-backed dynamic orchestration editor
+  state. Legacy static sessions remain readable so their existing runs and
+  reviews can be resumed.
 
 Run artifacts are not duplicated in SQL. The backend derives run artifacts from
 `RunState.trace` plus files in the workspace. Saved static DAG input uploads are
@@ -76,7 +80,19 @@ dynamic orchestration sessions are standalone conversations and use standalone
 conversation workspaces, not project workspaces. Project-scoped DAG
 conversations remain part of the smart workbench project flow. Static
 orchestration history is stored as `saved_dags` plus runs linked by
-`saved_dag_id`.
+`saved_dag_id`. Every new static run has a distinct run id and workspace; its
+`project_id` and `conversation_id` are null.
+
+Create a reusable definition and start it with these project-neutral request
+shapes:
+
+```text
+POST /saved-dags
+{ "name": "Report", "spec": { ... }, "layout": { ... } }
+
+POST /saved-dags/{dag_id}/run/stream
+{ "graph_input": { ... } }
+```
 
 The WebUI uses these endpoints to manage orchestration history:
 
@@ -95,13 +111,23 @@ workspace, and visible `conversation_messages` whose `run_id` matches the
 deleted run. Awaiting-review runs can be deleted; doing so intentionally
 discards the pending review and the visible transcript for that run.
 
+`DELETE /saved-dags/{dag_id}` archives the definition and deletes its retained
+run rows, reviews, dedicated run workspaces, and saved input uploads. It returns
+`409` while one of the definition's runs is queued or running.
+
 ## Resume And Restart Behavior
 
 For persisted review resume, use:
 
 ```text
 POST /projects/{project_id}/reviews/{review_id}/resume
+POST /reviews/{review_id}/resume
 ```
+
+The project route applies to conversation-backed project runs. New static DAG
+runs use the project-neutral route. Both load the authoritative persisted
+checkpoint; a static resume reuses the run-owned workspace and never creates or
+locks a conversation.
 
 The backend atomically changes the review from `pending` to `resuming`, loads
 the complete `RunCheckpoint` from the associated run, and calls
@@ -119,10 +145,9 @@ the in-memory runner only when no database state exists. This lets completed and
 awaiting-review project runs remain inspectable after an API process restart,
 as long as the workspace files are still reachable.
 
-Dynamic and static orchestration resume through `orchestration_sessions`.
-Review resume updates the attached session draft from the final `RunState`, and
-the WebUI restores orchestration drafts from the saved session when revisiting a
-matching conversation.
+Dynamic orchestration resumes through `orchestration_sessions`. Static review
+resume is keyed by the saved run and checkpoint. Existing conversation-backed
+static runs retain their legacy resume behavior.
 
 ## Enterprise Path
 

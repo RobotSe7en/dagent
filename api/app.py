@@ -340,7 +340,6 @@ class UserDAG(BaseModel):
 class SavedDAGCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    project_id: str | None = None
     name: str | None = None
     description: str = ""
     spec: UserDAG
@@ -360,8 +359,6 @@ class SavedDAGUpdateRequest(BaseModel):
 class SavedDAGRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    project_id: str | None = None
-    conversation_id: str = Field(min_length=1)
     graph_input: Any = None
 
 
@@ -623,6 +620,18 @@ class PersistedMessageContext:
     conversation_revision: int
     orchestration_session_id: str | None = None
     orchestration_surface: str | None = None
+
+
+@dataclass(frozen=True)
+class PersistedStaticDAGRunContext:
+    workspace_uri: str
+    workspace_path: Path
+    project_id: None = None
+    conversation_id: None = None
+    orchestration_session_id: None = None
+
+
+PersistedRunContext = PersistedMessageContext | PersistedStaticDAGRunContext
 
 
 ORCHESTRATION_WORKSPACE_SURFACE = "orchestration_workspace"
@@ -1345,12 +1354,9 @@ async def delete_project(project_id: str) -> dict[str, str]:
         run_states: dict[str, RunState | None] = {}
         for run in runs:
             run_states[run.id] = await run_in_threadpool(store.get_run_state, run.id)
-        saved_dags = await run_in_threadpool(store.list_saved_dags, project.id)
         workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, project.workspace_uri)
         for run in runs:
             await run_in_threadpool(_delete_run_files, run, run_states[run.id])
-        for saved_dag in saved_dags:
-            await run_in_threadpool(shutil.rmtree, _saved_dag_artifact_root(saved_dag.id), ignore_errors=True)
         await run_in_threadpool(_delete_project_workspace, project, workspace_path)
         deleted = await run_in_threadpool(store.delete_project, project.id)
         if not deleted:
@@ -1888,10 +1894,6 @@ async def validate_user_dag(dag: UserDAG) -> dict[str, Any]:
 
 @app.post("/saved-dags")
 async def create_saved_dag(request: SavedDAGCreateRequest) -> dict[str, Any]:
-    if request.project_id is not None:
-        project = await run_in_threadpool(state.get_store().get_project, request.project_id)
-        if project is None:
-            raise HTTPException(status_code=404, detail="Project not found.")
     _validate_user_dag_or_raise(request.spec)
     name = _clean_required_text(request.name or request.spec.name, field="DAG name")
     description = request.description.strip()
@@ -1899,7 +1901,6 @@ async def create_saved_dag(request: SavedDAGCreateRequest) -> dict[str, Any]:
         saved = await run_in_threadpool(
             state.get_store().create_saved_dag,
             dag_id=_new_api_id("dag"),
-            project_id=request.project_id,
             name=name,
             description=description,
             spec_json=_user_dag_json(request.spec),
@@ -1911,12 +1912,8 @@ async def create_saved_dag(request: SavedDAGCreateRequest) -> dict[str, Any]:
 
 
 @app.get("/saved-dags")
-async def list_saved_dags(project_id: str | None = None) -> dict[str, Any]:
-    if project_id is not None:
-        project = await run_in_threadpool(state.get_store().get_project, project_id)
-        if project is None:
-            raise HTTPException(status_code=404, detail="Project not found.")
-    saved_dags = await run_in_threadpool(state.get_store().list_saved_dags, project_id)
+async def list_saved_dags() -> dict[str, Any]:
+    saved_dags = await run_in_threadpool(state.get_store().list_saved_dags)
     return {"saved_dags": [_saved_dag_payload(saved) for saved in saved_dags]}
 
 
@@ -1969,9 +1966,17 @@ async def update_saved_dag(dag_id: str, request: SavedDAGUpdateRequest) -> dict[
 
 @app.delete("/saved-dags/{dag_id}")
 async def delete_saved_dag(dag_id: str) -> dict[str, str]:
-    deleted = await run_in_threadpool(state.get_store().archive_saved_dag, dag_id)
+    store = state.get_store()
+    runs = await run_in_threadpool(store.list_runs, saved_dag_id=dag_id)
+    if any(run.status in {"queued", "running"} for run in runs):
+        raise HTTPException(status_code=409, detail="Saved DAG has active runs.")
+    deleted = await run_in_threadpool(store.archive_saved_dag, dag_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    for run in runs:
+        run_state = await run_in_threadpool(store.get_run_state, run.id)
+        await run_in_threadpool(_delete_run_files, run, run_state)
+        await run_in_threadpool(store.delete_run, run.id)
     await run_in_threadpool(shutil.rmtree, _saved_dag_artifact_root(dag_id), ignore_errors=True)
     return {"status": "deleted"}
 
@@ -1981,23 +1986,20 @@ async def run_saved_dag_stream(dag_id: str, request: SavedDAGRunRequest) -> Stre
     saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
     if saved is None:
         raise HTTPException(status_code=404, detail="Saved DAG not found.")
-    context = await _persisted_context_from_conversation(
-        request.project_id,
-        request.conversation_id,
-        expected_kind="static_dag",
-    )
-    if saved.project_id != context.project_id:
-        raise HTTPException(status_code=404, detail="Saved DAG not found.")
     dag = _user_dag_from_saved(saved)
-    stream_id = _new_api_id("stream")
+    run_id = _new_api_id("run")
     try:
-        lock = await run_in_threadpool(
-            state.get_store().acquire_conversation_lock,
-            context.conversation_id,
-            owner=stream_id,
+        workspace_uri, workspace_path = await run_in_threadpool(
+            state.get_workspaces().create_run_workspace,
+            run_id,
         )
-    except ConversationBusyError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Run workspace is invalid.") from exc
+    context = PersistedStaticDAGRunContext(
+        workspace_uri=workspace_uri,
+        workspace_path=workspace_path,
+    )
+    stream_id = _new_api_id("stream")
     return StreamingResponse(
         _persisted_static_dag_stream_events(
             dag,
@@ -2005,7 +2007,7 @@ async def run_saved_dag_stream(dag_id: str, request: SavedDAGRunRequest) -> Stre
             saved,
             context,
             stream_id,
-            lock,
+            run_id,
         ),
         media_type="text/event-stream",
     )
@@ -2022,7 +2024,7 @@ async def create_orchestration_session(request: OrchestrationSessionCreateReques
         raise HTTPException(status_code=400, detail="Conversation kind does not match orchestration session kind.")
     if request.saved_dag_id is not None:
         saved = await run_in_threadpool(state.get_store().get_saved_dag, request.saved_dag_id)
-        if saved is None or saved.project_id != context.project_id:
+        if saved is None:
             raise HTTPException(status_code=404, detail="Saved DAG not found.")
     try:
         session = await run_in_threadpool(
@@ -2084,7 +2086,7 @@ async def update_orchestration_session(
     update_ui_state = "ui_state" in request.model_fields_set
     if update_saved_dag_id and request.saved_dag_id is not None:
         saved = await run_in_threadpool(state.get_store().get_saved_dag, request.saved_dag_id)
-        if saved is None or saved.project_id != existing.project_id:
+        if saved is None:
             raise HTTPException(status_code=404, detail="Saved DAG not found.")
     try:
         session = await run_in_threadpool(
@@ -4097,46 +4099,65 @@ async def _resume_persisted_review_stream(
     run = await run_in_threadpool(store.get_run, review.run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found.")
-    if run.conversation_id is None:
-        raise HTTPException(status_code=400, detail="Review run is not attached to a conversation.")
-    conversation = await run_in_threadpool(store.get_conversation, run.conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    if project is not None and conversation.project_id != project.id:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    _require_v3_conversation(conversation)
     checkpoint = await run_in_threadpool(store.get_run_checkpoint, run.id)
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Run checkpoint not found.")
     run_state = checkpoint.state
-    conversation_state = await _conversation_state_for(conversation, store)
-    workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, run.workspace_uri)
-    orchestration_session = None
-    if conversation.kind != "chat":
-        orchestration_session = await run_in_threadpool(
-            store.get_orchestration_session_by_conversation,
-            conversation.id,
+    lock = None
+    message_projection = None
+    if run.conversation_id is None:
+        if run.kind != "static_dag" or run.saved_dag_id is None or run.project_id is not None:
+            raise HTTPException(status_code=400, detail="Review run is not resumable without a conversation.")
+        try:
+            workspace_path = await run_in_threadpool(
+                state.get_workspaces().run_workspace_path_for_existing,
+                run.id,
+                run.workspace_uri,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="Run workspace is invalid.") from exc
+        if not workspace_path.is_dir() or workspace_path.is_symlink():
+            raise HTTPException(status_code=404, detail="Run workspace not found.")
+        context: PersistedRunContext = PersistedStaticDAGRunContext(
+            workspace_uri=run.workspace_uri,
+            workspace_path=workspace_path,
         )
-    context = PersistedMessageContext(
-        project_id=conversation.project_id,
-        conversation_id=conversation.id,
-        conversation_kind=conversation.kind,
-        workspace_uri=run.workspace_uri,
-        workspace_path=workspace_path,
-        conversation_state=conversation_state,
-        conversation_revision=conversation.conversation_revision,
-        orchestration_session_id=None if orchestration_session is None else orchestration_session.id,
-        orchestration_surface=_orchestration_session_surface(orchestration_session),
-    )
+    else:
+        conversation = await run_in_threadpool(store.get_conversation, run.conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        if project is not None and conversation.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        _require_v3_conversation(conversation)
+        conversation_state = await _conversation_state_for(conversation, store)
+        workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, run.workspace_uri)
+        orchestration_session = None
+        if conversation.kind != "chat":
+            orchestration_session = await run_in_threadpool(
+                store.get_orchestration_session_by_conversation,
+                conversation.id,
+            )
+        context = PersistedMessageContext(
+            project_id=conversation.project_id,
+            conversation_id=conversation.id,
+            conversation_kind=conversation.kind,
+            workspace_uri=run.workspace_uri,
+            workspace_path=workspace_path,
+            conversation_state=conversation_state,
+            conversation_revision=conversation.conversation_revision,
+            orchestration_session_id=None if orchestration_session is None else orchestration_session.id,
+            orchestration_surface=_orchestration_session_surface(orchestration_session),
+        )
     stream_id = _new_api_id("stream")
-    try:
-        lock = await run_in_threadpool(
-            store.acquire_conversation_lock,
-            conversation.id,
-            owner=stream_id,
-        )
-    except ConversationBusyError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if run.conversation_id is not None:
+        try:
+            lock = await run_in_threadpool(
+                store.acquire_conversation_lock,
+                run.conversation_id,
+                owner=stream_id,
+            )
+        except ConversationBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     decision = ReviewDecision(
         review_id=review_id,
         approved=request.approved,
@@ -4146,7 +4167,8 @@ async def _resume_persisted_review_stream(
     )
     try:
         decision_json = _review_decision_json(decision)
-        message_projection = await ConversationMessageProjection.resume_for_review(run_state, context, decision)
+        if isinstance(context, PersistedMessageContext):
+            message_projection = await ConversationMessageProjection.resume_for_review(run_state, context, decision)
         claimed = await run_in_threadpool(
             store.claim_review,
             review_id,
@@ -4158,7 +4180,8 @@ async def _resume_persisted_review_stream(
                 detail="Review is already being resumed or has been resolved.",
             )
     except BaseException:
-        await run_in_threadpool(lock.release)
+        if lock is not None:
+            await run_in_threadpool(lock.release)
         raise
     return StreamingResponse(
         _LockReleasingAsyncIterator(
@@ -4224,7 +4247,7 @@ async def _persisted_message_stream_events(
 async def _persisted_review_resume_stream_events(
     decision: ReviewDecision,
     checkpoint: RunCheckpoint,
-    context: PersistedMessageContext,
+    context: PersistedRunContext,
     stream_id: str,
     *,
     message_projection: ConversationMessageProjection | None = None,
@@ -4254,7 +4277,7 @@ class _LockReleasingAsyncIterator:
     def __init__(
         self,
         source: AsyncIterator[Any],
-        lock: Any,
+        lock: Any | None,
         *,
         on_unstarted_close: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
@@ -4287,16 +4310,17 @@ class _LockReleasingAsyncIterator:
         if not self._started and self._on_unstarted_close is not None:
             await self._on_unstarted_close()
         self._released = True
-        await run_in_threadpool(self._lock.release)
+        if self._lock is not None:
+            await run_in_threadpool(self._lock.release)
 
 
 async def _persisted_static_dag_stream_events(
     dag: UserDAG,
     graph_input: Any,
     saved: SavedDag,
-    context: PersistedMessageContext,
+    context: PersistedStaticDAGRunContext,
     stream_id: str,
-    lock: Any,
+    run_id: str,
 ):
     try:
         runner = state.get_runner()
@@ -4305,6 +4329,7 @@ async def _persisted_static_dag_stream_events(
             graph_input=graph_input,
             workspace_path=context.workspace_path,
             artifact_uploads=_saved_dag_artifact_uploads(saved, dag),
+            run_id=run_id,
         )
         async for payload in _persisted_run_events(
             event_source,
@@ -4317,14 +4342,16 @@ async def _persisted_static_dag_stream_events(
         ):
             yield _sse(payload)
     finally:
-        await run_in_threadpool(lock.release)
+        persisted_run = await run_in_threadpool(state.get_store().get_run, run_id)
+        if persisted_run is None:
+            await run_in_threadpool(_delete_workspace_root, context.workspace_path)
 
 
 async def _persisted_run_events(
     event_source: AsyncIterator[RunStreamEvent],
     *,
     runner: Runner,
-    context: PersistedMessageContext,
+    context: PersistedRunContext,
     stream_id: str,
     run_kind: str,
     create_run: bool,
@@ -4441,6 +4468,10 @@ async def _persisted_run_events(
                         result.output_text,
                     )
                     if result.conversation is not None:
+                        if not isinstance(context, PersistedMessageContext):
+                            raise StorageConflictError(
+                                "SDK returned conversation state for a non-conversation run."
+                            )
                         if result.conversation.id != context.conversation_id:
                             raise StorageConflictError(
                                 "SDK conversation identity does not match the host conversation."
@@ -5088,6 +5119,17 @@ def _delete_conversation_files(
 
 
 def _delete_run_files(run: Run, run_state: RunState | None) -> None:
+    isolated_static_run = run.conversation_id is None and run.saved_dag_id is not None
+    if isolated_static_run:
+        try:
+            workspace = state.get_workspaces().run_workspace_path_for_existing(
+                run.id,
+                run.workspace_uri,
+            )
+        except ValueError:
+            return
+        _delete_workspace_root(workspace)
+        return
     if run_state is None or not run_state.workspace_path:
         return
     try:

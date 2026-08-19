@@ -102,8 +102,24 @@ class SQLiteStore:
                 self._rebuild_database()
             self._conn.executescript(schema)
             self._add_v08_columns()
+            self._apply_v2_saved_dag_detachment()
             self._conn.execute("DELETE FROM conversation_locks WHERE expires_at <= ?", (_now(),))
             self._conn.commit()
+
+    def _apply_v2_saved_dag_detachment(self) -> None:
+        applied = self._conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = 2"
+        ).fetchone()
+        if applied is not None:
+            return
+        if "project_id" in self._table_columns("saved_dags"):
+            self._conn.execute(
+                "UPDATE saved_dags SET project_id = NULL WHERE project_id IS NOT NULL"
+            )
+        self._conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (2, ?)",
+            (_now(),),
+        )
 
     def _add_v08_columns(self) -> None:
         conversation_columns = self._table_columns("conversations")
@@ -1113,7 +1129,6 @@ class SQLiteStore:
         self,
         *,
         dag_id: str,
-        project_id: str | None,
         name: str,
         description: str,
         spec_json: str,
@@ -1127,14 +1142,13 @@ class SQLiteStore:
                 self._conn.execute(
                     """
                     INSERT INTO saved_dags(
-                        id, project_id, org_id, owner_user_id, name, description,
+                        id, org_id, owner_user_id, name, description,
                         spec_json, layout_json, revision, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     """,
                     (
                         dag_id,
-                        project_id,
                         org_id,
                         owner_user_id,
                         name,
@@ -1161,17 +1175,9 @@ class SQLiteStore:
             row = self._conn.execute(query, params).fetchone()
         return None if row is None else _saved_dag_from_row(row)
 
-    def list_saved_dags(
-        self,
-        project_id: str | None = None,
-        *,
-        org_id: str | None = None,
-    ) -> list[SavedDag]:
+    def list_saved_dags(self, *, org_id: str | None = None) -> list[SavedDag]:
         conditions = ["archived_at IS NULL"]
         params: list[object] = []
-        if project_id is not None:
-            conditions.append("project_id = ?")
-            params.append(project_id)
         if org_id is not None:
             conditions.append("org_id = ?")
             params.append(org_id)
@@ -1470,7 +1476,6 @@ def _review_from_row(row: sqlite3.Row) -> Review:
 def _saved_dag_from_row(row: sqlite3.Row) -> SavedDag:
     return SavedDag(
         id=row["id"],
-        project_id=row["project_id"],
         org_id=row["org_id"],
         owner_user_id=row["owner_user_id"],
         name=row["name"],

@@ -1,6 +1,6 @@
 # API 后端持久化
 
-> 版本说明：本页描述内置的 0.8 host 实现。其他 host 需要遵循的 contract 参见
+> 版本说明：本页描述内置的本地 host 实现。其他 host 需要遵循的 contract 参见
 > [0.8 Host 迁移](host-migration-0.8.md)。
 
 公开 Python SDK 仍然不做持久化。`Runner`、`ToolAgent`、`DagAgent`、`Dag`
@@ -20,6 +20,8 @@ Web UI 和 API 后端支持项目与会话：
 - 单个会话是单写者：同一时间只能有一个 stream 或 resume 驱动它。第二个写入者会收到
   `409`。会话锁是 lease，进程崩溃不会让会话永久 busy。
 - 同一项目里的不同会话可以并发运行，也可能同时改同一个项目文件。
+- 保存的静态 DAG 定义不属于 project 或 conversation。每次显式静态运行都会获得独立的
+  `.dagent/projects/_runs/<run_id>/workspace`，且不获取 conversation lock。
 
 消息流使用 `/messages/stream`，请求只包含一个 `input` 字符串和
 `conversation_id`；项目会话还包含 `project_id`。后端拒绝已删除的客户端
@@ -46,8 +48,9 @@ Web UI 和 API 后端支持项目与会话：
   `orchestration_workspace` surface 的动态 DAG conversation。
 - `reviews`：pending/resuming/resolved review 元数据。review row 会被原子 claim；
   可恢复执行状态保存在 `runs.checkpoint_json`。
-- `saved_dags`：保存的静态 DAG spec、layout 元数据、revision 和 project 归属。
-- `orchestration_sessions`：绑定到同 kind conversation 的动态/静态编排编辑器状态。
+- `saved_dags`：可复用的静态 DAG spec、layout 元数据和 revision。
+- `orchestration_sessions`：基于 conversation 的动态编排编辑器状态。旧静态 session 仍可读取，
+  以便恢复其已有 run 和 review。
 
 运行 artifact 不在 SQL 里重复保存。后端从 `RunState.trace` 和 workspace 文件系统派生
 run artifact 列表。保存的静态 DAG 输入上传会写入 API 配置目录下的磁盘目录，API 进程重启后
@@ -63,7 +66,18 @@ run artifact 列表。保存的静态 DAG 输入上传会写入 API 配置目录
 conversation，并绑定 `orchestration_sessions` 和 runs。在编排工作区里，动态编排
 session 是无项目 conversation，使用无项目 conversation workspace，不使用项目
 workspace。项目范围的 DAG conversation 仍属于智能工作台的项目流程。静态编排历史保存为
-`saved_dags`，运行历史通过 `saved_dag_id` 关联到 runs。
+`saved_dags`，运行历史通过 `saved_dag_id` 关联到 runs。每个新静态 run 都有不同的 run id
+和 workspace，其 `project_id`、`conversation_id` 均为 null。
+
+创建可复用定义和启动运行使用以下不含项目语义的请求：
+
+```text
+POST /saved-dags
+{ "name": "Report", "spec": { ... }, "layout": { ... } }
+
+POST /saved-dags/{dag_id}/run/stream
+{ "graph_input": { ... } }
+```
 
 WebUI 使用这些 endpoint 管理编排历史：
 
@@ -81,13 +95,20 @@ DELETE /runs/{run_id}
 `conversation_messages`。等待审核中的 run 也可以删除；这样做会有意丢弃对应的 pending
 review 和该 run 的可见会话记录。
 
+`DELETE /saved-dags/{dag_id}` 会归档定义，并删除其保留的 run 记录、review、专属 run
+workspace 和已保存输入上传。如果该定义仍有 queued 或 running run，则返回 `409`。
+
 ## Resume 和重启行为
 
 持久化 review resume 使用：
 
 ```text
 POST /projects/{project_id}/reviews/{review_id}/resume
+POST /reviews/{review_id}/resume
 ```
+
+project 路由用于基于 conversation 的项目 run；新静态 DAG run 使用无项目路由。两者都读取
+权威的持久化 checkpoint；静态恢复会复用该 run 的专属 workspace，不创建或锁定 conversation。
 
 后端先把 review 从 `pending` 原子更新为 `resuming`，读取关联 run 的完整
 `RunCheckpoint`，然后调用
@@ -102,9 +123,8 @@ Trace 和 artifact endpoint 会先读取数据库里的 `RunState`，没有数�
 进程内 runner。只要 workspace 文件仍可访问，API 进程重启后，completed 和
 awaiting-review 的项目 run 仍然可以查看 trace 和 artifact。
 
-动态和静态编排通过 `orchestration_sessions` 恢复。Review resume 会用最终
-`RunState` 回写关联 session 的 draft；WebUI 重新进入匹配 kind 的 conversation 时，会从
-session 恢复编排草稿。
+动态编排通过 `orchestration_sessions` 恢复。静态 review resume 由已保存的 run 和 checkpoint
+定位；已有的基于 conversation 的静态 run 继续保留旧恢复行为。
 
 ## 企业化路径
 

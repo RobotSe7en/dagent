@@ -9,6 +9,48 @@ The current package version is `0.9.3`.
 
 ## Unreleased
 
+### Changed: project-neutral static orchestration runs
+
+- The bundled API/WebUI now treats a saved static DAG as a reusable definition,
+  not a project or conversation resource. Each call to
+  `POST /saved-dags/{dag_id}/run/stream` creates a new run id and an isolated
+  `.dagent/projects/_runs/<run_id>/workspace`.
+- New static runs do not acquire a conversation lock. Their run rows have null
+  `project_id` and `conversation_id`, and history remains grouped by
+  `saved_dag_id`.
+- Archiving a saved DAG deletes its grouped run history and isolated run
+  workspaces; active definitions return `409` until queued/running runs finish.
+- Static reviews resume through `POST /reviews/{review_id}/resume` using the
+  persisted `RunCheckpoint` and run-owned workspace. This remains deterministic
+  across an API or `Runner` restart.
+
+### Local API and storage compatibility
+
+- `POST /saved-dags` no longer accepts `project_id`, and saved-DAG responses no
+  longer contain it. `GET /saved-dags` no longer filters by project.
+- `POST /saved-dags/{dag_id}/run/stream` no longer accepts `project_id` or
+  `conversation_id`; send only optional `graph_input`.
+- SQLite migration version 2 detaches existing saved DAG definitions by setting
+  a legacy `saved_dags.project_id` column to null. New databases do not create
+  that column. Deleting a project no longer deletes saved DAG definitions or
+  their uploaded inputs.
+- Existing conversation-backed static runs and pending reviews remain readable
+  and resumable through their original conversation/project route. This
+  compatibility path is only for already persisted runs; it is not used for new
+  static runs.
+- These are changes to the bundled local API/WebUI contract. The public Python
+  SDK, `DAGSpec`, `RunState`, and `RunCheckpoint` schemas and versions are
+  unchanged by this change.
+
+### Migration steps
+
+- Remove `project_id` from saved-DAG create calls.
+- Remove `project_id` and `conversation_id` from saved-DAG run calls. Group run
+  history with `GET /saved-dags/{dag_id}/runs` instead of a conversation.
+- Resume a newly created static run's review with the project-neutral review
+  endpoint. Do not create a static conversation or orchestration session for a
+  new run.
+
 ## 0.9.3
 
 ### Added
