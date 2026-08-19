@@ -152,7 +152,6 @@ CREATE INDEX IF NOT EXISTS idx_reviews_pending
 
 CREATE TABLE IF NOT EXISTS saved_dags (
     id TEXT PRIMARY KEY,
-    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
     org_id TEXT NOT NULL DEFAULT 'default',
     owner_user_id TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL,
@@ -164,9 +163,6 @@ CREATE TABLE IF NOT EXISTS saved_dags (
     updated_at INTEGER NOT NULL,
     archived_at INTEGER
 );
-
-CREATE INDEX IF NOT EXISTS idx_saved_dags_project_updated
-    ON saved_dags(project_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS orchestration_sessions (
     id TEXT PRIMARY KEY,

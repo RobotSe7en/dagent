@@ -282,7 +282,6 @@ class Store(Protocol):
         self,
         *,
         dag_id: str,
-        project_id: str | None,
         name: str,
         description: str,
         spec_json: str,
@@ -293,12 +292,7 @@ class Store(Protocol):
 
     def get_saved_dag(self, dag_id: str, *, org_id: str | None = None) -> SavedDag | None: ...
 
-    def list_saved_dags(
-        self,
-        project_id: str | None = None,
-        *,
-        org_id: str | None = None,
-    ) -> list[SavedDag]: ...
+    def list_saved_dags(self, *, org_id: str | None = None) -> list[SavedDag]: ...
 
     def update_saved_dag(
         self,

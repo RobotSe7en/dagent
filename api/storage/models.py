@@ -125,7 +125,6 @@ class Review(BaseModel):
 
 class SavedDag(BaseModel):
     id: str
-    project_id: str | None = None
     org_id: str = "default"
     owner_user_id: str = "default"
     name: str

@@ -1092,7 +1092,6 @@ type OrchestrationContext = {
 };
 type StaticCapabilityReviewContext = {
   savedDagId: string;
-  conversation: OrchestrationContext['request'];
 };
 type ToolDirectoryTab = 'tools' | 'skills' | 'mcp';
 type ChatWorkspaceSub = 'conversations' | 'projects';
@@ -1117,7 +1116,6 @@ type StaticDagEditorDraft = {
 };
 type SavedDagView = {
   savedDagId: string;
-  projectId: string | null;
   name: string;
   description: string;
   revision: number;
@@ -1623,7 +1621,6 @@ export function App() {
   const [consoleError, setConsoleError] = useState<string | null>(null);
   const [savedDags, setSavedDags] = useState<SavedDag[]>([]);
   const [editorSavedDagId, setEditorSavedDagId] = useState<string | null>(null);
-  const [editorSavedDagProjectId, setEditorSavedDagProjectId] = useState<string | null>(null);
   const [editorSavedDagRevision, setEditorSavedDagRevision] = useState<number | null>(null);
   const [editorSavedDagLayout, setEditorSavedDagLayout] = useState<Record<string, unknown>>({});
   const [editorUserDag, setEditorUserDag] = useState<UserDag>(() => createEmptyUserDag());
@@ -2242,7 +2239,6 @@ export function App() {
       const layoutPositions = pruneNodePositions(editorLayoutPositionsRef.current, editorDag);
       return {
         savedDagId: saved.id,
-        projectId: saved.project_id ?? null,
         name: spec.name || saved.name,
         description: spec.description ?? saved.description,
         revision: editorSavedDagRevision ?? saved.revision,
@@ -2255,7 +2251,6 @@ export function App() {
     const draftSpec = draft?.spec ?? saved.spec;
     return {
       savedDagId: saved.id,
-      projectId: saved.project_id ?? null,
       name: draftSpec.name || saved.name,
       description: draftSpec.description ?? saved.description,
       revision: draft?.revision ?? saved.revision,
@@ -2656,7 +2651,6 @@ export function App() {
     layoutPositions: Record<string, XYPosition> = {},
     saved: {
       savedDagId?: string | null;
-      projectId?: string | null;
       revision?: number | null;
       layout?: Record<string, unknown>;
     } = {},
@@ -2672,7 +2666,6 @@ export function App() {
       metadata: spec.metadata ?? {},
     };
     setEditorSavedDagId(saved.savedDagId ?? null);
-    setEditorSavedDagProjectId(saved.projectId ?? null);
     setEditorSavedDagRevision(saved.revision ?? null);
     setEditorSavedDagLayout(saved.layout ?? {});
     setEditorUserDag(normalizedSpec);
@@ -3225,7 +3218,6 @@ export function App() {
       const nextSpec = draftDag ? userDagFromRuntimeDag(baseSpec, draftDag) : baseSpec;
       setEditorUserDagAndRuntimeDag(nextSpec, baseLayoutPositions, saved ? {
         savedDagId: saved.id,
-        projectId: saved.project_id ?? null,
         revision: saved.revision,
         layout: baseLayout,
       } : {});
@@ -3494,8 +3486,6 @@ export function App() {
   const newEditorUserDag = () => {
     rememberCurrentEditorDraft();
     setEditorUserDagAndRuntimeDag(createEmptyUserDag(), {});
-    setSelectedConversationId('');
-    orchestrationHydratedKeyRef.current = '';
     setEditorRunInputText('');
     setEditorTrace([]);
     setEditorRun(null);
@@ -3514,7 +3504,6 @@ export function App() {
       draft?.layoutPositions ?? saved.layoutPositions,
       {
         savedDagId: saved.savedDagId,
-        projectId: saved.projectId,
         revision: draft?.revision ?? saved.revision,
         layout: draft?.layout ?? saved.layout,
       },
@@ -3579,10 +3568,6 @@ export function App() {
       if (nextState?.pending_review?.kind === 'capability_review' && editorSavedDagId) {
         showStaticCapabilityReview(nextState.pending_review, {
           savedDagId: editorSavedDagId,
-          conversation: {
-            projectId: editorSavedDagProjectId,
-            conversationId: selectedConversation?.id ?? '',
-          },
         });
       }
     } catch (exc) {
@@ -3728,7 +3713,6 @@ export function App() {
         name: spec.name,
         description: spec.description ?? '',
         savedDagId: editorSavedDagId,
-        projectId: editorSavedDagId ? undefined : selectedProjectId || null,
         expectedRevision: editorSavedDagRevision,
         spec,
         layout: savedLayoutWithNodePositions(editorSavedDagLayout, localLayoutPositions),
@@ -3753,7 +3737,6 @@ export function App() {
       });
       setEditorUserDagAndRuntimeDag(saved.spec, savedLayoutPositions, {
         savedDagId: saved.id,
-        projectId: saved.project_id ?? null,
         revision: saved.revision,
         layout: saved.layout,
       });
@@ -3806,7 +3789,6 @@ export function App() {
     const nextSpec = updateArtifactBinding(spec, previousId, artifact);
     setEditorUserDagAndRuntimeDag(nextSpec, editorLayoutPositionsRef.current, {
       savedDagId: editorSavedDagId,
-      projectId: editorSavedDagProjectId,
       revision: editorSavedDagRevision,
       layout: editorSavedDagLayout,
     });
@@ -3821,7 +3803,6 @@ export function App() {
     if (editingArtifactId === artifactId) setEditingArtifactId('');
     setEditorUserDagAndRuntimeDag(nextSpec, editorLayoutPositionsRef.current, {
       savedDagId: editorSavedDagId,
-      projectId: editorSavedDagProjectId,
       revision: editorSavedDagRevision,
       layout: editorSavedDagLayout,
     });
@@ -4036,17 +4017,6 @@ export function App() {
       if (!saved) return;
       const validation = validateUserDagDraft(spec);
       if (validation) return;
-      const context = await ensureOrchestrationContext(
-        'static_dag',
-        saved.name || saved.spec.name || spec.name || '静态编排',
-        {
-          targetProjectId: saved.project_id ?? null,
-          savedDagId: saved.id,
-          draftDag: runtimeDagFromUserDag(saved.spec) as unknown as Record<string, unknown>,
-          uiState: { selectedNodeId: editorSelectedId },
-        },
-      );
-      if (!context) return;
       setEditorTrace([]);
       setEditorRun(null);
       setEditorRunTimeline([]);
@@ -4065,13 +4035,11 @@ export function App() {
         onReview: (review) => {
           showStaticCapabilityReview(review, {
             savedDagId: saved.id,
-            conversation: context.request,
           });
         },
         onDone: (payload) => {
           applyStaticRunResult(payload.result, {
             savedDagId: saved.id,
-            conversation: context.request,
           });
         },
         onError: (message) => {
@@ -4079,7 +4047,6 @@ export function App() {
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, `\n\nRun error: ${message}`));
         },
       }, {
-        conversation: context.request,
         ...(parsedInput.hasInput ? { input: parsedInput.value } : {}),
       });
     } catch (exc) {
@@ -4120,7 +4087,6 @@ export function App() {
     } as const;
     setEditorRun(dagRun);
     syncEditorDag(dagRun.dag);
-    void refreshConversations();
     setStaticSelectedRunId(dagRun.run_id);
     void listSavedDagRuns(context.savedDagId)
       .then((runs) => setStaticRunHistory(runs))
@@ -4172,7 +4138,7 @@ export function App() {
           setEditorMessage(message);
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, `\n\nRun error: ${message}`));
         },
-      }, undefined, feedback, { conversation: context.conversation });
+      }, undefined, feedback, { persisted: true });
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setEditorMessage(message);
@@ -5472,7 +5438,6 @@ export function App() {
       {staticDagDeleteTarget ? (
         <SavedDagDeleteDialog
           savedDag={staticDagDeleteTarget}
-          project={projects.find((project) => project.id === staticDagDeleteTarget.project_id) ?? null}
           onCancel={() => setStaticDagDeleteTargetId('')}
           onConfirm={() => void confirmDeleteSavedDag()}
         />
@@ -8225,12 +8190,10 @@ function DynamicConversationDeleteDialog({
 
 function SavedDagDeleteDialog({
   savedDag,
-  project,
   onCancel,
   onConfirm,
 }: {
   savedDag: SavedDag;
-  project: ApiProject | null;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -8249,7 +8212,7 @@ function SavedDagDeleteDialog({
         <div className="project-dialog-body danger-dialog-body">
           <AlertTriangle size={18} />
           <p>静态编排会被归档并从列表移除，已有运行记录仍可通过运行接口保留。</p>
-          <code>{project ? `${project.name} / ${savedDag.id}` : savedDag.id}</code>
+          <code>{savedDag.id}</code>
         </div>
         <footer className="project-dialog-actions">
           <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>

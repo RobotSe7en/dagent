@@ -17,6 +17,23 @@ class LocalWorkspaceStore:
             return (self.root / "_conversations" / conversation_id / "workspace").as_uri()
         return self.project_workspace_uri(project_id)
 
+    def run_workspace_uri(self, run_id: str) -> str:
+        return self._run_workspace_path(run_id).as_uri()
+
+    def create_run_workspace(self, run_id: str) -> tuple[str, Path]:
+        path = self._run_workspace_path(run_id)
+        self._reject_symlinked_run_path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        self._reject_symlinked_run_path(path)
+        return path.as_uri(), path
+
+    def run_workspace_path_for_existing(self, run_id: str, uri: str) -> Path:
+        path = self._run_workspace_path(run_id)
+        if uri != path.as_uri():
+            raise ValueError("Run workspace URI does not match its run id.")
+        self._reject_symlinked_run_path(path)
+        return path
+
     def local_path_for(self, uri: str) -> Path:
         path = self._file_uri_path(uri)
         path.mkdir(parents=True, exist_ok=True)
@@ -47,6 +64,18 @@ class LocalWorkspaceStore:
         except ValueError as exc:
             raise ValueError(f"File workspace URI must be under workspace root: {uri}") from exc
         return path
+
+    def _run_workspace_path(self, run_id: str) -> Path:
+        if not run_id or Path(run_id).name != run_id or run_id in {".", ".."}:
+            raise ValueError("Run id must be a safe path segment.")
+        return self.root / "_runs" / run_id / "workspace"
+
+    def _reject_symlinked_run_path(self, path: Path) -> None:
+        candidate = self.root
+        for part in path.relative_to(self.root).parts:
+            candidate /= part
+            if candidate.is_symlink():
+                raise ValueError("Run workspace path cannot contain symlinks.")
 
     def _resolve_relative_file(self, workspace: Path, rel: str) -> Path:
         relative = str(rel).strip().replace("\\", "/")

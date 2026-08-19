@@ -216,7 +216,6 @@ export interface UserDag {
 
 export interface SavedDag {
   id: string;
-  project_id?: string | null;
   org_id: string;
   owner_user_id: string;
   name: string;

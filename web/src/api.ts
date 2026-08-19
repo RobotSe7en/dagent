@@ -344,11 +344,8 @@ export async function testCapability(
   return data.result;
 }
 
-export async function listSavedDags(options: { projectId?: string | null } = {}): Promise<SavedDag[]> {
-  const params = new URLSearchParams();
-  if (options.projectId) params.set('project_id', options.projectId);
-  const suffix = params.toString() ? `?${params.toString()}` : '';
-  const res = await fetch(`${API_BASE}/saved-dags${suffix}`);
+export async function listSavedDags(): Promise<SavedDag[]> {
+  const res = await fetch(`${API_BASE}/saved-dags`);
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.saved_dags ?? [];
@@ -356,7 +353,6 @@ export async function listSavedDags(options: { projectId?: string | null } = {})
 
 export async function saveSavedDag(input: {
   savedDagId?: string | null;
-  projectId?: string | null;
   name?: string;
   description?: string;
   spec: UserDag;
@@ -378,7 +374,6 @@ export async function saveSavedDag(input: {
   } else {
     body.name = input.name ?? input.spec.name;
     body.description = input.description ?? input.spec.description ?? '';
-    body.project_id = input.projectId ?? null;
   }
   const res = await fetch(endpoint, {
     method: updating ? 'PATCH' : 'POST',
@@ -979,6 +974,7 @@ interface StreamRequestOptions {
   signal?: AbortSignal;
   uploads?: File[];
   conversation?: ConversationRequestContext;
+  persisted?: boolean;
   visibleMessage?: string;
 }
 
@@ -1117,14 +1113,10 @@ export async function runSavedDagStream(
   savedDagId: string,
   handlers: StreamHandlers,
   options: {
-    conversation: ConversationRequestContext;
     input?: unknown;
   },
 ): Promise<void> {
-  const payload: Record<string, unknown> = {
-    conversation_id: options.conversation.conversationId,
-  };
-  if (options.conversation.projectId) payload.project_id = options.conversation.projectId;
+  const payload: Record<string, unknown> = {};
   if (Object.prototype.hasOwnProperty.call(options, 'input')) payload.graph_input = options.input;
   const response = await fetch(`${API_BASE}/saved-dags/${encodeURIComponent(savedDagId)}/run/stream`, {
     method: 'POST',
@@ -1383,7 +1375,7 @@ export async function resumeCapabilityReview(
 ): Promise<void> {
   const normalizedFeedback = feedback?.trim();
   const conversationContext = options.conversation;
-  const persistedResume = conversationContext !== undefined;
+  const persistedResume = options.persisted === true || conversationContext !== undefined;
   const projectId = conversationContext?.projectId;
   const url = persistedResume
     ? projectId

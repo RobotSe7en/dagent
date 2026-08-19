@@ -361,6 +361,46 @@ def test_sqlite_store_marks_pre_v3_conversations_during_migration(
     migrated.close()
 
 
+def test_sqlite_store_detaches_legacy_saved_dags_from_projects(tmp_path: Path) -> None:
+    db_path = tmp_path / "api.sqlite3"
+    store = SQLiteStore(db_path)
+    project = store.create_project(
+        project_id="proj_legacy_dag",
+        slug="legacy-dag",
+        name="Legacy DAG",
+        workspace_uri=f"file://{tmp_path / 'projects' / 'proj_legacy_dag' / 'workspace'}",
+    )
+    saved = store.create_saved_dag(
+        dag_id="dag_legacy",
+        name="Legacy",
+        description="",
+        spec_json='{"id":"legacy","name":"Legacy","nodes":[],"edges":[]}',
+    )
+    store._conn.execute(
+        "ALTER TABLE saved_dags ADD COLUMN project_id TEXT REFERENCES projects(id)"
+    )
+    store._conn.execute(
+        "UPDATE saved_dags SET project_id = ? WHERE id = ?",
+        (project.id, saved.id),
+    )
+    store._conn.execute("DELETE FROM schema_migrations WHERE version = 2")
+    store._conn.commit()
+    store.close()
+
+    reopened = SQLiteStore(db_path)
+    legacy_project_id = reopened._conn.execute(
+        "SELECT project_id FROM saved_dags WHERE id = ?",
+        (saved.id,),
+    ).fetchone()["project_id"]
+
+    assert legacy_project_id is None
+    assert reopened.get_saved_dag(saved.id) is not None
+    assert reopened._conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = 2"
+    ).fetchone() is not None
+    reopened.close()
+
+
 def test_sqlite_store_persists_conversation_kind(tmp_path: Path) -> None:
     db_path = tmp_path / "api.sqlite3"
     store = SQLiteStore(db_path)
@@ -455,7 +495,6 @@ def test_sqlite_store_persists_saved_dags_and_sessions(tmp_path: Path) -> None:
 
     saved = store.create_saved_dag(
         dag_id="dag_saved",
-        project_id=project.id,
         name="Saved DAG",
         description="demo",
         spec_json=spec_json,
@@ -474,16 +513,15 @@ def test_sqlite_store_persists_saved_dags_and_sessions(tmp_path: Path) -> None:
 
     reopened = SQLiteStore(db_path)
     recovered_dag = reopened.get_saved_dag("dag_saved")
-    project_dags = reopened.list_saved_dags(project_id=project.id)
+    saved_dags = reopened.list_saved_dags()
     recovered_session = reopened.get_orchestration_session("orch_static")
     by_conversation = reopened.get_orchestration_session_by_conversation(conversation.id)
 
     assert recovered_dag is not None
-    assert recovered_dag.project_id == project.id
     assert recovered_dag.spec_json == spec_json
     assert recovered_dag.layout_json == '{"nodes":[]}'
     assert recovered_dag.revision == 1
-    assert [item.id for item in project_dags] == ["dag_saved"]
+    assert [item.id for item in saved_dags] == ["dag_saved"]
     assert recovered_session == session
     assert by_conversation == session
     reopened.close()
@@ -500,7 +538,6 @@ def test_sqlite_store_archive_saved_dag_clears_session_references(tmp_path: Path
     )
     saved = store.create_saved_dag(
         dag_id="dag_saved",
-        project_id=None,
         name="Saved DAG",
         description="",
         spec_json='{"id":"dag_saved","name":"Saved DAG","nodes":[],"edges":[]}',
@@ -526,7 +563,6 @@ def test_sqlite_store_tracks_saved_dag_on_runs(tmp_path: Path) -> None:
     workspace_uri = f"file://{tmp_path / 'workspace'}"
     store.create_saved_dag(
         dag_id="dag_source",
-        project_id=None,
         name="Source DAG",
         description="",
         spec_json='{"id":"dag_source","name":"Source DAG","nodes":[],"edges":[]}',
@@ -555,14 +591,12 @@ def test_sqlite_store_filters_runs_by_saved_dag(tmp_path: Path) -> None:
     workspace_uri = f"file://{tmp_path / 'workspace'}"
     store.create_saved_dag(
         dag_id="dag_one",
-        project_id=None,
         name="One",
         description="",
         spec_json='{"id":"one","name":"One","nodes":[],"edges":[]}',
     )
     store.create_saved_dag(
         dag_id="dag_two",
-        project_id=None,
         name="Two",
         description="",
         spec_json='{"id":"two","name":"Two","nodes":[],"edges":[]}',
@@ -1558,7 +1592,7 @@ def test_api_deletes_conversation_runs_and_per_run_workspace(persistence_client,
     assert not run_workspace.exists()
 
 
-def test_api_deletes_project_run_files_and_saved_dag_artifacts(
+def test_api_deletes_project_run_files_without_deleting_saved_dag_artifacts(
     persistence_client,
     tmp_path: Path,
 ) -> None:
@@ -1618,7 +1652,7 @@ def test_api_deletes_project_run_files_and_saved_dag_artifacts(
     store.save_run_state(run_state.run_id, run_state.model_dump_json(), output_text="done")
     saved = persistence_client.post(
         "/saved-dags",
-        json={"project_id": project["id"], "name": "Project Upload", "spec": spec},
+        json={"name": "Project Upload", "spec": spec},
     ).json()["saved_dag"]
     upload = persistence_client.post(
         f"/saved-dags/{saved['id']}/artifacts/source/upload",
@@ -1634,9 +1668,9 @@ def test_api_deletes_project_run_files_and_saved_dag_artifacts(
     assert response.status_code == 200
     assert store.get_project(project["id"]) is None
     assert store.get_run(run_state.run_id) is None
-    assert store.get_saved_dag(saved["id"]) is None
+    assert store.get_saved_dag(saved["id"]) is not None
     assert not run_workspace.exists()
-    assert not artifact_root.exists()
+    assert artifact_root.exists()
 
 
 def test_api_deletes_conversation_without_removing_project_workspace(persistence_client) -> None:
@@ -2432,10 +2466,6 @@ def test_api_standalone_review_resume_uses_db_state_after_runner_restart(
 
 
 def test_api_saved_dag_crud_persists_static_dag_spec(persistence_client) -> None:
-    project = persistence_client.post(
-        "/projects",
-        json={"name": "DAGs", "slug": "dags"},
-    ).json()["project"]
     spec = {
         "id": "project_report",
         "name": "Project Report",
@@ -2454,7 +2484,6 @@ def test_api_saved_dag_crud_persists_static_dag_spec(persistence_client) -> None
     created = persistence_client.post(
         "/saved-dags",
         json={
-            "project_id": project["id"],
             "name": "Project Report",
             "description": "first",
             "spec": spec,
@@ -2462,7 +2491,7 @@ def test_api_saved_dag_crud_persists_static_dag_spec(persistence_client) -> None
         },
     )
     saved = created.json()["saved_dag"]
-    listed = persistence_client.get("/saved-dags", params={"project_id": project["id"]})
+    listed = persistence_client.get("/saved-dags")
     fetched = persistence_client.get(f"/saved-dags/{saved['id']}")
     updated = persistence_client.patch(
         f"/saved-dags/{saved['id']}",
@@ -2475,11 +2504,11 @@ def test_api_saved_dag_crud_persists_static_dag_spec(persistence_client) -> None
         },
     )
     archived = persistence_client.delete(f"/saved-dags/{saved['id']}")
-    listed_after_delete = persistence_client.get("/saved-dags", params={"project_id": project["id"]})
+    listed_after_delete = persistence_client.get("/saved-dags")
 
     assert created.status_code == 200
     assert saved["id"].startswith("dag_")
-    assert saved["project_id"] == project["id"]
+    assert "project_id" not in saved
     assert saved["spec"]["id"] == spec["id"]
     assert saved["spec"]["name"] == spec["name"]
     assert saved["spec"]["output"] == spec["output"]
@@ -2546,18 +2575,10 @@ def test_api_saved_dag_payload_rejects_invalid_stored_spec_without_mutation(
     assert store.get_saved_dag(saved["id"]).spec_json == invalid_spec_json
 
 
-def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(
+def test_api_saved_dag_stream_uses_independent_run_workspaces_and_persists_runs(
     persistence_client,
 ) -> None:
     state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([]))
-    project = persistence_client.post(
-        "/projects",
-        json={"name": "Static", "slug": "static"},
-    ).json()["project"]
-    conversation = persistence_client.post(
-        f"/projects/{project['id']}/conversations",
-        json={"title": "Static DAG session", "kind": "static_dag"},
-    ).json()["conversation"]
     spec = {
         "id": "write_static_note",
         "name": "Write Static Note",
@@ -2575,43 +2596,118 @@ def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(
     saved = persistence_client.post(
         "/saved-dags",
         json={
-            "project_id": project["id"],
             "name": "Write Static Note",
             "spec": spec,
         },
     ).json()["saved_dag"]
-    workspace_path = Path(unquote(urlparse(project["workspace_uri"]).path))
-
-    response = persistence_client.post(
+    first_response = persistence_client.post(
         f"/saved-dags/{saved['id']}/run/stream",
-        json={
-            "project_id": project["id"],
-            "conversation_id": conversation["id"],
-        },
+        json={},
     )
-    events = _sse_events(response.text)
-    result = events[-1]["data"]["result"]
-    run_id = result["state"]["run_id"]
-    persisted_run = state.get_store().get_run(run_id)
-    persisted_state = state.get_store().get_run_state(run_id)
-    listed_runs = persistence_client.get(
-        f"/projects/{project['id']}/conversations/{conversation['id']}/runs"
+    second_response = persistence_client.post(
+        f"/saved-dags/{saved['id']}/run/stream",
+        json={},
     )
+    first_result = _sse_events(first_response.text)[-1]["data"]["result"]
+    second_result = _sse_events(second_response.text)[-1]["data"]["result"]
+    first_run_id = first_result["state"]["run_id"]
+    second_run_id = second_result["state"]["run_id"]
+    first_workspace = Path(first_result["state"]["workspace_path"])
+    second_workspace = Path(second_result["state"]["workspace_path"])
+    persisted_run = state.get_store().get_run(first_run_id)
+    persisted_state = state.get_store().get_run_state(first_run_id)
+    listed_runs = persistence_client.get(f"/saved-dags/{saved['id']}/runs")
 
-    assert response.status_code == 200
-    assert result["state"]["kind"] == "static_dag"
-    assert result["output_value"] == {"kind": "static_note"}
-    assert result["state"]["workspace_path"] == str(workspace_path)
-    assert (workspace_path / "reports" / "static.md").read_text(encoding="utf-8") == "static"
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_run_id != second_run_id
+    assert first_workspace != second_workspace
+    assert first_workspace.parent.name == first_run_id
+    assert second_workspace.parent.name == second_run_id
+    assert first_result["state"]["kind"] == "static_dag"
+    assert first_result["output_value"] == {"kind": "static_note"}
+    assert (first_workspace / "reports" / "static.md").read_text(encoding="utf-8") == "static"
+    assert (second_workspace / "reports" / "static.md").read_text(encoding="utf-8") == "static"
     assert persisted_run is not None
     assert persisted_run.saved_dag_id == saved["id"]
-    assert persisted_run.project_id == project["id"]
-    assert persisted_run.conversation_id == conversation["id"]
+    assert persisted_run.project_id is None
+    assert persisted_run.conversation_id is None
     assert persisted_run.status == "completed"
     assert persisted_state is not None
     assert persisted_state.kind == "static_dag"
     assert listed_runs.status_code == 200
-    assert [item["id"] for item in listed_runs.json()["runs"]] == [run_id]
+    assert {item["id"] for item in listed_runs.json()["runs"]} == {first_run_id, second_run_id}
+
+    deleted = persistence_client.delete(f"/runs/{first_run_id}")
+
+    assert deleted.status_code == 200
+    assert not first_workspace.parent.exists()
+    assert second_workspace.parent.exists()
+
+
+def test_api_saved_dag_requests_reject_legacy_project_and_conversation_fields(
+    persistence_client,
+) -> None:
+    spec = {
+        "id": "neutral",
+        "name": "Neutral",
+        "nodes": [{
+            "id": "write",
+            "target": "tool.write_file",
+            "inputs": {"path": "output.txt", "content": "ok"},
+            "boundary": {"allowed_paths": ["."]},
+        }],
+        "edges": [],
+    }
+    create_response = persistence_client.post(
+        "/saved-dags",
+        json={"project_id": "proj_old", "name": "Neutral", "spec": spec},
+    )
+    saved = persistence_client.post(
+        "/saved-dags",
+        json={"name": "Neutral", "spec": spec},
+    ).json()["saved_dag"]
+    run_response = persistence_client.post(
+        f"/saved-dags/{saved['id']}/run/stream",
+        json={"conversation_id": "conv_old"},
+    )
+
+    assert create_response.status_code == 422
+    assert run_response.status_code == 422
+
+
+def test_api_saved_dag_run_rejects_symlinked_run_workspace_root(
+    persistence_client,
+) -> None:
+    spec = {
+        "id": "symlink_workspace",
+        "name": "Symlink Workspace",
+        "nodes": [{
+            "id": "write",
+            "target": "tool.write_file",
+            "inputs": {"path": "output.txt", "content": "blocked"},
+            "boundary": {"allowed_paths": ["."]},
+        }],
+        "edges": [],
+    }
+    saved = persistence_client.post(
+        "/saved-dags",
+        json={"name": "Symlink Workspace", "spec": spec},
+    ).json()["saved_dag"]
+    workspace_root = state.get_workspaces().root
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    symlink_target = workspace_root / "other_runs"
+    symlink_target.mkdir()
+    (workspace_root / "_runs").symlink_to(symlink_target, target_is_directory=True)
+
+    response = persistence_client.post(
+        f"/saved-dags/{saved['id']}/run/stream",
+        json={},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Run workspace is invalid."}
+    assert list(symlink_target.iterdir()) == []
 
 
 def test_api_saved_dag_static_agent_review_resumes_without_conversation_state(
@@ -2634,10 +2730,6 @@ def test_api_saved_dag_static_agent_review_resumes_without_conversation_state(
         capabilities=["tool.write_file"],
         skills=[],
     ))
-    conversation = persistence_client.post(
-        "/conversations",
-        json={"title": "Static agent review", "kind": "static_dag"},
-    ).json()["conversation"]
     saved = persistence_client.post(
         "/saved-dags",
         json={
@@ -2658,14 +2750,30 @@ def test_api_saved_dag_static_agent_review_resumes_without_conversation_state(
 
     initial_response = persistence_client.post(
         f"/saved-dags/{saved['id']}/run/stream",
-        json={"conversation_id": conversation["id"]},
+        json={},
     )
     initial_result = _sse_events(initial_response.text)[-1]["data"]["result"]
     review_id = initial_result["state"]["pending_review"]["review_id"]
+    run_id = initial_result["state"]["run_id"]
+    persisted_run = state.get_store().get_run(run_id)
 
     assert initial_response.status_code == 200
     assert initial_result["state"]["status"] == "awaiting_review"
-    assert state.get_store().get_conversation_state(conversation["id"]) is None
+    assert persisted_run is not None
+    assert persisted_run.conversation_id is None
+    assert persisted_run.project_id is None
+
+    state.runner = Runner(
+        workspace=".dagent",
+        runtime_directory=".runtime",
+        provider=MockProvider([ChatResponse(content="done")]),
+    )
+    state.runner.add_agent(ToolAgent(
+        name="helper",
+        profile="conversation",
+        capabilities=["tool.write_file"],
+        skills=[],
+    ))
 
     resume_response = persistence_client.post(
         f"/reviews/{review_id}/resume",
@@ -2720,10 +2828,6 @@ def test_api_saved_dag_artifact_upload_persists_across_process_state_reset(persi
         ],
         "edges": [],
     }
-    conversation = persistence_client.post(
-        "/conversations",
-        json={"title": "Static DAG session", "kind": "static_dag"},
-    ).json()["conversation"]
     saved = persistence_client.post(
         "/saved-dags",
         json={"name": "With Upload", "spec": spec},
@@ -2740,7 +2844,7 @@ def test_api_saved_dag_artifact_upload_persists_across_process_state_reset(persi
     state.dag_artifact_uploads.clear()
     run_response = persistence_client.post(
         f"/saved-dags/{saved['id']}/run/stream",
-        json={"conversation_id": conversation["id"]},
+        json={},
     )
     events = _sse_events(run_response.text)
     result = events[-1]["data"]["result"]
