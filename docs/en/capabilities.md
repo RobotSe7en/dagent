@@ -216,9 +216,11 @@ Review settings on agents and runs determine when medium/high-risk work pauses
 for approval. Boundary review is independent of risk review: a tool-agent call
 that tries to read or write outside its boundary pauses with
 `payload.reason == "boundary_violation"`. Approving that review executes the
-same call once without expanding the run boundary. Rejecting it feeds a denial
-message back to the agent. Hard-blocked shell patterns, such as destructive
-system commands, are not reviewable.
+same call and authorizes the reported `payload.boundary_paths` for later tool
+calls in the same run. Other paths still require review, and the authorization
+does not carry into another run. Rejecting it feeds a denial message back to the
+agent. Hard-blocked shell patterns, such as destructive system commands, are
+not reviewable.
 
 ## MCP Tools
 

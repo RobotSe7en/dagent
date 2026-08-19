@@ -9,6 +9,18 @@ The current package version is `0.9.3`.
 
 ## Unreleased
 
+### Changed: approved boundary paths are reusable within one run
+
+- A reviewable boundary violation now includes normalized
+  `payload.boundary_paths`. Approval authorizes only those reported paths for
+  later tool-agent calls in the same run, so a new invocation id does not cause
+  a duplicate review for the same path.
+- Different paths still require review. The authorization is not persisted as
+  user, project, or cross-run policy, and hard boundary failures remain blocked.
+- `RunState` and `RunCheckpoint` schema versions are unchanged. New checkpoints
+  carry the authorization through the existing invocation boundary. Older
+  checkpoints without `boundary_paths` retain one-invocation approval behavior.
+
 ### Changed: project-neutral static orchestration runs
 
 - The bundled API/WebUI now treats a saved static DAG as a reusable definition,

@@ -18,11 +18,13 @@ class BoundaryViolation(PermissionError):
         *,
         tool_name: str | None = None,
         path: str | None = None,
+        resolved_path: str | None = None,
         command: str | None = None,
     ) -> None:
         super().__init__(message)
         self.tool_name = tool_name
         self.path = path
+        self.resolved_path = resolved_path
         self.command = command
 
 
@@ -127,6 +129,7 @@ def enforce_command_paths_allowed(
                 f"Command path '{raw_path}' resolves outside allowed paths: "
                 f"{resolved_path}. Allowed paths: {allowed_display}.",
                 path=str(raw_path),
+                resolved_path=str(resolved_path),
                 command=command,
             )
 
@@ -141,6 +144,7 @@ def enforce_path_allowed(path: str | Path, boundary: Boundary, workspace_root: P
         raise BoundaryViolation(
             f"Path '{resolved_path}' is outside allowed paths: {allowed_display}.",
             path=str(path),
+            resolved_path=str(resolved_path),
         )
     return resolved_path
 

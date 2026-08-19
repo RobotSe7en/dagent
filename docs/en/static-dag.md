@@ -60,9 +60,10 @@ if result.requires_review:
 
 With `careful`, the agent's medium- and high-risk inner tools pause for review.
 At either level, an inner tool that exceeds its node boundary can pause for a
-one-invocation boundary override. Approval or rejection resumes the same
-`ToolAgent` conversation; rejection feeds the decision back to the model and
-does not execute the tool.
+path-specific boundary override. Approval also authorizes that reviewed path
+for later inner tool calls in the same run; other paths still pause. Approval
+or rejection resumes the same `ToolAgent` conversation; rejection feeds the
+decision back to the model and does not execute the tool.
 
 The DAG author already authorizes ordinary capability nodes, including
 high-risk ones, so they still execute directly. This continuation supports only
