@@ -8222,7 +8222,7 @@ function SavedDagDeleteDialog({
         </header>
         <div className="project-dialog-body danger-dialog-body">
           <AlertTriangle size={18} />
-          <p>静态编排会被归档并从列表移除，已有运行记录仍可通过运行接口保留。</p>
+          <p>静态编排、运行历史、审核记录和专属运行目录都会被删除。</p>
           <code>{savedDag.id}</code>
         </div>
         <footer className="project-dialog-actions">

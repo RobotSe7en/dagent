@@ -15,6 +15,8 @@
   `.dagent/projects/_runs/<run_id>/workspace`。
 - 新静态 run 不获取 conversation lock；run 记录中的 `project_id`、`conversation_id` 均为
   null，历史仍按 `saved_dag_id` 分组。
+- 归档 saved DAG 会删除其分组运行历史和隔离的 run workspace；存在 queued/running run
+  时返回 `409`，需等待运行结束。
 - 静态 review 通过 `POST /reviews/{review_id}/resume` 恢复，使用已持久化的
   `RunCheckpoint` 和该 run 的专属 workspace；API 或 `Runner` 重启后语义保持确定。
 

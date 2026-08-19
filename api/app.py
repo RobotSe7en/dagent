@@ -1966,9 +1966,17 @@ async def update_saved_dag(dag_id: str, request: SavedDAGUpdateRequest) -> dict[
 
 @app.delete("/saved-dags/{dag_id}")
 async def delete_saved_dag(dag_id: str) -> dict[str, str]:
-    deleted = await run_in_threadpool(state.get_store().archive_saved_dag, dag_id)
+    store = state.get_store()
+    runs = await run_in_threadpool(store.list_runs, saved_dag_id=dag_id)
+    if any(run.status in {"queued", "running"} for run in runs):
+        raise HTTPException(status_code=409, detail="Saved DAG has active runs.")
+    deleted = await run_in_threadpool(store.archive_saved_dag, dag_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    for run in runs:
+        run_state = await run_in_threadpool(store.get_run_state, run.id)
+        await run_in_threadpool(_delete_run_files, run, run_state)
+        await run_in_threadpool(store.delete_run, run.id)
     await run_in_threadpool(shutil.rmtree, _saved_dag_artifact_root(dag_id), ignore_errors=True)
     return {"status": "deleted"}
 
@@ -5111,22 +5119,25 @@ def _delete_conversation_files(
 
 
 def _delete_run_files(run: Run, run_state: RunState | None) -> None:
+    isolated_static_run = run.conversation_id is None and run.saved_dag_id is not None
+    if isolated_static_run:
+        try:
+            workspace = state.get_workspaces().run_workspace_path_for_existing(
+                run.id,
+                run.workspace_uri,
+            )
+        except ValueError:
+            return
+        _delete_workspace_root(workspace)
+        return
     if run_state is None or not run_state.workspace_path:
         return
     try:
-        if run.conversation_id is None and run.saved_dag_id is not None:
-            parent_workspace = state.get_workspaces().run_workspace_path_for_existing(
-                run.id,
-                run.workspace_uri,
-            ).resolve()
-        else:
-            parent_workspace = state.get_workspaces().local_path_for_existing(run.workspace_uri).resolve()
+        parent_workspace = state.get_workspaces().local_path_for_existing(run.workspace_uri).resolve()
     except ValueError:
         return
     candidate = Path(run_state.workspace_path).resolve()
     if candidate == parent_workspace:
-        if run.conversation_id is None and run.saved_dag_id is not None:
-            _delete_workspace_root(candidate)
         return
     if not _should_delete_run_workspace(candidate, parent_workspace):
         return

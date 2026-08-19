@@ -18,6 +18,8 @@ The current package version is `0.9.3`.
 - New static runs do not acquire a conversation lock. Their run rows have null
   `project_id` and `conversation_id`, and history remains grouped by
   `saved_dag_id`.
+- Archiving a saved DAG deletes its grouped run history and isolated run
+  workspaces; active definitions return `409` until queued/running runs finish.
 - Static reviews resume through `POST /reviews/{review_id}/resume` using the
   persisted `RunCheckpoint` and run-owned workspace. This remains deterministic
   across an API or `Runner` restart.

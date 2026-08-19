@@ -2644,6 +2644,53 @@ def test_api_saved_dag_stream_uses_independent_run_workspaces_and_persists_runs(
     assert not first_workspace.parent.exists()
     assert second_workspace.parent.exists()
 
+    archived = persistence_client.delete(f"/saved-dags/{saved['id']}")
+
+    assert archived.status_code == 200
+    assert state.get_store().get_run(second_run_id) is None
+    assert not second_workspace.parent.exists()
+
+
+def test_api_deletes_stateless_isolated_static_run_workspace(
+    persistence_client,
+) -> None:
+    saved = persistence_client.post(
+        "/saved-dags",
+        json={
+            "name": "Failed Static",
+            "spec": {
+                "id": "failed_static",
+                "name": "Failed Static",
+                "nodes": [{
+                    "id": "write",
+                    "target": "tool.write_file",
+                    "inputs": {"path": "output.txt", "content": "unused"},
+                    "boundary": {"allowed_paths": ["."]},
+                }],
+                "edges": [],
+            },
+        },
+    ).json()["saved_dag"]
+    run_id = "run_stateless_static"
+    workspace_uri, workspace_path = state.get_workspaces().create_run_workspace(run_id)
+    (workspace_path / "partial.txt").write_text("partial", encoding="utf-8")
+    state.get_store().create_run(
+        run_id=run_id,
+        project_id=None,
+        conversation_id=None,
+        user_id="default",
+        kind="static_dag",
+        status="failed",
+        workspace_uri=workspace_uri,
+        saved_dag_id=saved["id"],
+    )
+
+    response = persistence_client.delete(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert state.get_store().get_run(run_id) is None
+    assert not workspace_path.parent.exists()
+
 
 def test_api_saved_dag_requests_reject_legacy_project_and_conversation_fields(
     persistence_client,

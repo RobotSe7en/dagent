@@ -95,6 +95,9 @@ DELETE /runs/{run_id}
 `conversation_messages`。等待审核中的 run 也可以删除；这样做会有意丢弃对应的 pending
 review 和该 run 的可见会话记录。
 
+`DELETE /saved-dags/{dag_id}` 会归档定义，并删除其保留的 run 记录、review、专属 run
+workspace 和已保存输入上传。如果该定义仍有 queued 或 running run，则返回 `409`。
+
 ## Resume 和重启行为
 
 持久化 review resume 使用：

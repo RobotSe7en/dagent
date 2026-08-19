@@ -111,6 +111,10 @@ workspace, and visible `conversation_messages` whose `run_id` matches the
 deleted run. Awaiting-review runs can be deleted; doing so intentionally
 discards the pending review and the visible transcript for that run.
 
+`DELETE /saved-dags/{dag_id}` archives the definition and deletes its retained
+run rows, reviews, dedicated run workspaces, and saved input uploads. It returns
+`409` while one of the definition's runs is queued or running.
+
 ## Resume And Restart Behavior
 
 For persisted review resume, use:
