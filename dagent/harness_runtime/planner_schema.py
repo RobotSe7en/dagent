@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from dagent.providers import StructuredOutputFormat
+from dagent.schemas import DAGSpec
 
 
 class _PlannerModel(BaseModel):
@@ -250,6 +251,35 @@ class BuilderPlannerResponse(_PlannerModel):
         return self
 
 
+class DAGDesignPlannerResponse(_PlannerModel):
+    """Strict model response used by the non-executing design facade."""
+
+    action: PlannerAction
+    candidate_json: str | None
+    answer: str | None
+    summary: str | None
+
+    @model_validator(mode="after")
+    def validate_action_payload(self) -> "DAGDesignPlannerResponse":
+        if self.action == "propose_plan":
+            if not str(self.candidate_json or "").strip() or self.answer is not None:
+                raise ValueError("propose_plan requires candidate_json and forbids answer.")
+            if not str(self.summary or "").strip():
+                raise ValueError("propose_plan requires a non-empty summary.")
+            return self
+        if self.action == "no_change":
+            if self.candidate_json is not None or self.answer is not None:
+                raise ValueError("no_change forbids candidate_json and answer.")
+            if not str(self.summary or "").strip():
+                raise ValueError("no_change requires a non-empty summary.")
+            return self
+        if self.candidate_json is not None or self.summary is not None:
+            raise ValueError("final_answer forbids candidate_json and summary.")
+        if not str(self.answer or "").strip():
+            raise ValueError("final_answer requires a non-empty answer.")
+        return self
+
+
 def planner_response_format() -> StructuredOutputFormat:
     """Return the strict provider response contract for a planner turn."""
     return StructuredOutputFormat(
@@ -270,22 +300,48 @@ def builder_planner_response_format() -> StructuredOutputFormat:
     )
 
 
+def dag_design_response_format() -> StructuredOutputFormat:
+    """Return the strict provider contract for one non-executing design turn."""
+
+    return StructuredOutputFormat(
+        name="dagent_dag_design_response",
+        description="A complete DAGSpec candidate, no-change decision, or explanation.",
+        schema=_strict_json_schema(DAGDesignPlannerResponse.model_json_schema()),
+        strict=True,
+    )
+
+
+def dag_design_candidate_schema() -> dict[str, Any]:
+    """Return the strict JSON shape parsed from ``candidate_json``."""
+
+    return _strict_json_schema(DAGSpec.model_json_schema())
+
+
 def parse_planner_response(content: str) -> PlannerResponse:
     """Parse provider JSON into the internal planner response model."""
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Planner response is not valid JSON: {exc.msg}.") from exc
-    return PlannerResponse.model_validate(payload)
+    return PlannerResponse.model_validate(_parse_json(content, label="Planner response"))
 
 
 def parse_builder_planner_response(content: str) -> BuilderPlannerResponse:
     """Parse provider JSON into the SDK-builder response model."""
+    return BuilderPlannerResponse.model_validate(
+        _parse_json(content, label="Builder planner response")
+    )
+
+
+def parse_dag_design_response(content: str) -> DAGDesignPlannerResponse:
+    """Parse provider JSON into the internal DAG design response model."""
+
+    return DAGDesignPlannerResponse.model_validate(
+        _parse_json(content, label="DAG design response")
+    )
+
+
+def _parse_json(content: str, *, label: str) -> Any:
     try:
-        payload = json.loads(content)
+        return json.loads(content)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Builder planner response is not valid JSON: {exc.msg}.") from exc
-    return BuilderPlannerResponse.model_validate(payload)
+        raise ValueError(f"{label} is not valid JSON: {exc.msg}.") from exc
 
 
 def _strict_json_schema(value: Any) -> Any:

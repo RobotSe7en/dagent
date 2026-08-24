@@ -66,6 +66,7 @@ from dagent.harness_runtime.execution_budget import (
     execution_budget_scope,
 )
 from dagent.harness_runtime.context import ContextAssembler
+from dagent.harness_runtime.dag_design import design_dag as design_dag_candidate
 from dagent.harness_runtime.planner_skill import load_dag_generation_skill
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
@@ -101,6 +102,8 @@ from dagent.schemas import (
     ContextPolicy,
     ContextUsage,
     DAG,
+    DAGDesignResult,
+    DAGDesignSelection,
     DAGSpec,
     ExecutionLimits,
     ExecutionUsage,
@@ -1172,6 +1175,39 @@ class Runner:
                 continue
             updated = entry.definition.model_copy(update={"config": {**entry.definition.config, "roots": roots}})
             catalog.replace(updated, entry.handler, supports_context=entry.supports_context)
+
+    async def design_dag(
+        self,
+        instruction: str,
+        *,
+        agent: DagAgent | None = None,
+        current: DAGSpec | None = None,
+        selection: DAGDesignSelection | None = None,
+        conversation: ConversationState | None = None,
+    ) -> DAGDesignResult:
+        """Produce, revise, or explain a DAG design without executing it."""
+
+        self._ensure_open()
+        resolved_agent = agent or DagAgent()
+        if not isinstance(resolved_agent, DagAgent):
+            raise TypeError("agent must be a DagAgent or None.")
+        resolved = self._runtime_for_dag_agent(resolved_agent)
+        capability_scope = CapabilityScope(
+            capability_ids=resolved.capability_ids,
+            skills=resolved.skill_ids,
+        )
+        capabilities = resolved.runtime.dag_agent.loop.available_capabilities(
+            capability_scope.capability_ids
+        )
+        return await design_dag_candidate(
+            resolved.runtime.dag_agent,
+            instruction,
+            capabilities=capabilities,
+            capability_scope=capability_scope,
+            current=current,
+            selection=selection,
+            conversation=conversation,
+        )
 
     async def run(
         self,

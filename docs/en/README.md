@@ -25,6 +25,8 @@ Simplified Chinese documentation is available at
 - [Agents](agents.md): when to use `ToolAgent`, `AutoAgent`, or `DagAgent`.
 - [Static DAGs](static-dag.md): typed graph input, node output references,
   artifacts, explicit edges, control flow, subgraphs, and loops.
+- [DAG Design](dag-design.md): create, revise, inspect, or explain typed DAG
+  candidates without executing capabilities or creating runs.
 - [Skills](skills.md): skill roots, managed installs, `SkillStore`, linked
   files, and agent-level skill visibility.
 - [Results, Streaming, and Review](results-streaming-review.md): `RunResult`,

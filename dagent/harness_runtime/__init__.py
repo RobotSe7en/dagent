@@ -9,6 +9,7 @@ from dagent.harness_runtime.dag_agent import DAGAgent, DAGAgentLoop
 from dagent.harness_runtime.dag_builder import (
     DAGCreationError,
     DAGInputValidationError,
+    inspect_dag_spec,
     validate_dag_input,
     validate_dag_spec,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "ExecutionLimitExceeded",
     "ConversationResourceError",
     "RuntimeMode",
+    "inspect_dag_spec",
     "validate_dag_spec",
     "validate_dag_input",
 ]

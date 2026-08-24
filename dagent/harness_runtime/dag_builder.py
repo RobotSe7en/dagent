@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 import json
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -21,6 +22,7 @@ from dagent.schemas import (
     DAGEdge,
     DAGNode,
     DAGSpec,
+    DAGDiagnostic,
     CapabilityNodePayload,
     ConditionNodePayload,
     CapabilityDefinition,
@@ -134,6 +136,69 @@ def validate_dag_spec(spec: DAGSpec) -> None:
             validate_dag_spec(embedded)
         except DAGValidationError as exc:
             raise DAGValidationError(f"Node '{node.id}' embedded DAG: {exc}") from exc
+
+
+def inspect_dag_spec(spec: DAGSpec) -> tuple[DAGDiagnostic, ...]:
+    """Return deterministic diagnostics without changing validation exceptions.
+
+    ``validate_dag_spec`` remains the authoritative compatibility boundary. This
+    inspection facade reports its failure as structured data while preserving
+    the validator's existing fail-fast message and exception behavior.
+    """
+
+    if not isinstance(spec, DAGSpec):
+        raise TypeError("inspect_dag_spec expects a DAGSpec.")
+    try:
+        validate_dag_spec(spec)
+    except DAGValidationError as exc:
+        message = str(exc)
+        node_id = _diagnostic_node_id(message)
+        return (DAGDiagnostic(
+            severity="error",
+            code=_diagnostic_code(message),
+            message=message,
+            node_id=node_id,
+            path=_diagnostic_path(message, node_id=node_id),
+        ),)
+    return ()
+
+
+def _diagnostic_node_id(message: str) -> str | None:
+    match = re.search(r"\bNode '([^']+)'", message)
+    return None if match is None else match.group(1)
+
+
+def _diagnostic_code(message: str) -> str:
+    lowered = message.lower()
+    if "input_schema" in lowered or "input schema" in lowered:
+        return "dag.input_schema.invalid"
+    if "dag output" in lowered:
+        return "dag.output.invalid"
+    if "artifact" in lowered:
+        return "dag.artifact.invalid"
+    if "edge" in lowered or "branch" in lowered:
+        return "dag.edge.invalid"
+    if "node" in lowered:
+        return "dag.node.invalid"
+    return "dag.structure.invalid"
+
+
+def _diagnostic_path(
+    message: str,
+    *,
+    node_id: str | None,
+) -> tuple[str | int, ...]:
+    lowered = message.lower()
+    if node_id is not None:
+        return ("nodes", node_id)
+    artifact_match = re.search(r"\bArtifact '([^']+)'", message)
+    if artifact_match is not None:
+        return ("artifacts", artifact_match.group(1))
+    if "input_schema" in lowered or "input schema" in lowered:
+        return ("input_schema",)
+    if "dag output" in lowered:
+        return ("output",)
+    return ()
 
 
 def validate_dag_input(

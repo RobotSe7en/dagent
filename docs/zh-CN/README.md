@@ -22,6 +22,8 @@
 - [Agents](agents.md)：什么时候使用 `ToolAgent`、`AutoAgent` 或 `DagAgent`。
 - [静态 DAG](static-dag.md)：类型化 graph input、节点输出引用、artifact、显式边、
   控制流、子图和循环。
+- [DAG 设计](dag-design.md)：在不执行 capability、也不创建 run 的前提下创建、修改、
+  检查或解释类型化 DAG 候选。
 - [Skills](skills.md)：skill roots、managed installs、`SkillStore`、关联文件和
   agent 级 skill 可见性。
 - [结果、流式输出和 Review](results-streaming-review.md)：`RunResult`、
