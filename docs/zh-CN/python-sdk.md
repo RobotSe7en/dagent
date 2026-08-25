@@ -22,6 +22,7 @@ import dagent
 | 选择 agent 类型 | [Agents](agents.md) |
 | 注册用于单层委派的子 agent | [Agents](agents.md#子-agent-委派) |
 | 在代码中构建静态 workflow | [静态 DAGs](static-dag.md) |
+| 不执行地设计或检查 DAG | [DAG 设计](dag-design.md) |
 | 使用 skills 和 managed skill installs | [Skills](skills.md) |
 | 持久化、stream、review 或 resume runs | [结果、流式输出和 Review](results-streaming-review.md) |
 | 运行示例 | [Examples](../../examples/README.md) |
@@ -36,6 +37,7 @@ import dagent
 | Runner and tools | `Runner`, `tool`, `CapabilityBinding`；`dagent.capabilities.python_tools` 提供配置化 Python tool source loading helpers |
 | Agents | `AutoAgent`, `ToolAgent`, `DagAgent` |
 | Static DAGs | `Dag`, `Node`, `ConditionNode`, `Case`, `MapNode`, `LoopNode`, `item`, `InputRef`, `NodeOutputRef`, `ItemRef`, `CompareRef`, `LogicalRef`, `all_of`, `any_of`, `not_`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec`, `validate_dag_input`, `DAGInputValidationError` |
+| DAG design | `Runner.design_dag`, `DAGDesignSelection`, `DAGDesignResult`, `DAGDesignProposal`, `DAGDesignNoChange`, `DAGDesignAnswer`, `DAGDesignFailure`, `DAGDiagnostic`, `DAGDiagnosticSeverity`, `inspect_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ModelTokenUsage`, `ResultStoragePolicy` |

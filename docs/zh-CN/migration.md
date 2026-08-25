@@ -8,6 +8,28 @@
 
 ## Unreleased
 
+### 新增：中立的非执行型 DAG 设计
+
+- `Runner.design_dag(...)` 现在可以根据自然语言创建、修改、检查或解释完整的类型化
+  `DAGSpec` 候选。带 tag 的结果变体包括 `DAGDesignProposal`、`DAGDesignNoChange`、
+  `DAGDesignAnswer` 和 `DAGDesignFailure`。
+- `DAGDesignSelection` 携带可选的选中 node ids。每种结果都包含可继续使用的
+  `ConversationState`、provider 可用时的 `ModelTokenUsage`、请求 `ContextUsage`，以及
+  结构化 `DAGDiagnostic`。
+- `inspect_dag_spec(...)` 提供确定性 diagnostics，同时保持现有
+  `validate_dag_spec(...)` 异常 contract 不变。
+
+### 行为和兼容性
+
+- 设计调用使用正常的 Runner catalog 和可选 `DagAgent` scope。候选中的 capability kind、
+  risk 和 boundary 始终由 catalog 值覆盖；未知、disabled 或超出 scope 的 id 会 fail closed。
+- 设计调用只调用 chat provider。它不会创建 Run、review、checkpoint、workspace artifact
+  或 capability result，也绝不会调用 capability handler。现有 `Runner.run(...)` 行为不变。
+- 修改会返回完整候选；语义未变时保留稳定的 node 和 invocation id，并保持未改边的字段与
+  顺序。`DAGEdge` 不增加 id 或 layout 字段。
+- 不需要数据或配置迁移。持久化、revision、semantic diff、部分采纳、layout、policy 和
+  audit 仍由 host 负责。
+
 ### 变更：已批准越界路径可在同一 run 内复用
 
 - 可审核的 boundary violation 现在包含规范化后的 `payload.boundary_paths`。批准后只会授权

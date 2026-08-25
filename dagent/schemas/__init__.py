@@ -28,6 +28,16 @@ from dagent.schemas.artifact import (
     ArtifactStatus,
 )
 from dagent.schemas.dag import DAG, DAGRun, DAGRunStatus, DAGSpec, iter_dag_invocations
+from dagent.schemas.dag_design import (
+    DAGDesignAnswer,
+    DAGDesignFailure,
+    DAGDesignNoChange,
+    DAGDesignProposal,
+    DAGDesignResult,
+    DAGDesignSelection,
+    DAGDiagnostic,
+    DAGDiagnosticSeverity,
+)
 from dagent.schemas.edge import DAGEdge
 from dagent.schemas.feedback import Feedback
 from dagent.schemas.node import (
@@ -119,6 +129,14 @@ __all__ = [
     "DAGEdge",
     "DAGNode",
     "DAGSpec",
+    "DAGDesignAnswer",
+    "DAGDesignFailure",
+    "DAGDesignNoChange",
+    "DAGDesignProposal",
+    "DAGDesignResult",
+    "DAGDesignSelection",
+    "DAGDiagnostic",
+    "DAGDiagnosticSeverity",
     "Feedback",
     "LoopNodePayload",
     "LoopOutcome",

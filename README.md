@@ -161,6 +161,7 @@ See the [Quick Start](docs/en/quick-start.md#6-use-the-terminal-ui) and
 flowchart TD
   U["User / SDK"] --> RUN["Runner"]
   RUN --> HR["HarnessRuntime"]
+  RUN -->|"design only"| DD["Validated DAGSpec Candidate"]
   HR -->|"AutoAgent routes to tool"| TA["ToolAgent"]
   HR -->|"ToolAgent target"| TA
   HR -->|"AutoAgent routes to DAG"| DA["DAGAgent"]
@@ -177,6 +178,7 @@ flowchart TD
   RG --> DE["DAGExecutor"]
   DE -->|"ready layer"| CE
   CE --> CAT["Capability Catalog"]
+  DD --> CAT
   CE --> RT["RunTrace + Artifacts"]
   RT --> OBS["DAG Observation"]
   OBS --> DAL
@@ -188,6 +190,10 @@ flowchart TD
 and capability catalog. `HarnessRuntime` is the lower-level control layer for
 routing, review continuations, optional result validation, and final response
 delivery.
+
+`Runner.design_dag(...)` is the non-executing branch: it uses the configured
+provider and catalog to return a validated candidate without creating a run or
+calling capability handlers. See [DAG Design](docs/en/dag-design.md).
 
 `AutoAgent` lets the runtime route each request to direct tool use or dynamic
 DAG planning. `ToolAgent` delegates bounded tool-loop work to `ToolAgentLoop`.

@@ -167,14 +167,18 @@ class DAGAgent:
         capability_scope: CapabilityScope,
         *,
         workspace_path: str | Path | None = None,
+        response_format: StructuredOutputFormat | None = None,
+        additional_context: Sequence[str] = (),
+        include_planner_frontend: bool = True,
     ) -> dict[str, str]:
         tools = self.loop.available_capabilities(capability_scope.capability_ids)
+        resolved_response_format = response_format or _planner_response_format_for_frontend(
+            self.loop.planner_frontend
+        )
         context_sections = [
-            _planner_response_schema_context(
-                _planner_response_format_for_frontend(self.loop.planner_frontend)
-            )
+            _planner_response_schema_context(resolved_response_format)
         ]
-        if self.loop.planner_frontend == "sdk_builder":
+        if include_planner_frontend and self.loop.planner_frontend == "sdk_builder":
             planner_skill = self.loop.planner_skill
             if planner_skill is None:
                 raise RuntimeError("sdk_builder planner frontend requires a frozen planner skill.")
@@ -185,6 +189,7 @@ class DAGAgent:
                 + planner_skill.content
             )
         context_sections.append(_planner_capability_context(tools))
+        context_sections.extend(additional_context)
         return self.prompt_builder.build_system_message(
             PromptRequest(
                 profile=self.profile,

@@ -9,6 +9,33 @@ The current package version is `0.9.3`.
 
 ## Unreleased
 
+### Added: neutral, non-executing DAG design
+
+- `Runner.design_dag(...)` now creates, revises, checks, or explains a complete
+  typed `DAGSpec` candidate from natural language. Its tagged result variants
+  are `DAGDesignProposal`, `DAGDesignNoChange`, `DAGDesignAnswer`, and
+  `DAGDesignFailure`.
+- `DAGDesignSelection` carries optional selected node ids. Every result carries
+  a continued `ConversationState`, provider `ModelTokenUsage` when available,
+  request `ContextUsage`, and structured `DAGDiagnostic` values.
+- `inspect_dag_spec(...)` exposes deterministic diagnostics without changing
+  the existing `validate_dag_spec(...)` exception contract.
+
+### Behavior and compatibility
+
+- Design calls use the normal Runner catalog and optional `DagAgent` scope.
+  Candidate capability kind, risk, and boundary are always replaced with
+  catalog values; unknown, disabled, or out-of-scope ids fail closed.
+- A design call invokes only the chat provider. It creates no Run, review,
+  checkpoint, workspace artifact, or capability result, and never invokes a
+  capability handler. Existing `Runner.run(...)` behavior is unchanged.
+- Revisions return a full candidate, preserve stable retained node and
+  invocation ids where semantics are unchanged, and retain unchanged edge
+  fields and ordering. `DAGEdge` gains no id or layout field.
+- No data or configuration migration is required. Hosts continue to own
+  persistence, revisions, semantic diff, partial acceptance, layout, policy,
+  and audit.
+
 ### Changed: approved boundary paths are reusable within one run
 
 - A reviewable boundary violation now includes normalized

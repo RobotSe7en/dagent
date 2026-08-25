@@ -23,6 +23,7 @@ import dagent
 | Choose an agent type | [Agents](agents.md) |
 | Register subagents for single-level delegation | [Agents](agents.md#subagent-delegation) |
 | Build static workflows in code | [Static DAGs](static-dag.md) |
+| Design or inspect a DAG without execution | [DAG Design](dag-design.md) |
 | Use skills and managed skill installs | [Skills](skills.md) |
 | Persist, stream, review, or resume runs | [Results, Streaming, and Review](results-streaming-review.md) |
 | Run examples | [Examples](../../examples/README.md) |
@@ -37,6 +38,7 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | Runner and tools | `Runner`, `tool`, `CapabilityBinding`; `dagent.capabilities.python_tools` provides configured Python tool source loading helpers |
 | Agents | `AutoAgent`, `ToolAgent`, `DagAgent` |
 | Static DAGs | `Dag`, `Node`, `ConditionNode`, `Case`, `MapNode`, `LoopNode`, `item`, `InputRef`, `NodeOutputRef`, `ItemRef`, `CompareRef`, `LogicalRef`, `all_of`, `any_of`, `not_`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec`, `validate_dag_input`, `DAGInputValidationError` |
+| DAG design | `Runner.design_dag`, `DAGDesignSelection`, `DAGDesignResult`, `DAGDesignProposal`, `DAGDesignNoChange`, `DAGDesignAnswer`, `DAGDesignFailure`, `DAGDiagnostic`, `DAGDiagnosticSeverity`, `inspect_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ModelTokenUsage`, `ResultStoragePolicy` |

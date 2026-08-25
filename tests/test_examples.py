@@ -2,6 +2,7 @@ import asyncio
 
 from examples import (
     agent_delegation,
+    dag_design,
     dynamic_dag_builder_agent,
     runtime_registration_and_skills,
     tool_agent,
@@ -42,3 +43,11 @@ def test_dynamic_dag_builder_example_runs_restricted_frontend(capsys) -> None:
     lines = capsys.readouterr().out.strip().splitlines()
 
     assert lines == ["completed", "Report: found:Research dagent.", "sdk_builder"]
+
+
+def test_dag_design_example_does_not_execute_tool(capsys) -> None:
+    asyncio.run(dag_design.main())
+
+    lines = capsys.readouterr().out.strip().splitlines()
+
+    assert lines == ["proposal", "summary", "0"]
