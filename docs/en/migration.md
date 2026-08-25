@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.4`.
+The current package version is `0.9.5`.
 
 ## Unreleased
+
+## 0.9.5
 
 ### Changed: observable DAG design provider streams
 
@@ -25,6 +27,9 @@ The current package version is `0.9.4`.
   deterministic failure message as visible assistant content instead of the
   provider's raw structured JSON. No schema or persistence migration is
   required; existing conversation values remain valid inputs.
+- The design-only `dag_design` profile remains loadable by
+  `Runner.design_dag(...)`, but the bundled host does not advertise or accept it
+  as an executable `agent.dag_design` capability.
 
 ## 0.9.4
 

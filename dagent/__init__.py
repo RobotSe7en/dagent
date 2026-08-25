@@ -96,7 +96,7 @@ from dagent.schemas import (
     UserMessage,
 )
 
-__version__ = "0.9.4"
+__version__ = "0.9.5"
 
 __all__ = [
     "__version__",

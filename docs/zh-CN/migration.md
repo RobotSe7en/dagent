@@ -4,9 +4,11 @@
 
 ## 当前发布线
 
-当前包版本是 `0.9.4`。
+当前包版本是 `0.9.5`。
 
 ## Unreleased
+
+## 0.9.5
 
 ### 变更：可观察的 DAG 设计 provider 流
 
@@ -20,6 +22,8 @@
 - 返回的设计 conversation 现在把自然 summary、answer 或确定性失败说明保存为可见
   assistant content，不再保存 provider 原始结构化 JSON。不需要 schema 或持久化迁移；
   已有 conversation 值仍可作为合法输入。
+- 设计专用 `dag_design` profile 仍可由 `Runner.design_dag(...)` 加载，但内置 host 不会
+  将它作为可执行的 `agent.dag_design` capability 发布或接受。
 
 ## 0.9.4
 
