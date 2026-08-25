@@ -164,7 +164,11 @@ def inspect_dag_spec(spec: DAGSpec) -> tuple[DAGDiagnostic, ...]:
 
 
 def _diagnostic_node_id(message: str) -> str | None:
-    match = re.search(r"\bNode '([^']+)'", message)
+    match = re.search(
+        r"\b(?:condition |start )?node '([^']+)'",
+        message,
+        flags=re.IGNORECASE,
+    )
     return None if match is None else match.group(1)
 
 

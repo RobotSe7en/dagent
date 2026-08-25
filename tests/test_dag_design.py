@@ -13,7 +13,9 @@ from dagent.schemas import (
     DAGNode,
     DAGEdge,
     ModelTokenUsage,
+    SubgraphNodePayload,
 )
+from dagent.schemas.value import bind_value_expr
 
 
 def _design_response(
@@ -111,7 +113,9 @@ async def test_design_dag_creates_candidate_without_execution_state_or_handler_c
         calls.append(text)
         return text
 
-    provider = MockProvider([_design_response(_spec("tool.echo"))])
+    candidate = _spec("tool.echo")
+    candidate.nodes[0].status = "completed"
+    provider = MockProvider([_design_response(candidate)])
     runner = dagent.Runner(
         workspace=tmp_path,
         provider=provider,
@@ -126,6 +130,7 @@ async def test_design_dag_creates_candidate_without_execution_state_or_handler_c
     assert isinstance(result, dagent.DAGDesignProposal)
     assert result.type == "proposal"
     assert result.candidate.id == "draft"
+    assert result.candidate.nodes[0].status == "planned"
     assert result.summary == "Created a candidate DAG."
     assert result.usage == ModelTokenUsage(
         input_tokens=10,
@@ -364,7 +369,9 @@ async def test_design_dag_catalog_overrides_model_capability_metadata(tmp_path) 
                 text="hello",
                 kind="mcp",
                 risk="high",
-                boundary=dagent.Boundary(allowed_paths=["model/owned"]),
+                boundary=dagent.Boundary(
+                    allowed_paths=[bind_value_expr({"type": "item", "path": []})]
+                ),
             )
         ],
     )
@@ -384,6 +391,95 @@ async def test_design_dag_catalog_overrides_model_capability_metadata(tmp_path) 
     assert invocation.kind == "tool"
     assert invocation.risk == "medium"
     assert invocation.boundary == dagent.Boundary(allowed_paths=["."])
+    runner.close()
+
+
+@pytest.mark.asyncio
+async def test_design_dag_accepts_canonical_artifact_expression_serialization(
+    tmp_path,
+) -> None:
+    @dagent.tool
+    def echo(text: str) -> str:
+        return text
+
+    candidate = _spec("tool.echo")
+    candidate.artifacts = {"report": Artifact(id="report", paths=["outputs/report.md"])}
+    candidate.output = bind_value_expr(
+        {
+            "type": "artifact",
+            "artifact_id": "report",
+        }
+    )
+    serialized = candidate.model_dump(mode="json")
+    assert "path" not in serialized["output"]["$expr"]
+
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=MockProvider([_design_response(candidate)]),
+        capabilities=[echo],
+    )
+    result = await runner.design_dag(
+        "Keep the artifact output.",
+        agent=dagent.DagAgent(capabilities=["tool.echo"]),
+        current=candidate,
+    )
+
+    assert isinstance(result, dagent.DAGDesignProposal)
+    assert result.candidate.output == candidate.output
+    runner.close()
+
+
+@pytest.mark.asyncio
+async def test_design_dag_resets_nested_model_authored_statuses(tmp_path) -> None:
+    @dagent.tool
+    def echo(text: str) -> str:
+        return text
+
+    nested = _spec("tool.echo", spec_id="inner")
+    nested.nodes[0].status = "running"
+    candidate = dagent.DAGSpec(
+        id="outer",
+        name="Outer",
+        nodes=[
+            DAGNode(
+                id="group",
+                status="completed",
+                payload={"type": "subgraph", "spec": nested},
+            )
+        ],
+    )
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=MockProvider([_design_response(candidate)]),
+        capabilities=[echo],
+    )
+
+    result = await runner.design_dag(
+        "Create the nested DAG.",
+        agent=dagent.DagAgent(capabilities=["tool.echo"]),
+    )
+
+    assert isinstance(result, dagent.DAGDesignProposal)
+    assert result.candidate.nodes[0].status == "planned"
+    payload = result.candidate.nodes[0].payload
+    assert isinstance(payload, SubgraphNodePayload)
+    assert payload.spec.nodes[0].status == "planned"
+    runner.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("instruction", [None, 123])
+async def test_design_dag_rejects_non_string_instruction_before_provider_call(
+    tmp_path,
+    instruction,
+) -> None:
+    provider = MockProvider()
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    with pytest.raises(TypeError, match="instruction must be a string"):
+        await runner.design_dag(instruction)  # type: ignore[arg-type]
+
+    assert provider.requests == []
     runner.close()
 
 
@@ -443,3 +539,35 @@ def test_inspect_dag_spec_is_deterministic_and_preserves_validate_contract() -> 
     assert first[0].path == ("nodes", "write")
     with pytest.raises(DAGValidationError, match="references unknown artifact"):
         dagent.validate_dag_spec(spec)
+
+
+def test_inspect_dag_spec_locates_condition_node() -> None:
+    spec = dagent.DAGSpec(
+        id="invalid_condition",
+        name="Invalid condition",
+        nodes=[
+            DAGNode(
+                id="route",
+                payload={
+                    "type": "condition",
+                    "cases": [
+                        {
+                            "branch": "yes",
+                            "when": bind_value_expr(
+                                {
+                                    "type": "graph_input",
+                                    "path": [],
+                                }
+                            ),
+                        }
+                    ],
+                    "default_branch": "yes",
+                },
+            )
+        ],
+    )
+
+    diagnostic = dagent.inspect_dag_spec(spec)[0]
+
+    assert diagnostic.node_id == "route"
+    assert diagnostic.path == ("nodes", "route")

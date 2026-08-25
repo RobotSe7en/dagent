@@ -312,9 +312,9 @@ def dag_design_response_format() -> StructuredOutputFormat:
 
 
 def dag_design_candidate_schema() -> dict[str, Any]:
-    """Return the strict JSON shape parsed from ``candidate_json``."""
+    """Return the closed JSON shape parsed from ``candidate_json``."""
 
-    return _strict_json_schema(DAGSpec.model_json_schema())
+    return _closed_json_schema(DAGSpec.model_json_schema())
 
 
 def parse_planner_response(content: str) -> PlannerResponse:
@@ -364,6 +364,21 @@ def _strict_json_schema(value: Any) -> Any:
     properties = output.get("properties")
     if isinstance(properties, dict):
         output["required"] = list(properties)
+        output["additionalProperties"] = False
+    return output
+
+
+def _closed_json_schema(value: Any) -> Any:
+    """Forbid unknown object fields without changing Pydantic optionality."""
+    if isinstance(value, list):
+        return [_closed_json_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    output = {
+        key: _closed_json_schema(item)
+        for key, item in value.items()
+    }
+    if isinstance(output.get("properties"), dict):
         output["additionalProperties"] = False
     return output
 

@@ -54,7 +54,9 @@ async def design_dag(
 ) -> DAGDesignResult:
     """Ask the configured provider for one candidate without running the graph."""
 
-    normalized_instruction = str(instruction).strip()
+    if not isinstance(instruction, str):
+        raise TypeError("instruction must be a string.")
+    normalized_instruction = instruction.strip()
     if not normalized_instruction:
         raise ValueError("instruction must be a non-empty string.")
 
@@ -159,24 +161,13 @@ async def design_dag(
             **common,
         )
 
-    deterministic = inspect_dag_spec(candidate)
-    if deterministic:
-        return DAGDesignFailure(
-            diagnostics=tuple(
-                diagnostic.model_copy(
-                    update={"code": f"dag_design.candidate.{diagnostic.code}"}
-                )
-                for diagnostic in deterministic
-            ),
-            **common,
-        )
-
     if current is not None:
         candidate.id = current.id
         candidate.version = current.version + 1
         _preserve_design_identity(candidate, current)
 
     _replace_model_invocation_ids(candidate)
+    _reset_node_statuses(candidate)
     try:
         candidate = resolve_dag_spec_capabilities(candidate, definitions)
     except DAGCreationError as exc:
@@ -327,7 +318,7 @@ def _catalog_diagnostic(exc: Exception) -> DAGDiagnostic:
     elif "invalid arguments" in message:
         code = "dag_design.capability_arguments_invalid"
     else:
-        code = "dag_design.candidate_invalid"
+        code = "dag_design.candidate.invalid"
     return _error(code, message)
 
 
@@ -407,6 +398,16 @@ def _preserve_design_identity(candidate: DAGSpec, current: DAGSpec) -> None:
 def _replace_model_invocation_ids(spec: DAGSpec) -> None:
     for invocation in iter_dag_invocations(spec.nodes):
         invocation.invocation_id = f"run_inv_{uuid4().hex}"
+
+
+def _reset_node_statuses(spec: DAGSpec) -> None:
+    for node in spec.nodes:
+        node.status = "planned"
+        payload = node.payload
+        if isinstance(payload, SubgraphNodePayload):
+            _reset_node_statuses(payload.spec)
+        elif isinstance(payload, LoopNodePayload):
+            _reset_node_statuses(payload.body)
 
 
 def _preserve_invocation_ids(candidate: DAGSpec, current: DAGSpec) -> None:
