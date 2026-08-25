@@ -40,6 +40,7 @@ async def main() -> None:
     provider = MockProvider(
         [
             ChatResponse(
+                reasoning_content="Choosing the smallest valid graph.",
                 content=json.dumps(
                     {
                         "action": "propose_plan",
@@ -60,9 +61,15 @@ async def main() -> None:
         capabilities=[summarize],
     )
 
+    def observe(event: dagent.RunStreamEvent) -> None:
+        if event.type == "response.reasoning.delta":
+            print(event.data.delta)
+        elif event.type.startswith("validation."):
+            print(event.type)
+
     result = await runner.design_dag(
         "Create a DAG that summarizes its string input.",
-        agent=dagent.DagAgent(capabilities=["tool.summarize"]),
+        on_event=observe,
     )
 
     if not isinstance(result, dagent.DAGDesignProposal):

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 BUILTIN_PROFILE_NAMES = frozenset({
     "conversation",
     "dag_agent",
+    "dag_design",
     "validator_agent",
     "feedback_learner",
 })

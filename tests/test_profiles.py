@@ -59,6 +59,16 @@ def test_dag_agent_prompt_does_not_ask_for_reserved_dag_start() -> None:
     assert "dag_start" not in prompt
 
 
+def test_dag_design_prompt_is_non_executing_and_returns_complete_candidates() -> None:
+    prompt = load_builtin_profile("dag_design").content
+
+    assert "non-executing DAG designer" in prompt
+    assert "complete DAGSpec" in prompt
+    assert "Never execute the graph" in prompt
+    assert "candidate_json" in prompt
+    assert "final_answer" in prompt
+
+
 def test_conversation_prompt_contains_only_tool_selection_guidance() -> None:
     prompt = load_builtin_profile("conversation").content
 

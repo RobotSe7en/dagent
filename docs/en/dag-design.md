@@ -39,9 +39,45 @@ offline example using `MockProvider`.
 
 The optional `agent` is an ordinary declarative `DagAgent`. Its profile,
 context policy, skills, registered subagents, and `capabilities` scope are
-resolved in the same way as a dynamic DAG run. When it is omitted, the runner's
-normally visible capability catalog is used. Callers do not submit copied
+resolved in the same way as a dynamic DAG run. When it is omitted,
+`design_dag` uses the built-in non-executing `dag_design` profile and the
+runner's normally visible capability catalog. Pass an explicit `DagAgent` to
+select a custom profile or narrower scope. Callers do not submit copied
 capability definitions; the runner catalog remains authoritative.
+
+## Observe provider reasoning and validation
+
+Pass a fast synchronous `on_event` callback to observe the real provider stream
+using the existing public `RunStreamEvent` protocol:
+
+```python
+import asyncio
+
+
+events: asyncio.Queue[dagent.RunStreamEvent] = asyncio.Queue()
+
+result = await runner.design_dag(
+    "Create a DAG that summarizes its string input.",
+    on_event=events.put_nowait,
+)
+```
+
+An observed call emits `response.started`, zero or more
+`response.reasoning.delta` events, `response.finished`, and
+`validation.started`. A valid result with no error diagnostics also emits
+`validation.passed`. These events have call-local sequence numbers starting at
+1 and `run_id=None`, because design does not create a run.
+
+The provider's structured JSON is deliberately not emitted as
+`response.content.delta`. Awaiting `design_dag` returns the final typed result;
+its `summary` or `answer` is the natural user-visible final text. Without
+`on_event`, the 0.9.4-compatible path continues to call `provider.chat` rather
+than `provider.stream_chat`.
+
+Cancel the task that is awaiting `design_dag` to cancel an in-flight design.
+The SDK deterministically closes the provider stream and propagates
+`CancelledError`. Provider and callback exceptions also propagate; design does
+not manufacture run failure or cancellation events.
 
 ## Revise an existing DAG
 
@@ -88,7 +124,9 @@ Every variant returns a new `ConversationState`, optional provider-reported
 `ModelTokenUsage` as `usage`, and request-estimate `ContextUsage` as
 `context_usage`. Input conversation objects are copied and never mutated. Pass
 the returned conversation into a later turn explicitly; separate calls without
-it stay isolated.
+it stay isolated. The assistant item stores the natural proposal summary,
+no-change summary, answer, or a short deterministic failure message. Raw
+structured response JSON is never stored as visible assistant content.
 
 ## Validation and catalog authority
 

@@ -37,7 +37,7 @@ import dagent
 | Runner and tools | `Runner`, `tool`, `CapabilityBinding`；`dagent.capabilities.python_tools` 提供配置化 Python tool source loading helpers |
 | Agents | `AutoAgent`, `ToolAgent`, `DagAgent` |
 | Static DAGs | `Dag`, `Node`, `ConditionNode`, `Case`, `MapNode`, `LoopNode`, `item`, `InputRef`, `NodeOutputRef`, `ItemRef`, `CompareRef`, `LogicalRef`, `all_of`, `any_of`, `not_`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec`, `validate_dag_input`, `DAGInputValidationError` |
-| DAG design | `Runner.design_dag`, `DAGDesignSelection`, `DAGDesignResult`, `DAGDesignProposal`, `DAGDesignNoChange`, `DAGDesignAnswer`, `DAGDesignFailure`, `DAGDiagnostic`, `DAGDiagnosticSeverity`, `inspect_dag_spec` |
+| DAG design | `Runner.design_dag`（包括可选的 `RunStreamEvent` 观察）、`DAGDesignSelection`, `DAGDesignResult`, `DAGDesignProposal`, `DAGDesignNoChange`, `DAGDesignAnswer`, `DAGDesignFailure`, `DAGDiagnostic`, `DAGDiagnosticSeverity`, `inspect_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ModelTokenUsage`, `ResultStoragePolicy` |

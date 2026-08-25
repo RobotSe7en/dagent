@@ -17,7 +17,9 @@ Use static `Dag` instead of an agent when the graph shape belongs in code. See
 
 ## Managed Profiles and Agent Presets
 
-Built-in profiles live in `dagent/resources/profiles/*.md`. The local FastAPI
+Built-in profiles live in `dagent/resources/profiles/*.md`. `dag_agent` is the
+execution planner profile, while `dag_design` is the dedicated non-executing
+profile used by `Runner.design_dag(agent=None)`. The local FastAPI
 service manages editable profiles under `~/.dagent/profiles/<name>.md`; users can
 create, copy, edit, and delete those profiles without passing Markdown file
 paths to each run.

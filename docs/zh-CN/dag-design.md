@@ -37,9 +37,40 @@ elif isinstance(result, dagent.DAGDesignFailure):
 [`examples/dag_design.py`](../../examples/dag_design.py)。
 
 可选的 `agent` 是普通声明式 `DagAgent`。它的 profile、context policy、skills、已注册
-子 agent 和 `capabilities` scope 与动态 DAG run 使用同样的解析方式。省略时使用 Runner
-通常可见的 capability catalog。调用方不提交 capability definition 副本；Runner catalog
-始终是权威事实来源。
+子 agent 和 `capabilities` scope 与动态 DAG run 使用同样的解析方式。省略时，
+`design_dag` 使用内置的非执行型 `dag_design` profile 和 Runner 通常可见的 capability
+catalog。如需自定义 profile 或更窄 scope，请显式传入 `DagAgent`。调用方不提交
+capability definition 副本；Runner catalog 始终是权威事实来源。
+
+## 观察 provider reasoning 与校验
+
+传入执行迅速的同步 `on_event` callback，即可通过现有公开 `RunStreamEvent` 协议观察真实
+provider 流：
+
+```python
+import asyncio
+
+
+events: asyncio.Queue[dagent.RunStreamEvent] = asyncio.Queue()
+
+result = await runner.design_dag(
+    "创建一个汇总字符串输入的 DAG。",
+    on_event=events.put_nowait,
+)
+```
+
+观察模式会发出 `response.started`、零个或多个 `response.reasoning.delta`、
+`response.finished` 和 `validation.started`。合法且没有 error diagnostic 的结果还会发出
+`validation.passed`。事件使用从 1 开始的调用内 sequence，且 `run_id=None`，因为设计不会
+创建 run。
+
+Provider 的结构化 JSON 不会作为 `response.content.delta` 发出。等待 `design_dag` 完成后，
+最终类型化结果的 `summary` 或 `answer` 才是自然的用户可见终态文本。不传 `on_event` 时，
+保持与 0.9.4 兼容的路径，继续调用 `provider.chat`，而不是 `provider.stream_chat`。
+
+要取消进行中的设计，应取消等待 `design_dag` 的 task。SDK 会确定性关闭 provider stream
+并传播 `CancelledError`。Provider 和 callback 异常也会直接传播；设计不会伪造 run 失败
+或取消事件。
 
 ## 修改现有 DAG
 
@@ -77,7 +108,9 @@ invocation id。设计调用不会改写保留节点的 runtime status。
 
 每种结果都返回新的 `ConversationState`、可选的 provider `ModelTokenUsage`（`usage`），以及
 请求估算 `ContextUsage`（`context_usage`）。输入 conversation 会被复制，绝不会原地修改。
-后续调用需显式传入返回的 conversation；不传时，各次调用彼此隔离。
+后续调用需显式传入返回的 conversation；不传时，各次调用彼此隔离。Assistant item 保存自然
+的 proposal summary、no-change summary、answer 或简短且确定的失败说明；原始结构化响应 JSON
+绝不会作为可见 assistant content 保存。
 
 ## 校验与 catalog 权威性
 
