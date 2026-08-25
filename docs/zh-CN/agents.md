@@ -17,8 +17,8 @@ continuation 和 execution dispatch。
 ## 受管 Profiles 和 Agent Presets
 
 内置 profiles 位于 `dagent/resources/profiles/*.md`。`dag_agent` 是执行 planner profile，
-`dag_design` 是 `Runner.design_dag(agent=None)` 使用的专用非执行型 profile。本地 FastAPI
-服务会把可编辑
+`dag_design` 是 `Runner.design_dag(agent=None)` 使用的专用非执行型 profile；它不会作为
+可运行的 `agent.dag_design` capability 发布或被接受。本地 FastAPI 服务会把可编辑
 profiles 管理在 `~/.dagent/profiles/<name>.md` 下；用户可以创建、复制、编辑和删除
 这些 profiles，而不必在每次 run 时传 Markdown 文件路径。
 

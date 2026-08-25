@@ -133,6 +133,7 @@ RUN_ARTIFACT_SCAN_VISIT_LIMIT = 5_000
 ONLYOFFICE_TOKEN_SECONDS = 10 * 60
 ONLYOFFICE_EDIT_TOKEN_SECONDS = 24 * 60 * 60
 PROFILE_CONTENT_BYTES_LIMIT = 128 * 1024
+_DESIGN_ONLY_PROFILE_NAMES = frozenset({"dag_design"})
 _MANAGED_PROFILE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$")
 _LOCAL_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -2324,6 +2325,8 @@ def _clean_agent_profile_name(value: str) -> str:
 
 
 def _resolve_agent_profile(name: str) -> AgentProfile:
+    if name in _DESIGN_ONLY_PROFILE_NAMES:
+        raise ValueError(f"Agent profile '{name}' is available only for DAG design.")
     managed_store = state.managed_profile_store()
     if name in managed_store.list_names():
         return managed_store.load(name)
@@ -2676,6 +2679,8 @@ def _profile_agent_capabilities() -> list[CapabilityDefinition]:
     profiles = _agent_profile_candidates()
     definitions: list[CapabilityDefinition] = []
     for source, profile in profiles:
+        if profile.name in _DESIGN_ONLY_PROFILE_NAMES:
+            continue
         try:
             name = clean_agent_preset_name(profile.name)
         except ValueError:
