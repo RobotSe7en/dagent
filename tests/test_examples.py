@@ -50,4 +50,11 @@ def test_dag_design_example_does_not_execute_tool(capsys) -> None:
 
     lines = capsys.readouterr().out.strip().splitlines()
 
-    assert lines == ["proposal", "summary", "0"]
+    assert lines == [
+        "Choosing the smallest valid graph.",
+        "validation.started",
+        "validation.passed",
+        "proposal",
+        "summary",
+        "0",
+    ]

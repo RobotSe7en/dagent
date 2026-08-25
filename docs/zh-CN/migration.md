@@ -8,6 +8,19 @@
 
 ## Unreleased
 
+### 变更：可观察的 DAG 设计 provider 流
+
+- `Runner.design_dag(...)` 新增可选的同步 `on_event` callback。传入时会消费 provider 的
+  真实流，并通过现有 `RunStreamEvent` 报告 response 和 validation 事件。结构化候选 JSON
+  不会作为 content delta 暴露，等待返回的 `DAGDesignResult` 仍是唯一终态值。不传 callback
+  时保留 0.9.4 的 `provider.chat` transport 行为。
+- 省略 `agent` 时，设计现在使用专用内置 `dag_design` profile，不再使用面向执行的
+  `dag_agent` profile。如需保留旧 prompt，可传
+  `DagAgent(planner_profile="dag_agent")`；也可传显式自定义 profile。
+- 返回的设计 conversation 现在把自然 summary、answer 或确定性失败说明保存为可见
+  assistant content，不再保存 provider 原始结构化 JSON。不需要 schema 或持久化迁移；
+  已有 conversation 值仍可作为合法输入。
+
 ## 0.9.4
 
 ### 新增：中立的非执行型 DAG 设计

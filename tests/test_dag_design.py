@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
 import dagent
 from dagent.harness_runtime.dag_builder import DAGValidationError
-from dagent.providers import ChatResponse, MockProvider
+from dagent.profiles import AgentProfile
+from dagent.providers import ChatResponse, ChatStreamEvent, MockProvider
 from dagent.schemas import (
     Artifact,
     CapabilityInvocation,
@@ -139,6 +141,8 @@ async def test_design_dag_creates_candidate_without_execution_state_or_handler_c
     )
     assert result.context_usage is not None
     assert len(result.conversation.items) == 2
+    assert result.conversation.items[-1].content == result.summary
+    assert "candidate_json" not in str(result.conversation.items[-1].content)
     assert calls == []
     assert runner.runtime.session.runs == {}
     assert runner._run_checkpoints == {}
@@ -272,8 +276,10 @@ async def test_design_dag_returns_no_change_and_answer(tmp_path) -> None:
 
     assert isinstance(unchanged, dagent.DAGDesignNoChange)
     assert unchanged.type == "no_change"
+    assert unchanged.conversation.items[-1].content == unchanged.summary
     assert isinstance(answer, dagent.DAGDesignAnswer)
     assert answer.answer == "The graph has one echo step."
+    assert answer.conversation.items[-1].content == answer.answer
     runner.close()
 
 
@@ -309,6 +315,10 @@ async def test_design_dag_reports_invalid_model_and_candidate_output(tmp_path) -
 
     assert isinstance(malformed, dagent.DAGDesignFailure)
     assert malformed.diagnostics[0].code == "dag_design.invalid_model_output"
+    assert malformed.conversation.items[-1].content.startswith(
+        "I couldn't complete the DAG design."
+    )
+    assert malformed.conversation.items[-1].content != "not-json"
     assert isinstance(invalid, dagent.DAGDesignFailure)
     assert invalid.diagnostics[0].code.startswith("dag_design.candidate.")
     assert "acyclic" in invalid.diagnostics[0].message.lower()
@@ -514,6 +524,15 @@ async def test_design_conversations_are_isolated_and_failures_do_not_mutate_inpu
     assert any(
         message.get("content") == "First question." for message in second_messages
     )
+    assert any(
+        message.get("content") == "First answer." for message in second_messages
+    )
+    assistant_contents = [
+        str(message.get("content"))
+        for message in second_messages
+        if message.get("role") == "assistant"
+    ]
+    assert assistant_contents == ["First answer."]
     third_messages = provider.requests[2]["messages"]
     assert all(
         message.get("content") != "First question." for message in third_messages
@@ -571,3 +590,263 @@ def test_inspect_dag_spec_locates_condition_node() -> None:
 
     assert diagnostic.node_id == "route"
     assert diagnostic.path == ("nodes", "route")
+
+
+@pytest.mark.asyncio
+async def test_design_dag_without_observer_uses_non_streaming_provider_chat(
+    tmp_path,
+) -> None:
+    class TransportProvider:
+        def __init__(self) -> None:
+            self.chat_calls = 0
+            self.stream_calls = 0
+            self.messages = []
+
+        async def chat(self, messages, tools=None, *, response_format=None):
+            self.chat_calls += 1
+            self.messages = messages
+            return _answer_response("A direct answer.")
+
+        async def stream_chat(self, messages, tools=None, *, response_format=None):
+            self.stream_calls += 1
+            yield ChatStreamEvent(type="done", response=_answer_response("streamed"))
+
+    provider = TransportProvider()
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    result = await runner.design_dag("Explain DAGs.")
+
+    assert isinstance(result, dagent.DAGDesignAnswer)
+    assert provider.chat_calls == 1
+    assert provider.stream_calls == 0
+    assert "# DAG Designer" in provider.messages[0]["content"]
+    runner.close()
+
+
+@pytest.mark.asyncio
+async def test_design_dag_observer_uses_true_reasoning_stream_and_filters_json(
+    tmp_path,
+) -> None:
+    response = _answer_response("The DAG has one step.")
+
+    class StreamingProvider:
+        async def chat(self, messages, tools=None, *, response_format=None):
+            raise AssertionError("observer mode must use provider streaming")
+
+        async def stream_chat(self, messages, tools=None, *, response_format=None):
+            yield ChatStreamEvent(
+                type="token",
+                content="Inspecting ",
+                channel="reasoning",
+            )
+            yield ChatStreamEvent(
+                type="token",
+                content="the graph.",
+                channel="reasoning",
+            )
+            yield ChatStreamEvent(type="token", content=response.content, channel="content")
+            yield ChatStreamEvent(type="done", response=response)
+
+    events: list[dagent.RunStreamEvent] = []
+    runner = dagent.Runner(workspace=tmp_path, provider=StreamingProvider())
+
+    result = await runner.design_dag("Explain it.", on_event=events.append)
+
+    assert isinstance(result, dagent.DAGDesignAnswer)
+    assert [event.type for event in events] == [
+        "response.started",
+        "response.reasoning.delta",
+        "response.reasoning.delta",
+        "response.finished",
+        "validation.started",
+        "validation.passed",
+    ]
+    assert [event.sequence for event in events] == list(range(1, 7))
+    assert all(event.run_id is None for event in events)
+    response_events = events[:4]
+    response_ids = {event.data.response_id for event in response_events}
+    assert len(response_ids) == 1
+    assert [event.data.delta for event in events if event.type.endswith(".delta")] == [
+        "Inspecting ",
+        "the graph.",
+    ]
+    assert all(
+        "candidate_json" not in json.dumps(event.model_dump(mode="json"))
+        for event in events
+    )
+    assert result.conversation.items[-1].content == result.answer
+    runner.close()
+
+
+@pytest.mark.asyncio
+async def test_design_dag_chat_only_provider_emits_boundaries_without_fake_tokens(
+    tmp_path,
+) -> None:
+    class ChatOnlyProvider:
+        async def chat(self, messages, tools=None, *, response_format=None):
+            return _answer_response("No stream is available.")
+
+    events: list[dagent.RunStreamEvent] = []
+    runner = dagent.Runner(workspace=tmp_path, provider=ChatOnlyProvider())
+
+    await runner.design_dag("Explain it.", on_event=events.append)
+
+    assert [event.type for event in events] == [
+        "response.started",
+        "response.finished",
+        "validation.started",
+        "validation.passed",
+    ]
+    runner.close()
+
+
+@pytest.mark.asyncio
+async def test_design_dag_failure_omits_validation_passed_event(tmp_path) -> None:
+    events: list[dagent.RunStreamEvent] = []
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=MockProvider([ChatResponse(content="invalid")]),
+    )
+
+    result = await runner.design_dag("Create it.", on_event=events.append)
+
+    assert isinstance(result, dagent.DAGDesignFailure)
+    assert "validation.started" in [event.type for event in events]
+    assert "validation.passed" not in [event.type for event in events]
+    runner.close()
+
+
+@pytest.mark.asyncio
+async def test_design_dag_refusal_preserves_metadata_without_exposing_raw_content(
+    tmp_path,
+) -> None:
+    usage = ModelTokenUsage(input_tokens=3, output_tokens=4, total_tokens=7)
+    response = ChatResponse(
+        content="model-private-content",
+        reasoning_content="Safety check.",
+        refusal="I cannot produce this graph.",
+        usage=usage,
+    )
+    events: list[dagent.RunStreamEvent] = []
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=MockProvider([response]),
+    )
+
+    result = await runner.design_dag("Create it.", on_event=events.append)
+
+    assert isinstance(result, dagent.DAGDesignFailure)
+    assistant = result.conversation.items[-1]
+    assert assistant.content == (
+        "I couldn't complete the DAG design. "
+        "See diagnostic dag_design.model_refusal."
+    )
+    assert "model-private-content" not in assistant.content
+    assert assistant.reasoning == "Safety check."
+    assert assistant.refusal == "I cannot produce this graph."
+    assert result.usage == usage
+    assert "validation.passed" not in [event.type for event in events]
+    runner.close()
+
+
+@pytest.mark.asyncio
+async def test_design_dag_honors_explicit_planner_profile(tmp_path) -> None:
+    provider = MockProvider([_answer_response("Custom profile answer.")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    profile = AgentProfile(
+        name="custom_designer",
+        content="# Custom Designer\n\nUse the active design schema.",
+    )
+
+    await runner.design_dag(
+        "Explain it.",
+        agent=dagent.DagAgent(planner_profile=profile),
+    )
+
+    assert "# Custom Designer" in provider.requests[0]["messages"][0]["content"]
+    assert "# DAG Designer" not in provider.requests[0]["messages"][0]["content"]
+    runner.close()
+
+
+@pytest.mark.asyncio
+async def test_design_dag_cancellation_closes_provider_stream_without_runtime_state(
+    tmp_path,
+) -> None:
+    calls: list[str] = []
+
+    @dagent.tool
+    def echo(text: str) -> str:
+        calls.append(text)
+        return text
+
+    class CancellableProvider:
+        def __init__(self) -> None:
+            self.waiting = asyncio.Event()
+            self.closed = asyncio.Event()
+
+        async def chat(self, messages, tools=None, *, response_format=None):
+            raise AssertionError("observer mode must use provider streaming")
+
+        async def stream_chat(self, messages, tools=None, *, response_format=None):
+            try:
+                yield ChatStreamEvent(type="token", content="Thinking", channel="reasoning")
+                self.waiting.set()
+                await asyncio.Event().wait()
+            finally:
+                self.closed.set()
+
+    provider = CancellableProvider()
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=provider,
+        capabilities=[echo],
+    )
+    task = asyncio.create_task(
+        runner.design_dag(
+            "Create it.",
+            agent=dagent.DagAgent(capabilities=["tool.echo"]),
+            on_event=lambda _event: None,
+        )
+    )
+    await provider.waiting.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(provider.closed.wait(), timeout=1)
+    assert calls == []
+    assert runner.runtime.session.runs == {}
+    assert runner._run_checkpoints == {}
+    runner.close()
+
+
+@pytest.mark.asyncio
+async def test_design_dag_callback_and_provider_errors_propagate(tmp_path) -> None:
+    callback_runner = dagent.Runner(
+        workspace=tmp_path / "callback",
+        provider=MockProvider([_answer_response("unused")]),
+    )
+
+    def fail_callback(_event: dagent.RunStreamEvent) -> None:
+        raise RuntimeError("callback failed")
+
+    with pytest.raises(RuntimeError, match="callback failed"):
+        await callback_runner.design_dag("Explain it.", on_event=fail_callback)
+    callback_runner.close()
+
+    class FailingProvider:
+        async def chat(self, messages, tools=None, *, response_format=None):
+            raise AssertionError("observer mode must use provider streaming")
+
+        async def stream_chat(self, messages, tools=None, *, response_format=None):
+            yield ChatStreamEvent(type="token", content="Starting", channel="reasoning")
+            raise RuntimeError("provider failed")
+
+    provider_runner = dagent.Runner(
+        workspace=tmp_path / "provider",
+        provider=FailingProvider(),
+    )
+    with pytest.raises(RuntimeError, match="provider failed"):
+        await provider_runner.design_dag("Explain it.", on_event=lambda _event: None)
+    provider_runner.close()

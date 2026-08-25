@@ -14,6 +14,7 @@ from dagent.harness_runtime.capability_scope import CapabilityScope
 from dagent.harness_runtime.dag_agent import DAGAgent, _chat_for_dag
 from dagent.harness_runtime.dag_builder import DAGCreationError, inspect_dag_spec
 from dagent.harness_runtime.dynamic_planner import resolve_dag_spec_capabilities
+from dagent.harness_runtime.runtime_events import LoopEventHandler
 from dagent.harness_runtime.planner_schema import (
     dag_design_candidate_schema,
     dag_design_response_format,
@@ -51,6 +52,7 @@ async def design_dag(
     current: DAGSpec | None = None,
     selection: DAGDesignSelection | None = None,
     conversation: ConversationState | None = None,
+    on_event: LoopEventHandler | None = None,
 ) -> DAGDesignResult:
     """Ask the configured provider for one candidate without running the graph."""
 
@@ -90,76 +92,93 @@ async def design_dag(
         retry_policy=designer.loop.llm_retry_policy,
         retry_sleep=designer.loop.llm_retry_sleep,
         response_format=response_format,
+        on_event=on_event,
     )
-    next_conversation = _append_item(
-        prepared.conversation,
-        AssistantMessage(
-            content=response.content,
-            reasoning=response.reasoning_content,
-            refusal=response.refusal,
-            usage=response.usage,
-            scope="planner",
-        ),
-    )
-    common = {
-        "conversation": next_conversation,
-        "usage": response.usage,
-        "context_usage": prepared.usage,
-    }
+    if on_event is not None:
+        on_event({"type": "validating", "message": "Validating DAG design response."})
+
+    def common(visible_content: str) -> dict[str, object]:
+        return {
+            "conversation": _append_item(
+                prepared.conversation,
+                AssistantMessage(
+                    content=visible_content,
+                    reasoning=response.reasoning_content,
+                    refusal=response.refusal,
+                    usage=response.usage,
+                    scope="planner",
+                ),
+            ),
+            "usage": response.usage,
+            "context_usage": prepared.usage,
+        }
+
+    def failure(diagnostics: tuple[DAGDiagnostic, ...]) -> DAGDesignFailure:
+        message = (
+            "I couldn't complete the DAG design. "
+            f"See diagnostic {diagnostics[0].code}."
+        )
+        return DAGDesignFailure(diagnostics=diagnostics, **common(message))
+
+    def validation_passed() -> None:
+        if on_event is not None:
+            on_event({
+                "type": "validation_passed",
+                "summary": "DAG design response is valid.",
+                "issues": [],
+            })
+
     if response.refusal:
-        return DAGDesignFailure(
-            diagnostics=(
+        return failure(
+            (
                 _error(
                     "dag_design.model_refusal",
                     f"DAG designer refused the request: {response.refusal}",
                 ),
-            ),
-            **common,
+            )
         )
 
     try:
         design_response = parse_dag_design_response(response.content)
     except (ValueError, PydanticValidationError) as exc:
-        return DAGDesignFailure(
-            diagnostics=(_error("dag_design.invalid_model_output", str(exc)),),
-            **common,
-        )
+        return failure((_error("dag_design.invalid_model_output", str(exc)),))
 
     definitions = tuple(capabilities)
     if design_response.action == "final_answer":
         answer_diagnostics = _current_diagnostics(current, definitions)
+        answer = str(design_response.answer or "").strip()
+        if not answer_diagnostics:
+            validation_passed()
         return DAGDesignAnswer(
-            answer=str(design_response.answer or "").strip(),
+            answer=answer,
             diagnostics=answer_diagnostics,
-            **common,
+            **common(answer),
         )
     if design_response.action == "no_change":
         if current is None:
-            return DAGDesignFailure(
-                diagnostics=(
+            return failure(
+                (
                     _error(
                         "dag_design.no_current_dag",
                         "The designer returned no_change without a current DAGSpec.",
                     ),
-                ),
-                **common,
+                )
             )
         current_failure = _catalog_failure(current, definitions)
         if current_failure is not None:
-            return DAGDesignFailure(diagnostics=(current_failure,), **common)
+            return failure((current_failure,))
+        summary = str(design_response.summary or "").strip()
+        validation_passed()
         return DAGDesignNoChange(
-            summary=str(design_response.summary or "").strip(),
-            **common,
+            summary=summary,
+            **common(summary),
         )
 
     candidate_json = str(design_response.candidate_json or "")
     try:
         candidate = _parse_candidate(candidate_json)
     except (ValueError, PydanticValidationError, JSONSchemaValidationError) as exc:
-        return DAGDesignFailure(
-            diagnostics=(_candidate_parse_diagnostic(exc),),
-            **common,
-        )
+        return failure((_candidate_parse_diagnostic(exc),))
 
     if current is not None:
         candidate.id = current.id
@@ -171,22 +190,21 @@ async def design_dag(
     try:
         candidate = resolve_dag_spec_capabilities(candidate, definitions)
     except DAGCreationError as exc:
-        return DAGDesignFailure(
-            diagnostics=(_catalog_diagnostic(exc),),
-            **common,
-        )
+        return failure((_catalog_diagnostic(exc),))
 
     if current is not None:
         _preserve_invocation_ids(candidate, current)
         _preserve_node_statuses(candidate, current)
     diagnostics = inspect_dag_spec(candidate)
     if diagnostics:
-        return DAGDesignFailure(diagnostics=diagnostics, **common)
+        return failure(diagnostics)
+    summary = str(design_response.summary or "").strip()
+    validation_passed()
     return DAGDesignProposal(
         candidate=candidate,
-        summary=str(design_response.summary or "").strip(),
+        summary=summary,
         diagnostics=diagnostics,
-        **common,
+        **common(summary),
     )
 
 
@@ -245,8 +263,9 @@ field names described by the base profile.
   graph content.
 - Use only capability ids in the injected catalog. Catalog metadata is
   authoritative; model-provided kind, risk, and boundary values are ignored.
-- Do not claim to execute handlers or create runs, reviews, checkpoints, or
-  artifacts.
+- Do not claim to execute handlers or create runs, reviews, checkpoints,
+  workspace files, or capability results. A candidate may still declare
+  DAGSpec artifacts when its dataflow requires them.
 
 Selected node ids: {json.dumps(selected_ids, ensure_ascii=False)}
 

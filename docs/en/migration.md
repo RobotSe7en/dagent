@@ -9,6 +9,23 @@ The current package version is `0.9.4`.
 
 ## Unreleased
 
+### Changed: observable DAG design provider streams
+
+- `Runner.design_dag(...)` accepts an optional synchronous `on_event` callback.
+  When present, it consumes the provider's real stream and reports existing
+  `RunStreamEvent` response and validation events. Structured candidate JSON is
+  not exposed as content deltas, and the awaited `DAGDesignResult` remains the
+  only terminal value. Calls without a callback retain the 0.9.4
+  `provider.chat` transport behavior.
+- When `agent` is omitted, design now uses the dedicated built-in `dag_design`
+  profile instead of the execution-oriented `dag_agent` profile. Pass
+  `DagAgent(planner_profile="dag_agent")` to retain the previous prompt, or an
+  explicit custom profile for host-specific instructions.
+- Returned design conversations now store the natural summary, answer, or
+  deterministic failure message as visible assistant content instead of the
+  provider's raw structured JSON. No schema or persistence migration is
+  required; existing conversation values remain valid inputs.
+
 ## 0.9.4
 
 ### Added: neutral, non-executing DAG design

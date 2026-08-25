@@ -335,7 +335,7 @@ RunStreamEventData = (
 
 @dataclass(frozen=True, config=_STRICT)
 class RunStreamEvent:
-    """Typed event yielded by ``Runner.stream`` and ``Runner.resume_stream``."""
+    """Typed runtime event yielded by streams or observed during DAG design."""
 
     type: RunStreamEventType
     data: RunStreamEventData

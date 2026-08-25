@@ -1184,11 +1184,12 @@ class Runner:
         current: DAGSpec | None = None,
         selection: DAGDesignSelection | None = None,
         conversation: ConversationState | None = None,
+        on_event: Callable[[RunStreamEvent], None] | None = None,
     ) -> DAGDesignResult:
         """Produce, revise, or explain a DAG design without executing it."""
 
         self._ensure_open()
-        resolved_agent = agent or DagAgent()
+        resolved_agent = agent or DagAgent(planner_profile="dag_design")
         if not isinstance(resolved_agent, DagAgent):
             raise TypeError("agent must be a DagAgent or None.")
         resolved = self._runtime_for_dag_agent(resolved_agent)
@@ -1199,6 +1200,18 @@ class Runner:
         capabilities = resolved.runtime.dag_agent.loop.available_capabilities(
             capability_scope.capability_ids
         )
+        sequence = 0
+
+        def emit_design_event(event: dict[str, Any]) -> None:
+            nonlocal sequence
+            if on_event is None:
+                return
+            if event.get("type") == "response_token" and event.get("channel") == "content":
+                return
+            stream_event = _stream_event_from_runtime(event)
+            sequence += 1
+            on_event(replace(stream_event, sequence=sequence, run_id=None))
+
         return await design_dag_candidate(
             resolved.runtime.dag_agent,
             instruction,
@@ -1207,6 +1220,7 @@ class Runner:
             current=current,
             selection=selection,
             conversation=conversation,
+            on_event=emit_design_event if on_event is not None else None,
         )
 
     async def run(

@@ -1774,6 +1774,14 @@ def test_api_profile_agent_capability_ids_use_clean_names(monkeypatch) -> None:
     assert [definition.id for definition in definitions] == ["agent.analyst"]
 
 
+def test_api_dag_design_profile_is_not_an_agent_capability() -> None:
+    definitions = app_module._profile_agent_capabilities()
+
+    assert "agent.dag_design" not in {definition.id for definition in definitions}
+    with pytest.raises(ValueError, match="available only for DAG design"):
+        app_module._resolve_agent_profile("dag_design")
+
+
 def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path) -> None:
     state.close_runner()
     agent_root = tmp_path / "agents"

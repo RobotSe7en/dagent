@@ -15,7 +15,7 @@ credentials.
 | `auto_agent.py` | Let the runtime choose direct tool use or dynamic DAG execution. | [Agents](../docs/en/agents.md) |
 | `dynamic_dag_agent.py` | Run a `DagAgent` that plans, executes a tool node, and returns a final answer. | [Agents](../docs/en/agents.md), [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
 | `dynamic_dag_builder_agent.py` | Use the restricted SDK Builder planner frontend without executing generated Python. | [Agents](../docs/en/agents.md), [Runner and Configuration](../docs/en/runner-and-configuration.md) |
-| `dag_design.py` | Create and validate a typed DAG candidate without creating a run or executing tools. | [DAG Design](../docs/en/dag-design.md) |
+| `dag_design.py` | Observe provider reasoning while creating and validating a typed DAG candidate without creating a run or executing tools. | [DAG Design](../docs/en/dag-design.md) |
 | `static_dag.py` | Build and execute a static DAG with artifacts and a context-aware tool. | [Static DAGs](../docs/en/static-dag.md), [Capabilities](../docs/en/capabilities.md) |
 | `static_dag_artifact_files.py` | Materialize input artifact uploads and fan their safe file metadata out with a `MapNode`. | [Static DAGs](../docs/en/static-dag.md) |
 | `static_rag.py` | Feed retrieval output into an agent node through optional reference content. | [Static DAGs](../docs/en/static-dag.md) |
