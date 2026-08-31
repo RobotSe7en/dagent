@@ -48,6 +48,13 @@ from dagent.providers import Provider
 from dagent.result import RunResult, RunStreamEvent
 from dagent.review import ReviewDecision, ReviewHandle, ReviewLevel
 from dagent.runner import Runner
+from dagent.steering import (
+    RunNotActiveError,
+    RunNotSteerableError,
+    SteerError,
+    SteerQueueFullError,
+    SteerReceipt,
+)
 from dagent.schemas import (
     AssistantMessage,
     Attachment,
@@ -172,6 +179,8 @@ __all__ = [
     "RiskLevel",
     "RunCheckpoint",
     "RunExecution",
+    "RunNotActiveError",
+    "RunNotSteerableError",
     "RunResult",
     "RunState",
     "RunStreamEvent",
@@ -187,6 +196,9 @@ __all__ = [
     "SkillStore",
     "SkillStoreError",
     "SkillView",
+    "SteerError",
+    "SteerQueueFullError",
+    "SteerReceipt",
     "ToolAgent",
     "ToolCallItem",
     "ToolResultMessage",

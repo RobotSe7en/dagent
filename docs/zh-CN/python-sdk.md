@@ -24,7 +24,7 @@ import dagent
 | 在代码中构建静态 workflow | [静态 DAGs](static-dag.md) |
 | 不执行地设计或检查 DAG | [DAG 设计](dag-design.md) |
 | 使用 skills 和 managed skill installs | [Skills](skills.md) |
-| 持久化、stream、review 或 resume runs | [结果、流式输出和 Review](results-streaming-review.md) |
+| 持久化、stream、steer、review 或 resume runs | [结果、流式输出和 Review](results-streaming-review.md) |
 | 运行示例 | [Examples](../../examples/README.md) |
 
 ## 公开 Surface
@@ -42,6 +42,7 @@ import dagent
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ModelTokenUsage`, `ResultStoragePolicy` |
 | Reviews and results | `RunResult`（包含 `output_text` 和静态结构化 `output_value`）、`RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
+| Tool-run steering | `Runner.steer`, `SteerReceipt`, `SteerError`, `RunNotActiveError`, `RunNotSteerableError`, `SteerQueueFullError` |
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionLimits`, `ExecutionUsage`, `ExecutionLimitExceeded`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`；`dagent.providers` 也导出 `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于 custom providers 和 tests |
 

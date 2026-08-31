@@ -25,7 +25,7 @@ import dagent
 | Build static workflows in code | [Static DAGs](static-dag.md) |
 | Design or inspect a DAG without execution | [DAG Design](dag-design.md) |
 | Use skills and managed skill installs | [Skills](skills.md) |
-| Persist, stream, review, or resume runs | [Results, Streaming, and Review](results-streaming-review.md) |
+| Persist, stream, steer, review, or resume runs | [Results, Streaming, and Review](results-streaming-review.md) |
 | Run examples | [Examples](../../examples/README.md) |
 
 ## Public Surface
@@ -43,6 +43,7 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ModelTokenUsage`, `ResultStoragePolicy` |
 | Reviews and results | `RunResult` (`output_text` plus structured static `output_value`), `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
+| Tool-run steering | `Runner.steer`, `SteerReceipt`, `SteerError`, `RunNotActiveError`, `RunNotSteerableError`, `SteerQueueFullError` |
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionLimits`, `ExecutionUsage`, `ExecutionLimitExceeded`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
 

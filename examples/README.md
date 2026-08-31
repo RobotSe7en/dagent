@@ -21,6 +21,7 @@ credentials.
 | `static_rag.py` | Feed retrieval output into an agent node through optional reference content. | [Static DAGs](../docs/en/static-dag.md) |
 | `control_flow.py` | Use an exclusive condition node, map fan-out, an embedded subgraph, and a bounded loop in one static DAG. | [Static DAGs](../docs/en/static-dag.md) |
 | `streaming.py` | Consume `Runner.stream(...)` typed events and read the final `RunResult`. | [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
+| `steering.py` | Queue guidance for an active root `ToolAgent` and observe typed steer events. | [Results, Streaming, and Review](../docs/en/results-streaming-review.md#steer-an-active-tool-agent-run) |
 | `runtime_registration_and_skills.py` | Add tools and skill roots at runtime, then use `SkillStore` directly. | [Runner and Configuration](../docs/en/runner-and-configuration.md), [Skills](../docs/en/skills.md) |
 | `local_test_mcp.py` | Run a local stdio MCP server for registration and tool-call diagnostics. | [Runner and Configuration](../docs/en/runner-and-configuration.md), [Capabilities](../docs/en/capabilities.md) |
 | `quickstart.py` | Stream a model-backed quickstart agent against a real provider. | [Quick Start](../docs/en/quick-start.md), [Installation](../docs/en/installation.md) |
@@ -39,6 +40,7 @@ uv run python -m examples.static_dag_artifact_files
 uv run python -m examples.static_rag
 uv run python -m examples.control_flow
 uv run python -m examples.streaming
+uv run python -m examples.steering
 uv run python -m examples.runtime_registration_and_skills
 ```
 

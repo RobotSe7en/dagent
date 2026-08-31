@@ -8,6 +8,19 @@
 
 ## Unreleased
 
+### 新增：活跃根 ToolAgent run 的协作式 steer
+
+- `await Runner.steer(run_id, input)` 可以为活跃根 `ToolAgent` loop 排队文本指令，并返回
+  `SteerReceipt`。`run`、`stream`、`resume` 或 `resume_stream` 正在执行时都支持同样行为。
+- `AutoAgent` 仅在 route 解析为 `tool` 后支持 steer。静态/动态 DAG、validation 阶段和
+  awaiting-review 阶段都会拒绝 steer；在 review 门上仍应使用 review feedback。
+- 类型化 stream 新增 `steer.queued`、`steer.applied` 和 `steer.discarded`。队列按 FIFO
+  处理，上限为 32 条。已经开始的模型/capability 调用不会被中断；尚未开始的同批工具调用
+  会被跳过。
+- 这是纯新增能力。`RunState` 和 `RunCheckpoint` schema version 不变，无需迁移数据或
+  配置。Host 如需暴露 steer，必须持有同一个进程内 `Runner`；排队消息有意保持临时状态，
+  不会写入 checkpoint。
+
 ## 0.9.5
 
 ### 变更：可观察的 DAG 设计 provider 流

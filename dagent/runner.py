@@ -68,6 +68,10 @@ from dagent.harness_runtime.execution_budget import (
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.dag_design import design_dag as design_dag_candidate
 from dagent.harness_runtime.planner_skill import load_dag_generation_skill
+from dagent.harness_runtime.steering import (
+    RunSteeringControl,
+    run_steering_context,
+)
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
@@ -86,6 +90,9 @@ from dagent.result import (
     RunResult,
     RunStartedData,
     RunStreamEvent,
+    SteerAppliedData,
+    SteerDiscardedData,
+    SteerQueuedData,
     TextDeltaData,
     TraceUpdatedData,
     ValidationPassedData,
@@ -93,6 +100,7 @@ from dagent.result import (
     ValidationStartedData,
 )
 from dagent.review import ReviewDecision, ReviewLevel
+from dagent.steering import RunNotActiveError, RunNotSteerableError, SteerReceipt
 from dagent.schemas import (
     Boundary,
     CapabilityDefinition,
@@ -191,6 +199,7 @@ class Runner:
         self._run_checkpoints: dict[str, RunCheckpoint] = {}
         self._active_run_tasks: dict[str, asyncio.Task[RunResult]] = {}
         self._active_run_cancellation_events: dict[str, threading.Event] = {}
+        self._active_run_steering_controls: dict[str, RunSteeringControl] = {}
         self._consumed_review_ids: set[str] = set()
         self._mcp_server_capability_ids: dict[str, tuple[str, ...]] = {}
         self._mcp_server_managers: dict[str, Any] = {}
@@ -298,6 +307,9 @@ class Runner:
             task.cancel()
         self._active_run_tasks.clear()
         self._active_run_cancellation_events.clear()
+        for control in self._active_run_steering_controls.values():
+            control.close("runner_closed")
+        self._active_run_steering_controls.clear()
         self._runtime.capability_catalog.shutdown()
         self._run_checkpoints.clear()
         self._consumed_review_ids.clear()
@@ -783,6 +795,43 @@ class Runner:
         )
         with self._run_scope(execution):
             return await self._runtime.capability_executor.execute(invocation)
+
+    @contextmanager
+    def _steering_scope(
+        self,
+        on_event: LoopEventHandler | None,
+    ) -> Iterator[LoopEventHandler | None]:
+        control: RunSteeringControl
+
+        def emit(event: dict[str, Any]) -> None:
+            if on_event is not None:
+                on_event(event)
+
+        def register(bound_control: RunSteeringControl, run_id: str) -> None:
+            existing = self._active_run_steering_controls.get(run_id)
+            if existing is not None and existing is not bound_control:
+                raise RuntimeError(f"Run '{run_id}' is already active.")
+            self._active_run_steering_controls[run_id] = bound_control
+
+        control = RunSteeringControl(emit, register)
+        close_reason = None
+        with run_steering_context(control):
+            try:
+                yield emit if on_event is not None else None
+            except asyncio.CancelledError:
+                close_reason = "run_cancelled"
+                raise
+            except BaseException:
+                close_reason = "run_failed"
+                raise
+            finally:
+                control.close(close_reason)
+                run_id = control.run_id
+                if (
+                    run_id is not None
+                    and self._active_run_steering_controls.get(run_id) is control
+                ):
+                    self._active_run_steering_controls.pop(run_id, None)
 
     @contextmanager
     def _run_scope(
@@ -1278,6 +1327,7 @@ class Runner:
                 skill_names=skill_names,
             ),
             execution_budget_scope(budget),
+            self._steering_scope(on_event) as steering_on_event,
         ):
             return await self._run_dispatch(
                 target,
@@ -1294,7 +1344,7 @@ class Runner:
                 input_uploads=input_uploads,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
-                on_event=on_event,
+                on_event=steering_on_event,
             )
 
     async def _run_dispatch(
@@ -1674,6 +1724,25 @@ class Runner:
             await task
         return True
 
+    async def steer(self, run_id: str, input: str) -> SteerReceipt:
+        """Queue text guidance for an active root tool-agent loop."""
+
+        self._ensure_open()
+        validate_run_id(run_id)
+        if not isinstance(input, str):
+            raise TypeError("input must be a string.")
+        if not input.strip():
+            raise ValueError("input cannot be empty.")
+        control = self._active_run_steering_controls.get(run_id)
+        if control is None:
+            checkpoint = self._run_checkpoints.get(run_id)
+            if checkpoint is not None and checkpoint.state.status == "awaiting_review":
+                raise RunNotSteerableError(
+                    f"Run '{run_id}' is awaiting review; use review feedback when resuming it."
+                )
+            raise RunNotActiveError(f"Run '{run_id}' is not active.")
+        return control.enqueue(input)
+
     async def resume_stream(
         self,
         decision: ReviewDecision,
@@ -1776,13 +1845,14 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
-        return await self._resume_checkpoint(
-            decision,
-            checkpoint,
-            execution=execution,
-            on_token=on_token,
-            on_event=on_event,
-        )
+        with self._steering_scope(on_event) as steering_on_event:
+            return await self._resume_checkpoint(
+                decision,
+                checkpoint,
+                execution=execution,
+                on_token=on_token,
+                on_event=steering_on_event,
+            )
 
     async def _resume_checkpoint(
         self,
@@ -2617,6 +2687,35 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
             data=ContextCompactionFinishedData(
                 usage=ContextUsage.model_validate(data.get("usage") or {}),
                 scope=str(data.get("scope") or "conversation"),
+            ),
+            run_id=_nullable_event_string(data.get("run_id")),
+        )
+
+    if event_type == "steer_queued":
+        return RunStreamEvent(
+            type="steer.queued",
+            data=SteerQueuedData(
+                steer_id=str(data.get("steer_id") or ""),
+                content=str(data.get("content") or ""),
+            ),
+            run_id=_nullable_event_string(data.get("run_id")),
+        )
+
+    if event_type == "steer_applied":
+        return RunStreamEvent(
+            type="steer.applied",
+            data=SteerAppliedData(
+                steer_id=str(data.get("steer_id") or ""),
+            ),
+            run_id=_nullable_event_string(data.get("run_id")),
+        )
+
+    if event_type == "steer_discarded":
+        return RunStreamEvent(
+            type="steer.discarded",
+            data=SteerDiscardedData(
+                steer_id=str(data.get("steer_id") or ""),
+                reason=str(data.get("reason") or "run_failed"),  # type: ignore[arg-type]
             ),
             run_id=_nullable_event_string(data.get("run_id")),
         )
