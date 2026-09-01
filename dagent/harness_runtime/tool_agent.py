@@ -39,7 +39,6 @@ from dagent.harness_runtime.runtime_events import (
 )
 from dagent.harness_runtime.steering import (
     QueuedSteer,
-    RunSteeringControl,
     current_run_steering_control,
 )
 from dagent.harness_runtime.llm_retry import (
@@ -97,6 +96,10 @@ _REVIEW_SKIPPED_TOOL_CONTENT = (
 _STEER_SKIPPED_TOOL_CONTENT = (
     "[TOOL_SKIPPED] Not executed because the user steered the active run before "
     "this tool call started. Reconsider the call against the latest user guidance."
+)
+_STEER_STEP_LIMIT_FAILURE_DIAGNOSTIC = (
+    "The task could not apply a user steering update because the maximum model "
+    "steps were exhausted. The preceding assistant response was discarded."
 )
 
 
@@ -614,6 +617,7 @@ class ToolAgentLoop:
         loop_conversation = conversation
         new_items: list[ConversationItem] = []
         context_usages: list[ContextUsage] = []
+        failure_diagnostic: str | None = None
         resolved_run_id = run_id or f"tool_run_{uuid4().hex}"
         steering = current_run_steering_control(resolved_run_id)
         trace = RunTrace(run_id=resolved_run_id, root=RunTraceNode.run(run_id=resolved_run_id))
@@ -677,7 +681,10 @@ class ToolAgentLoop:
                         else str(execution_context.workspace_path)
                     ),
                 ),
-                execution_context=_format_capability_execution_context(loop_conversation),
+                execution_context=(
+                    failure_diagnostic
+                    or _format_capability_execution_context(loop_conversation)
+                ),
                 new_items=tuple(new_items),
             )
 
@@ -688,6 +695,8 @@ class ToolAgentLoop:
             skipped_calls: Sequence[ToolCall] = (),
         ) -> bool:
             """Apply steers and continue, or discard them at the hard step limit."""
+
+            nonlocal failure_diagnostic
 
             if not steers:
                 return False
@@ -701,6 +710,7 @@ class ToolAgentLoop:
                         steers,
                         "step_limit_exhausted",
                     )
+                failure_diagnostic = _STEER_STEP_LIMIT_FAILURE_DIAGNOSTIC
                 return False
             apply_steers(steers)
             return True

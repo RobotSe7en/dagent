@@ -66,6 +66,28 @@ class GatedProvider:
         yield ChatStreamEvent(type="done", response=response)
 
 
+class GatedCompactionProvider(GatedProvider):
+    context_window_tokens = 2048
+    output_reserve_tokens = 256
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        response_format: StructuredOutputFormat | None = None,
+    ) -> ChatResponse:
+        if str(messages[0].get("content", "")).startswith(
+            "Summarize earlier conversation data"
+        ):
+            return ChatResponse(content="compacted conversation")
+        return await super().chat(
+            messages,
+            tools,
+            response_format=response_format,
+        )
+
+
 @pytest.mark.asyncio
 async def test_runner_steer_applies_after_inflight_model_call(tmp_path) -> None:
     provider = GatedProvider(
@@ -398,6 +420,11 @@ async def test_steer_at_step_limit_is_discarded_and_run_fails(tmp_path) -> None:
     assert discarded.data.steer_id == receipt.steer_id
     assert discarded.data.reason == "step_limit_exhausted"
     assert result.status == "failed"
+    assert result.output_text == (
+        "The task could not apply a user steering update because the maximum model "
+        "steps were exhausted. The preceding assistant response was discarded."
+    )
+    assert "stale" not in result.output_text
     assert not any(
         isinstance(item, UserMessage) and item.id == receipt.steer_id
         for item in result.state.model_thread.items
@@ -515,6 +542,77 @@ async def test_validator_receives_initial_request_plus_applied_steers(tmp_path) 
         "User steering updates (chronological):\n"
         "1. first update\n"
         "2. second update"
+    )
+    runner.close()
+
+
+@pytest.mark.asyncio
+async def test_validator_preserves_applied_steers_across_compaction_and_retry(
+    tmp_path,
+) -> None:
+    provider = GatedCompactionProvider(
+        [
+            ChatResponse(content="stale one"),
+            ChatResponse(content="stale two"),
+            ChatResponse(content="first final"),
+            ChatResponse(content="corrected final"),
+        ],
+        blocked={0, 1},
+    )
+    captured_requests: list[str] = []
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        validator="validator_agent",
+    )
+
+    async def capture_validation(*, user_request: str, **_kwargs):
+        captured_requests.append(user_request)
+        return (
+            ValidationResult(
+                passed=len(captured_requests) > 1,
+                summary="retry once",
+            ),
+            None,
+            None,
+        )
+
+    assert runner.runtime.validator is not None
+    runner.runtime.validator.validate_with_audit = capture_validation  # type: ignore[method-assign]
+    task = asyncio.create_task(
+        runner.run(
+            dagent.ToolAgent(
+                profile="conversation",
+                context=dagent.ContextPolicy(
+                    compaction_trigger_ratio=0.2,
+                    keep_recent_turns=1,
+                    summary_max_tokens=64,
+                ),
+            ),
+            input="original request " * 40,
+            run_id="validator_compacted_steers",
+        )
+    )
+    await provider.started[0].wait()
+    await runner.steer("validator_compacted_steers", "first update")
+    provider.release[0].set()
+    await provider.started[1].wait()
+    await runner.steer("validator_compacted_steers", "second update")
+    provider.release[1].set()
+    result = await task
+
+    effective_request = (
+        f"{'original request ' * 40}\n\n"
+        "User steering updates (chronological):\n"
+        "1. first update\n"
+        "2. second update"
+    )
+    assert captured_requests == [effective_request, effective_request]
+    assert result.output_text == "corrected final"
+    assert not any(
+        isinstance(item, UserMessage) and item.content == "first update"
+        for item in result.state.model_thread.items
     )
     runner.close()
 

@@ -263,6 +263,7 @@ class HarnessRuntime:
         feedback: str | None = None
         loop_outcome: LoopOutcome | None = initial_loop_outcome
         audit_items: list[ConversationItem] = []
+        applied_steers: list[UserMessage] = []
         run_context_usages: list[ContextUsage] = []
         validation_usages: list[ContextUsage] = []
 
@@ -288,9 +289,15 @@ class HarnessRuntime:
                     set_run_steering_phase(loop_outcome.state.run_id, "active")
                 loop_outcome = await run_once(feedback_item)
                 audit_items.extend(loop_outcome.new_items)
+                applied_steers.extend(
+                    _applied_steers(loop_outcome.new_items, loop_outcome.state.run_id)
+                )
                 run_context_usages.extend(loop_outcome.state.context_usage)
             elif not audit_items:
                 audit_items.extend(loop_outcome.new_items)
+                applied_steers.extend(
+                    _applied_steers(loop_outcome.new_items, loop_outcome.state.run_id)
+                )
                 run_context_usages.extend(loop_outcome.state.context_usage)
 
             if loop_outcome.state.status == "awaiting_review":
@@ -303,7 +310,7 @@ class HarnessRuntime:
                 )
 
             set_run_steering_phase(loop_outcome.state.run_id, "validation")
-            effective_request = _effective_user_request(user_request, loop_outcome)
+            effective_request = _effective_user_request(user_request, applied_steers)
             passed, validation_feedback, audit_item, context_usage = (
                 await self._validate_loop_outcome(
                     loop_outcome,
@@ -969,34 +976,34 @@ def _fallback_output_text(loop_outcome: LoopOutcome) -> str:
 
 def _effective_user_request(
     initial_request: str,
-    loop_outcome: LoopOutcome,
+    steers: list[UserMessage],
 ) -> str:
-    conversation = (
-        loop_outcome.state.model_thread
-        or loop_outcome.state.conversation
-    )
-    if conversation is None:
-        return initial_request
-    steers = [
-        item.content
-        for item in conversation.items
-        if isinstance(item, UserMessage)
-        and item.run_id == loop_outcome.state.run_id
-        and item.scope == "conversation"
-        and item.visibility == "user"
-        and item.id.startswith("steer_")
-    ]
     if not steers:
         return initial_request
     updates = "\n".join(
-        f"{index}. {content}"
-        for index, content in enumerate(steers, start=1)
+        f"{index}. {steer.content}"
+        for index, steer in enumerate(steers, start=1)
     )
     return (
         f"{initial_request}\n\n"
         "User steering updates (chronological):\n"
         f"{updates}"
     )
+
+
+def _applied_steers(
+    items: tuple[ConversationItem, ...],
+    run_id: str,
+) -> list[UserMessage]:
+    return [
+        item
+        for item in items
+        if isinstance(item, UserMessage)
+        and item.run_id == run_id
+        and item.scope == "conversation"
+        and item.visibility == "user"
+        and item.id.startswith("steer_")
+    ]
 
 
 def _append_conversation_item(
