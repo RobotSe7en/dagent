@@ -10,6 +10,7 @@ from pydantic import ConfigDict, Field as PydanticField, TypeAdapter
 from pydantic.dataclasses import dataclass
 
 from dagent.review import ReviewHandle
+from dagent.steering import SteerDiscardReason
 from dagent.schemas import (
     ArtifactState,
     ContextUsage,
@@ -47,6 +48,9 @@ RunStreamEventType = Literal[
     "validation.passed",
     "validation.retry",
     "review.required",
+    "steer.queued",
+    "steer.applied",
+    "steer.discarded",
     "run.finished",
     "run.failed",
 ]
@@ -302,6 +306,23 @@ class ContextCompactionFinishedData:
 
 
 @dataclass(frozen=True, config=_STRICT)
+class SteerQueuedData:
+    steer_id: str
+    content: str
+
+
+@dataclass(frozen=True, config=_STRICT)
+class SteerAppliedData:
+    steer_id: str
+
+
+@dataclass(frozen=True, config=_STRICT)
+class SteerDiscardedData:
+    steer_id: str
+    reason: SteerDiscardReason
+
+
+@dataclass(frozen=True, config=_STRICT)
 class RunFinishedData:
     result: RunResult
 
@@ -328,6 +349,9 @@ RunStreamEventData = (
     | CapabilityCallFailedData
     | ContextCompactionStartedData
     | ContextCompactionFinishedData
+    | SteerQueuedData
+    | SteerAppliedData
+    | SteerDiscardedData
     | RunFinishedData
     | RunFailedData
 )
@@ -377,6 +401,9 @@ _EVENT_DATA_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "capability.call.failed": TypeAdapter(CapabilityCallFailedData),
     "context.compaction.started": TypeAdapter(ContextCompactionStartedData),
     "context.compaction.finished": TypeAdapter(ContextCompactionFinishedData),
+    "steer.queued": TypeAdapter(SteerQueuedData),
+    "steer.applied": TypeAdapter(SteerAppliedData),
+    "steer.discarded": TypeAdapter(SteerDiscardedData),
     "dag.updated": TypeAdapter(DagUpdatedData),
     "trace.updated": TypeAdapter(TraceUpdatedData),
     "validation.started": TypeAdapter(ValidationStartedData),

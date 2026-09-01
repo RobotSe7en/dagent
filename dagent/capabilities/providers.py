@@ -263,6 +263,7 @@ class AgentCapabilityProvider:
             StaticAgentExecutionControl,
             StaticAgentReviewRequired,
         )
+        from dagent.harness_runtime.steering import suspend_run_steering
         from dagent.harness_runtime.tool_agent import ToolAgent, ToolAgentLoop
 
         profile = _profile_from_config(agent_name, config)
@@ -321,7 +322,10 @@ class AgentCapabilityProvider:
         )
         control = _static_agent_execution_control(context, StaticAgentExecutionControl)
         capability_context = _agent_capability_context(context, config.get("skills"))
-        with capability_executor.workspace_context(workspace_path):
+        with (
+            capability_executor.workspace_context(workspace_path),
+            suspend_run_steering(),
+        ):
             if control is not None and control.agent_state is not None:
                 outcome = await agent.resume_review(
                     control.agent_state,

@@ -46,6 +46,11 @@ from dagent.harness_runtime.artifacts import (
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.harness_runtime.runtime_events import _dag_event_emitter
+from dagent.harness_runtime.steering import (
+    RunSteeringKind,
+    bind_run_steering,
+    set_run_steering_phase,
+)
 from dagent.review import ReviewLevel
 from dagent.providers import ChatProvider
 from dagent.providers.base import normalize_chat_response
@@ -258,6 +263,7 @@ class HarnessRuntime:
         feedback: str | None = None
         loop_outcome: LoopOutcome | None = initial_loop_outcome
         audit_items: list[ConversationItem] = []
+        applied_steers: list[UserMessage] = []
         run_context_usages: list[ContextUsage] = []
         validation_usages: list[ContextUsage] = []
 
@@ -279,22 +285,36 @@ class HarnessRuntime:
                 )
                 if feedback_item is not None:
                     audit_items.append(feedback_item)
+                if loop_outcome is not None:
+                    set_run_steering_phase(loop_outcome.state.run_id, "active")
                 loop_outcome = await run_once(feedback_item)
                 audit_items.extend(loop_outcome.new_items)
+                applied_steers.extend(
+                    _applied_steers(loop_outcome.new_items, loop_outcome.state.run_id)
+                )
                 run_context_usages.extend(loop_outcome.state.context_usage)
             elif not audit_items:
                 audit_items.extend(loop_outcome.new_items)
+                applied_steers.extend(
+                    _applied_steers(loop_outcome.new_items, loop_outcome.state.run_id)
+                )
                 run_context_usages.extend(loop_outcome.state.context_usage)
 
             if loop_outcome.state.status == "awaiting_review":
+                set_run_steering_phase(
+                    loop_outcome.state.run_id,
+                    "awaiting_review",
+                )
                 return loop_outcome.model_copy(
                     update={"new_items": tuple(audit_items)}
                 )
 
+            set_run_steering_phase(loop_outcome.state.run_id, "validation")
+            effective_request = _effective_user_request(user_request, applied_steers)
             passed, validation_feedback, audit_item, context_usage = (
                 await self._validate_loop_outcome(
                     loop_outcome,
-                    user_request,
+                    effective_request,
                     on_event=on_event,
                 )
             )
@@ -303,6 +323,7 @@ class HarnessRuntime:
             if context_usage is not None:
                 validation_usages.append(context_usage)
             if passed:
+                set_run_steering_phase(loop_outcome.state.run_id, "finishing")
                 state = loop_outcome.state.model_copy(
                     update={
                         "context_usage": [
@@ -321,6 +342,7 @@ class HarnessRuntime:
 
         if loop_outcome is None:
             raise RuntimeError("Validation retry loop did not execute.")
+        set_run_steering_phase(loop_outcome.state.run_id, "finishing")
         state = loop_outcome.state.model_copy(
             update={
                 "context_usage": [
@@ -952,6 +974,38 @@ def _fallback_output_text(loop_outcome: LoopOutcome) -> str:
     return "The task did not complete, and no final answer was produced."
 
 
+def _effective_user_request(
+    initial_request: str,
+    steers: list[UserMessage],
+) -> str:
+    if not steers:
+        return initial_request
+    updates = "\n".join(
+        f"{index}. {steer.content}"
+        for index, steer in enumerate(steers, start=1)
+    )
+    return (
+        f"{initial_request}\n\n"
+        "User steering updates (chronological):\n"
+        f"{updates}"
+    )
+
+
+def _applied_steers(
+    items: tuple[ConversationItem, ...],
+    run_id: str,
+) -> list[UserMessage]:
+    return [
+        item
+        for item in items
+        if isinstance(item, UserMessage)
+        and item.run_id == run_id
+        and item.scope == "conversation"
+        and item.visibility == "user"
+        and item.id.startswith("steer_")
+    ]
+
+
 def _append_conversation_item(
     conversation: ConversationState,
     item: ConversationItem,
@@ -1000,8 +1054,9 @@ def _emit_run_started(
     on_event: LoopEventHandler | None,
     *,
     run_id: str,
-    kind: str,
+    kind: RunSteeringKind,
 ) -> None:
+    bind_run_steering(run_id, kind)
     if on_event is not None:
         on_event({"type": "run_started", "run_id": run_id, "kind": kind})
 

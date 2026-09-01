@@ -179,6 +179,63 @@ a changed profile or runtime setting cannot silently alter a resumed run. See
 [Static DAGs](static-dag.md#agent-node-tool-review) for the supported topology
 and policy behavior.
 
+## Steer an active tool-agent run
+
+Use `Runner.steer(...)` to add text guidance to a currently executing root
+`ToolAgent` run without cancelling its in-flight model or capability call. Give
+the run an explicit id, start it in a task, then wait until your application
+knows the run has started before steering it:
+
+```python
+run_task = asyncio.create_task(
+    runner.run(
+        agent,
+        input="Draft the release note.",
+        run_id="release_note_run",
+    )
+)
+
+# Called later, while the run is active.
+receipt = await runner.steer(
+    "release_note_run",
+    "Focus on the breaking API change and omit benchmarks.",
+)
+assert receipt.status == "queued"
+
+result = await run_task
+```
+
+`steer` acknowledges queueing immediately. The tool loop applies queued
+messages FIFO as separate `UserMessage` items at the next cooperative safe
+point: before a model call, after the current model call, or after the current
+capability call. It never interrupts a model request or a capability that has
+already started. If one assistant response requested multiple capabilities, the
+current call finishes and calls that have not started are skipped so the model
+can reconsider them against the new guidance.
+
+The mailbox holds at most 32 messages. Rejections are explicit:
+
+- `RunNotActiveError`: the run has not started or has already ended;
+- `RunNotSteerableError`: the active run is a DAG, is validating, or is waiting
+  for review;
+- `SteerQueueFullError`: 32 messages are already queued.
+
+Only root tool-agent execution is steerable. `AutoAgent` becomes steerable only
+after routing resolves to `tool`; a `dynamic_dag` route is rejected. Static and
+dynamic DAG execution are never steerable. A nested subagent does not consume
+the root mailbox—the root loop applies the guidance after the subagent returns.
+
+Steering is also available while `resume(...)` or `resume_stream(...)` is
+actively continuing an approved tool-agent review. A run already stopped at
+`awaiting_review` rejects `steer`; put guidance in the review decision's
+`feedback` instead. Applied steering is included in the request passed to result
+validation, while `RunState.user_request` remains the original request.
+
+Steering does not extend `ToolAgent.max_steps`. If no model step remains, queued
+guidance is discarded and the run fails with reason `step_limit_exhausted`.
+Other discard reasons are `run_cancelled`, `run_failed`, and `runner_closed`.
+The runnable example is [`examples/steering.py`](../../examples/steering.py).
+
 ## Streaming
 
 ```python
@@ -189,6 +246,12 @@ async for event in runner.stream(agent, input="Prepare the answer."):
         show_content(event.data.delta)
     elif event.type == "context.compaction.finished":
         show_context_usage(event.data.usage)
+    elif event.type == "steer.queued":
+        show_queued_steer(event.data.steer_id, event.data.content)
+    elif event.type == "steer.applied":
+        show_applied_steer(event.data.steer_id)
+    elif event.type == "steer.discarded":
+        show_discarded_steer(event.data.steer_id, event.data.reason)
     elif event.type == "run.finished":
         result = event.data.result
 ```

@@ -9,6 +9,22 @@ The current package version is `0.9.5`.
 
 ## Unreleased
 
+### Added: cooperative steering for active root tool-agent runs
+
+- `await Runner.steer(run_id, input)` queues text guidance for an active root
+  `ToolAgent` loop and returns `SteerReceipt`. The same behavior is available
+  while `run`, `stream`, `resume`, or `resume_stream` is executing.
+- `AutoAgent` supports steering only after routing resolves to `tool`. Static
+  and dynamic DAG runs reject steering, as do validation and awaiting-review
+  phases. Review feedback remains the continuation input at a review gate.
+- Typed streams add `steer.queued`, `steer.applied`, and `steer.discarded`.
+  Queues are FIFO and bounded at 32 messages. In-flight model and capability
+  calls are never interrupted; unstarted sibling tool calls are skipped.
+- This is additive. `RunState` and `RunCheckpoint` schema versions are
+  unchanged, and no data or configuration migration is required. Hosts that
+  choose to expose steering must retain the same in-process `Runner`; queued
+  messages are intentionally ephemeral and are not checkpointed.
+
 ## 0.9.5
 
 ### Changed: observable DAG design provider streams

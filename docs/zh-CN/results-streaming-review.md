@@ -162,6 +162,56 @@ capability definition 指纹、策略、限制、planner 模式和已消耗预�
 scope。直接 Agent 节点的执行配置会写入指纹，profile 或运行时设置变更时不会悄然改变续跑。
 支持的拓扑和策略行为见[静态 DAG](static-dag.md#agent-节点工具审核)。
 
+## 调整正在运行的 ToolAgent
+
+使用 `Runner.steer(...)` 可以在不取消当前模型调用或 capability 调用的前提下，为正在执行的
+根 `ToolAgent` run 补充文本指令。为 run 指定明确 id，在 task 中启动它，并等应用确认 run
+已经开始后再提交 steer：
+
+```python
+run_task = asyncio.create_task(
+    runner.run(
+        agent,
+        input="起草发布说明。",
+        run_id="release_note_run",
+    )
+)
+
+# 稍后在 run 仍活跃时调用。
+receipt = await runner.steer(
+    "release_note_run",
+    "重点说明破坏性 API 变化，不要写性能数据。",
+)
+assert receipt.status == "queued"
+
+result = await run_task
+```
+
+`steer` 在消息成功排队后立即返回。Tool loop 会在下一个协作式安全点，将排队消息按 FIFO
+顺序分别加入为 `UserMessage`：模型调用前、当前模型调用后，或当前 capability 调用后。
+它不会中断已经开始的模型请求或 capability。如果一条 assistant 响应请求了多个
+capability，当前调用会执行完毕，尚未开始的调用会被跳过，让模型根据最新指令重新判断。
+
+邮箱最多容纳 32 条消息。拒绝会抛出明确异常：
+
+- `RunNotActiveError`：run 尚未开始或已经结束；
+- `RunNotSteerableError`：活跃 run 是 DAG、正在 validation，或正在等待 review；
+- `SteerQueueFullError`：已经有 32 条消息排队。
+
+只有根 tool-agent 执行支持 steer。`AutoAgent` 只有在 route 解析为 `tool` 后才支持；
+`dynamic_dag` route 会被拒绝。静态和动态 DAG 始终不支持 steer。嵌套子 agent 不会消费
+根邮箱；子 agent 返回后，由根循环应用这些指令。
+
+`resume(...)` 或 `resume_stream(...)` 正在继续已批准的 tool-agent review 时同样可以
+steer。已经停在 `awaiting_review` 的 run 会拒绝 steer；此时应把指导信息放在 review
+decision 的 `feedback` 中。结果 validation 会收到初始请求和所有已应用 steer，
+`RunState.user_request` 则始终保留初始请求。
+
+Steer 不会增加 `ToolAgent.max_steps`。如果已没有下一次模型调用额度，排队指令会以
+`step_limit_exhausted` 原因丢弃，run 状态为 failed。其他丢弃原因包括
+`run_cancelled`、`run_failed` 和 `runner_closed`。可运行示例见
+[`examples/steering.py`](../../examples/steering.py)。
+
 ## 流式调用
 
 ```python
@@ -172,6 +222,12 @@ async for event in runner.stream(agent, input="准备答案。"):
         show_content(event.data.delta)
     elif event.type == "context.compaction.finished":
         show_context_usage(event.data.usage)
+    elif event.type == "steer.queued":
+        show_queued_steer(event.data.steer_id, event.data.content)
+    elif event.type == "steer.applied":
+        show_applied_steer(event.data.steer_id)
+    elif event.type == "steer.discarded":
+        show_discarded_steer(event.data.steer_id, event.data.reason)
     elif event.type == "run.finished":
         result = event.data.result
 ```

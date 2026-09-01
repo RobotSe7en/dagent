@@ -37,6 +37,10 @@ from dagent.harness_runtime.runtime_events import (
     TokenHandler,
     response_token_stream,
 )
+from dagent.harness_runtime.steering import (
+    QueuedSteer,
+    current_run_steering_control,
+)
 from dagent.harness_runtime.llm_retry import (
     DEFAULT_LLM_RETRY_POLICY,
     LLMRetryPolicy,
@@ -88,6 +92,14 @@ _REVIEW_SKIPPED_TOOL_CONTENT = (
     "[TOOL_SKIPPED] Not executed because another tool call from the same "
     "assistant message is awaiting human review. Re-issue this tool call after "
     "review if still needed."
+)
+_STEER_SKIPPED_TOOL_CONTENT = (
+    "[TOOL_SKIPPED] Not executed because the user steered the active run before "
+    "this tool call started. Reconsider the call against the latest user guidance."
+)
+_STEER_STEP_LIMIT_FAILURE_DIAGNOSTIC = (
+    "The task could not apply a user steering update because the maximum model "
+    "steps were exhausted. The preceding assistant response was discarded."
 )
 
 
@@ -605,7 +617,9 @@ class ToolAgentLoop:
         loop_conversation = conversation
         new_items: list[ConversationItem] = []
         context_usages: list[ContextUsage] = []
+        failure_diagnostic: str | None = None
         resolved_run_id = run_id or f"tool_run_{uuid4().hex}"
+        steering = current_run_steering_control(resolved_run_id)
         trace = RunTrace(run_id=resolved_run_id, root=RunTraceNode.run(run_id=resolved_run_id))
         execution_context = _execution_context(
             capability_context,
@@ -628,35 +642,117 @@ class ToolAgentLoop:
                 callbacks=capability_callbacks,
             )
 
+        def apply_steers(steers: tuple[QueuedSteer, ...]) -> None:
+            nonlocal loop_conversation
+            for steer in steers:
+                item = UserMessage(
+                    id=steer.steer_id,
+                    run_id=resolved_run_id,
+                    content=steer.content,
+                )
+                loop_conversation = _append_item(loop_conversation, item)
+                new_items.append(item)
+            if steering is not None:
+                steering.emit_applied(resolved_run_id, steers)
+
+        def append_skipped(tool_calls: Sequence[ToolCall]) -> None:
+            nonlocal loop_conversation
+            loop_conversation, skipped_items = _append_skipped_tool_results(
+                loop_conversation,
+                tool_calls,
+                run_id=resolved_run_id,
+                content=_STEER_SKIPPED_TOOL_CONTENT,
+            )
+            new_items.extend(skipped_items)
+
+        def failed_outcome() -> LoopOutcome:
+            trace.root.status = "failed"
+            return LoopOutcome(
+                state=_tool_run_state(
+                    run_id=resolved_run_id,
+                    status="failed",
+                    conversation=loop_conversation,
+                    trace=trace,
+                    context_usage=context_usages,
+                    capability_scope=state_scope,
+                    workspace_path=(
+                        None
+                        if execution_context.workspace_path is None
+                        else str(execution_context.workspace_path)
+                    ),
+                ),
+                execution_context=(
+                    failure_diagnostic
+                    or _format_capability_execution_context(loop_conversation)
+                ),
+                new_items=tuple(new_items),
+            )
+
+        def handle_pending_steers(
+            steers: tuple[QueuedSteer, ...],
+            *,
+            step: int,
+            skipped_calls: Sequence[ToolCall] = (),
+        ) -> bool:
+            """Apply steers and continue, or discard them at the hard step limit."""
+
+            nonlocal failure_diagnostic
+
+            if not steers:
+                return False
+            if skipped_calls:
+                append_skipped(skipped_calls)
+            if step >= max_steps:
+                if steering is not None:
+                    steering.set_phase(resolved_run_id, "finishing")
+                    steering.emit_discarded(
+                        resolved_run_id,
+                        steers,
+                        "step_limit_exhausted",
+                    )
+                failure_diagnostic = _STEER_STEP_LIMIT_FAILURE_DIAGNOSTIC
+                return False
+            apply_steers(steers)
+            return True
+
         for step in range(1, max_steps + 1):
             tool_definitions = self._llm_tool_definitions(capability_ids=capability_ids)
-            previous_revision = loop_conversation.revision
-            prepared = await context_assembler.prepare(
-                system_message=system_message,
-                conversation=loop_conversation,
-                tools=tool_definitions,
-                policy=context_policy,
-                compact=lambda summary, items, limit: self._compact_history(
-                    summary,
-                    items,
-                    limit,
-                    run_id=resolved_run_id,
-                    on_event=on_event,
-                    context_assembler=context_assembler,
-                    context_policy=context_policy,
-                ),
-            )
-            loop_conversation = prepared.conversation
-            context_usages.append(prepared.usage)
-            if on_event is not None and loop_conversation.revision != previous_revision:
-                on_event(
-                    {
-                        "type": "context_compacted",
-                        "run_id": resolved_run_id,
-                        "scope": "conversation",
-                        "usage": prepared.usage.model_dump(mode="json"),
-                    }
+            while True:
+                if steering is not None:
+                    apply_steers(steering.drain(resolved_run_id))
+                previous_revision = loop_conversation.revision
+                prepared = await context_assembler.prepare(
+                    system_message=system_message,
+                    conversation=loop_conversation,
+                    tools=tool_definitions,
+                    policy=context_policy,
+                    compact=lambda summary, items, limit: self._compact_history(
+                        summary,
+                        items,
+                        limit,
+                        run_id=resolved_run_id,
+                        on_event=on_event,
+                        context_assembler=context_assembler,
+                        context_policy=context_policy,
+                    ),
                 )
+                loop_conversation = prepared.conversation
+                context_usages.append(prepared.usage)
+                if on_event is not None and loop_conversation.revision != previous_revision:
+                    on_event(
+                        {
+                            "type": "context_compacted",
+                            "run_id": resolved_run_id,
+                            "scope": "conversation",
+                            "usage": prepared.usage.model_dump(mode="json"),
+                        }
+                    )
+                late_steers = (
+                    () if steering is None else steering.drain(resolved_run_id)
+                )
+                if not late_steers:
+                    break
+                apply_steers(late_steers)
             response = await self._chat(
                 prepared.messages,
                 tools=tool_definitions,
@@ -689,6 +785,18 @@ class ToolAgentLoop:
             )
 
             if not response.tool_calls:
+                pending_steers = (
+                    ()
+                    if steering is None
+                    else steering.drain_or_transition(
+                        resolved_run_id,
+                        "validation",
+                    )
+                )
+                if pending_steers:
+                    if handle_pending_steers(pending_steers, step=step):
+                        continue
+                    return failed_outcome()
                 trace.root.status = "completed"
                 return LoopOutcome(
                     state=_tool_run_state(
@@ -709,7 +817,30 @@ class ToolAgentLoop:
                     new_items=tuple(new_items),
                 )
 
+            pending_steers = (
+                () if steering is None else steering.drain(resolved_run_id)
+            )
+            if pending_steers:
+                if handle_pending_steers(
+                    pending_steers,
+                    step=step,
+                    skipped_calls=response.tool_calls,
+                ):
+                    continue
+                return failed_outcome()
+
             for tool_call_index, tool_call in enumerate(response.tool_calls):
+                pending_steers = (
+                    () if steering is None else steering.drain(resolved_run_id)
+                )
+                if pending_steers:
+                    if handle_pending_steers(
+                        pending_steers,
+                        step=step,
+                        skipped_calls=response.tool_calls[tool_call_index:],
+                    ):
+                        break
+                    return failed_outcome()
                 try:
                     invocation = self.tool_adapter.invocation_from_tool_call(
                         tool_call,
@@ -751,6 +882,19 @@ class ToolAgentLoop:
                             )
                         )
                         raise
+                    if control_result.needs_review and steering is not None:
+                        pending_steers = steering.drain_or_transition(
+                            resolved_run_id,
+                            "awaiting_review",
+                        )
+                        if pending_steers:
+                            if handle_pending_steers(
+                                pending_steers,
+                                step=step,
+                                skipped_calls=response.tool_calls[tool_call_index:],
+                            ):
+                                break
+                            return failed_outcome()
                     recorded_result = control_result.capability_result
                     stored_content: Any = None
                     attachments: tuple[Any, ...] = ()
@@ -865,25 +1009,25 @@ class ToolAgentLoop:
                             new_items=tuple(new_items),
                         )
                     if control_result.stop_reason:
-                        trace.root.status = "failed"
-                        return LoopOutcome(
-                            state=_tool_run_state(
-                                run_id=resolved_run_id,
-                                status="failed",
-                                conversation=loop_conversation,
-                                trace=trace,
-                                context_usage=context_usages,
-                                capability_scope=state_scope,
-                                workspace_path=(
-                                    None
-                                    if execution_context.workspace_path is None
-                                    else str(execution_context.workspace_path)
-                                ),
-                            ),
-                            execution_context=_format_capability_execution_context(loop_conversation),
-                            output_text=bounded_content,
-                            new_items=tuple(new_items),
-                        )
+                        if steering is not None:
+                            steering.discard_and_transition(
+                                resolved_run_id,
+                                phase="finishing",
+                                reason="run_failed",
+                            )
+                        outcome = failed_outcome()
+                        return outcome.model_copy(update={"output_text": bounded_content})
+                    pending_steers = (
+                        () if steering is None else steering.drain(resolved_run_id)
+                    )
+                    if pending_steers:
+                        if handle_pending_steers(
+                            pending_steers,
+                            step=step,
+                            skipped_calls=response.tool_calls[tool_call_index + 1:],
+                        ):
+                            break
+                        return failed_outcome()
                     continue
 
                 try:
@@ -920,6 +1064,17 @@ class ToolAgentLoop:
                             error=error_content,
                         )
                     )
+                    pending_steers = (
+                        () if steering is None else steering.drain(resolved_run_id)
+                    )
+                    if pending_steers:
+                        if handle_pending_steers(
+                            pending_steers,
+                            step=step,
+                            skipped_calls=response.tool_calls[tool_call_index + 1:],
+                        ):
+                            break
+                        return failed_outcome()
                     continue
                 normalized = normalize_capability_result(
                     capability_result,
@@ -964,25 +1119,25 @@ class ToolAgentLoop:
                         error=capability_result.error,
                     )
                 )
+                pending_steers = (
+                    () if steering is None else steering.drain(resolved_run_id)
+                )
+                if pending_steers:
+                    if handle_pending_steers(
+                        pending_steers,
+                        step=step,
+                        skipped_calls=response.tool_calls[tool_call_index + 1:],
+                    ):
+                        break
+                    return failed_outcome()
 
-        trace.root.status = "failed"
-        return LoopOutcome(
-            state=_tool_run_state(
-                run_id=resolved_run_id,
-                status="failed",
-                conversation=loop_conversation,
-                trace=trace,
-                context_usage=context_usages,
-                capability_scope=state_scope,
-                workspace_path=(
-                    None
-                    if execution_context.workspace_path is None
-                    else str(execution_context.workspace_path)
-                ),
-            ),
-            execution_context=_format_capability_execution_context(loop_conversation),
-            new_items=tuple(new_items),
-        )
+        if steering is not None:
+            steering.discard_and_transition(
+                resolved_run_id,
+                phase="finishing",
+                reason="step_limit_exhausted",
+            )
+        return failed_outcome()
 
     async def _compact_history(
         self,
@@ -1308,6 +1463,7 @@ def _append_skipped_tool_results(
     tool_calls: Sequence[ToolCall],
     *,
     run_id: str,
+    content: str = _REVIEW_SKIPPED_TOOL_CONTENT,
 ) -> tuple[ConversationState, list[ToolResultMessage]]:
     skipped: list[ToolResultMessage] = []
     for tool_call in tool_calls:
@@ -1315,7 +1471,7 @@ def _append_skipped_tool_results(
             tool_call=tool_call,
             run_id=run_id,
             status="skipped",
-            content=_REVIEW_SKIPPED_TOOL_CONTENT,
+            content=content,
         )
         conversation = _append_item(conversation, item)
         skipped.append(item)
