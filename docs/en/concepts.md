@@ -80,6 +80,8 @@ state, including trace data and pending review checkpoints.
 When work requires review, approve or reject with `Runner.resume(...)` or
 `Runner.resume_stream(...)`. For cross-process continuation, persist
 `RunResult.checkpoint`; it keeps mutable state, resolved target semantics, and
-cumulative operation usage separate. Optional `ExecutionLimits` apply one
-shared budget across root, DAG, validation, concurrent, and subagent work. See
+cumulative `ExecutionUsage` telemetry separate. Execution bounds belong to the
+agent declaration through its single `max_steps` field; static DAGs have no
+root-wide operation limit, while Map and Loop nodes retain their structural
+bounds. See
 [Results, Streaming, and Review](results-streaming-review.md).

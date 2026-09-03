@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 import hashlib
 import inspect
 import json
+import warnings
 from pathlib import Path
 from typing import Any, Literal
 
@@ -216,7 +217,7 @@ class AgentCapabilityProvider:
                     "profile": profile.name,
                     "execution_fingerprint": _agent_config_fingerprint(
                         profile=profile,
-                        max_steps=int(config.get("max_steps", 8)),
+                        max_steps=int(config.get("max_steps", 888)),
                         context_policy=_context_policy_from_config(config),
                         result_storage_policy=_result_storage_policy_from_config(config),
                         capability_ids=capability_ids,
@@ -277,7 +278,14 @@ class AgentCapabilityProvider:
                 toolsets=[CapabilityToolset("builtin", ())],
             )
         enabled_toolsets = tuple(config.get("enabled_toolsets") or ("builtin",))
-        max_steps = int(invocation.arguments.get("max_steps", config.get("max_steps", 8)))
+        if "max_steps" in invocation.arguments:
+            warnings.warn(
+                "Agent capability argument 'max_steps' is deprecated and ignored; "
+                "configure ToolAgent.max_steps instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        max_steps = int(config.get("max_steps", 888))
         loop = ToolAgentLoop(
             provider=provider,
             capability_executor=capability_executor,
@@ -502,12 +510,6 @@ def agent_capability_parameters() -> dict[str, Any]:
                 "description": "Optional reference content supplied as task data for this agent node.",
                 "default": "",
             },
-            "max_steps": {
-                "type": "integer",
-                "description": "Maximum tool-loop steps for this agent node.",
-                "default": 8,
-                "minimum": 1,
-            }
         },
     }
 

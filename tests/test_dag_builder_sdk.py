@@ -562,8 +562,55 @@ def test_agent_node_generates_agent_capability_invocation(tmp_path: Path) -> Non
     assert invocation.arguments == {"prompt": "Draft the report.", "max_steps": 3}
 
     runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
-    result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
+    with pytest.warns(DeprecationWarning, match="max_steps.*deprecated and ignored"):
+        result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
     assert result.status == "completed"
+
+
+def test_agent_node_legacy_max_steps_cannot_override_tool_agent_limit(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    @dagent.tool
+    def echo(text: str) -> str:
+        calls.append(text)
+        return text
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(
+                id="call_1",
+                name="tool_echo",
+                arguments={"text": "draft"},
+            )
+        ]),
+        ChatResponse(content="This response must not be reached."),
+    ])
+    writer = dagent.ToolAgent(
+        profile=_profile_root(tmp_path, "writer"),
+        capabilities=[echo],
+        max_steps=1,
+    )
+    dag = dagent.Dag("legacy_agent_limit")
+    dag.add_node(dagent.Node(
+        "draft",
+        target=writer,
+        inputs={"prompt": "Draft.", "max_steps": 99},
+    ))
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        profile_root=tmp_path / "profiles",
+    )
+
+    with pytest.warns(DeprecationWarning, match="max_steps.*deprecated and ignored"):
+        result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
+
+    assert result.status == "failed"
+    assert calls == ["draft"]
+    assert len(provider.requests) == 1
 
 
 def test_agent_node_prompt_accepts_value_expr_from_previous_node(tmp_path: Path) -> None:

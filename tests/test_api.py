@@ -1739,7 +1739,7 @@ def test_api_managed_profiles_surface_agent_capabilities(monkeypatch, tmp_path) 
     assert capabilities["agent.analyst"]["config"] == {"profile": "analyst", "source": "managed"}
     assert capabilities["agent.analyst"]["parameters"]["properties"]["prompt"]["default"] == ""
     assert capabilities["agent.analyst"]["parameters"]["properties"]["reference_content"]["default"] == ""
-    assert capabilities["agent.analyst"]["parameters"]["properties"]["max_steps"]["default"] == 8
+    assert "max_steps" not in capabilities["agent.analyst"]["parameters"]["properties"]
 
 
 def test_api_profile_agent_capabilities_skip_catalog_name_collisions(monkeypatch, tmp_path) -> None:
@@ -1795,7 +1795,6 @@ def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path)
             "name": "helper",
             "profile": "conversation",
             "description": "Summarizes text.",
-            "max_steps": 1,
             "capabilities": [],
             "skills": [],
             "agents": [],
@@ -1809,6 +1808,7 @@ def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path)
     assert created.status_code == 200
     assert created.json()["agent"]["id"] == "agent.helper"
     assert created.json()["agent"]["profile"] == "conversation"
+    assert created.json()["agent"]["max_steps"] == 888
     assert created.json()["agent"]["capabilities"] == []
     assert listed.status_code == 200
     assert [agent["id"] for agent in listed.json()["agents"]] == ["agent.helper"]

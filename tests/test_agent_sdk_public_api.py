@@ -30,9 +30,9 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "RunStreamEvent")
     assert hasattr(dagent, "RunCheckpoint")
     assert hasattr(dagent, "ResolvedRunPlan")
-    assert hasattr(dagent, "ExecutionLimits")
+    assert not hasattr(dagent, "ExecutionLimits")
     assert hasattr(dagent, "ExecutionUsage")
-    assert hasattr(dagent, "ExecutionLimitExceeded")
+    assert not hasattr(dagent, "ExecutionLimitExceeded")
     assert hasattr(dagent, "SkillStore")
     assert hasattr(dagent, "load_builtin_profile")
     assert hasattr(dagent, "list_builtin_profiles")
@@ -80,8 +80,28 @@ def test_auto_agent_is_public_target_without_mode_field() -> None:
     agent = dagent.AutoAgent()
 
     assert "mode" not in signature.parameters
+    assert "max_cycles" not in signature.parameters
     assert agent.profile == "conversation"
     assert agent.planner_profile == "dag_agent"
+    assert agent.max_steps == 888
+
+
+def test_public_agents_share_one_max_steps_setting() -> None:
+    agents = (
+        dagent.AutoAgent(),
+        dagent.ToolAgent(profile="conversation"),
+        dagent.DagAgent(),
+    )
+
+    assert [agent.max_steps for agent in agents] == [888, 888, 888]
+    assert all("max_cycles" not in inspect.signature(type(agent)).parameters for agent in agents)
+    for agent_type, kwargs in (
+        (dagent.AutoAgent, {}),
+        (dagent.ToolAgent, {"profile": "conversation"}),
+        (dagent.DagAgent, {}),
+    ):
+        with pytest.raises(ValueError, match="max_steps must be at least 1"):
+            agent_type(max_steps=0, **kwargs)
 
 
 def test_runner_accepts_exact_workspace_path_parameter() -> None:
@@ -601,6 +621,40 @@ def test_runner_auto_agent_routes_to_tool_result(tmp_path) -> None:
     assert "General-Purpose Agent" in provider.requests[1]["messages"][0]["content"]
 
 
+def test_runner_auto_agent_applies_max_steps_to_tool_route(tmp_path) -> None:
+    calls: list[str] = []
+
+    @dagent.tool
+    def echo(text: str) -> str:
+        calls.append(text)
+        return text
+
+    provider = MockProvider([
+        ChatResponse(content="tool"),
+        ChatResponse(tool_calls=[
+            ToolCall(id="call_1", name="tool_echo", arguments={"text": "x"})
+        ]),
+        ChatResponse(content="This response must not be reached."),
+    ])
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+    )
+
+    result = run(runner.run(
+        dagent.AutoAgent(capabilities=[echo], skills=[], max_steps=1),
+        input="echo",
+    ))
+
+    assert result.kind == "tool"
+    assert result.status == "failed"
+    assert result.plan is not None
+    assert result.plan.max_steps == 1
+    assert calls == ["x"]
+    assert len(provider.requests) == 2
+
+
 def test_runner_auto_agent_injects_skills_only_after_tool_routing(tmp_path) -> None:
     skill_root = tmp_path / "skills" / "writing" / "brief"
     skill_root.mkdir(parents=True)
@@ -709,6 +763,40 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     assert result.dag.nodes[-1].payload.invocation.capability_id == "tool.search"
     assert "routing classifier" in provider.requests[0]["messages"][0]["content"]
     assert "DAG Agent" in provider.requests[1]["messages"][0]["content"]
+
+
+def test_runner_auto_agent_applies_max_steps_to_dag_route(tmp_path) -> None:
+    calls: list[str] = []
+
+    @dagent.tool
+    def search(q: str) -> str:
+        calls.append(q)
+        return f"found:{q}"
+
+    provider = MockProvider([
+        ChatResponse(content="dag"),
+        ChatResponse(content=capability_plan_response(
+            "tool.search", {"q": "X"}, node_id="lookup"
+        )),
+        ChatResponse(content=final_answer_response("This response must not be reached.")),
+    ])
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+    )
+
+    result = run(runner.run(
+        dagent.AutoAgent(capabilities=[search], skills=[], max_steps=1),
+        input="research X",
+    ))
+
+    assert result.kind == "dynamic_dag"
+    assert result.plan is not None
+    assert result.plan.max_steps == 1
+    assert result.status == "failed"
+    assert calls == []
+    assert len(provider.requests) == 2
 
 
 def test_runner_extra_system_prompt_applies_after_auto_dag_routing(tmp_path) -> None:

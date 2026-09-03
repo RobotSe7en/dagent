@@ -24,8 +24,7 @@ class AutoAgent:
     profile: str | AgentProfile = "conversation"
     planner_profile: str | AgentProfile = "dag_agent"
     name: str | None = None
-    max_steps: int = 8
-    max_cycles: int = 6
+    max_steps: int = 888
     capabilities: Iterable[CapabilityRef] | None = None
     skills: Iterable[str] | None = None
     agents: Iterable[ToolAgent | str] | str | None = None
@@ -37,8 +36,6 @@ class AutoAgent:
         object.__setattr__(self, "name", self.name or _default_profile_name(self.profile))
         if self.max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
-        if self.max_cycles < 1:
-            raise ValueError("max_cycles must be at least 1.")
         if self.capabilities is not None:
             object.__setattr__(self, "capabilities", tuple(self.capabilities))
         if self.skills is not None:
@@ -52,7 +49,7 @@ class ToolAgent:
 
     profile: str | AgentProfile
     name: str | None = None
-    max_steps: int = 8
+    max_steps: int = 888
     capabilities: Iterable[CapabilityRef] | None = None
     skills: Iterable[str] | None = None
     agents: Iterable[ToolAgent | str] | str | None = None
@@ -77,7 +74,7 @@ class DagAgent:
 
     planner_profile: str | AgentProfile = "dag_agent"
     name: str | None = None
-    max_cycles: int = 6
+    max_steps: int = 888
     capabilities: Iterable[CapabilityRef] | None = None
     skills: Iterable[str] | None = None
     agents: Iterable[ToolAgent | str] | str | None = None
@@ -87,8 +84,8 @@ class DagAgent:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", self.name or _default_profile_name(self.planner_profile))
-        if self.max_cycles < 1:
-            raise ValueError("max_cycles must be at least 1.")
+        if self.max_steps < 1:
+            raise ValueError("max_steps must be at least 1.")
         if self.capabilities is not None:
             object.__setattr__(self, "capabilities", tuple(self.capabilities))
         if self.skills is not None:

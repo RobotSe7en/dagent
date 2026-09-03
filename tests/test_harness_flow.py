@@ -95,9 +95,9 @@ def runtime_for(
     *,
     dag_agent_loop: DAGAgentLoop,
     executor: DAGExecutor,
-    max_cycles: int = 6,
+    max_steps: int = 6,
 ) -> HarnessRuntime:
-    dag_agent_loop.max_cycles = max_cycles
+    dag_agent_loop.max_steps = max_steps
     return HarnessRuntime(runtime_directory=".runtime",
         provider=dag_agent_loop.provider,
         tool_agent=ToolAgent(

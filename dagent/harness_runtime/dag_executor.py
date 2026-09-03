@@ -29,7 +29,6 @@ from dagent.harness_runtime.capability_executor import (
     CapabilityExecutor,
 )
 from dagent.harness_runtime.result_storage import normalize_capability_result
-from dagent.harness_runtime.execution_budget import ExecutionLimitExceeded
 from dagent.harness_runtime.static_agent_review import (
     StaticAgentExecutionControl,
     StaticAgentReviewRequired,
@@ -661,8 +660,6 @@ class DAGExecutor:
         value_references: dict[str, ContentReference] = {}
         failure: str | None = None
         for outcome in outcomes:
-            if isinstance(outcome, ExecutionLimitExceeded):
-                raise outcome
             if isinstance(outcome, BaseException):
                 failure = failure or str(outcome)
                 continue

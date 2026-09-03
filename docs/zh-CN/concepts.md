@@ -71,5 +71,6 @@ OpenAI-compatible `messages`；静态 DAG runs 接收 `graph_input`。
 
 当工作需要 review 时，用 `Runner.resume(...)` 或 `Runner.resume_stream(...)` 批准或拒绝。
 跨进程 continuation 应持久化 `RunResult.checkpoint`；它把可变 state、已解析的目标执行语义
-和累计 operation usage 分开保存。可选的 `ExecutionLimits` 会让 root、DAG、validation、
-并发和 subagent work 共享同一个 budget。详见[结果、流式输出和 Review](results-streaming-review.md)。
+和累计 `ExecutionUsage` telemetry 分开保存。执行上限属于 agent 声明中的单一
+`max_steps` 字段；静态 DAG 没有 root-wide operation limit，Map 和 Loop node 仍保留各自的
+结构上限。详见[结果、流式输出和 Review](results-streaming-review.md)。

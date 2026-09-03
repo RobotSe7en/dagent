@@ -49,6 +49,9 @@ def test_careful_static_agent_approval_resumes_and_preserves_graph_input(tmp_pat
     assert first.pending_review is not None
     assert first.pending_review.capability_call.capability_id == "tool.publish"
     assert first.state.static_agent_continuation is not None
+    assert first.checkpoint is not None
+    assert first.checkpoint.plan.max_steps is None
+    assert "max_steps" not in first.checkpoint.plan.model_dump(mode="json")
     assert calls == []
 
     resumed = run(runner.resume(first.review.approve(), checkpoint=first.checkpoint))
@@ -256,7 +259,7 @@ def test_static_agent_checkpoint_rejects_changed_execution_configuration(tmp_pat
         run(second_runner.resume(first.review.approve(), checkpoint=checkpoint))
 
 
-def test_static_agent_resume_limit_failure_clears_continuation(tmp_path) -> None:
+def test_static_agent_resume_completes_without_a_run_wide_limit(tmp_path) -> None:
     calls: list[str] = []
 
     @dagent.tool(risk="high")
@@ -279,18 +282,17 @@ def test_static_agent_resume_limit_failure_clears_continuation(tmp_path) -> None
     first = run(runner.run(
         _agent_dag(agent),
         review="careful",
-        limits=dagent.ExecutionLimits(max_total_operations=2),
     ))
 
-    with pytest.raises(dagent.ExecutionLimitExceeded) as raised:
-        run(runner.resume(first.review.approve(), checkpoint=first.checkpoint))
+    resumed = run(runner.resume(first.review.approve(), checkpoint=first.checkpoint))
 
-    assert raised.value.checkpoint is not None
-    assert raised.value.checkpoint.state.status == "failed"
-    assert raised.value.checkpoint.state.pending_review is None
-    assert raised.value.checkpoint.state.static_agent_continuation is None
-    assert runner.run_checkpoint(first.run_id) == raised.value.checkpoint
-    assert calls == []
+    assert resumed is not None
+    assert resumed.node_output("assistant") == "not reached"
+    assert resumed.state.status == "completed"
+    assert resumed.state.pending_review is None
+    assert resumed.state.static_agent_continuation is None
+    assert runner.run_checkpoint(first.run_id) == resumed.checkpoint
+    assert calls == ["draft"]
 
 
 def test_static_high_risk_capability_stays_direct_and_nested_agent_shapes_are_rejected(tmp_path) -> None:

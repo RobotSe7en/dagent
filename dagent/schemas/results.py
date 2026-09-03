@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import warnings
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -41,8 +42,8 @@ RuntimeModeValue = Literal["auto", "tool", "dag", "dag_spec"]
 PlannerFrontend = Literal["typed_spec", "sdk_builder"]
 
 
-class ExecutionLimits(BaseModel):
-    """Run-wide operation limits shared by every nested execution path."""
+class _LegacyExecutionLimits(BaseModel):
+    """Removed run-wide limits retained only to read V4/V5 checkpoints."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -99,12 +100,13 @@ class ResolvedRunPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[4, 5] = 5
+    schema_version: Literal[4, 5, 6] = 6
     runtime_kind: RunStateKind
     tool_profile: AgentProfile
     planner_profile: AgentProfile
-    max_tool_steps: int = Field(ge=1)
-    max_dag_cycles: int = Field(ge=1)
+    max_steps: int | None = Field(default=None, ge=1)
+    max_tool_steps: int | None = Field(default=None, ge=1)
+    max_dag_cycles: int | None = Field(default=None, ge=1)
     review_level: ReviewLevelValue = "fast"
     dynamic_adjust: bool = True
     capability_ids: tuple[str, ...] = ()
@@ -114,7 +116,7 @@ class ResolvedRunPlan(BaseModel):
     validation_enabled: bool = False
     validator_profile: AgentProfile | None = None
     max_validation_retries: int = Field(default=1, ge=0)
-    limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
+    limits: _LegacyExecutionLimits | None = None
     planner_frontend: PlannerFrontend = "typed_spec"
     planner_skill: PlannerSkillSnapshot | None = None
     context_policy: ContextPolicy = Field(default_factory=ContextPolicy)
@@ -124,6 +126,18 @@ class ResolvedRunPlan(BaseModel):
     output_reserve_tokens: int = Field(default=4096, ge=0)
     extra_system_prompt: str | None = None
     fingerprint: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def restore_legacy_limit_defaults(cls, value: Any) -> Any:
+        if (
+            isinstance(value, dict)
+            and value.get("schema_version", 6) in {4, 5}
+            and "limits" not in value
+        ):
+            value = dict(value)
+            value["limits"] = {}
+        return value
 
     @field_validator(
         "tool_profile",
@@ -160,6 +174,20 @@ class ResolvedRunPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_resolved_configuration(self) -> "ResolvedRunPlan":
+        if self.schema_version == 6:
+            if self.runtime_kind != "static_dag" and self.max_steps is None:
+                raise ValueError("Agent run plans require max_steps.")
+            if self.max_tool_steps is not None or self.max_dag_cycles is not None:
+                raise ValueError("V6 plans cannot contain legacy loop limits.")
+            if self.limits is not None:
+                raise ValueError("V6 plans cannot contain removed execution limits.")
+        else:
+            if self.max_steps is not None:
+                raise ValueError("Legacy plans cannot contain max_steps.")
+            if self.max_tool_steps is None or self.max_dag_cycles is None:
+                raise ValueError("Legacy plans require both local loop limits.")
+            if self.limits is None:
+                raise ValueError("Legacy plans require execution limits.")
         if self.planner_frontend == "sdk_builder" and self.planner_skill is None:
             raise ValueError("sdk_builder plans require a frozen planner skill.")
         if self.planner_frontend == "typed_spec" and self.planner_skill is not None:
@@ -200,6 +228,19 @@ class ResolvedRunPlan(BaseModel):
             object.__setattr__(self, "fingerprint", expected_fingerprint)
         return self
 
+    @model_serializer(mode="wrap")
+    def serialize_versioned_execution_fields(self, serializer):
+        payload = serializer(self)
+        if self.schema_version == 6:
+            payload.pop("max_tool_steps", None)
+            payload.pop("max_dag_cycles", None)
+            payload.pop("limits", None)
+            if self.runtime_kind == "static_dag":
+                payload.pop("max_steps", None)
+        else:
+            payload.pop("max_steps", None)
+        return payload
+
     def canonical_fingerprint(self) -> str:
         """Return the SDK-defined SHA-256 fingerprint for this plan payload."""
 
@@ -219,6 +260,19 @@ class ResolvedRunPlan(BaseModel):
     def validate_fingerprint(self) -> None:
         if self.fingerprint != self.canonical_fingerprint():
             raise ValueError("Resolved run plan fingerprint does not match its payload.")
+
+    def effective_max_steps(self) -> int:
+        """Return the active local loop bound, including legacy checkpoint plans."""
+
+        if self.schema_version == 6:
+            return self.max_steps or 888
+        if self.runtime_kind == "tool":
+            assert self.max_tool_steps is not None
+            return self.max_tool_steps
+        if self.runtime_kind == "dynamic_dag":
+            assert self.max_dag_cycles is not None
+            return self.max_dag_cycles
+        return 888
 
 
 class RunCapabilityScope(BaseModel):
@@ -348,7 +402,7 @@ class RunCheckpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[4, 5] = 5
+    schema_version: Literal[4, 5, 6] = 6
     state: RunState
     plan: ResolvedRunPlan
     usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
@@ -358,7 +412,7 @@ class RunCheckpoint(BaseModel):
         self.plan.validate_fingerprint()
         if self.schema_version != self.plan.schema_version:
             raise ValueError("Checkpoint schema version does not match the resolved run plan.")
-        expected_state_version = {4: 3, 5: 4}[self.schema_version]
+        expected_state_version = {4: 3, 5: 4, 6: 4}[self.schema_version]
         if self.state.schema_version != expected_state_version:
             raise ValueError(
                 f"Checkpoint V{self.schema_version} requires RunState V{expected_state_version}."
@@ -438,22 +492,13 @@ class RunCheckpoint(BaseModel):
             raise ValueError(
                 "Static DAG capability reviews require a static agent continuation."
             )
-        limits = self.plan.limits
-        if (
-            limits.max_total_operations is not None
-            and self.usage.total_operations > limits.max_total_operations
-        ):
-            raise ValueError("Checkpoint usage exceeds max_total_operations.")
-        if (
-            limits.max_model_turns is not None
-            and self.usage.model_turns > limits.max_model_turns
-        ):
-            raise ValueError("Checkpoint usage exceeds max_model_turns.")
-        if (
-            limits.max_capability_calls is not None
-            and self.usage.capability_calls > limits.max_capability_calls
-        ):
-            raise ValueError("Checkpoint usage exceeds max_capability_calls.")
+        if self.schema_version < 6:
+            warnings.warn(
+                "RunCheckpoint V4/V5 run-wide execution limits are deprecated "
+                "and ignored when execution resumes.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         return self
 
 

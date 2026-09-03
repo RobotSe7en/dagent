@@ -113,7 +113,6 @@ agent = dagent.AutoAgent(
     capabilities=["tool.search"],
     skills=["research/briefing"],
     max_steps=8,
-    max_cycles=6,
     review="fast",
     dynamic_adjust=True,
 )
@@ -162,7 +161,7 @@ agent = dagent.DagAgent(
     planner_profile="dag_agent",
     capabilities=["tool.search"],
     skills=["research/briefing"],
-    max_cycles=6,
+    max_steps=6,
     review="careful",
     dynamic_adjust=True,
 )
@@ -227,8 +226,11 @@ capability id when the top-level run should delegate.
 
 Dynamic DAG planners see exposed agents in the Available Tools section and call
 them like any other function, usually with `prompt="..."` and optionally
-`reference_content="..."` or `max_steps=...`. Non-empty reference content is
-supplied to the agent as task data in a separate user-message section.
+`reference_content="..."`. The child `ToolAgent.max_steps` declaration is its
+hard local limit; callers cannot override it. Non-empty reference content is
+supplied to the agent as task data in a separate user-message section. Persisted
+older DAGs that still pass an invocation-level `max_steps` remain executable,
+but the value is ignored and emits `DeprecationWarning`.
 
 ## Shared Agent Fields
 
@@ -240,9 +242,13 @@ supplied to the agent as task data in a separate user-message section.
 | `skills` | Concrete skills indexed in tool-loop prompts and readable through `skill.list` and `skill.view`. |
 | `agents` | Subagent capabilities visible to a top-level run: `None`, `"registered"`, `ToolAgent` objects, or `agent.<name>` ids. |
 | `review` | Review level for risky work. |
-| `max_steps` | Tool-loop bound for `ToolAgent` and `AutoAgent`. |
-| `max_cycles` | Dynamic DAG replan bound for `AutoAgent` and `DagAgent`. |
+| `max_steps` | Local execution bound for every agent; defaults to `888`. It counts tool-loop iterations for `ToolAgent`, dynamic DAG cycles for `DagAgent`, and the selected engine's steps for `AutoAgent`. |
 | `dynamic_adjust` | Whether `AutoAgent` and `DagAgent` may replan the dynamic DAG after the initial DAG is generated. Defaults to `True`. |
+
+Provider retries, result-validation retries, and context compaction do not
+consume agent steps. They do remain visible in cumulative `ExecutionUsage`
+telemetry when they make model or capability calls. `Runner` has no separate
+run-wide step limit.
 
 Skill indexes follow each tool agent's resolved scope. A top-level conversation
 and a registered subagent can therefore expose different skills without prompt

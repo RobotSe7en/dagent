@@ -102,7 +102,6 @@ agent = dagent.AutoAgent(
     capabilities=["tool.search"],
     skills=["research/briefing"],
     max_steps=8,
-    max_cycles=6,
     review="fast",
     dynamic_adjust=True,
 )
@@ -147,7 +146,7 @@ agent = dagent.DagAgent(
     planner_profile="dag_agent",
     capabilities=["tool.search"],
     skills=["research/briefing"],
-    max_cycles=6,
+    max_steps=6,
     review="careful",
     dynamic_adjust=True,
 )
@@ -208,8 +207,10 @@ capability id 时，顶层 run 才能委派。
 
 Dynamic DAG planner 会在 Available Tools section 中看到已暴露的 agent，并像调用其他
 function 一样调用它们，通常只需要传 `prompt="..."`，必要时再传
-`reference_content="..."` 或 `max_steps=...`。非空参考内容会作为 task data 放入独立的
-user-message 区块。
+`reference_content="..."`。子 `ToolAgent.max_steps` 声明是它的硬性局部上限，调用方不能
+覆盖。非空参考内容会作为 task data 放入独立的 user-message 区块。仍包含调用级
+`max_steps` 的旧持久化 DAG 可以继续执行，但该值会被忽略，并发出
+`DeprecationWarning`。
 
 ## 共享 Agent 字段
 
@@ -221,9 +222,12 @@ user-message 区块。
 | `skills` | 在 tool-loop prompt 中建立索引，并可通过 `skill.list` 和 `skill.view` 读取的具体 skills。 |
 | `agents` | 顶层 run 可见的子 agent capabilities：`None`、`"registered"`、`ToolAgent` 对象或 `agent.<name>` ids。 |
 | `review` | risky work 的 review level。 |
-| `max_steps` | `ToolAgent` 和 `AutoAgent` 的 tool-loop bound。 |
-| `max_cycles` | `AutoAgent` 和 `DagAgent` 的 dynamic DAG replan bound。 |
+| `max_steps` | 所有 agent 的局部执行上限，默认 `888`；对 `ToolAgent` 统计 tool-loop iterations，对 `DagAgent` 统计 dynamic DAG cycles，对 `AutoAgent` 统计实际选中执行引擎的 steps。 |
 | `dynamic_adjust` | `AutoAgent` 和 `DagAgent` 生成初始 DAG 后是否允许继续动态 replan，默认 `True`。 |
+
+Provider 重试、结果校验重试和上下文压缩不消耗 agent steps；如果它们实际触发了 model
+或 capability 调用，仍会记录在累计 `ExecutionUsage` telemetry 中。`Runner` 不再有单独的
+run-wide step limit。
 
 Skill 索引遵循每个 tool agent 最终解析出的 scope，因此顶层会话和注册子 agent 可以暴露
 不同技能，且不会互相泄漏 prompt。加载规则、prompt 预算和缓存稳定性见

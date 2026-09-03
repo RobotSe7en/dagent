@@ -8,6 +8,31 @@
 
 ## Unreleased
 
+### 破坏性变更：由 Agent 拥有单一执行上限
+
+- `ToolAgent`、`AutoAgent` 和 `DagAgent` 现在统一只暴露一个 `max_steps` 字段，字面默认值
+  为 `888`。`ToolAgent` 统计本地 tool-loop iterations，`DagAgent` 统计 dynamic DAG
+  cycles，`AutoAgent` 把该值应用到 router 实际选择的执行引擎。Provider 重试、validation
+  重试和 context compaction 不消耗 agent steps。
+- 将 `DagAgent(max_cycles=n)` 改为 `DagAgent(max_steps=n)`。删除
+  `AutoAgent.max_cycles`；其已有 `max_steps` 现在也会限制 dynamic DAG route。这是有意的
+  公开 API 破坏，不提供 alias。
+- `Runner.run(...)` 和 `Runner.stream(...)` 不再接受 `limits=`；`ExecutionLimits` 和
+  `ExecutionLimitExceeded` 不再公开导出。请删除相关 import，并把局部执行上限移到目标
+  agent。静态 `Dag`/`DAGSpec` run 没有 root-wide operation limit；Map 和 Loop 的结构
+  上限保持不变。
+- `agent.*` capability 只接受 `prompt` 和 `reference_content`，不再接受调用级
+  `max_steps`。请改为配置已注册的 `ToolAgent.max_steps`。旧持久化 DAG node arguments
+  仍可读取和执行，其中的旧 `max_steps` 会被忽略并发出 `DeprecationWarning`。
+- `ExecutionUsage` 继续作为 model turns 和 capability calls 的累计 telemetry。Review
+  resume 会恢复并继续累计，新 conversation run 从零开始，但这些计数不再执行 budget。
+- 新 checkpoint 使用 schema V6，并为 agent run 保存单一 `max_steps`；静态 DAG plan 不保存
+  root step 值。V4/V5 checkpoint 仍可读取和恢复：其中的全局 limits 会被忽略并发出
+  `DeprecationWarning`；tool 的 `max_tool_steps` 或 dynamic DAG 的 `max_dag_cycles` 会映射为
+  有效局部上限；成功 resume 后输出 V6。
+- 内置 API 和 WebUI 继续在可复用子 agent preset 上保留 `max_steps`，新建 preset 的默认值
+  改为 `888`；agent-node capability 表单不再提供调用级步数覆盖。
+
 ### 新增：活跃根 ToolAgent run 的协作式 steer
 
 - `await Runner.steer(run_id, input)` 可以为活跃根 `ToolAgent` loop 排队文本指令，并返回
@@ -17,9 +42,9 @@
 - 类型化 stream 新增 `steer.queued`、`steer.applied` 和 `steer.discarded`。队列按 FIFO
   处理，上限为 32 条。已经开始的模型/capability 调用不会被中断；尚未开始的同批工具调用
   会被跳过。
-- 这是纯新增能力。`RunState` 和 `RunCheckpoint` schema version 不变，无需迁移数据或
-  配置。Host 如需暴露 steer，必须持有同一个进程内 `Runner`；排队消息有意保持临时状态，
-  不会写入 checkpoint。
+- Steer 本身没有给 `RunState` 或 `RunCheckpoint` 增加字段。Host 如需暴露 steer，必须持有
+  同一个进程内 `Runner`；排队消息有意保持临时状态，不会写入 checkpoint。本 Unreleased
+  章节中单独说明的 V6 checkpoint 迁移仍然适用。
 
 ## 0.9.5
 

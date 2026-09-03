@@ -13962,7 +13962,7 @@ function emptyAgentPresetDraft(profiles: AgentProfile[], presets: AgentPreset[])
     name: uniqueAgentPresetName('helper', presets),
     profile: profiles[0]?.name ?? 'conversation',
     description: '',
-    max_steps: 4,
+    max_steps: 888,
     capabilities: [],
     skills: [],
     agents: [],
