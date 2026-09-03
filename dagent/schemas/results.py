@@ -175,6 +175,8 @@ class ResolvedRunPlan(BaseModel):
     @model_validator(mode="after")
     def validate_resolved_configuration(self) -> "ResolvedRunPlan":
         if self.schema_version == 6:
+            if self.runtime_kind == "static_dag" and self.max_steps is not None:
+                raise ValueError("V6 static DAG plans cannot contain max_steps.")
             if self.runtime_kind != "static_dag" and self.max_steps is None:
                 raise ValueError("Agent run plans require max_steps.")
             if self.max_tool_steps is not None or self.max_dag_cycles is not None:
@@ -235,7 +237,7 @@ class ResolvedRunPlan(BaseModel):
             payload.pop("max_tool_steps", None)
             payload.pop("max_dag_cycles", None)
             payload.pop("limits", None)
-            if self.runtime_kind == "static_dag":
+            if self.runtime_kind == "static_dag" and self.max_steps is None:
                 payload.pop("max_steps", None)
         else:
             payload.pop("max_steps", None)

@@ -36,6 +36,12 @@ The current package version is `0.9.5`.
   and resumable: their global limits are ignored with `DeprecationWarning`,
   their tool `max_tool_steps` or dynamic-DAG `max_dag_cycles` becomes the local
   effective bound, and a successful resume emits V6.
+- A V4/V5 checkpoint whose registered child agent relied on the former
+  `ToolAgent.max_steps=8` default must keep that child explicitly pinned to
+  `max_steps=8` for every remaining resume of that run. Registering the same
+  constructor without the explicit value now means `888`; Runner reports this
+  case with a targeted migration error instead of silently changing execution
+  semantics. New runs can use the `888` default.
 - The bundled API and WebUI keep `max_steps` on reusable child-agent presets;
   the default for newly created presets is now `888`. Agent-node capability
   forms no longer offer a per-invocation step override.

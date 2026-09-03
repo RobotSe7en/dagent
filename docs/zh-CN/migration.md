@@ -30,6 +30,10 @@
   root step 值。V4/V5 checkpoint 仍可读取和恢复：其中的全局 limits 会被忽略并发出
   `DeprecationWarning`；tool 的 `max_tool_steps` 或 dynamic DAG 的 `max_dag_cycles` 会映射为
   有效局部上限；成功 resume 后输出 V6。
+- 如果 V4/V5 checkpoint 中已注册的子 agent 使用了原来的默认
+  `ToolAgent.max_steps=8`，则该 run 剩余的每次 resume 都必须把这个子 agent 显式固定为
+  `max_steps=8`。升级后省略该值意味着 `888`；Runner 会返回明确的迁移错误，而不会静默
+  改变执行语义。新 run 可以使用默认值 `888`。
 - 内置 API 和 WebUI 继续在可复用子 agent preset 上保留 `max_steps`，新建 preset 的默认值
   改为 `888`；agent-node capability 表单不再提供调用级步数覆盖。
 
