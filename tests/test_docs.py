@@ -47,6 +47,10 @@ def test_migration_notes_record_release_history() -> None:
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
     collapsed_english_076 = _collapsed(english_076)
+    assert "one agent-owned execution bound" in english_unreleased
+    assert "New checkpoints use schema V6" in english_unreleased
+    assert "invocation-level `max_steps`" in english_unreleased
+    assert "explicitly pinned" in english_unreleased
     assert "`Runtime Context` system-prompt section" in collapsed_english_076
     assert "resolved managed run workspace" in collapsed_english_076
     assert "Profile contents remain immutable" in collapsed_english_076
@@ -96,6 +100,10 @@ def test_migration_notes_record_release_history() -> None:
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
     collapsed_chinese_076 = _collapsed(chinese_076)
+    assert "由 Agent 拥有单一执行上限" in chinese_unreleased
+    assert "新 checkpoint 使用 schema V6" in chinese_unreleased
+    assert "调用级 `max_steps`" in _collapsed(chinese_unreleased)
+    assert "显式固定" in chinese_unreleased
     assert "动态 `Runtime Context` 段" in collapsed_chinese_076
     assert "managed run workspace" in collapsed_chinese_076
     assert "Profile 内容保持不可变" in collapsed_chinese_076

@@ -34,10 +34,7 @@ from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.dag_builder import validate_dag_input
 from dagent.harness_runtime.dag_executor import DAGExecutor
 from dagent.harness_runtime.conversation_resources import ConversationResourceStore
-from dagent.harness_runtime.execution_budget import (
-    ExecutionLimitExceeded,
-    reserve_model_turn,
-)
+from dagent.harness_runtime.execution_usage import record_model_turn
 from dagent.harness_runtime.artifacts import (
     ArtifactUpload,
     create_run_workspace,
@@ -683,7 +680,7 @@ class HarnessRuntime:
             policy=self.tool_agent.context_policy,
         )
         try:
-            reserve_model_turn()
+            record_model_turn()
             response = normalize_chat_response(
                 await self.provider.chat(prepared.messages)
             )
@@ -699,8 +696,6 @@ class HarnessRuntime:
             if decision in {"dag", "tool"}:
                 return decision, audit_item, prepared.usage  # type: ignore[return-value]
             return "tool", audit_item, prepared.usage
-        except ExecutionLimitExceeded:
-            raise
         except Exception:
             return "tool", None, prepared.usage
 

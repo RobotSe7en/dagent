@@ -53,10 +53,7 @@ from dagent.harness_runtime.llm_retry import (
     LLMRetrySleep,
     run_with_llm_retries,
 )
-from dagent.harness_runtime.execution_budget import (
-    ExecutionLimitExceeded,
-    reserve_model_turn,
-)
+from dagent.harness_runtime.execution_usage import record_model_turn
 from dagent.harness_runtime.static_agent_review import (
     StaticAgentExecutionControl,
     StaticAgentReviewRequired,
@@ -398,7 +395,7 @@ class DAGAgent:
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
-        max_cycles: int | None = None,
+        max_steps: int | None = None,
     ) -> RunTrace | None:
         return await self.loop.execute(
             record,
@@ -411,7 +408,7 @@ class DAGAgent:
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
-            max_cycles=max_cycles,
+            max_steps=max_steps,
         )
 
     def build_request_user_message(self, *, prompt: str, task_id: str) -> dict[str, str]:
@@ -431,7 +428,7 @@ class DAGAgentLoop:
         dag_executor: DAGExecutor,
         tool_adapter: CapabilityToolAdapter,
         enabled_toolsets: Sequence[str] = ("builtin",),
-        max_cycles: int = 6,
+        max_steps: int = 888,
         planner_frontend: PlannerFrontend = "typed_spec",
         planner_skill: PlannerSkillSnapshot | None = None,
         _llm_retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
@@ -441,7 +438,7 @@ class DAGAgentLoop:
         self.dag_executor = dag_executor
         self.tool_adapter = tool_adapter
         self.enabled_toolsets = tuple(enabled_toolsets)
-        self.max_cycles = max_cycles
+        self.max_steps = max_steps
         if planner_frontend not in {"typed_spec", "sdk_builder"}:
             raise ValueError("Unknown planner frontend.")
         if planner_frontend == "sdk_builder" and planner_skill is None:
@@ -666,7 +663,7 @@ class DAGAgentLoop:
             ),
             policy=self.context_policy,
         )
-        reserve_model_turn()
+        record_model_turn()
         response = normalize_chat_response(
             await self.provider.chat(prepared.messages)
         )
@@ -1121,7 +1118,7 @@ class DAGAgentLoop:
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
-        max_cycles: int | None = None,
+        max_steps: int | None = None,
         replan: bool = True,
         dag_executor: DAGExecutor | None = None,
         entry_observation: str | None = None,
@@ -1144,7 +1141,7 @@ class DAGAgentLoop:
 
         cycle = 0
         failed_node_id: str | None = None
-        cycle_limit = self.max_cycles if max_cycles is None else max_cycles
+        step_limit = self.max_steps if max_steps is None else max_steps
         pending_observation: str | None = entry_observation
         trace = record.trace
         active_executor = dag_executor or self.dag_executor
@@ -1155,7 +1152,7 @@ class DAGAgentLoop:
                 artifact_states={} if trace is None else trace.artifacts,
             )
 
-        while cycle < cycle_limit:
+        while cycle < step_limit:
             cycle += 1
 
             if pending_observation is None:
@@ -1176,8 +1173,6 @@ class DAGAgentLoop:
                         on_token=on_token,
                         on_event=on_event,
                     )
-                except ExecutionLimitExceeded:
-                    raise
                 except StaticAgentReviewRequired:
                     raise
                 except Exception as exc:
@@ -1273,7 +1268,7 @@ class DAGAgentLoop:
                     capability_scope=capability_scope_from_state(record.capability_scope),
                     current_spec=record.dag_spec,
                 )
-            except (ExecutionLimitExceeded, ContextWindowExceeded):
+            except ContextWindowExceeded:
                 raise
             except Exception as exc:
                 pending_observation = _format_dag_observation(
@@ -1591,7 +1586,7 @@ async def _chat_for_dag(
     response_format: StructuredOutputFormat | None = None,
 ) -> ChatResponse:
     async def chat_attempt() -> ChatResponse:
-        reserve_model_turn()
+        record_model_turn()
         return await provider.chat(messages, response_format=response_format)
 
     if on_token is None and on_event is None:
@@ -1624,7 +1619,7 @@ async def _chat_for_dag(
     async def attempt() -> ChatResponse:
         nonlocal content, emitted_tokens, response
         response = None
-        reserve_model_turn()
+        record_model_turn()
         if hasattr(provider, "stream_chat"):
             async for event in provider.stream_chat(
                 messages,

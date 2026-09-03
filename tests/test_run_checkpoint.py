@@ -1,4 +1,6 @@
 import asyncio
+import inspect
+import warnings
 
 import pytest
 from pydantic import ValidationError
@@ -19,22 +21,40 @@ def tool_names(request: dict) -> set[str]:
     }
 
 
-def legacy_v4_checkpoint(checkpoint: dagent.RunCheckpoint) -> dagent.RunCheckpoint:
+def legacy_checkpoint(
+    checkpoint: dagent.RunCheckpoint,
+    *,
+    schema_version: int,
+    capability_fingerprints: dict[str, str] | None = None,
+) -> dagent.RunCheckpoint:
     state_payload = checkpoint.state.model_dump(mode="json")
-    state_payload["schema_version"] = 3
-    state_payload.pop("input_artifact_files", None)
+    if schema_version == 4:
+        state_payload["schema_version"] = 3
+        state_payload.pop("input_artifact_files", None)
     state = dagent.RunState.model_validate(state_payload)
 
     plan_payload = checkpoint.plan.model_dump(mode="json")
-    plan_payload["schema_version"] = 4
+    plan_payload["schema_version"] = schema_version
+    plan_payload["max_tool_steps"] = checkpoint.plan.max_steps or 888
+    plan_payload["max_dag_cycles"] = checkpoint.plan.max_steps or 888
+    plan_payload["limits"] = {
+        "max_total_operations": 1,
+        "max_model_turns": 1,
+        "max_capability_calls": 1,
+    }
+    if capability_fingerprints is not None:
+        plan_payload["capability_fingerprints"].update(capability_fingerprints)
+    plan_payload.pop("max_steps", None)
     plan_payload["fingerprint"] = ""
     plan = dagent.ResolvedRunPlan.model_validate(plan_payload)
-    return dagent.RunCheckpoint(
-        schema_version=4,
-        state=state,
-        plan=plan,
-        usage=checkpoint.usage,
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return dagent.RunCheckpoint(
+            schema_version=schema_version,
+            state=state,
+            plan=plan,
+            usage=checkpoint.usage,
+        )
 
 
 def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
@@ -60,8 +80,12 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     assert restored.plan.runtime_kind == "tool"
     assert restored.plan.capability_ids == ()
     assert restored.plan.skill_ids == ()
-    assert restored.schema_version == 5
-    assert restored.plan.schema_version == 5
+    assert restored.schema_version == 6
+    assert restored.plan.schema_version == 6
+    assert restored.plan.max_steps == 888
+    assert "max_tool_steps" not in restored.plan.model_dump(mode="json")
+    assert "max_dag_cycles" not in restored.plan.model_dump(mode="json")
+    assert "limits" not in restored.plan.model_dump(mode="json")
     assert restored.plan.runtime_directory == ".runtime"
     assert restored.plan.extra_system_prompt is None
     assert len(restored.plan.fingerprint) == 64
@@ -82,19 +106,23 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     legacy = checkpoint.model_dump(mode="json")
     legacy["schema_version"] = 3
     legacy["plan"]["schema_version"] = 3
-    with pytest.raises(ValidationError, match="Input should be 4 or 5"):
+    with pytest.raises(ValidationError, match="Input should be 4, 5 or 6"):
         dagent.RunCheckpoint.model_validate(legacy)
 
-    copied_plan = restored.plan.model_copy(update={"max_tool_steps": 99})
+    copied_plan = restored.plan.model_copy(update={"max_steps": 99})
     with pytest.raises(ValidationError, match="fingerprint"):
         dagent.RunCheckpoint(
             state=restored.state,
             plan=copied_plan,
-        usage=restored.usage,
-    )
+            usage=restored.usage,
+        )
 
 
-def test_runner_resumes_legacy_v4_checkpoint_and_emits_v5_checkpoint(tmp_path) -> None:
+@pytest.mark.parametrize("schema_version", [4, 5])
+def test_runner_resumes_legacy_checkpoint_and_emits_v6_checkpoint(
+    tmp_path,
+    schema_version: int,
+) -> None:
     calls: list[str] = []
 
     @dagent.tool(risk="medium")
@@ -120,14 +148,16 @@ def test_runner_resumes_legacy_v4_checkpoint_and_emits_v5_checkpoint(tmp_path) -
     ))
     assert first.checkpoint is not None
 
-    legacy = legacy_v4_checkpoint(first.checkpoint)
+    legacy = legacy_checkpoint(first.checkpoint, schema_version=schema_version)
     serialized = legacy.model_dump_json()
-    restored_legacy = dagent.RunCheckpoint.model_validate_json(serialized)
+    with pytest.warns(DeprecationWarning, match="execution limits.*ignored"):
+        restored_legacy = dagent.RunCheckpoint.model_validate_json(serialized)
 
-    assert restored_legacy.schema_version == 4
-    assert restored_legacy.plan.schema_version == 4
-    assert restored_legacy.state.schema_version == 3
-    assert "input_artifact_files" not in restored_legacy.model_dump(mode="json")["state"]
+    assert restored_legacy.schema_version == schema_version
+    assert restored_legacy.plan.schema_version == schema_version
+    assert restored_legacy.state.schema_version == (3 if schema_version == 4 else 4)
+    if schema_version == 4:
+        assert "input_artifact_files" not in restored_legacy.model_dump(mode="json")["state"]
 
     second_runner = dagent.Runner(
         runtime_directory=".runtime",
@@ -136,17 +166,19 @@ def test_runner_resumes_legacy_v4_checkpoint_and_emits_v5_checkpoint(tmp_path) -
         capabilities=[write],
         skill_roots=[],
     )
-    resumed = run(second_runner.resume(
-        first.review.approve(),  # type: ignore[union-attr]
-        checkpoint=restored_legacy,
-    ))
+    with pytest.warns(DeprecationWarning, match="execution limits.*ignored"):
+        resumed = run(second_runner.resume(
+            first.review.approve(),  # type: ignore[union-attr]
+            checkpoint=restored_legacy,
+        ))
 
     assert resumed is not None
     assert resumed.output_text == "done"
     assert calls == ["hello"]
     assert resumed.state.schema_version == 4
     assert resumed.checkpoint is not None
-    assert resumed.checkpoint.schema_version == 5
+    assert resumed.checkpoint.schema_version == 6
+    assert resumed.checkpoint.plan.max_steps == 888
 
 
 def test_checkpoint_rejects_pending_capability_outside_plan_scope(tmp_path) -> None:
@@ -269,7 +301,7 @@ def test_checkpoint_resume_rebuilds_target_runtime_and_exact_scope(tmp_path) -> 
     assert "CHECKPOINT_WRITER_PROFILE" in provider.requests[-1]["messages"][0]["content"]
     assert tool_names(provider.requests[-1]) == {"tool_write"}
     assert resumed.plan is not None
-    assert resumed.plan.max_tool_steps == 3
+    assert resumed.plan.max_steps == 3
     assert resumed.plan.capability_ids == ("tool.write",)
     assert resumed.usage == dagent.ExecutionUsage(
         total_operations=3,
@@ -355,7 +387,8 @@ def test_checkpoint_resume_rejects_missing_capability(tmp_path) -> None:
             tool_calls=[
                 ToolCall(id="call_1", name="tool_write", arguments={"text": "x"})
             ]
-        )
+        ),
+        ChatResponse(content="done"),
     ])
     first_runner = dagent.Runner(
         runtime_directory=".runtime",
@@ -396,7 +429,8 @@ def test_checkpoint_resume_rejects_changed_capability_definition(tmp_path) -> No
             tool_calls=[
                 ToolCall(id="call_1", name="tool_write", arguments={"text": "x"})
             ]
-        )
+        ),
+        ChatResponse(content="done"),
     ])
     runner = dagent.Runner(
         runtime_directory=".runtime",
@@ -432,27 +466,185 @@ def test_checkpoint_resume_rejects_changed_capability_definition(tmp_path) -> No
         )
 
 
-def test_model_limit_is_reserved_before_provider_call(tmp_path) -> None:
-    provider = MockProvider([ChatResponse(content="not reached")])
-    runner = dagent.Runner(
+def test_legacy_checkpoint_accepts_only_the_known_agent_schema_change(
+    tmp_path,
+) -> None:
+    calls: list[str] = []
+
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        calls.append(text)
+        return text
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(id="call_1", name="tool_write", arguments={"text": "x"})
+        ]),
+        ChatResponse(content="done"),
+    ])
+    agent = dagent.ToolAgent(
+        name="helper",
+        profile="conversation",
+        capabilities=[write],
+        max_steps=2,
+    )
+    dag = dagent.Dag("legacy_agent_checkpoint")
+    dag.add_node(dagent.Node("helper", target=agent, inputs={"prompt": "write"}))
+    first_runner = dagent.Runner(
         runtime_directory=".runtime",
         workspace=tmp_path,
         provider=provider,
         skill_roots=[],
     )
+    first = run(first_runner.run(dag, review="careful"))
+    assert first.checkpoint is not None
+    legacy_agent_fingerprint = first_runner._legacy_agent_capability_fingerprint(
+        "agent.helper"
+    )
+    legacy = legacy_checkpoint(
+        first.checkpoint,
+        schema_version=5,
+        capability_fingerprints={"agent.helper": legacy_agent_fingerprint},
+    )
+    first_runner.close()
 
-    with pytest.raises(dagent.ExecutionLimitExceeded) as raised:
-        run(runner.run(
-            dagent.ToolAgent(profile="conversation", capabilities=[]),
-            input="hello",
-            limits=dagent.ExecutionLimits(max_model_turns=0),
+    second_runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[],
+    )
+    second_runner.add_agent(agent)
+    with pytest.warns(DeprecationWarning, match="execution limits.*ignored"):
+        resumed = run(second_runner.resume(
+            first.review.approve(),  # type: ignore[union-attr]
+            checkpoint=legacy,
         ))
 
-    assert raised.value.limit_name == "max_model_turns"
-    assert provider.requests == []
+    assert resumed is not None
+    assert resumed.node_output("helper") == "done"
+    assert resumed.checkpoint is not None
+    assert resumed.checkpoint.schema_version == 6
+    assert calls == ["x"]
 
 
-def test_capability_limit_is_reserved_before_handler_call(tmp_path) -> None:
+def test_legacy_checkpoint_requires_the_old_child_agent_default_to_be_pinned(
+    tmp_path,
+) -> None:
+    calls: list[str] = []
+
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        calls.append(text)
+        return text
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(id="call_1", name="tool_write", arguments={"text": "x"})
+        ]),
+        ChatResponse(content="done"),
+    ])
+    old_agent = dagent.ToolAgent(
+        name="helper",
+        profile="conversation",
+        capabilities=[write],
+        max_steps=8,
+    )
+    dag = dagent.Dag("legacy_default_agent_checkpoint")
+    dag.add_node(dagent.Node("helper", target=old_agent, inputs={"prompt": "write"}))
+    first_runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[],
+    )
+    first = run(first_runner.run(dag, review="careful"))
+    assert first.checkpoint is not None
+    legacy = legacy_checkpoint(
+        first.checkpoint,
+        schema_version=5,
+        capability_fingerprints={
+            "agent.helper": first_runner._legacy_agent_capability_fingerprint(
+                "agent.helper"
+            )
+        },
+    )
+    first_runner.close()
+
+    default_runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[],
+    )
+    default_runner.add_agent(dagent.ToolAgent(
+        name="helper",
+        profile="conversation",
+        capabilities=[write],
+    ))
+    with pytest.warns(DeprecationWarning, match="execution limits.*ignored"):
+        with pytest.raises(ValueError, match="Register.*max_steps=8"):
+            run(default_runner.resume(
+                first.review.approve(),  # type: ignore[union-attr]
+                checkpoint=legacy,
+            ))
+    default_runner.close()
+
+    pinned_runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[],
+    )
+    pinned_runner.add_agent(old_agent)
+    with pytest.warns(DeprecationWarning, match="execution limits.*ignored"):
+        resumed = run(pinned_runner.resume(
+            first.review.approve(),  # type: ignore[union-attr]
+            checkpoint=legacy,
+        ))
+
+    assert resumed is not None
+    assert resumed.node_output("helper") == "done"
+    assert resumed.checkpoint is not None
+    assert resumed.checkpoint.schema_version == 6
+    assert calls == ["x"]
+
+
+def test_v6_static_plan_rejects_root_max_steps(tmp_path) -> None:
+    @dagent.tool
+    def echo(text: str) -> str:
+        return text
+
+    dag = dagent.Dag("static_checkpoint")
+    dag.add_node(dagent.Node("echo", target=echo, inputs={"text": "ok"}))
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=MockProvider([]),
+        skill_roots=[],
+    )
+    result = run(runner.run(dag))
+    assert result.plan is not None
+    payload = result.plan.model_dump(mode="json")
+    assert "max_steps" not in payload
+
+    payload["max_steps"] = 1
+    payload["fingerprint"] = ""
+    with pytest.raises(
+        ValidationError,
+        match="V6 static DAG plans cannot contain max_steps",
+    ):
+        dagent.ResolvedRunPlan.model_validate(payload)
+
+
+def test_runner_execution_methods_do_not_expose_global_limits() -> None:
+    assert "limits" not in inspect.signature(dagent.Runner.run).parameters
+    assert "limits" not in inspect.signature(dagent.Runner.stream).parameters
+    assert not hasattr(dagent, "ExecutionLimits")
+    assert not hasattr(dagent, "ExecutionLimitExceeded")
+
+
+def test_run_usage_counts_model_and_capability_calls(tmp_path) -> None:
     calls: list[str] = []
 
     @dagent.tool
@@ -465,7 +657,8 @@ def test_capability_limit_is_reserved_before_handler_call(tmp_path) -> None:
             tool_calls=[
                 ToolCall(id="call_1", name="tool_write", arguments={"text": "x"})
             ]
-        )
+        ),
+        ChatResponse(content="done"),
     ])
     runner = dagent.Runner(
         runtime_directory=".runtime",
@@ -474,19 +667,21 @@ def test_capability_limit_is_reserved_before_handler_call(tmp_path) -> None:
         skill_roots=[],
     )
 
-    with pytest.raises(dagent.ExecutionLimitExceeded) as raised:
-        run(runner.run(
-            dagent.ToolAgent(profile="conversation", capabilities=[write]),
-            input="write",
-            limits=dagent.ExecutionLimits(max_capability_calls=0),
-        ))
+    result = run(runner.run(
+        dagent.ToolAgent(profile="conversation", capabilities=[write]),
+        input="write",
+    ))
 
-    assert raised.value.limit_name == "max_capability_calls"
-    assert calls == []
-    assert len(provider.requests) == 1
+    assert calls == ["x"]
+    assert len(provider.requests) == 2
+    assert result.usage == dagent.ExecutionUsage(
+        total_operations=3,
+        model_turns=2,
+        capability_calls=1,
+    )
 
 
-def test_checkpoint_resume_restores_usage_without_resetting_limit(tmp_path) -> None:
+def test_checkpoint_resume_restores_and_accumulates_usage(tmp_path) -> None:
     calls: list[str] = []
 
     @dagent.tool(risk="medium")
@@ -500,7 +695,7 @@ def test_checkpoint_resume_restores_usage_without_resetting_limit(tmp_path) -> N
                 ToolCall(id="call_1", name="tool_write", arguments={"text": "x"})
             ]
         ),
-        ChatResponse(content="not reached"),
+        ChatResponse(content="done"),
     ])
     first_runner = dagent.Runner(
         runtime_directory=".runtime",
@@ -515,7 +710,6 @@ def test_checkpoint_resume_restores_usage_without_resetting_limit(tmp_path) -> N
             review="careful",
         ),
         input="write",
-        limits=dagent.ExecutionLimits(max_total_operations=2),
     ))
     assert first.checkpoint is not None
     first_runner.close()
@@ -527,24 +721,22 @@ def test_checkpoint_resume_restores_usage_without_resetting_limit(tmp_path) -> N
         capabilities=[write],
         skill_roots=[],
     )
-    with pytest.raises(dagent.ExecutionLimitExceeded) as raised:
-        run(second_runner.resume(
-            first.review.approve(),  # type: ignore[union-attr]
-            checkpoint=first.checkpoint,
-        ))
+    resumed = run(second_runner.resume(
+        first.review.approve(),  # type: ignore[union-attr]
+        checkpoint=first.checkpoint,
+    ))
 
-    assert raised.value.limit_name == "max_total_operations"
-    assert raised.value.usage == dagent.ExecutionUsage(
-        total_operations=2,
-        model_turns=1,
+    assert resumed is not None
+    assert resumed.output_text == "done"
+    assert resumed.usage == dagent.ExecutionUsage(
+        total_operations=3,
+        model_turns=2,
         capability_calls=1,
     )
-    assert raised.value.checkpoint is not None
-    assert raised.value.checkpoint.state.status == "failed"
-    assert raised.value.checkpoint.state.pending_review is None
-    assert second_runner.run_checkpoint(first.run_id) == raised.value.checkpoint
+    assert resumed.checkpoint is not None
+    assert second_runner.run_checkpoint(first.run_id) == resumed.checkpoint
     assert calls == ["x"]
-    assert len(provider.requests) == 1
+    assert len(provider.requests) == 2
 
     with pytest.raises(ValueError, match="already been consumed"):
         run(second_runner.resume(
@@ -554,7 +746,7 @@ def test_checkpoint_resume_restores_usage_without_resetting_limit(tmp_path) -> N
     assert calls == ["x"]
 
 
-def test_conversation_continuation_starts_a_new_run_budget(tmp_path) -> None:
+def test_conversation_continuation_starts_new_usage_counters(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(content="first"),
         ChatResponse(content="second"),
@@ -567,18 +759,14 @@ def test_conversation_continuation_starts_a_new_run_budget(tmp_path) -> None:
         skill_roots=[],
     )
     agent = dagent.ToolAgent(profile="conversation", capabilities=[])
-    limits = dagent.ExecutionLimits(max_model_turns=2)
-
     first = run(runner.run(
         agent,
         input="first",
-        limits=limits,
     ))
     second = run(runner.run(
         agent,
         input="second",
         conversation=first.conversation,
-        limits=limits,
     ))
 
     assert second.usage == dagent.ExecutionUsage(
@@ -587,7 +775,7 @@ def test_conversation_continuation_starts_a_new_run_budget(tmp_path) -> None:
         capability_calls=0,
     )
     assert second.plan is not None
-    assert second.plan.limits == limits
+    assert second.plan.max_steps == 888
     assert first.run_id != second.run_id
     assert provider.requests[1]["messages"][-3:] == [
         {"role": "user", "content": "first"},
@@ -607,7 +795,6 @@ def test_cross_process_conversation_continuation_has_independent_usage(tmp_path)
     first = run(first_runner.run(
         agent,
         input="first",
-        limits=dagent.ExecutionLimits(max_model_turns=2),
     ))
     assert first.conversation is not None
     conversation = dagent.ConversationState.model_validate_json(
@@ -625,15 +812,14 @@ def test_cross_process_conversation_continuation_has_independent_usage(tmp_path)
         agent,
         input="second",
         conversation=conversation,
-        limits=dagent.ExecutionLimits(max_model_turns=2),
     ))
 
     assert second.usage.model_turns == 1
     assert second.plan is not None
-    assert second.plan.limits.max_model_turns == 2
+    assert second.plan.max_steps == 888
 
 
-def test_parallel_dag_capability_reservations_are_atomic(tmp_path) -> None:
+def test_parallel_dag_capability_usage_is_recorded_atomically(tmp_path) -> None:
     calls: list[str] = []
 
     @dagent.tool
@@ -658,11 +844,14 @@ def test_parallel_dag_capability_reservations_are_atomic(tmp_path) -> None:
         skill_roots=[],
     )
 
-    with pytest.raises(dagent.ExecutionLimitExceeded):
-        run(runner.run(
-            dag,
-            workspace_root=tmp_path / "runs",
-            limits=dagent.ExecutionLimits(max_capability_calls=2),
-        ))
+    result = run(runner.run(
+        dag,
+        workspace_root=tmp_path / "runs",
+    ))
 
-    assert len(calls) == 1
+    assert sorted(calls) == ["first", "second"]
+    assert result.usage == dagent.ExecutionUsage(
+        total_operations=3,
+        model_turns=0,
+        capability_calls=3,
+    )

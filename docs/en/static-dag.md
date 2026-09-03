@@ -220,9 +220,9 @@ managed agent profiles are exposed as `agent.<name>` capabilities. For example,
 the profile `~/.dagent/profiles/analyst.md` appears as `agent.analyst`; selecting
 it creates an agent node whose `prompt` argument can be a fixed value or a
 structured value reference from graph input, artifacts, or upstream nodes.
-Agent nodes also expose optional `reference_content` and `max_steps` arguments.
-`reference_content` accepts the same value references, so a retrieval node can
-feed evidence to the agent without assembling a format expression:
+Agent nodes also expose an optional `reference_content` argument. It accepts the
+same value references, so a retrieval node can feed evidence to the agent
+without assembling a format expression:
 
 ```python
 retrieve_node = dagent.Node("retrieve", target=retrieve, inputs={"query": dag.input})
@@ -241,8 +241,10 @@ dag.add_edge(retrieve_node, answer_node)
 
 At runtime, non-empty reference content is appended to the user message in a
 separate `Reference content` section and treated as task data. Empty reference
-content adds no section or related instruction. `max_steps` bounds the inner
-tool loop. Run the complete example with
+content adds no section or related instruction. The target `ToolAgent.max_steps`
+declaration bounds the inner tool loop; the node cannot override it. Older
+persisted node arguments containing `max_steps` are ignored with a
+`DeprecationWarning`. Run the complete example with
 `uv run python -m examples.static_rag`.
 
 The Web UI maps agent-node capability controls onto the public SDK fields:

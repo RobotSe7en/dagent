@@ -17,7 +17,7 @@ class _AgentPresetFields(BaseModel):
 
     profile: str = Field(min_length=1)
     description: str = ""
-    max_steps: int = Field(default=8, ge=1)
+    max_steps: int = Field(default=888, ge=1)
     capabilities: list[str] | None = None
     skills: list[str] | None = None
     agents: list[str] | None = None

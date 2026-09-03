@@ -11,7 +11,7 @@ from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
 from dagent.providers.base import normalize_chat_response
 from dagent.harness_runtime.context import ContextAssembler
-from dagent.harness_runtime.execution_budget import reserve_model_turn
+from dagent.harness_runtime.execution_usage import record_model_turn
 from dagent.schemas import ContextPolicy, ContextUsage, ConversationState, UserMessage
 from dagent.state import PromptBuilder, PromptRequest
 
@@ -67,7 +67,7 @@ class ProfiledAgent:
             ),
             policy=self.context_policy,
         )
-        reserve_model_turn()
+        record_model_turn()
         response = normalize_chat_response(
             await self.provider.chat(prepared.messages)
         )

@@ -9,6 +9,43 @@ The current package version is `0.9.5`.
 
 ## Unreleased
 
+### Breaking: one agent-owned execution bound
+
+- `ToolAgent`, `AutoAgent`, and `DagAgent` now expose the same single
+  `max_steps` field with a literal default of `888`. `ToolAgent` counts local
+  tool-loop iterations, `DagAgent` counts dynamic DAG cycles, and `AutoAgent`
+  applies the value to whichever engine its router selects. Provider retries,
+  validation retries, and context compaction do not consume agent steps.
+- Replace `DagAgent(max_cycles=n)` with `DagAgent(max_steps=n)`. Remove
+  `AutoAgent.max_cycles`; its existing `max_steps` now also bounds a dynamic DAG
+  route. This is an intentional public API break with no alias.
+- `Runner.run(...)` and `Runner.stream(...)` no longer accept `limits=`.
+  `ExecutionLimits` and `ExecutionLimitExceeded` are no longer public exports.
+  Remove those imports and move local execution bounds to the target agent.
+  Static `Dag`/`DAGSpec` runs have no root-wide operation limit; Map and Loop
+  structural bounds are unchanged.
+- An `agent.*` capability accepts `prompt` and `reference_content`, but no
+  invocation-level `max_steps`. Configure the registered `ToolAgent.max_steps`
+  instead. Older persisted DAG node arguments remain readable and executable;
+  an old `max_steps` argument is ignored with `DeprecationWarning`.
+- `ExecutionUsage` remains cumulative telemetry for model turns and capability
+  calls. It is restored across review resume and starts from zero for a new
+  conversation run, but no longer enforces a budget.
+- New checkpoints use schema V6 and store one `max_steps` value for agent runs.
+  Static DAG plans store no root step value. V4/V5 checkpoints remain readable
+  and resumable: their global limits are ignored with `DeprecationWarning`,
+  their tool `max_tool_steps` or dynamic-DAG `max_dag_cycles` becomes the local
+  effective bound, and a successful resume emits V6.
+- A V4/V5 checkpoint whose registered child agent relied on the former
+  `ToolAgent.max_steps=8` default must keep that child explicitly pinned to
+  `max_steps=8` for every remaining resume of that run. Registering the same
+  constructor without the explicit value now means `888`; Runner reports this
+  case with a targeted migration error instead of silently changing execution
+  semantics. New runs can use the `888` default.
+- The bundled API and WebUI keep `max_steps` on reusable child-agent presets;
+  the default for newly created presets is now `888`. Agent-node capability
+  forms no longer offer a per-invocation step override.
+
 ### Added: cooperative steering for active root tool-agent runs
 
 - `await Runner.steer(run_id, input)` queues text guidance for an active root
@@ -20,10 +57,10 @@ The current package version is `0.9.5`.
 - Typed streams add `steer.queued`, `steer.applied`, and `steer.discarded`.
   Queues are FIFO and bounded at 32 messages. In-flight model and capability
   calls are never interrupted; unstarted sibling tool calls are skipped.
-- This is additive. `RunState` and `RunCheckpoint` schema versions are
-  unchanged, and no data or configuration migration is required. Hosts that
-  choose to expose steering must retain the same in-process `Runner`; queued
-  messages are intentionally ephemeral and are not checkpointed.
+- Steering itself adds no fields to `RunState` or `RunCheckpoint`. Hosts that
+  choose to expose it must retain the same in-process `Runner`; queued messages
+  are intentionally ephemeral and are not checkpointed. The separate V6
+  checkpoint migration in this Unreleased section still applies.
 
 ## 0.9.5
 

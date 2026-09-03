@@ -23,7 +23,10 @@ from dagent.capabilities.mcp.config import (
     MCPStdioStderr,
     validate_mcp_stdio_stderr,
 )
-from dagent.capabilities.providers import AgentCapabilityProvider
+from dagent.capabilities.providers import (
+    AgentCapabilityProvider,
+    _agent_config_fingerprint,
+)
 from dagent.capabilities.python_tools import (
     load_python_tool_sources,
 )
@@ -60,10 +63,9 @@ from dagent.harness_runtime import (
     ValidatorAgent,
 )
 from dagent.harness_runtime.artifacts import ArtifactUpload
-from dagent.harness_runtime.execution_budget import (
-    ExecutionBudget,
-    ExecutionLimitExceeded,
-    execution_budget_scope,
+from dagent.harness_runtime.execution_usage import (
+    ExecutionUsageTracker,
+    execution_usage_scope,
 )
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.dag_design import design_dag as design_dag_candidate
@@ -113,7 +115,6 @@ from dagent.schemas import (
     DAGDesignResult,
     DAGDesignSelection,
     DAGSpec,
-    ExecutionLimits,
     ExecutionUsage,
     MCPServerRegistrationResult,
     MCPServerSnapshot,
@@ -1281,7 +1282,6 @@ class Runner:
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
-        limits: ExecutionLimits | None = None,
         execution: RunExecution = "local",
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
@@ -1319,14 +1319,13 @@ class Runner:
             if isinstance(target, (AutoAgent, ToolAgent, DagAgent))
             else None
         )
-        resolved_limits = limits or ExecutionLimits()
-        budget = ExecutionBudget(resolved_limits, ExecutionUsage())
+        usage_tracker = ExecutionUsageTracker()
         with (
             self._run_scope(
                 resolved_execution,
                 skill_names=skill_names,
             ),
-            execution_budget_scope(budget),
+            execution_usage_scope(usage_tracker),
             self._steering_scope(on_event) as steering_on_event,
         ):
             return await self._run_dispatch(
@@ -1336,8 +1335,7 @@ class Runner:
                 graph_input=graph_input,
                 review=review,
                 dynamic_adjust=dynamic_adjust,
-                limits=resolved_limits,
-                budget=budget,
+                usage_tracker=usage_tracker,
                 workspace_root=workspace_root,
                 workspace_path=resolved_workspace_path,
                 run_id=run_id,
@@ -1356,8 +1354,7 @@ class Runner:
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
-        limits: ExecutionLimits,
-        budget: ExecutionBudget,
+        usage_tracker: ExecutionUsageTracker,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
         run_id: str | None = None,
@@ -1399,8 +1396,7 @@ class Runner:
                 skill_ids=resolved.skill_ids,
                 review_level=review_level,
                 dynamic_adjust=resolved_dynamic_adjust,
-                limits=limits,
-                usage=budget.snapshot(),
+                usage=usage_tracker.snapshot(),
             )
 
         if isinstance(target, ToolAgent):
@@ -1432,8 +1428,7 @@ class Runner:
                 skill_ids=resolved.skill_ids,
                 review_level=review_level,
                 dynamic_adjust=True,
-                limits=limits,
-                usage=budget.snapshot(),
+                usage=usage_tracker.snapshot(),
             )
 
         if isinstance(target, DagAgent):
@@ -1469,8 +1464,7 @@ class Runner:
                 skill_ids=resolved.skill_ids,
                 review_level=review_level,
                 dynamic_adjust=resolved_dynamic_adjust,
-                limits=limits,
-                usage=budget.snapshot(),
+                usage=usage_tracker.snapshot(),
             )
 
         if isinstance(target, Dag):
@@ -1501,8 +1495,7 @@ class Runner:
                 result,
                 spec=spec,
                 review_level=review_level,
-                limits=limits,
-                usage=budget.snapshot(),
+                usage=usage_tracker.snapshot(),
             )
 
         if isinstance(target, DAGSpec):
@@ -1532,8 +1525,7 @@ class Runner:
                 result,
                 spec=spec,
                 review_level=review_level,
-                limits=limits,
-                usage=budget.snapshot(),
+                usage=usage_tracker.snapshot(),
             )
 
         raise TypeError("Runner.run expects an AutoAgent, ToolAgent, DagAgent, Dag, or DAGSpec target.")
@@ -1544,7 +1536,6 @@ class Runner:
         *,
         spec: DAGSpec,
         review_level: ReviewLevel,
-        limits: ExecutionLimits,
         usage: ExecutionUsage,
     ) -> RunResult:
         capability_ids = self._static_capability_ids(spec)
@@ -1556,7 +1547,6 @@ class Runner:
             skill_ids=skill_ids,
             review_level=review_level,
             dynamic_adjust=True,
-            limits=limits,
             usage=usage,
         )
 
@@ -1569,7 +1559,6 @@ class Runner:
         skill_ids: tuple[str, ...],
         review_level: ReviewLevel,
         dynamic_adjust: bool,
-        limits: ExecutionLimits,
         usage: ExecutionUsage,
     ) -> RunResult:
         capability_ids = tuple(sorted(capability_ids))
@@ -1591,12 +1580,19 @@ class Runner:
             else None
         )
         plan = ResolvedRunPlan(
-            schema_version=5,
+            schema_version=6,
             runtime_kind=state.kind,
             tool_profile=runtime.tool_agent.profile.model_copy(deep=True),
             planner_profile=runtime.dag_agent.profile.model_copy(deep=True),
-            max_tool_steps=runtime.tool_agent.max_steps,
-            max_dag_cycles=runtime.dag_agent.loop.max_cycles,
+            max_steps=(
+                None
+                if state.kind == "static_dag"
+                else (
+                    runtime.tool_agent.max_steps
+                    if state.kind == "tool"
+                    else runtime.dag_agent.loop.max_steps
+                )
+            ),
             review_level=review_level,
             dynamic_adjust=dynamic_adjust,
             capability_ids=capability_ids,
@@ -1612,7 +1608,6 @@ class Runner:
             validation_enabled=runtime.enable_validation,
             validator_profile=validator_profile,
             max_validation_retries=runtime.max_validation_retries,
-            limits=limits,
             planner_frontend=runtime.dag_agent.loop.planner_frontend,
             planner_skill=runtime.dag_agent.loop.planner_skill,
             context_policy=runtime.tool_agent.context_policy,
@@ -1665,6 +1660,57 @@ class Runner:
             fingerprints[capability_id] = hashlib.sha256(canonical).hexdigest()
         return fingerprints
 
+    def _legacy_agent_capability_fingerprint(
+        self,
+        capability_id: str,
+        *,
+        max_steps: int | None = None,
+    ) -> str:
+        definition = self._runtime.capability_catalog.get(capability_id)
+        if definition is None:
+            raise KeyError(f"Capability '{capability_id}' is not registered.")
+        payload = definition.model_dump(mode="json")
+        if max_steps is not None:
+            agent_name = capability_id.removeprefix("agent.")
+            config = self._registered_agent_runtime_configs.get(agent_name)
+            if config is None:
+                raise KeyError(
+                    f"Registered agent configuration '{capability_id}' is missing."
+                )
+            enabled_toolsets = tuple(config.get("enabled_toolsets") or ("builtin",))
+            tool_adapter = config["tool_adapter"]
+            capability_ids = tuple(
+                item.id for item in tool_adapter.capabilities(enabled_toolsets)
+            )
+            definition_config = dict(payload["config"])
+            definition_config["execution_fingerprint"] = _agent_config_fingerprint(
+                profile=config["profile"],
+                max_steps=max_steps,
+                context_policy=config["context_policy"],
+                result_storage_policy=config["result_storage_policy"],
+                capability_ids=capability_ids,
+                skills=config.get("skills"),
+                enabled_toolsets=enabled_toolsets,
+            )
+            payload["config"] = definition_config
+        parameters = dict(payload["parameters"])
+        properties = dict(parameters.get("properties") or {})
+        properties["max_steps"] = {
+            "type": "integer",
+            "description": "Maximum tool-loop steps for this agent node.",
+            "default": 8,
+            "minimum": 1,
+        }
+        parameters["properties"] = properties
+        payload["parameters"] = parameters
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
     async def stream(
         self,
         target: RunTarget,
@@ -1674,7 +1720,6 @@ class Runner:
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
-        limits: ExecutionLimits | None = None,
         execution: RunExecution = "local",
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
@@ -1696,7 +1741,6 @@ class Runner:
                 graph_input=graph_input,
                 review=review,
                 dynamic_adjust=dynamic_adjust,
-                limits=limits,
                 execution=execution,
                 workspace_root=workspace_root,
                 workspace_path=workspace_path,
@@ -1889,7 +1933,7 @@ class Runner:
             usage=checkpoint.usage,
         )
         runtime = self._runtime_for_resolved_plan(plan)
-        budget = ExecutionBudget(plan.limits, restored.usage)
+        usage_tracker = ExecutionUsageTracker(restored.usage)
         resolved_execution = _resolve_run_execution(execution, resume_state)
         self._consumed_review_ids.add(decision.review_id)
         try:
@@ -1898,7 +1942,7 @@ class Runner:
                     resolved_execution,
                     skill_names=plan.skill_ids,
                 ),
-                execution_budget_scope(budget),
+                execution_usage_scope(usage_tracker),
             ):
                 result = await runtime.resume_review(
                     decision.review_id,
@@ -1921,11 +1965,10 @@ class Runner:
                     skill_ids=plan.skill_ids,
                     review_level=review_level,
                     dynamic_adjust=plan.dynamic_adjust,
-                    limits=plan.limits,
-                    usage=budget.snapshot(),
+                    usage=usage_tracker.snapshot(),
                 )
-        except BaseException as exc:
-            usage = budget.snapshot()
+        except BaseException:
+            usage = usage_tracker.snapshot()
             failed_update: dict[str, Any] = {
                 "status": "failed",
                 "pending_review": None,
@@ -1951,8 +1994,6 @@ class Runner:
             self._run_checkpoints[failed_state.run_id] = failed_checkpoint.model_copy(
                 deep=True
             )
-            if isinstance(exc, ExecutionLimitExceeded):
-                exc.attach_checkpoint(failed_checkpoint, usage)
             raise
 
     def _validate_checkpoint_runtime(self, checkpoint: RunCheckpoint) -> None:
@@ -1978,6 +2019,31 @@ class Runner:
                 checkpoint.plan.capability_fingerprints[capability_id]
                 != current_fingerprint
             ):
+                legacy_agent_match = (
+                    checkpoint.plan.schema_version < 6
+                    and capability_id in checkpoint.plan.agent_ids
+                    and checkpoint.plan.capability_fingerprints[capability_id]
+                    == self._legacy_agent_capability_fingerprint(capability_id)
+                )
+                if legacy_agent_match:
+                    continue
+                legacy_default_match = (
+                    checkpoint.plan.schema_version < 6
+                    and capability_id in checkpoint.plan.agent_ids
+                    and capability_id.removeprefix("agent.")
+                    in self._registered_agent_runtime_configs
+                    and checkpoint.plan.capability_fingerprints[capability_id]
+                    == self._legacy_agent_capability_fingerprint(
+                        capability_id,
+                        max_steps=8,
+                    )
+                )
+                if legacy_default_match:
+                    raise ValueError(
+                        f"Legacy checkpoint capability '{capability_id}' used "
+                        "ToolAgent(max_steps=8). Register that child agent with "
+                        "max_steps=8 while resuming this run."
+                    )
                 raise ValueError(
                     "Checkpoint capability definition changed: "
                     f"{capability_id}"
@@ -2009,9 +2075,8 @@ class Runner:
                 plan.capability_ids,
             ),
             tool_profile=plan.tool_profile,
-            tool_max_steps=plan.max_tool_steps,
+            max_steps=plan.effective_max_steps(),
             dag_profile=plan.planner_profile,
-            dag_max_cycles=plan.max_dag_cycles,
             validator=validator,
             enable_validation=plan.validation_enabled,
             max_validation_retries=plan.max_validation_retries,
@@ -2035,9 +2100,8 @@ class Runner:
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile=agent.profile,
-            tool_max_steps=agent.max_steps,
+            max_steps=agent.max_steps,
             dag_profile=agent.planner_profile,
-            dag_max_cycles=agent.max_cycles,
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
             context_policy=agent.context,
@@ -2050,9 +2114,8 @@ class Runner:
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile=agent.profile,
-            tool_max_steps=agent.max_steps,
+            max_steps=agent.max_steps,
             dag_profile="dag_agent",
-            dag_max_cycles=6,
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
             context_policy=agent.context,
@@ -2065,9 +2128,8 @@ class Runner:
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile="conversation",
-            tool_max_steps=8,
+            max_steps=agent.max_steps,
             dag_profile=agent.planner_profile,
-            dag_max_cycles=agent.max_cycles,
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
             context_policy=agent.context,
@@ -2334,9 +2396,8 @@ def _assemble_runtime(
     catalog: Any,
     tool_adapter: CapabilityToolAdapter,
     tool_profile: str | AgentProfile,
-    tool_max_steps: int,
+    max_steps: int,
     dag_profile: str | AgentProfile,
-    dag_max_cycles: int,
     validator: ValidatorAgent | None,
     enable_validation: bool,
     max_validation_retries: int,
@@ -2372,7 +2433,7 @@ def _assemble_runtime(
             runtime_directory=runtime_directory,
         ),
         profile=_resolve_profile(tool_profile, profile_root=profile_root),
-        max_steps=tool_max_steps,
+        max_steps=max_steps,
         extra_system_prompt=extra_system_prompt,
         skill_prompt_resolver=skill_prompt_resolver,
         context_policy=resolved_context_policy,
@@ -2393,7 +2454,7 @@ def _assemble_runtime(
                 extra_system_prompt=extra_system_prompt,
             ),
             tool_adapter=tool_adapter,
-            max_cycles=dag_max_cycles,
+            max_steps=max_steps,
             planner_frontend=planner_frontend,
             planner_skill=planner_skill,
         ),
@@ -2427,9 +2488,8 @@ def _create_runtime(
     capabilities: Iterable[CapabilityBinding],
     tool_profile: str | AgentProfile = "conversation",
     validator: str | AgentProfile | ValidatorAgent | None = None,
-    tool_max_steps: int = 8,
+    max_steps: int = 888,
     dag_profile: str | AgentProfile = "dag_agent",
-    dag_max_cycles: int = 6,
     skills_provider: SkillsCapabilityProvider | None = None,
     profile_root: str | Path | None = None,
     planner_frontend: PlannerFrontend = "typed_spec",
@@ -2456,9 +2516,8 @@ def _create_runtime(
         catalog=catalog,
         tool_adapter=_tool_adapter(catalog, tuple(sorted(catalog.ids()))),
         tool_profile=tool_profile,
-        tool_max_steps=tool_max_steps,
+        max_steps=max_steps,
         dag_profile=dag_profile,
-        dag_max_cycles=dag_max_cycles,
         validator=resolved_validator,
         enable_validation=resolved_validator is not None,
         max_validation_retries=1,
@@ -2478,9 +2537,8 @@ def _runtime_from_existing(
     base: HarnessRuntime,
     *,
     tool_profile: str | AgentProfile,
-    tool_max_steps: int,
+    max_steps: int,
     dag_profile: str | AgentProfile,
-    dag_max_cycles: int,
     visible_capability_ids: tuple[str, ...],
     profile_root: str | Path | None,
     context_policy: ContextPolicy,
@@ -2492,9 +2550,8 @@ def _runtime_from_existing(
         catalog=base.capability_catalog,
         tool_adapter=_tool_adapter(base.capability_catalog, visible_capability_ids),
         tool_profile=tool_profile,
-        tool_max_steps=tool_max_steps,
+        max_steps=max_steps,
         dag_profile=dag_profile,
-        dag_max_cycles=dag_max_cycles,
         validator=base.validator,
         enable_validation=base.enable_validation,
         max_validation_retries=base.max_validation_retries,

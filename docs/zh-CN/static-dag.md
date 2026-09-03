@@ -201,9 +201,8 @@ Python 中的静态 DAG 节点可以直接 target `ToolAgent` 对象。在本地
 agent profiles 会暴露为 `agent.<name>` capabilities。例如
 `~/.dagent/profiles/analyst.md` 会显示为 `agent.analyst`；选择它会创建一个 agent 节点，
 它的 `prompt` 参数可以是固定值，也可以绑定 graph input、artifacts 或上游节点输出。
-Agent 节点还会暴露可选的 `reference_content` 和 `max_steps` 参数。
-`reference_content` 支持同样的 value references，因此检索节点可以直接把参考内容传给
-agent，无需手动组装 format expression：
+Agent 节点还会暴露可选的 `reference_content` 参数。它支持同样的 value references，
+因此检索节点可以直接把参考内容传给 agent，无需手动组装 format expression：
 
 ```python
 retrieve_node = dagent.Node("retrieve", target=retrieve, inputs={"query": dag.input})
@@ -221,8 +220,10 @@ dag.add_edge(retrieve_node, answer_node)
 ```
 
 运行时，非空参考内容会作为 task data 追加到 user message 的独立
-`Reference content` 区块；参考内容为空时不会增加该区块或相关指令。`max_steps` 用于控制
-内部有界 tool loop。完整示例可运行 `uv run python -m examples.static_rag`。
+`Reference content` 区块；参考内容为空时不会增加该区块或相关指令。目标
+`ToolAgent.max_steps` 声明控制内部有界 tool loop，node 不能覆盖它。旧持久化 node arguments
+中的 `max_steps` 会被忽略并发出 `DeprecationWarning`。完整示例可运行
+`uv run python -m examples.static_rag`。
 
 Web UI 的 agent 节点能力范围会映射到公开 SDK 字段：
 `ToolAgent(capabilities=[...], skills=[...])`。Tool 和 MCP 选择会保存为

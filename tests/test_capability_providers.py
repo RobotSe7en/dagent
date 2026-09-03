@@ -323,7 +323,7 @@ def test_mcp_skill_and_agent_providers_register_and_execute(tmp_path) -> None:
     assert agent_definition is not None
     assert agent_definition.parameters["properties"]["prompt"]["default"] == ""
     assert agent_definition.parameters["properties"]["reference_content"]["default"] == ""
-    assert agent_definition.parameters["properties"]["max_steps"]["default"] == 8
+    assert "max_steps" not in agent_definition.parameters["properties"]
     assert provider.requests[0]["messages"][0]["role"] == "system"
 
 

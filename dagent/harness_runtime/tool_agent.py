@@ -27,10 +27,7 @@ from dagent.harness_runtime.capability_scope import (
     capability_scope_from_state,
     capability_scope_to_state,
 )
-from dagent.harness_runtime.execution_budget import (
-    ExecutionLimitExceeded,
-    reserve_model_turn,
-)
+from dagent.harness_runtime.execution_usage import record_model_turn
 from dagent.harness_runtime.runtime_events import (
     LoopEventHandler,
     ResponseStreamContext,
@@ -128,7 +125,7 @@ class ToolAgent:
         loop: "ToolAgentLoop",
         profile: AgentProfile,
         prompt_builder: PromptBuilder | None = None,
-        max_steps: int = 8,
+        max_steps: int = 888,
         extra_system_prompt: str | None = None,
         skill_prompt_resolver: SkillPromptResolver | None = None,
         context_policy: ContextPolicy | None = None,
@@ -314,8 +311,6 @@ class ToolAgent:
                     run_id=state.run_id,
                     content=feed_content,
                 )
-            except ExecutionLimitExceeded:
-                raise
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
                 self.loop._emit_capability_event(
@@ -565,8 +560,6 @@ class ToolAgentLoop:
                         context=context,
                         callbacks=callbacks,
                     )
-                except ExecutionLimitExceeded:
-                    raise
                 except Exception as exc:
                     capability_result = CapabilityResult.failed(
                         invocation,
@@ -597,7 +590,7 @@ class ToolAgentLoop:
         *,
         run_id: str | None = None,
         boundary: Boundary,
-        max_steps: int = 8,
+        max_steps: int = 888,
         system_message: dict[str, Any],
         context_policy: ContextPolicy,
         result_storage_policy: ResultStoragePolicy,
@@ -1036,8 +1029,6 @@ class ToolAgentLoop:
                         context=execution_context,
                         callbacks=capability_callbacks,
                     )
-                except ExecutionLimitExceeded:
-                    raise
                 except Exception as exc:
                     error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
                     self._emit_capability_event(
@@ -1192,7 +1183,7 @@ class ToolAgentLoop:
             ),
             policy=context_policy,
         )
-        reserve_model_turn()
+        record_model_turn()
         response = normalize_chat_response(
             await self.provider.chat(prepared.messages)
         )
@@ -1236,7 +1227,7 @@ class ToolAgentLoop:
         on_event: LoopEventHandler | None,
     ) -> ChatResponse:
         async def chat_attempt() -> ChatResponse:
-            reserve_model_turn()
+            record_model_turn()
             return await self.provider.chat(messages, tools=tools)
 
         if on_token is None and on_event is None:
@@ -1268,7 +1259,7 @@ class ToolAgentLoop:
         async def attempt() -> ChatResponse:
             nonlocal emitted_tokens, response
             response = None
-            reserve_model_turn()
+            record_model_turn()
             if hasattr(self.provider, "stream_chat"):
                 async for event in self.provider.stream_chat(messages, tools=tools):
                     if event.type == "token" and event.content:

@@ -381,7 +381,7 @@ def test_harness_runtime_dynamic_dag_loop_retries_failed_llm_request_before_cycl
         tool_adapter=tool_adapter,
         _llm_retry_sleep=record_sleep,
     )
-    dag_agent_loop.max_cycles = 1
+    dag_agent_loop.max_steps = 1
     runtime = HarnessRuntime(runtime_directory=".runtime",
         provider=provider,
         tool_agent=ToolAgent(
@@ -547,7 +547,7 @@ def test_harness_runtime_dag_stream_does_not_retry_after_token_emitted() -> None
     provider = FailAfterTokenProvider()
     runtime = _runtime(provider)
     runtime.dag_agent.loop.llm_retry_sleep = record_sleep
-    runtime.dag_agent.loop.max_cycles = 1
+    runtime.dag_agent.loop.max_steps = 1
     streamed: list[str] = []
 
     result = run(run_message(
@@ -971,7 +971,7 @@ def test_harness_runtime_planning_retry_does_not_stop_after_start_only() -> None
         ChatResponse(content=final_answer_response("The DAG completed after inspection.")),
     ])
     runtime = _runtime(provider)
-    runtime.dag_agent.loop.max_cycles = 3
+    runtime.dag_agent.loop.max_steps = 3
 
     result = run(run_message(runtime, "Where am I?", mode="dag", review_level="fast"))
 

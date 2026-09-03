@@ -70,7 +70,6 @@ from dagent.schemas.capability import (
     validate_capability_name,
 )
 from dagent.schemas.results import (
-    ExecutionLimits,
     ExecutionUsage,
     LoopOutcome,
     LoopStatus,
@@ -141,7 +140,6 @@ __all__ = [
     "LoopNodePayload",
     "LoopOutcome",
     "LoopStatus",
-    "ExecutionLimits",
     "ExecutionUsage",
     "MapNodePayload",
     "PendingCapabilityCall",
