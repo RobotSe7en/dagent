@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.5`.
+The current package version is `0.9.6`.
 
 ## Unreleased
+
+## 0.9.6
 
 ### Breaking: one agent-owned execution bound
 
