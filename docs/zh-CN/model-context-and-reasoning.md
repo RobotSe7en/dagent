@@ -126,7 +126,9 @@ streaming、structured output 与 reasoning 控制；否则在 Chat 满足请求
 不会把可能具有副作用的请求换协议重放。
 
 Responses generation 只有终态为 `completed` 才会被接受；`failed`、`incomplete` 和
-`cancelled` 会抛出 `ProviderResponseError`，流式输出的部分内容不会被转换成成功 run。
+`cancelled` 会抛出 `ProviderResponseError`。Chat Completions 返回
+`finish_reason="length"`、表示输出上限耗尽时也会抛出该异常。流式输出的部分内容不会被
+转换成成功 run。
 
 每个已记录的 `AssistantMessage.model_call` 都会暴露实际选择的协议、请求用途、请求值与
 生效的 effort/输出限制、实际 wire 字段以及自动选择原因。这些审计元数据会随 conversation
@@ -154,8 +156,9 @@ vLLM 精确计数不增加安全系数，安全系数只应用于 heuristic/cust
 3. 汇总过大 active run 中已经完成的中间步骤。
 
 当前 run 的起始用户输入、未闭合的 assistant/tool-result chain 和最新原子步骤会保留，
-tool-call/result pair 不会拆开。如果缩减后必要输入仍超过有效窗口，会在 generation 前抛出
-`ContextWindowExceeded`。
+tool-call/result pair 不会拆开。16% 保留目标是软目标：如果固定输入仍会造成硬超限，dagent
+会先继续汇总最旧的跨 run 历史。如果缩减后必要输入仍超过有效窗口，会在 generation 前
+抛出 `ContextWindowExceeded`。
 
 默认在输入容量的 80% 触发压缩，这是软阈值：完成全部安全缩减后，只要尚未超过硬输入
 预算，仍可发起请求。摘要默认最多生成 8,192 tokens，并独立使用

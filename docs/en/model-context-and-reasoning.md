@@ -136,8 +136,9 @@ possibly side-effecting request.
 
 A Responses generation is accepted only with terminal status `completed`.
 `failed`, `incomplete`, and `cancelled` terminal states raise
-`ProviderResponseError`; partial streaming output is never converted into a
-successful run.
+`ProviderResponseError`. Chat Completions also raises this error when
+`finish_reason="length"` reports output-limit exhaustion. Partial streaming
+output is never converted into a successful run.
 
 Each recorded `AssistantMessage.model_call` exposes the selected protocol,
 request purpose, requested and effective effort/output limit, actual wire field,
@@ -172,7 +173,9 @@ turns. At the configured trigger, dagent applies reductions in this order:
 
 The current run's initiating user input, an open assistant/tool-result chain,
 and the latest atomic step are retained. Tool-call/result pairs are not split.
-If required input still exceeds the effective window after reductions,
+The 16% retention target is soft: when fixed input would otherwise cause a hard
+overflow, dagent summarizes additional oldest cross-run history first. If
+required input still exceeds the effective window after reductions,
 `ContextWindowExceeded` is raised before generation.
 
 The default trigger is 80% of input capacity and is a soft threshold: after all

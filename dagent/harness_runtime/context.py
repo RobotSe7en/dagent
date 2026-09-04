@@ -281,6 +281,54 @@ class ContextAssembler:
                 stream=stream,
             )
 
+        # Retention is a soft target. If fixed input such as system instructions
+        # and tool schemas still causes a hard overflow, compact the oldest
+        # retained cross-run groups before touching the active run.
+        while estimate > input_budget:
+            retained_item_tokens = sum(
+                _conversation_item_tokens(item, self.token_counter)
+                for item in working.items
+            )
+            compactable = _compaction_prefix(
+                working.items,
+                active_run_id=active_run_id,
+                retain_tokens=max(
+                    0,
+                    retained_item_tokens - (estimate - input_budget),
+                ),
+                counter=self.token_counter,
+            )
+            if not compactable:
+                break
+            working, method, reason = await self._compact_slice(
+                working,
+                start=0,
+                end=len(compactable),
+                policy=policy,
+                compact=compact,
+            )
+            compacted_items += len(compactable)
+            if method == "deterministic_fallback" or compaction_method == "none":
+                compaction_method = method
+            compaction_reason = reason or compaction_reason
+            request, projection = self._project(
+                system_message=system_message,
+                conversation=working,
+                tools=tools,
+                policy=policy,
+                active_run_id=active_run_id,
+                omitted_reasoning_ids=omitted_reasoning_ids,
+                response_format=response_format,
+                max_output_tokens=request_max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                purpose=purpose,
+            )
+            estimate, exact_count = await self._safe_estimate(
+                request,
+                policy,
+                stream=stream,
+            )
+
         # If one run itself is too large, compact only completed middle steps.
         # Keep that run's initiating user input and its latest atomic tool step.
         active_slice = _active_compaction_slice(
@@ -581,6 +629,7 @@ class ContextAssembler:
             tools=tuple(dict(tool) for tool in tools),
             response_format=response_format,
             max_output_tokens=max_output_tokens,
+            inherit_provider_max_output_tokens=False,
             reasoning_effort=reasoning_effort,
             purpose=purpose,
         )

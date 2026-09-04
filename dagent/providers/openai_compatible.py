@@ -47,13 +47,19 @@ class ProviderCapabilityError(RuntimeError):
 
 
 class ProviderResponseError(RuntimeError):
-    """A Responses generation ended without a successful terminal state."""
+    """A model generation ended without a successful terminal state."""
 
     def __init__(self, status: str, details: Any = None) -> None:
         self.status = status
         self.details = details
         suffix = f": {details}" if details not in (None, "") else ""
-        super().__init__(f"Responses generation ended with status '{status}'{suffix}")
+        source = (
+            "Chat Completions"
+            if isinstance(details, Mapping)
+            and details.get("protocol") == "chat_completions"
+            else "Responses"
+        )
+        super().__init__(f"{source} generation ended with status '{status}'{suffix}")
 
 
 class OpenAICompatibleProvider:
@@ -302,7 +308,17 @@ class OpenAICompatibleProvider:
             resolution_reason=resolution_reason,
         )
         response = await self.client.chat.completions.create(**kwargs)
-        message = response.choices[0].message
+        choice = response.choices[0]
+        if getattr(choice, "finish_reason", None) == "length":
+            raise ProviderResponseError(
+                "incomplete",
+                {
+                    "protocol": "chat_completions",
+                    "finish_reason": "length",
+                    "reason": "max_output_tokens",
+                },
+            )
+        message = choice.message
         result = ModelResponse(
             content=str(getattr(message, "content", None) or ""),
             reasoning=_reasoning_content(message),
@@ -337,6 +353,7 @@ class OpenAICompatibleProvider:
         refusal_parts: list[str] = []
         tool_call_parts: dict[int, dict[str, str]] = {}
         token_usage: ModelTokenUsage | None = None
+        finish_reason: str | None = None
         capture_tag_reasoning = _reasoning_capture(self.config) == "field_and_tags"
         thinking_parser = _ThinkingStreamParser(enabled=True)
         async for chunk in response_stream:
@@ -346,7 +363,11 @@ class OpenAICompatibleProvider:
             choices = getattr(chunk, "choices", None) or []
             if not choices:
                 continue
-            delta = choices[0].delta
+            choice = choices[0]
+            chunk_finish_reason = getattr(choice, "finish_reason", None)
+            if chunk_finish_reason is not None:
+                finish_reason = str(chunk_finish_reason)
+            delta = choice.delta
             reasoning = _reasoning_content(delta)
             if reasoning:
                 reasoning_parts.append(reasoning)
@@ -389,6 +410,15 @@ class OpenAICompatibleProvider:
                     channel=cast(Literal["reasoning", "content"], channel),
                     content=part,
                 )
+        if finish_reason == "length":
+            raise ProviderResponseError(
+                "incomplete",
+                {
+                    "protocol": "chat_completions",
+                    "finish_reason": "length",
+                    "reason": "max_output_tokens",
+                },
+            )
         yield ModelStreamEvent(
             type="done",
             response=ModelResponse(
@@ -575,6 +605,7 @@ class OpenAICompatibleProvider:
         if self.config.reasoning is not None or request.reasoning_effort is not None:
             extra_body["include_reasoning"] = True
         max_output_tokens = self._effective_max_output_tokens(request)
+        requested_max_output_tokens = self._requested_max_output_tokens(request)
         output_limit_field = None
         if max_output_tokens is not None:
             output_limit_field = (
@@ -598,11 +629,7 @@ class OpenAICompatibleProvider:
                 if kwargs.get("reasoning_effort") is not None
                 else None
             ),
-            requested_max_output_tokens=(
-                request.max_output_tokens
-                if request.max_output_tokens is not None
-                else self.config.max_output_tokens
-            ),
+            requested_max_output_tokens=requested_max_output_tokens,
             effective_max_output_tokens=max_output_tokens,
             output_limit_field=output_limit_field,
             fallback_reason=resolution_reason,
@@ -637,6 +664,7 @@ class OpenAICompatibleProvider:
         ) and capabilities.server_kind == "vllm":
             extra_body["include_reasoning"] = True
         max_output_tokens = self._effective_max_output_tokens(request)
+        requested_max_output_tokens = self._requested_max_output_tokens(request)
         if max_output_tokens is not None:
             kwargs["max_output_tokens"] = max_output_tokens
         extra_body = _merge_dicts(extra_body, self.config.extra_body)
@@ -671,11 +699,7 @@ class OpenAICompatibleProvider:
             request_purpose=request.purpose,
             requested_reasoning_effort=reasoning_effort,
             effective_reasoning_effort=reasoning_effort,
-            requested_max_output_tokens=(
-                request.max_output_tokens
-                if request.max_output_tokens is not None
-                else self.config.max_output_tokens
-            ),
+            requested_max_output_tokens=requested_max_output_tokens,
             effective_max_output_tokens=max_output_tokens,
             output_limit_field=(
                 "max_output_tokens" if max_output_tokens is not None else None
@@ -695,7 +719,19 @@ class OpenAICompatibleProvider:
         requested = request.max_output_tokens
         if configured is not None and requested is not None:
             return min(configured, requested)
-        return requested if requested is not None else configured
+        if requested is not None:
+            return requested
+        if request.inherit_provider_max_output_tokens:
+            return configured
+        return None
+
+    def _requested_max_output_tokens(self, request: ModelRequest) -> int | None:
+        if (
+            request.max_output_tokens is not None
+            or not request.inherit_provider_max_output_tokens
+        ):
+            return request.max_output_tokens
+        return self.config.max_output_tokens
 
     def _resolved_chat_reasoning_field(
         self,
@@ -727,9 +763,15 @@ class OpenAICompatibleProvider:
                 raise ProviderCapabilityError(
                     f"Configured protocol={protocol} is not exposed by the server."
                 )
+            required = self._required_capabilities(
+                request,
+                stream=stream,
+                protocol=protocol,
+                capabilities=capabilities,
+            )
             unsupported = tuple(
                 name
-                for name in self._required_capabilities(request, stream=stream)
+                for name in required
                 if getattr(selected, name) == "unsupported"
             )
             if unsupported:
@@ -744,17 +786,28 @@ class OpenAICompatibleProvider:
 
         chat = capabilities.chat_completions.endpoint
         responses = capabilities.responses.endpoint
-        required = self._required_capabilities(request, stream=stream)
+        responses_required = self._required_capabilities(
+            request,
+            stream=stream,
+            protocol="responses",
+            capabilities=capabilities,
+        )
+        chat_required = self._required_capabilities(
+            request,
+            stream=stream,
+            protocol="chat_completions",
+            capabilities=capabilities,
+        )
         if responses == "supported":
             missing_responses = _missing_capabilities(
                 capabilities.responses,
-                required,
+                responses_required,
             )
             if not missing_responses:
                 return "responses", "Responses supports the current request and is preferred."
             if chat == "supported" and not _missing_capabilities(
                 capabilities.chat_completions,
-                required,
+                chat_required,
             ):
                 return (
                     "chat_completions",
@@ -769,7 +822,7 @@ class OpenAICompatibleProvider:
         if chat == "supported":
             missing_chat = _missing_capabilities(
                 capabilities.chat_completions,
-                required,
+                chat_required,
             )
             if missing_chat:
                 raise ProviderCapabilityError(
@@ -792,6 +845,8 @@ class OpenAICompatibleProvider:
         request: ModelRequest | None,
         *,
         stream: bool,
+        protocol: Literal["chat_completions", "responses"],
+        capabilities: ProviderCapabilities,
     ) -> tuple[str, ...]:
         required: list[str] = []
         if request is not None and request.tools:
@@ -809,11 +864,18 @@ class OpenAICompatibleProvider:
                 else None
             )
         )
+        replayed_reasoning = bool(
+            request is not None
+            and any(getattr(item, "reasoning", "") for item in request.items)
+        )
+        sends_replayed_reasoning = replayed_reasoning and (
+            protocol == "responses"
+            or self._resolved_chat_reasoning_field(capabilities) != "omit"
+        )
         if (
             reasoning_effort is not None
             or self.config.reasoning is not None
-            or request is not None
-            and any(getattr(item, "reasoning", "") for item in request.items)
+            or sends_replayed_reasoning
         ):
             required.append("reasoning")
         if reasoning_effort is not None:

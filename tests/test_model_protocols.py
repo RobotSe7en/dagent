@@ -366,6 +366,32 @@ async def test_unset_output_limit_is_not_sent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_explicit_unset_output_limit_does_not_inherit_provider_limit() -> None:
+    client = DualProtocolClient()
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            protocol="responses",
+            max_output_tokens=512,
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+    request = replace(
+        _simple_request(),
+        max_output_tokens=None,
+        inherit_provider_max_output_tokens=False,
+    )
+
+    response = await provider.complete(request)
+
+    assert "max_output_tokens" not in client.responses.calls[0]
+    assert response.metadata is not None
+    assert response.metadata.requested_max_output_tokens is None
+    assert response.metadata.effective_max_output_tokens is None
+
+
+@pytest.mark.asyncio
 async def test_auto_uses_chat_when_only_chat_supports_output_limit() -> None:
     client = DualProtocolClient(openapi=_openapi(responses_output=False))
     provider = OpenAICompatibleProvider(
@@ -440,6 +466,44 @@ async def test_auto_uses_chat_when_responses_lacks_request_capability(
         missing_field.replace("text", "structured_output")
         in response.metadata.fallback_reason
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["chat_completions", "auto"])
+async def test_chat_omit_does_not_require_reasoning_replay_support(
+    protocol: str,
+) -> None:
+    spec = _openapi()
+    spec["components"]["schemas"]["ChatRequest"]["properties"].pop(
+        "include_reasoning"
+    )
+    if protocol == "auto":
+        spec["paths"]["/v1/responses"]["post"]["requestBody"]["content"][
+            "application/json"
+        ]["schema"]["properties"].pop("tools")
+    client = DualProtocolClient(openapi=spec)
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            protocol=protocol,  # type: ignore[arg-type]
+            chat_reasoning_field="omit",
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    response = await provider.complete(_request())
+
+    assert not client.responses.calls
+    assistant = next(
+        message
+        for message in client.completions.calls[0]["messages"]
+        if message["role"] == "assistant"
+    )
+    assert "reasoning" not in assistant
+    assert "reasoning_content" not in assistant
+    assert response.metadata is not None
+    assert response.metadata.protocol == "chat_completions"
 
 
 @pytest.mark.asyncio
@@ -671,6 +735,96 @@ async def test_responses_failed_stream_never_emits_done() -> None:
         async for event in provider.stream(_simple_request()):
             events.append(event)
 
+    assert not any(event.type == "done" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_chat_length_finish_reason_raises_incomplete() -> None:
+    client = DualProtocolClient()
+
+    async def create(**kwargs):
+        client.completions.calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="length",
+                    message=SimpleNamespace(content="partial", tool_calls=[]),
+                )
+            ],
+            usage=None,
+        )
+
+    client.completions.create = create
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            protocol="chat_completions",
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ProviderResponseError, match="incomplete") as error:
+        await provider.complete(_simple_request())
+
+    assert error.value.details["finish_reason"] == "length"
+
+
+@pytest.mark.asyncio
+async def test_chat_length_stream_never_emits_done() -> None:
+    client = DualProtocolClient()
+
+    async def create(**kwargs):
+        client.completions.calls.append(kwargs)
+        return _AsyncStream(
+            [
+                SimpleNamespace(
+                    usage=None,
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason=None,
+                            delta=SimpleNamespace(
+                                content="partial",
+                                reasoning=None,
+                                refusal=None,
+                                tool_calls=[],
+                            ),
+                        )
+                    ],
+                ),
+                SimpleNamespace(
+                    usage=None,
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason="length",
+                            delta=SimpleNamespace(
+                                content=None,
+                                reasoning=None,
+                                refusal=None,
+                                tool_calls=[],
+                            ),
+                        )
+                    ],
+                ),
+            ]
+        )
+
+    client.completions.create = create
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            protocol="chat_completions",
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+    events = []
+
+    with pytest.raises(ProviderResponseError, match="incomplete"):
+        async for event in provider.stream(_simple_request()):
+            events.append(event)
+
+    assert "".join(event.content for event in events) == "partial"
     assert not any(event.type == "done" for event in events)
 
 

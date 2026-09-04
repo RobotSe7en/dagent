@@ -12,7 +12,7 @@ from dagent.capabilities.tools.registry import ToolOutput
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import normalize_capability_result
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.providers.model_io import ModelRequest, ModelResponse
+from dagent.providers.model_io import ModelRequest, ModelResponse, ModelTokenCount
 from dagent.schemas import (
     AssistantMessage,
     Attachment,
@@ -215,6 +215,57 @@ def test_context_window_fails_before_provider_invocation() -> None:
         )
 
     assert error.value.usage.estimated_input_tokens > 768
+
+
+def test_hard_overflow_compacts_history_inside_soft_retain_target() -> None:
+    old_user = UserMessage(run_id="run_1", content="old request")
+    old_assistant = AssistantMessage(run_id="run_1", content="old answer")
+    conversation = ConversationState(
+        items=(
+            old_user,
+            old_assistant,
+            UserMessage(run_id="run_2", content="active request"),
+        )
+    )
+
+    async def count_request(request: ModelRequest, _reasoning_field):
+        has_old_history = any(
+            item.source_id in {old_user.id, old_assistant.id}
+            for item in request.items
+        )
+        return ModelTokenCount(
+            count=950 if has_old_history else 800,
+            max_model_len=1024,
+        )
+
+    async def compact(_previous, items, _max_tokens):
+        return dagent.ContextSummary(
+            content="old history summary",
+            source_item_count=len(items),
+        )
+
+    prepared = run(
+        ContextAssembler(
+            context_window_tokens=1024,
+            max_output_tokens=128,
+            request_token_counter=count_request,
+        ).prepare(
+            system_message={"role": "system", "content": "fixed input"},
+            conversation=conversation,
+            policy=ContextPolicy(
+                compaction_trigger_ratio=0.9,
+                compaction_retain_ratio=0.8,
+            ),
+            compact=compact,
+            active_run_id="run_2",
+        )
+    )
+
+    assert prepared.usage.estimated_input_tokens == 800
+    assert prepared.usage.compacted_items == 2
+    assert prepared.conversation.summary is not None
+    assert [item.run_id for item in prepared.conversation.items] == ["run_2"]
+    assert prepared.request.inherit_provider_max_output_tokens is False
 
 
 def test_dag_context_window_error_is_not_retried_as_planner_feedback(

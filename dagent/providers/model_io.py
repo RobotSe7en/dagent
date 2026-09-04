@@ -53,6 +53,7 @@ class ModelRequest:
     tools: tuple[dict[str, Any], ...] = ()
     response_format: StructuredOutputFormat | None = None
     max_output_tokens: int | None = None
+    inherit_provider_max_output_tokens: bool = True
     reasoning_effort: ReasoningEffort | None = None
     purpose: Literal["generation", "compaction"] = "generation"
 
