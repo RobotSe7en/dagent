@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.7`.
+The current package version is `0.9.8`.
 
 ## Unreleased
+
+## 0.9.8
 
 ### Breaking: flat provider reasoning controls
 
@@ -20,6 +22,14 @@ The current package version is `0.9.7`.
   controls response parsing only and defaults to `field_and_tags`.
 - `ContextPolicy.reasoning_replay` is unchanged and remains the independent
   context-assembly policy for replaying stored reasoning.
+
+### Verification and known limitations
+
+- Release validation covers the full Python suite, WebUI tests and production
+  build, and wheel/sdist metadata checks.
+- Effort-level support remains model-dependent. A private vLLM endpoint must
+  expose the selected reasoning capability for `reasoning_effort` to take
+  effect.
 
 ## 0.9.7
 

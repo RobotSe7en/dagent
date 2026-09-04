@@ -4,9 +4,11 @@
 
 ## 当前发布线
 
-当前包版本是 `0.9.7`。
+当前包版本是 `0.9.8`。
 
 ## Unreleased
+
+## 0.9.8
 
 ### 破坏性变更：扁平化 Provider reasoning 配置
 
@@ -16,6 +18,12 @@
 - `reasoning_effort` 控制模型生成，并映射到 Chat `reasoning_effort` 或 Responses
   `reasoning.effort`；`reasoning_capture` 只控制响应解析，默认值为 `field_and_tags`。
 - `ContextPolicy.reasoning_replay` 不变，仍独立控制已保存 reasoning 的上下文回放。
+
+### 验证与已知限制
+
+- 发布验证覆盖完整 Python 测试、WebUI 测试与生产构建，以及 wheel/sdist 元数据检查。
+- effort 级别是否生效仍取决于实际模型；私有 vLLM endpoint 必须暴露所选 reasoning
+  能力，`reasoning_effort` 才会生效。
 
 ## 0.9.7
 
