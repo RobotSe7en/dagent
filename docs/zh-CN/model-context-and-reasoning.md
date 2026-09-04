@@ -87,24 +87,22 @@ provider = dagent.Provider(
     base_url="http://localhost:8000/v1",
     model="Qwen/Qwen3-Coder",
     protocol="auto",
-    reasoning={
-        "effort": "medium",
-        "capture": "field_and_tags",
-    },
+    reasoning_effort="medium",
+    reasoning_capture="field_and_tags",
     context_window_tokens=None,
     max_output_tokens=None,
 )
 ```
 
-`effort` 接受 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`。SDK 对
-Chat 发送 `reasoning_effort`，对 Responses 发送 `reasoning.effort`。具体级别是否生效
-仍由 vLLM 中实际部署的模型决定。
+`reasoning_effort` 接受 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或
+`max`。SDK 对 Chat 发送 `reasoning_effort`，对 Responses 发送
+`reasoning.effort`。具体级别是否生效仍由 vLLM 中实际部署的模型决定。
 
-SDK 不再提供 token 数形式的推理预算，只配置 effort。未知 reasoning 字段会被拒绝，
-不会静默忽略。
+SDK 不提供 token 数形式的推理预算，只配置 effort。
 
-`capture="field_and_tags"` 合并专用 reasoning response 字段与 `<think>` 内容；
-`capture="field"` 只信任专用字段。两种情况下 thinking tag 都不会残留在可见正文中。
+`reasoning_capture="field_and_tags"` 合并专用 reasoning response 字段与 `<think>`
+内容；`reasoning_capture="field"` 只信任专用字段。两种情况下 thinking tag 都不会残留
+在可见正文中。capture 只控制响应解析，不会改变请求。
 
 ## 能力探测与协议选择
 

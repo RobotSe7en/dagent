@@ -31,14 +31,14 @@ provider = dagent.Provider(
 ```
 
 Provider-specific 选项属于 provider，而不是 agent 对象。对于支持 reasoning 的
-endpoint，如果你的 provider 能映射这些字段，可以使用通用的 `reasoning` 快捷项：
+endpoint，直接配置协议无关的推理强度：
 
 ```python
 provider = dagent.Provider(
     base_url="https://api.deepseek.com",
     model="deepseek-v4-pro",
     api_key_env="DEEPSEEK_API_KEY",
-    reasoning={"effort": "high"},
+    reasoning_effort="high",
 )
 ```
 

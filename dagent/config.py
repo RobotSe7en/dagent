@@ -37,11 +37,7 @@ ChatReasoningField: TypeAlias = Literal[
     "reasoning_content",
     "omit",
 ]
-class ReasoningConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    effort: ReasoningEffort | None = None
-    capture: Literal["field", "field_and_tags"] = "field_and_tags"
+ReasoningCapture: TypeAlias = Literal["field", "field_and_tags"]
 
 
 class ProviderConfig(BaseModel):
@@ -55,7 +51,8 @@ class ProviderConfig(BaseModel):
     protocol: ProtocolMode = "auto"
     token_counting: TokenCountingMode = "auto"
     chat_reasoning_field: ChatReasoningField = "auto"
-    reasoning: ReasoningConfig | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    reasoning_capture: ReasoningCapture = "field_and_tags"
     stream_include_usage: bool = False
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)

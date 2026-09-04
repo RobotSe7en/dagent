@@ -628,7 +628,8 @@ export interface ModelProvider {
   protocol: 'auto' | 'chat_completions' | 'responses';
   token_counting: 'auto' | 'vllm' | 'heuristic';
   chat_reasoning_field: 'auto' | 'reasoning' | 'reasoning_content' | 'omit';
-  reasoning?: ModelReasoningConfig | null;
+  reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+  reasoning_capture: 'field' | 'field_and_tags';
   stream_include_usage: boolean;
   context_window_tokens: number | null;
   max_output_tokens: number | null;
@@ -637,11 +638,6 @@ export interface ModelProvider {
 }
 
 export type ModelApiKeyAction = 'preserve' | 'replace' | 'clear';
-
-export interface ModelReasoningConfig {
-  effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
-  capture?: 'field' | 'field_and_tags';
-}
 
 export interface ModelProviderInput {
   id: string;
@@ -655,7 +651,8 @@ export interface ModelProviderInput {
   protocol: 'auto' | 'chat_completions' | 'responses';
   token_counting: 'auto' | 'vllm' | 'heuristic';
   chat_reasoning_field: 'auto' | 'reasoning' | 'reasoning_content' | 'omit';
-  reasoning?: ModelReasoningConfig | null;
+  reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+  reasoning_capture: 'field' | 'field_and_tags';
   stream_include_usage: boolean;
   context_window_tokens: number | null;
   max_output_tokens: number | null;

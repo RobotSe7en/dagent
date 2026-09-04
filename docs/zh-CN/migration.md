@@ -8,6 +8,15 @@
 
 ## Unreleased
 
+### 破坏性变更：扁平化 Provider reasoning 配置
+
+- Python 中请将 `reasoning={"effort": "high", "capture": "field_and_tags"}` 改为
+  `reasoning_effort="high"` 与 `reasoning_capture="field_and_tags"`；YAML 使用对应的
+  两个扁平字段。旧嵌套 `reasoning` 对象会被拒绝，不提供兼容别名。
+- `reasoning_effort` 控制模型生成，并映射到 Chat `reasoning_effort` 或 Responses
+  `reasoning.effort`；`reasoning_capture` 只控制响应解析，默认值为 `field_and_tags`。
+- `ContextPolicy.reasoning_replay` 不变，仍独立控制已保存 reasoning 的上下文回放。
+
 ## 0.9.7
 
 ### 破坏性变更：统一私有 vLLM 模型上下文

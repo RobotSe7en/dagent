@@ -94,10 +94,8 @@ provider = dagent.Provider(
     protocol="auto",
     token_counting="auto",
     chat_reasoning_field="auto",
-    reasoning={
-        "effort": "high",
-        "capture": "field_and_tags",
-    },
+    reasoning_effort="high",
+    reasoning_capture="field_and_tags",
     stream_include_usage=False,
     context_window_tokens=None,
     max_output_tokens=None,
@@ -115,9 +113,9 @@ provider = dagent.Provider(
 
 两个协议都按无状态方式使用：每次调用发送本次选定的完整上下文。Responses 始终设置
 `store=False`，不使用 `previous_response_id` 或加密 reasoning content。
-`reasoning.effort` 在 Chat 中映射为 `reasoning_effort`，在 Responses 中映射为
-`reasoning.effort`。SDK 不再支持 token 数形式的 reasoning budget；已删除的
-`reasoning.enabled` 和 `reasoning.budget_tokens` 都会被拒绝。
+`reasoning_effort` 在 Chat 中映射为 `reasoning_effort`，在 Responses 中映射为
+`reasoning.effort`。SDK 不支持 token 数形式的 reasoning budget；旧的嵌套
+`reasoning` 对象会被拒绝。
 
 `chat_reasoning_field` 只控制 Chat 的 reasoning 回放序列化。`auto` 对已识别的 vLLM
 使用 `reasoning`，对未知 server 则省略。只有目标兼容 server 明确支持时才显式选择
@@ -135,8 +133,9 @@ provider = dagent.Provider(
 流式 usage metadata 默认关闭，因为部分兼容 endpoint 会拒绝 `stream_options`。
 只有目标 endpoint 支持 OpenAI 的流式 usage 扩展时才设置
 `stream_include_usage=True`；SDK 结果中的 usage 始终是可选值。
-`capture="field_and_tags"` 会记录专用 reasoning 字段和 tag 内容；
-`capture="field"` 只信任专用字段并丢弃 tag 内容；tag 不会残留在可见正文中。
+`reasoning_capture="field_and_tags"` 会记录专用 reasoning 字段和 tag 内容；
+`reasoning_capture="field"` 只信任专用字段并丢弃 tag 内容；tag 不会残留在可见正文中。
+capture 只控制响应解析，不会在请求中启用 reasoning。
 
 对于 structured planner call，达智会在本地校验返回对象，并把完整 schema 映射到 Chat
 的 `response_format.type="json_schema"` 或 Responses 的
@@ -177,8 +176,8 @@ provider:
   protocol: auto
   token_counting: auto
   chat_reasoning_field: auto
-  reasoning:
-    effort: "high"
+  reasoning_effort: "high"
+  reasoning_capture: field_and_tags
   context_window_tokens: null
   max_output_tokens: null
 profiles:

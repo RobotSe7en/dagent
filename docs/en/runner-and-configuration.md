@@ -115,10 +115,8 @@ provider = dagent.Provider(
     protocol="auto",
     token_counting="auto",
     chat_reasoning_field="auto",
-    reasoning={
-        "effort": "high",
-        "capture": "field_and_tags",
-    },
+    reasoning_effort="high",
+    reasoning_capture="field_and_tags",
     stream_include_usage=False,
     context_window_tokens=None,
     max_output_tokens=None,
@@ -139,10 +137,10 @@ other protocol.
 
 Both protocols are stateless: dagent sends the complete selected context on
 every call. Responses always uses `store=False` and never uses
-`previous_response_id` or encrypted reasoning content. `reasoning.effort` maps
-to `reasoning_effort` for Chat and `reasoning.effort` for Responses.
-Token-based reasoning budgets are not supported. The removed
-`reasoning.enabled` and `reasoning.budget_tokens` fields are rejected.
+`previous_response_id` or encrypted reasoning content. `reasoning_effort` maps
+to the Chat `reasoning_effort` field or Responses `reasoning.effort`.
+Token-based reasoning budgets are not supported. The old nested `reasoning`
+object is rejected.
 
 `chat_reasoning_field` controls only replay serialization for Chat. `auto`
 uses `reasoning` for a detected vLLM server and omits replay on an unknown
@@ -165,9 +163,10 @@ Streaming usage metadata is disabled by default because some compatible
 endpoints reject `stream_options`. Set `stream_include_usage=True` only when the
 target endpoint supports OpenAI's streamed usage extension; usage remains
 optional in SDK results.
-`capture="field_and_tags"` records both dedicated reasoning fields and tag
-content. `capture="field"` trusts only the dedicated field and discards tag
-content; tags are never left in visible content.
+`reasoning_capture="field_and_tags"` records both dedicated reasoning fields
+and tag content. `reasoning_capture="field"` trusts only the dedicated field
+and discards tag content; tags are never left in visible content. Capture
+controls response parsing only; it does not enable reasoning in the request.
 
 For structured planner calls, dagent validates the returned object locally and
 maps the full schema to Chat `response_format.type="json_schema"` or Responses
@@ -211,8 +210,8 @@ provider:
   protocol: auto
   token_counting: auto
   chat_reasoning_field: auto
-  reasoning:
-    effort: "high"
+  reasoning_effort: "high"
+  reasoning_capture: field_and_tags
   context_window_tokens: null
   max_output_tokens: null
 profiles:

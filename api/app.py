@@ -67,6 +67,7 @@ from dagent import (
     ConditionNode,
     Node,
     ProfileStore,
+    ReasoningEffort,
     ReviewDecision,
     ReviewLevel,
     RiskLevel,
@@ -89,7 +90,7 @@ from dagent.config import (
     DEFAULT_RUNS_DIR,
     DEFAULT_WORKSPACE,
     ProtocolMode,
-    ReasoningConfig,
+    ReasoningCapture,
     TokenCountingMode,
     UserDagentConfig,
     UserModelProviderConfig,
@@ -442,7 +443,8 @@ class ModelProviderRequest(BaseModel):
     protocol: ProtocolMode = "auto"
     token_counting: TokenCountingMode = "auto"
     chat_reasoning_field: ChatReasoningField = "auto"
-    reasoning: ReasoningConfig | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    reasoning_capture: ReasoningCapture = "field_and_tags"
     stream_include_usage: bool = False
     context_window_tokens: int | None = Field(default=None, ge=1024)
     max_output_tokens: int | None = Field(default=None, ge=1)
@@ -491,7 +493,8 @@ class ModelProviderPayload(BaseModel):
     protocol: ProtocolMode
     token_counting: TokenCountingMode
     chat_reasoning_field: ChatReasoningField
-    reasoning: ReasoningConfig | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    reasoning_capture: ReasoningCapture
     stream_include_usage: bool
     context_window_tokens: int | None
     max_output_tokens: int | None
@@ -3707,11 +3710,8 @@ def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
         "stream_include_usage": model.stream_include_usage,
         "context_window_tokens": model.context_window_tokens,
         "max_output_tokens": model.max_output_tokens,
-        "reasoning": (
-            None
-            if model.reasoning is None
-            else model.reasoning.model_dump(mode="python")
-        ),
+        "reasoning_effort": model.reasoning_effort,
+        "reasoning_capture": model.reasoning_capture,
         "extra_request_args": dict(model.extra_request_args),
         "extra_body": dict(model.extra_body),
     }
@@ -3734,7 +3734,8 @@ def _model_request_from_user_config(model_id: str, model: UserModelProviderConfi
         protocol=model.protocol,
         token_counting=model.token_counting,
         chat_reasoning_field=model.chat_reasoning_field,
-        reasoning=model.reasoning,
+        reasoning_effort=model.reasoning_effort,
+        reasoning_capture=model.reasoning_capture,
         stream_include_usage=model.stream_include_usage,
         context_window_tokens=(
             model.context_window_tokens
@@ -3758,7 +3759,8 @@ def _user_model_provider_config(model: ModelProviderRequest) -> UserModelProvide
         protocol=model.protocol,
         token_counting=model.token_counting,
         chat_reasoning_field=model.chat_reasoning_field,
-        reasoning=model.reasoning,
+        reasoning_effort=model.reasoning_effort,
+        reasoning_capture=model.reasoning_capture,
         stream_include_usage=model.stream_include_usage,
         context_window_tokens=model.context_window_tokens,
         max_output_tokens=model.max_output_tokens,
@@ -3819,7 +3821,8 @@ def _config_model_payload(*, active: bool) -> ModelProviderPayload:
         protocol=provider.protocol,
         token_counting=provider.token_counting,
         chat_reasoning_field=provider.chat_reasoning_field,
-        reasoning=provider.reasoning,
+        reasoning_effort=provider.reasoning_effort,
+        reasoning_capture=provider.reasoning_capture,
         stream_include_usage=provider.stream_include_usage,
         context_window_tokens=(
             provider.context_window_tokens
@@ -3847,7 +3850,8 @@ def _user_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelPr
         protocol=model.protocol,
         token_counting=model.token_counting,
         chat_reasoning_field=model.chat_reasoning_field,
-        reasoning=model.reasoning,
+        reasoning_effort=model.reasoning_effort,
+        reasoning_capture=model.reasoning_capture,
         stream_include_usage=model.stream_include_usage,
         context_window_tokens=model.context_window_tokens,
         max_output_tokens=model.max_output_tokens,

@@ -387,7 +387,8 @@ const defaultModelDraft: ModelProviderInput = {
   protocol: 'auto',
   token_counting: 'auto',
   chat_reasoning_field: 'auto',
-  reasoning: null,
+  reasoning_effort: null,
+  reasoning_capture: 'field_and_tags',
   stream_include_usage: false,
   context_window_tokens: null,
   max_output_tokens: null,
@@ -14278,7 +14279,6 @@ function ModelManagementWorkspace({
   const [draft, setDraft] = useState<ModelProviderInput>(defaultModelDraft);
   const [apiKeyText, setApiKeyText] = useState('');
   const [apiKeyAction, setApiKeyAction] = useState<ModelApiKeyAction>('replace');
-  const [reasoningText, setReasoningText] = useState('');
   const [extraRequestArgsText, setExtraRequestArgsText] = useState('{}');
   const [extraBodyText, setExtraBodyText] = useState('{}');
   const [modelAdvancedOpen, setModelAdvancedOpen] = useState(false);
@@ -14293,7 +14293,6 @@ function ModelManagementWorkspace({
       setDraft(defaultModelDraft);
       setApiKeyText('');
       setApiKeyAction('replace');
-      setReasoningText('');
       setExtraRequestArgsText('{}');
       setExtraBodyText('{}');
       setModelAdvancedOpen(false);
@@ -14302,7 +14301,6 @@ function ModelManagementWorkspace({
     setDraft(modelInputFromProvider(selected));
     setApiKeyText('');
     setApiKeyAction('preserve');
-    setReasoningText(formatModelJson(selected.reasoning, true));
     setExtraRequestArgsText(formatModelJson(selected.extra_request_args));
     setExtraBodyText(formatModelJson(selected.extra_body));
     setModelAdvancedOpen(false);
@@ -14317,7 +14315,6 @@ function ModelManagementWorkspace({
     });
     setApiKeyText('');
     setApiKeyAction('replace');
-    setReasoningText('');
     setExtraRequestArgsText('{}');
     setExtraBodyText('{}');
     setModelAdvancedOpen(false);
@@ -14355,17 +14352,12 @@ function ModelManagementWorkspace({
     if (!editable) return;
     const extraRequestArgs = parseJsonObject(extraRequestArgsText);
     const extraBody = parseJsonObject(extraBodyText);
-    const reasoning = reasoningText.trim() ? parseJsonObject(reasoningText) : null;
     if (!extraRequestArgs) {
       setMessage('Extra request args must be a JSON object.');
       return;
     }
     if (!extraBody) {
       setMessage('Extra body must be a JSON object.');
-      return;
-    }
-    if (reasoningText.trim() && !reasoning) {
-      setMessage('Reasoning must be a JSON object.');
       return;
     }
     if (draft.context_window_tokens !== null && draft.context_window_tokens < 1024) {
@@ -14393,7 +14385,6 @@ function ModelManagementWorkspace({
       api_key: apiKeyText.trim() || null,
       api_key_action: creating ? 'replace' : apiKeyAction,
       api_key_env: draft.api_key_env?.trim() || null,
-      reasoning,
       extra_request_args: extraRequestArgs,
       extra_body: extraBody,
     };
@@ -14518,7 +14509,8 @@ function ModelManagementWorkspace({
                     <input disabled={!editable} checked={draft.stream_include_usage} onChange={(event) => setDraft((current) => ({ ...current, stream_include_usage: event.target.checked }))} type="checkbox" />
                     <span>请求流式 token usage</span>
                   </label>
-                  <label>Reasoning JSON<textarea disabled={!editable} value={reasoningText} onChange={(event) => setReasoningText(event.target.value)} placeholder='{"effort": "medium", "capture": "field_and_tags"}' /></label>
+                  <label>Reasoning Effort<select disabled={!editable} value={draft.reasoning_effort ?? ''} onChange={(event) => setDraft((current) => ({ ...current, reasoning_effort: (event.target.value || null) as ModelProviderInput['reasoning_effort'] }))}><option value="">unset</option><option value="none">none</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select></label>
+                  <label>Reasoning Capture<select disabled={!editable} value={draft.reasoning_capture} onChange={(event) => setDraft((current) => ({ ...current, reasoning_capture: event.target.value as ModelProviderInput['reasoning_capture'] }))}><option value="field_and_tags">field_and_tags</option><option value="field">field</option></select></label>
                   <label>Extra Request Args<textarea disabled={!editable} value={extraRequestArgsText} onChange={(event) => setExtraRequestArgsText(event.target.value)} /></label>
                   <label>Extra Body<textarea disabled={!editable} value={extraBodyText} onChange={(event) => setExtraBodyText(event.target.value)} /></label>
                 </div>
@@ -14557,7 +14549,8 @@ function modelInputFromProvider(model: ModelProvider): ModelProviderInput {
     protocol: model.protocol,
     token_counting: model.token_counting,
     chat_reasoning_field: model.chat_reasoning_field,
-    reasoning: model.reasoning ?? null,
+    reasoning_effort: model.reasoning_effort ?? null,
+    reasoning_capture: model.reasoning_capture,
     stream_include_usage: model.stream_include_usage,
     context_window_tokens: model.context_window_tokens,
     max_output_tokens: model.max_output_tokens,

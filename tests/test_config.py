@@ -29,7 +29,8 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
     assert config.provider.model == "qwen3"
     assert config.provider.api_key == "local-key"
     assert config.provider.timeout_seconds == 12
-    assert config.provider.reasoning is None
+    assert config.provider.reasoning_effort is None
+    assert config.provider.reasoning_capture == "field_and_tags"
     assert config.provider.stream_include_usage is False
     assert config.provider.context_window_tokens is None
     assert config.provider.max_output_tokens is None
@@ -135,8 +136,7 @@ def test_load_config_resolves_api_key_from_dotenv(tmp_path: Path, monkeypatch) -
                 '  model: "MiniMax-M2.1"',
                 '  api_key_env: "MINIMAX_API_KEY"',
                 "  timeout_seconds: 60",
-                "  reasoning:",
-                "    capture: field_and_tags",
+                "  reasoning_capture: field_and_tags",
             ]
         ),
         encoding="utf-8",
@@ -147,8 +147,8 @@ def test_load_config_resolves_api_key_from_dotenv(tmp_path: Path, monkeypatch) -
     assert config.provider.base_url == "https://api.minimaxi.com/v1"
     assert config.provider.model == "MiniMax-M2.1"
     assert config.provider.api_key == "secret-key"
-    assert config.provider.reasoning is not None
-    assert config.provider.reasoning.capture == "field_and_tags"
+    assert config.provider.reasoning_effort is None
+    assert config.provider.reasoning_capture == "field_and_tags"
 
 
 def test_load_config_rejects_removed_strip_thinking(tmp_path: Path) -> None:
@@ -169,7 +169,9 @@ def test_load_config_rejects_removed_strip_thinking(tmp_path: Path) -> None:
         load_config(config_path)
 
 
-def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path) -> None:
+def test_load_config_parses_reasoning_controls_and_extra_provider_options(
+    tmp_path: Path,
+) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "\n".join(
@@ -178,8 +180,8 @@ def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path)
                 '  base_url: "https://api.deepseek.com"',
                 '  model: "deepseek-v4-pro"',
                 '  api_key: "local-key"',
-                "  reasoning:",
-                '    effort: "high"',
+                '  reasoning_effort: "high"',
+                "  reasoning_capture: field",
                 "  extra_request_args:",
                 "    temperature: 0",
                 "  extra_body:",
@@ -192,20 +194,30 @@ def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path)
 
     config = load_config(config_path)
 
-    assert config.provider.reasoning is not None
-    assert config.provider.reasoning.effort == "high"
+    assert config.provider.reasoning_effort == "high"
+    assert config.provider.reasoning_capture == "field"
     assert config.provider.extra_request_args == {"temperature": 0}
     assert config.provider.extra_body == {
         "chat_template_kwargs": {"enable_thinking": True},
     }
 
 
-def test_reasoning_config_rejects_removed_budget_tokens() -> None:
-    with pytest.raises(ValueError, match="budget_tokens"):
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        {"effort": "none", "budget_tokens": 64},
+        {"enabled": True},
+        {"effort": "high"},
+    ],
+)
+def test_provider_config_rejects_removed_nested_reasoning(
+    reasoning: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="reasoning"):
         ProviderConfig(
             base_url="http://localhost:8000/v1",
             model="qwen3",
-            reasoning={"effort": "none", "budget_tokens": 64},
+            reasoning=reasoning,
         )
 
 
@@ -222,12 +234,12 @@ def test_provider_rejects_managed_fields_in_extra_arguments(field: str) -> None:
         )
 
 
-def test_reasoning_config_rejects_removed_enabled_field() -> None:
-    with pytest.raises(ValueError, match="enabled"):
+def test_provider_config_rejects_unknown_reasoning_effort() -> None:
+    with pytest.raises(ValueError, match="reasoning_effort"):
         ProviderConfig(
             base_url="http://localhost:8000/v1",
             model="qwen3",
-            reasoning={"enabled": True},
+            reasoning_effort="extreme",
         )
 
 

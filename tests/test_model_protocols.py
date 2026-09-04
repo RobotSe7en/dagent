@@ -273,7 +273,7 @@ async def test_auto_prefers_stateless_responses_and_replays_items() -> None:
             base_url="http://localhost:8000/v1",
             model="qwen3",
             api_key="local",
-            reasoning={"effort": "high"},
+            reasoning_effort="high",
         ),
         client=client,  # type: ignore[arg-type]
     )
@@ -316,7 +316,7 @@ async def test_compaction_request_overrides_reasoning_effort_and_output_limit(
             model="qwen3",
             api_key="local",
             protocol=protocol,
-            reasoning={"effort": "high"},
+            reasoning_effort="high",
             max_output_tokens=4096,
         ),
         client=client,  # type: ignore[arg-type]
@@ -399,7 +399,7 @@ async def test_auto_uses_chat_when_only_chat_supports_output_limit() -> None:
             base_url="http://localhost:8000/v1",
             model="deepseek",
             api_key="local",
-            reasoning={"effort": "medium"},
+            reasoning_effort="medium",
             max_output_tokens=512,
         ),
         client=client,  # type: ignore[arg-type]

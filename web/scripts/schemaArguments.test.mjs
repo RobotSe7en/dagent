@@ -2372,7 +2372,11 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(modelSource, /modelAdvancedOpen \? \(/);
   assert.match(modelSource, /API Key Env/);
   assert.match(modelSource, /Timeout/);
-  assert.match(modelSource, /"capture": "field_and_tags"/);
+  assert.match(modelSource, /Reasoning Effort/);
+  assert.match(modelSource, /Reasoning Capture/);
+  assert.match(typesSource, /reasoning_effort:/);
+  assert.match(typesSource, /reasoning_capture:/);
+  assert.doesNotMatch(modelSource, /Reasoning JSON/);
   assert.doesNotMatch(modelSource, /strip_thinking|移除 <think> 推理块/);
   assert.doesNotMatch(typesSource, /StructuredOutputMode|structured_output_mode/);
   assert.doesNotMatch(modelSource, /结构化输出模式|structured_output_mode/);

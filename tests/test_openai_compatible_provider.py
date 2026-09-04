@@ -217,7 +217,7 @@ async def test_openai_compatible_field_capture_discards_tag_reasoning() -> None:
             base_url="http://localhost:8000/v1",
             model="qwen3",
             api_key="local-key",
-            reasoning={"capture": "field"},
+            reasoning_capture="field",
         ),
         client=client,
     )
@@ -235,6 +235,8 @@ async def test_openai_compatible_field_capture_discards_tag_reasoning() -> None:
     assert events[-1].response is not None
     assert events[-1].response.content == "done"
     assert events[-1].response.reasoning_content == ""
+    assert "reasoning_effort" not in client.completions.kwargs
+    assert "extra_body" not in client.completions.kwargs
 
 
 @pytest.mark.asyncio
@@ -274,7 +276,7 @@ async def test_openai_compatible_provider_forwards_reasoning_and_extra_request_o
             base_url="http://localhost:8000/v1",
             model="deepseek",
             api_key="local-key",
-            reasoning={"effort": "high"},
+            reasoning_effort="high",
             max_output_tokens=512,
             extra_request_args={"temperature": 0},
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
@@ -301,7 +303,7 @@ async def test_openai_compatible_provider_preserves_explicit_request_args_over_r
             base_url="http://localhost:8000/v1",
             model="deepseek",
             api_key="local-key",
-            reasoning={"effort": "high"},
+            reasoning_effort="high",
             extra_request_args={"reasoning_effort": "low"},
             extra_body={"thinking": {"type": "disabled"}},
         ),
