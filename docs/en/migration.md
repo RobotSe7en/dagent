@@ -9,6 +9,18 @@ The current package version is `0.9.7`.
 
 ## Unreleased
 
+### Breaking: flat provider reasoning controls
+
+- Replace `reasoning={"effort": "high", "capture": "field_and_tags"}` with
+  `reasoning_effort="high"` and `reasoning_capture="field_and_tags"` in Python,
+  or the equivalent flat keys in YAML. The old nested `reasoning` object is
+  rejected; no compatibility alias is provided.
+- `reasoning_effort` controls model generation and maps to Chat
+  `reasoning_effort` or Responses `reasoning.effort`. `reasoning_capture`
+  controls response parsing only and defaults to `field_and_tags`.
+- `ContextPolicy.reasoning_replay` is unchanged and remains the independent
+  context-assembly policy for replaying stored reasoning.
+
 ## 0.9.7
 
 ### Breaking: unified private-vLLM model context

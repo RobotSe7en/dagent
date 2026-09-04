@@ -93,24 +93,22 @@ provider = dagent.Provider(
     base_url="http://localhost:8000/v1",
     model="Qwen/Qwen3-Coder",
     protocol="auto",
-    reasoning={
-        "effort": "medium",
-        "capture": "field_and_tags",
-    },
+    reasoning_effort="medium",
+    reasoning_capture="field_and_tags",
     context_window_tokens=None,
     max_output_tokens=None,
 )
 ```
 
-`effort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
-The SDK sends it as `reasoning_effort` to Chat or `reasoning.effort` to
-Responses. Model support is still determined by the model served by vLLM.
-Token-based reasoning budgets are not part of the SDK contract; configure only
-the effort level. Unknown reasoning fields are rejected instead of ignored.
+`reasoning_effort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+or `max`. The SDK sends it as `reasoning_effort` to Chat or `reasoning.effort`
+to Responses. Model support is still determined by the model served by vLLM.
+Token-based reasoning budgets are not part of the SDK contract.
 
-`capture="field_and_tags"` combines the dedicated response reasoning field with
-`<think>` content. `capture="field"` trusts only the dedicated field. In both
-cases thinking tags are removed from visible assistant content.
+`reasoning_capture="field_and_tags"` combines the dedicated response reasoning
+field with `<think>` content. `reasoning_capture="field"` trusts only the
+dedicated field. In both cases thinking tags are removed from visible assistant
+content. Capture controls response parsing only and does not change the request.
 
 ## Capability discovery and protocol selection
 

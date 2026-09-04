@@ -32,15 +32,14 @@ provider = dagent.Provider(
 ```
 
 Provider-specific options belong on the provider, not on agent objects. For
-reasoning-capable endpoints, use the common `reasoning` shortcut when it maps to
-your provider:
+reasoning-capable endpoints, configure the provider-neutral effort directly:
 
 ```python
 provider = dagent.Provider(
     base_url="https://api.deepseek.com",
     model="deepseek-v4-pro",
     api_key_env="DEEPSEEK_API_KEY",
-    reasoning={"effort": "high"},
+    reasoning_effort="high",
 )
 ```
 

@@ -4283,7 +4283,8 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "protocol": "responses",
                 "token_counting": "heuristic",
                 "chat_reasoning_field": "omit",
-                "reasoning": {"capture": "field_and_tags"},
+                "reasoning_effort": "medium",
+                "reasoning_capture": "field_and_tags",
                 "stream_include_usage": True,
                 "context_window_tokens": 16384,
                 "max_output_tokens": 2048,
@@ -4329,8 +4330,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
         assert state.get_runner().runtime.provider.config.stream_include_usage is True
         assert state.get_runner().runtime.provider.config.context_window_tokens == 16384
         assert state.get_runner().runtime.provider.config.max_output_tokens == 2048
+        assert state.get_runner().runtime.provider.config.reasoning_effort == "medium"
         assert (
-            state.get_runner().runtime.provider.config.reasoning.capture
+            state.get_runner().runtime.provider.config.reasoning_capture
             == "field_and_tags"
         )
         assert state.get_runner().runtime.provider.config.extra_request_args == {
@@ -4351,7 +4353,8 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "model": "qwen3-coder",
                 "api_key_action": "preserve",
                 "timeout_seconds": 42,
-                "reasoning": {"capture": "field_and_tags"},
+                "reasoning_effort": "medium",
+                "reasoning_capture": "field_and_tags",
                 "stream_include_usage": True,
                 "context_window_tokens": 16384,
                 "max_output_tokens": 2048,
@@ -4374,7 +4377,8 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "model": "qwen3-coder",
                 "api_key_action": "preserve",
                 "timeout_seconds": 30,
-                "reasoning": {"capture": "field_and_tags"},
+                "reasoning_effort": "medium",
+                "reasoning_capture": "field_and_tags",
                 "stream_include_usage": True,
                 "context_window_tokens": 16384,
                 "max_output_tokens": 2048,
@@ -4399,7 +4403,8 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "model": "qwen3-coder",
                 "api_key_action": "clear",
                 "timeout_seconds": 30,
-                "reasoning": {"capture": "field_and_tags"},
+                "reasoning_effort": "medium",
+                "reasoning_capture": "field_and_tags",
                 "stream_include_usage": True,
                 "context_window_tokens": 16384,
                 "max_output_tokens": 2048,
@@ -4553,6 +4558,7 @@ def test_api_model_management_persists_user_models_to_user_config(monkeypatch, t
                 "protocol": "auto",
                 "token_counting": "auto",
                 "chat_reasoning_field": "auto",
+                "reasoning_capture": "field_and_tags",
                 "stream_include_usage": True,
             "context_window_tokens": 16384,
             "max_output_tokens": 2048,

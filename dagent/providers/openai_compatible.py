@@ -10,7 +10,7 @@ from typing import Any, Literal, cast
 
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 
-from dagent.config import ProviderConfig
+from dagent.config import ProviderConfig, ReasoningCapture
 from dagent.providers.base import (
     ChatResponse,
     ChatStreamEvent,
@@ -35,7 +35,7 @@ from dagent.providers.model_io import (
     normalize_model_response,
     responses_tools,
 )
-from dagent.schemas.context import ModelTokenUsage
+from dagent.schemas.context import ModelTokenUsage, ReasoningEffort
 
 
 class ProviderCapabilityWarning(RuntimeWarning):
@@ -332,7 +332,7 @@ class OpenAICompatibleProvider:
         )
         return normalize_model_response(
             result,
-            capture_tag_reasoning=_reasoning_capture(self.config) == "field_and_tags",
+            capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
         )
 
     async def _chat_stream(
@@ -354,7 +354,7 @@ class OpenAICompatibleProvider:
         tool_call_parts: dict[int, dict[str, str]] = {}
         token_usage: ModelTokenUsage | None = None
         finish_reason: str | None = None
-        capture_tag_reasoning = _reasoning_capture(self.config) == "field_and_tags"
+        capture_tag_reasoning = self.config.reasoning_capture == "field_and_tags"
         thinking_parser = _ThinkingStreamParser(enabled=True)
         async for chunk in response_stream:
             chunk_usage = _model_token_usage(getattr(chunk, "usage", None))
@@ -450,7 +450,7 @@ class OpenAICompatibleProvider:
         result = _model_response_from_responses(
             response,
             metadata=metadata,
-            capture_tag_reasoning=_reasoning_capture(self.config) == "field_and_tags",
+            capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
         )
         _require_completed_response(result, response)
         return result
@@ -554,7 +554,7 @@ class OpenAICompatibleProvider:
             result = _model_response_from_responses(
                 completed_response,
                 metadata=metadata,
-                capture_tag_reasoning=_reasoning_capture(self.config) == "field_and_tags",
+                capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
             )
         else:
             result = ModelResponse(
@@ -602,7 +602,7 @@ class OpenAICompatibleProvider:
         reasoning_effort = self._effective_reasoning_effort(request)
         if reasoning_effort is not None:
             kwargs["reasoning_effort"] = reasoning_effort
-        if self.config.reasoning is not None or request.reasoning_effort is not None:
+        if reasoning_effort is not None:
             extra_body["include_reasoning"] = True
         max_output_tokens = self._effective_max_output_tokens(request)
         requested_max_output_tokens = self._requested_max_output_tokens(request)
@@ -659,9 +659,7 @@ class OpenAICompatibleProvider:
         reasoning_effort = self._effective_reasoning_effort(request)
         if reasoning_effort is not None:
             kwargs["reasoning"] = {"effort": reasoning_effort}
-        if (
-            self.config.reasoning is not None or request.reasoning_effort is not None
-        ) and capabilities.server_kind == "vllm":
+        if reasoning_effort is not None and capabilities.server_kind == "vllm":
             extra_body["include_reasoning"] = True
         max_output_tokens = self._effective_max_output_tokens(request)
         requested_max_output_tokens = self._requested_max_output_tokens(request)
@@ -711,8 +709,7 @@ class OpenAICompatibleProvider:
     def _effective_reasoning_effort(self, request: ModelRequest) -> str | None:
         if request.reasoning_effort is not None:
             return request.reasoning_effort
-        reasoning = self.config.reasoning
-        return reasoning.effort if reasoning is not None else None
+        return self.config.reasoning_effort
 
     def _effective_max_output_tokens(self, request: ModelRequest) -> int | None:
         configured = self.config.max_output_tokens
@@ -858,11 +855,7 @@ class OpenAICompatibleProvider:
         reasoning_effort = (
             self._effective_reasoning_effort(request)
             if request is not None
-            else (
-                self.config.reasoning.effort
-                if self.config.reasoning is not None
-                else None
-            )
+            else self.config.reasoning_effort
         )
         replayed_reasoning = bool(
             request is not None
@@ -874,7 +867,6 @@ class OpenAICompatibleProvider:
         )
         if (
             reasoning_effort is not None
-            or self.config.reasoning is not None
             or sends_replayed_reasoning
         ):
             required.append("reasoning")
@@ -992,7 +984,8 @@ class Provider(OpenAICompatibleProvider):
         chat_reasoning_field: Literal[
             "auto", "reasoning", "reasoning_content", "omit"
         ] = "auto",
-        reasoning: dict[str, Any] | None = None,
+        reasoning_effort: ReasoningEffort | None = None,
+        reasoning_capture: ReasoningCapture = "field_and_tags",
         stream_include_usage: bool = False,
         context_window_tokens: int | None = None,
         max_output_tokens: int | None = None,
@@ -1010,7 +1003,8 @@ class Provider(OpenAICompatibleProvider):
                 protocol=protocol,
                 token_counting=token_counting,
                 chat_reasoning_field=chat_reasoning_field,
-                reasoning=reasoning,
+                reasoning_effort=reasoning_effort,
+                reasoning_capture=reasoning_capture,
                 stream_include_usage=stream_include_usage,
                 context_window_tokens=context_window_tokens,
                 max_output_tokens=max_output_tokens,
@@ -1296,10 +1290,6 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
         else:
             merged[key] = value
     return merged
-
-
-def _reasoning_capture(config: ProviderConfig) -> str:
-    return config.reasoning.capture if config.reasoning is not None else "field_and_tags"
 
 
 def _model_token_usage(value: Any) -> ModelTokenUsage | None:
