@@ -20,17 +20,20 @@
 - Responses 调用无状态：`store=False`，不使用 `previous_response_id`、encrypted
   reasoning content，也不持久化 provider item ID。
 - 删除 `ReasoningConfig.enabled`，请从 Python/YAML 配置中移除。`effort` 现在类型化为
-  `none|minimal|low|medium|high|xhigh|max`。`budget_tokens` 必须为正数，不能与
-  `effort="none"` 同时使用，并映射到探测到的 vLLM `thinking_token_budget` 能力；
-  不支持时 warning 并忽略。
+  `none|minimal|low|medium|high|xhigh|max`。同时删除 `budget_tokens`，现在会直接拒绝；
+  只使用 `effort`。
 - 删除 `ContextPolicy.keep_recent_turns`。请改用
   `reasoning_replay="none|active_run|all_runs"`，默认 `active_run`。压缩完全由 token
   驱动，并保留当前输入、未闭合工具链和最新步骤。
 - `token_counting="auto|vllm|heuristic"` 控制 vLLM `/tokenize` 精确计数。
-  `context_window_tokens` 改为可选值，作为探测到的 `max_model_len` 上限；无法探测时
-  fallback 仍为 32,768。
-- 新 checkpoint 使用 schema V7。V4、V5、V6 checkpoint 及其 legacy loop-limit 字段会
-  被拒绝，不提供转换或兼容 shim。升级前应完成 pending review，或由 host 显式迁移。
+  `context_window_tokens=None` 使用探测到的 `max_model_len`；显式值覆盖自动值，但不能
+  超过它。无法探测时 fallback 仍为 32,768。
+- 删除 `output_reserve_tokens`。改用可选的 `max_output_tokens`，它既减少输入容量，也会
+  作为真实生成上限发送。这不是一对一改名；留空表示不发送输出限制。
+- 上下文压缩默认在可用输入容量的 80% 触发，以最近 16% 历史为保留目标，摘要最多
+  8,192 tokens，并独立使用 `compaction_reasoning_effort="low"`。
+- 新 checkpoint 使用 schema V8、RunState V5 和 ConversationState V4。旧 checkpoint
+  会被拒绝，不提供转换或兼容 shim。升级前应完成 pending review。
 
 wire 示例与完整选择/回放策略见[模型上下文与推理](model-context-and-reasoning.md)。
 

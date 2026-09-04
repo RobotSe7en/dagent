@@ -325,7 +325,7 @@ class AgentCapabilityProvider:
                     "configured_context_window_tokens",
                     getattr(provider, "context_window_tokens", None),
                 ),
-                output_reserve_tokens=getattr(provider, "output_reserve_tokens", 4096),
+                max_output_tokens=getattr(provider, "max_output_tokens", None),
                 request_token_counter=getattr(provider, "count_tokens", None),
                 request_reasoning_field=getattr(
                     provider,

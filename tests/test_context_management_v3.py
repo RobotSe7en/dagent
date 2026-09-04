@@ -12,6 +12,7 @@ from dagent.capabilities.tools.registry import ToolOutput
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import normalize_capability_result
 from dagent.providers import ChatResponse, MockProvider, ToolCall
+from dagent.providers.model_io import ModelRequest, ModelResponse
 from dagent.schemas import (
     AssistantMessage,
     Attachment,
@@ -38,7 +39,7 @@ def run(coro):
 def test_context_projection_never_replays_reasoning_and_preserves_tool_protocol() -> None:
     assembler = ContextAssembler(
         context_window_tokens=4096,
-        output_reserve_tokens=512,
+        max_output_tokens=512,
     )
     conversation = ConversationState(
         items=(
@@ -113,7 +114,7 @@ def test_context_projection_deduplicates_and_budgets_all_stored_references() -> 
     )
     assembler = ContextAssembler(
         context_window_tokens=4096,
-        output_reserve_tokens=512,
+        max_output_tokens=512,
     )
 
     prepared = run(
@@ -140,7 +141,7 @@ def test_context_projection_deduplicates_and_budgets_all_stored_references() -> 
 def test_context_compaction_has_explicit_deterministic_fallback() -> None:
     assembler = ContextAssembler(
         context_window_tokens=2048,
-        output_reserve_tokens=256,
+        max_output_tokens=256,
     )
     conversation = ConversationState(
         items=(
@@ -186,8 +187,8 @@ def test_context_compaction_has_explicit_deterministic_fallback() -> None:
     assert "accepted planner decision" in prepared.conversation.summary.content
 
 
-def test_conversation_v3_rejects_older_versions_and_unknown_fields() -> None:
-    assert ConversationState().schema_version == 3
+def test_conversation_v4_rejects_older_versions_and_unknown_fields() -> None:
+    assert ConversationState().schema_version == 4
 
     with pytest.raises(ValidationError):
         ConversationState.model_validate({"schema_version": 2})
@@ -199,7 +200,7 @@ def test_conversation_v3_rejects_older_versions_and_unknown_fields() -> None:
 def test_context_window_fails_before_provider_invocation() -> None:
     assembler = ContextAssembler(
         context_window_tokens=1024,
-        output_reserve_tokens=256,
+        max_output_tokens=256,
     )
 
     with pytest.raises(ContextWindowExceeded) as error:
@@ -223,7 +224,7 @@ def test_dag_context_window_error_is_not_retried_as_planner_feedback(
         [ChatResponse(content=final_answer_response("unreachable"))]
     )
     provider.context_window_tokens = 1024
-    provider.output_reserve_tokens = 256
+    provider.max_output_tokens = 256
     runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
 
     with pytest.raises(ContextWindowExceeded):
@@ -428,7 +429,7 @@ def test_compaction_is_visible_in_typed_stream_events(tmp_path: Path) -> None:
         ]
     )
     provider.context_window_tokens = 2048
-    provider.output_reserve_tokens = 256
+    provider.max_output_tokens = 256
     runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     agent = dagent.ToolAgent(
         profile="conversation",
@@ -462,7 +463,7 @@ def test_compaction_is_visible_in_typed_stream_events(tmp_path: Path) -> None:
     assert finished.data.usage.compaction_method == "model"
     result = events[-1].data.result
     assert result.conversation.summary is not None
-    assert result.conversation.summary.reasoning == "summary reasoning"
+    assert result.conversation.summary.reasoning == ""
     assert result.conversation.summary.context_usage is not None
     assert result.conversation.summary.output_truncated
     assert (
@@ -472,6 +473,108 @@ def test_compaction_is_visible_in_typed_stream_events(tmp_path: Path) -> None:
         <= 64
     )
     assert "summary reasoning" not in str(provider.requests[-1]["messages"])
+    runner.close()
+
+
+def test_compaction_uses_independent_reasoning_effort_and_output_limit(
+    tmp_path: Path,
+) -> None:
+    class RecordingProvider:
+        context_window_tokens = 2048
+        max_output_tokens = 256
+
+        def __init__(self) -> None:
+            self.requests: list[ModelRequest] = []
+            self.responses = iter(
+                (
+                    ModelResponse(content="first"),
+                    ModelResponse(content="bounded summary"),
+                    ModelResponse(content="second"),
+                )
+            )
+
+        async def complete(self, request: ModelRequest) -> ModelResponse:
+            self.requests.append(request)
+            return next(self.responses)
+
+    provider = RecordingProvider()
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,  # type: ignore[arg-type]
+    )
+    agent = dagent.ToolAgent(
+        profile="conversation",
+        capabilities=[],
+        context=dagent.ContextPolicy(
+            compaction_trigger_ratio=0.2,
+            summary_max_tokens=64,
+            compaction_reasoning_effort="low",
+        ),
+    )
+
+    first = run(runner.run(agent, input="x" * 600))
+    second = run(
+        runner.run(agent, input="y" * 600, conversation=first.conversation)
+    )
+
+    assert second.output_text == "second"
+    assert [request.purpose for request in provider.requests] == [
+        "generation",
+        "compaction",
+        "generation",
+    ]
+    assert provider.requests[0].reasoning_effort is None
+    assert provider.requests[1].reasoning_effort == "low"
+    assert provider.requests[1].max_output_tokens == 64
+    assert second.conversation.summary is not None
+    assert second.conversation.summary.reasoning == ""
+    runner.close()
+
+
+def test_compaction_effort_failure_uses_deterministic_fallback(tmp_path: Path) -> None:
+    class RejectingProvider:
+        context_window_tokens = 2048
+        max_output_tokens = 256
+
+        def __init__(self) -> None:
+            self.requests: list[ModelRequest] = []
+            self.responses = iter(
+                (ModelResponse(content="first"), ModelResponse(content="second"))
+            )
+
+        async def complete(self, request: ModelRequest) -> ModelResponse:
+            self.requests.append(request)
+            if request.purpose == "compaction":
+                raise RuntimeError("low effort is unsupported")
+            return next(self.responses)
+
+    provider = RejectingProvider()
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,  # type: ignore[arg-type]
+    )
+    agent = dagent.ToolAgent(
+        profile="conversation",
+        capabilities=[],
+        context=dagent.ContextPolicy(
+            compaction_trigger_ratio=0.2,
+            summary_max_tokens=64,
+        ),
+    )
+
+    first = run(runner.run(agent, input="x" * 600))
+    second = run(
+        runner.run(agent, input="y" * 600, conversation=first.conversation)
+    )
+
+    assert second.output_text == "second"
+    assert second.conversation.summary is not None
+    assert second.conversation.summary.method == "deterministic_fallback"
+    assert "low effort is unsupported" in (
+        second.conversation.summary.fallback_reason or ""
+    )
     runner.close()
 
 
@@ -489,7 +592,7 @@ def test_dag_audit_delta_survives_planner_context_compaction(
         ]
     )
     provider.context_window_tokens = 8192
-    provider.output_reserve_tokens = 1024
+    provider.max_output_tokens = 1024
     runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     agent = dagent.DagAgent(
         capabilities=[],
@@ -499,7 +602,7 @@ def test_dag_audit_delta_survives_planner_context_compaction(
         ),
     )
 
-    first = run(runner.run(agent, input="x" * 600))
+    first = run(runner.run(agent, input="x" * 6000))
     second = run(
         runner.run(
             agent,

@@ -89,9 +89,10 @@ provider = dagent.Provider(
     protocol="auto",
     reasoning={
         "effort": "medium",
-        "budget_tokens": 2048,
         "capture": "field_and_tags",
     },
+    context_window_tokens=None,
+    max_output_tokens=None,
 )
 ```
 
@@ -99,10 +100,8 @@ provider = dagent.Provider(
 Chat 发送 `reasoning_effort`，对 Responses 发送 `reasoning.effort`。具体级别是否生效
 仍由 vLLM 中实际部署的模型决定。
 
-`budget_tokens` 必须是正整数，映射为 vLLM 的 `thinking_token_budget`。只有所选协议的
-已探测 schema 包含该字段时 SDK 才会发送。能力不支持或未知时会产生
-`ProviderCapabilityWarning`，并在不带该字段的情况下继续请求。`auto` 模式下，如果只有
-Chat 暴露 budget 能力，就选择 Chat。
+SDK 不再提供 token 数形式的推理预算，只配置 effort。未知 reasoning 字段会被拒绝，
+不会静默忽略。
 
 `capture="field_and_tags"` 合并专用 reasoning response 字段与 `<think>` 内容；
 `capture="field"` 只信任专用字段。两种情况下 thinking tag 都不会残留在可见正文中。
@@ -117,7 +116,7 @@ print(capabilities.model_dump())
 ```
 
 报告用 `supported`、`unsupported` 和 `unknown` 描述 Chat、Responses、reasoning、
-effort、budget、tools、streaming、structured output 与 `/tokenize`。探测只读取一次
+effort、输出限制、tools、streaming、structured output 与 `/tokenize`。探测只读取一次
 `/openapi.json` 和 `/version`，随后使用缓存。
 
 自动模式仅在 Responses 支持当前请求所需的全部能力时才优先选择它，包括 tools、
@@ -129,9 +128,9 @@ streaming、structured output 与 reasoning 控制；否则在 Chat 满足请求
 Responses generation 只有终态为 `completed` 才会被接受；`failed`、`incomplete` 和
 `cancelled` 会抛出 `ProviderResponseError`，流式输出的部分内容不会被转换成成功 run。
 
-每个已记录的 `AssistantMessage.model_call` 都会暴露实际选择的协议、请求值与生效的
-effort/budget、被忽略的参数以及自动选择原因。这些审计元数据会随 conversation 持久化，
-但绝不会投影回模型输入。
+每个已记录的 `AssistantMessage.model_call` 都会暴露实际选择的协议、请求用途、请求值与
+生效的 effort/输出限制、实际 wire 字段以及自动选择原因。这些审计元数据会随 conversation
+持久化，但绝不会投影回模型输入。
 
 ## Token 计数与压缩
 
@@ -140,15 +139,39 @@ messages 与 tools。此时 `ContextUsage.estimator` 为 `"vllm"`，
 `server_max_model_len` 记录发现的上限。设置 `token_counting="vllm"` 会在无法精确计数时
 报错；设置 `"heuristic"` 则始终使用本地确定性估算。
 
+`context_window_tokens=None` 时使用探测到的 `max_model_len`；探测失败会 warning 并
+fallback 到 32,768。显式值覆盖自动值，但大于 server limit 时会在 generation 前被拒绝。
+`max_output_tokens=None` 不发送输出限制；显式值映射到 Chat 已探测到的
+`max_completion_tokens`/`max_tokens`，或 Responses 的 `max_output_tokens`。
+
+总窗口为 `W`、输出上限为 `O` 时，输入预算是 `W - O`；未配置输出上限时为 `W - 1`。
+vLLM 精确计数不增加安全系数，安全系数只应用于 heuristic/custom counter。
+
 压缩依据 token 压力，而不是最低对话轮数。到达 trigger 后，dagent 按以下顺序缩减：
 
-1. 汇总旧 run 中的完整 items；
+1. 汇总旧历史，并以最近 16% 原始历史作为保留目标；
 2. 仅从 active request 投影移除最旧的已回放 reasoning；
 3. 汇总过大 active run 中已经完成的中间步骤。
 
 当前 run 的起始用户输入、未闭合的 assistant/tool-result chain 和最新原子步骤会保留，
 tool-call/result pair 不会拆开。如果缩减后必要输入仍超过有效窗口，会在 generation 前抛出
 `ContextWindowExceeded`。
+
+默认在输入容量的 80% 触发压缩，这是软阈值：完成全部安全缩减后，只要尚未超过硬输入
+预算，仍可发起请求。摘要默认最多生成 8,192 tokens，并独立使用
+`compaction_reasoning_effort="low"`，不继承普通 Provider effort：
+
+```python
+context = dagent.ContextPolicy(
+    compaction_trigger_ratio=0.8,
+    compaction_retain_ratio=0.16,
+    summary_max_tokens=8192,
+    compaction_reasoning_effort="low",
+)
+```
+
+摘要 reasoning 会被丢弃。如果摘要调用或该 effort 不受支持，dagent 会记录原因并使用
+有界的确定性 fallback，不会因此中断 agent run。
 
 `ContextUsage` 会报告回放模式、回放与省略的 reasoning 数量及 token 估算、active-run
 压缩、精确/启发式 estimator、有效窗口和显式配置上限。

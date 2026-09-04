@@ -135,7 +135,7 @@ class SQLiteStore:
         if "conversation_schema_version" not in conversation_columns:
             self._conn.execute(
                 "ALTER TABLE conversations "
-                "ADD COLUMN conversation_schema_version INTEGER NOT NULL DEFAULT 3"
+                "ADD COLUMN conversation_schema_version INTEGER NOT NULL DEFAULT 4"
             )
             self._mark_existing_conversation_versions()
         if "checkpoint_json" not in self._table_columns("runs"):
@@ -164,7 +164,7 @@ class SQLiteStore:
                         state.id == row["id"]
                         and state.revision == row["conversation_revision"]
                     ):
-                        version = 3
+                        version = 4
             versions.append((version, row["id"]))
         self._conn.executemany(
             """
@@ -321,9 +321,10 @@ class SQLiteStore:
                     """
                     INSERT INTO conversations(
                         id, project_id, org_id, owner_user_id, kind,
-                        title, status, workspace_uri, created_at, updated_at
+                        title, status, workspace_uri, conversation_schema_version,
+                        created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, 4, ?, ?)
                     """,
                     (conversation_id, project_id, org_id, owner_user_id, kind, title, workspace_uri, now, now),
                 )
@@ -478,7 +479,7 @@ class SQLiteStore:
                     conversation_revision = ?,
                     updated_at = ?
                 WHERE id = ?
-                  AND conversation_schema_version = 3
+                  AND conversation_schema_version = 4
                   AND conversation_revision = ?
                 """,
                 (

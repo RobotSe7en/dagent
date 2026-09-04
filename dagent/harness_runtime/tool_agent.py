@@ -153,7 +153,7 @@ class ToolAgent:
                 "configured_context_window_tokens",
                 getattr(loop.provider, "context_window_tokens", None),
             ),
-            output_reserve_tokens=getattr(loop.provider, "output_reserve_tokens", 4096),
+            max_output_tokens=getattr(loop.provider, "max_output_tokens", None),
             request_token_counter=getattr(loop.provider, "count_tokens", None),
             request_reasoning_field=getattr(
                 loop.provider,
@@ -1166,18 +1166,12 @@ class ToolAgentLoop:
                     "item_count": len(items),
                 }
             )
+        summary_output_limit, source_limit = context_assembler.compaction_limits(
+            max_tokens
+        )
         source, source_truncated = context_assembler.truncate_text(
             _compaction_source(previous, items),
-            max_tokens=max(
-                1,
-                int(
-                    (
-                        context_assembler.context_window_tokens
-                        - context_assembler.output_reserve_tokens
-                    )
-                    * 0.7
-                ),
-            ),
+            max_tokens=source_limit,
         )
         system_message = {
             "role": "system",
@@ -1199,6 +1193,9 @@ class ToolAgentLoop:
                 )
             ),
             policy=context_policy,
+            max_output_tokens=summary_output_limit,
+            reasoning_effort=context_policy.compaction_reasoning_effort,
+            purpose="compaction",
         )
         record_model_turn()
         response = normalize_chat_response(
@@ -1217,8 +1214,9 @@ class ToolAgentLoop:
             method="model",
             source_truncated=source_truncated,
             output_truncated=output_truncated,
-            reasoning=response.reasoning_content,
+            reasoning="",
             usage=response.usage,
+            model_call=response.metadata,
             context_usage=prepared.usage,
         )
         return summary

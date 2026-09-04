@@ -72,13 +72,9 @@ class OpenAICompatibleProvider:
         client: AsyncOpenAI | None = None,
     ) -> None:
         self.config = config
-        self.configured_context_window_tokens = (
-            config.context_window_tokens
-            if "context_window_tokens" in config.model_fields_set
-            else None
-        )
+        self.configured_context_window_tokens = config.context_window_tokens
         self.context_window_tokens = self.configured_context_window_tokens or 32768
-        self.output_reserve_tokens = config.output_reserve_tokens
+        self.max_output_tokens = config.max_output_tokens
         self.client = client or AsyncOpenAI(
             api_key=config.api_key,
             base_url=config.base_url,
@@ -153,7 +149,13 @@ class OpenAICompatibleProvider:
             message = "The server OpenAPI schema does not expose vLLM /tokenize."
             if self.config.token_counting == "vllm":
                 raise RuntimeError(message)
-            self._warn_once("tokenize-unsupported", message + " Using heuristic counting.")
+            suffix = (
+                " Using heuristic counting and the 32,768-token fallback context window."
+                if self.configured_context_window_tokens is None
+                else " Using heuristic counting and the configured context window without "
+                "server-side validation."
+            )
+            self._warn_once("tokenize-unsupported", message + suffix)
             return None
         if reasoning_field is None:
             reasoning_field = await self.context_reasoning_field(request)
@@ -176,21 +178,51 @@ class OpenAICompatibleProvider:
                 else None
             )
             if max_model_len is not None:
-                self.context_window_tokens = min(
-                    max_model_len,
-                    self.configured_context_window_tokens or max_model_len,
+                if (
+                    self.configured_context_window_tokens is not None
+                    and self.configured_context_window_tokens > max_model_len
+                ):
+                    raise ProviderCapabilityError(
+                        "Configured context_window_tokens "
+                        f"({self.configured_context_window_tokens}) exceeds vLLM "
+                        f"max_model_len ({max_model_len}) for model "
+                        f"'{self.config.model}'."
+                    )
+                self.context_window_tokens = (
+                    self.configured_context_window_tokens or max_model_len
+                )
+            elif self.configured_context_window_tokens is None:
+                self.context_window_tokens = 32768
+                self._warn_once(
+                    "tokenize-missing-max-model-len",
+                    "vLLM /tokenize did not return max_model_len; using the "
+                    "32,768-token fallback context window.",
+                )
+            else:
+                self._warn_once(
+                    "tokenize-cannot-validate-context-window",
+                    "vLLM /tokenize did not return max_model_len; using the "
+                    "configured context window without server-side validation.",
                 )
             return ModelTokenCount(
                 count=count,
                 max_model_len=max_model_len,
                 estimator="vllm",
             )
+        except ProviderCapabilityError:
+            raise
         except (APIConnectionError, APIStatusError, OSError, TypeError, ValueError) as exc:
             message = f"vLLM /tokenize failed: {type(exc).__name__}: {exc}"
             if self.config.token_counting == "vllm":
                 raise RuntimeError(message) from exc
             self._tokenize_unavailable = True
-            self._warn_once("tokenize-failed", message + "; using heuristic counting.")
+            suffix = (
+                "; using heuristic counting and the 32,768-token fallback window."
+                if self.configured_context_window_tokens is None
+                else "; using heuristic counting and the configured context window "
+                "without server-side validation."
+            )
+            self._warn_once("tokenize-failed", message + suffix)
             return None
 
     async def chat(
@@ -536,19 +568,19 @@ class OpenAICompatibleProvider:
             kwargs["stream"] = True
             if self.config.stream_include_usage:
                 kwargs["stream_options"] = {"include_usage": True}
-        ignored: list[str] = []
         extra_body: dict[str, Any] = {}
-        reasoning = self.config.reasoning
-        if reasoning is not None and reasoning.effort is not None:
-            kwargs["reasoning_effort"] = reasoning.effort
-        effective_budget = self._apply_budget(
-            extra_body,
-            capabilities.chat_completions.reasoning_budget,
-            ignored,
-            protocol="chat_completions",
-        )
-        if reasoning is not None:
+        reasoning_effort = self._effective_reasoning_effort(request)
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+        if self.config.reasoning is not None or request.reasoning_effort is not None:
             extra_body["include_reasoning"] = True
+        max_output_tokens = self._effective_max_output_tokens(request)
+        output_limit_field = None
+        if max_output_tokens is not None:
+            output_limit_field = (
+                capabilities.chat_completions.output_limit_field or "max_tokens"
+            )
+            kwargs[output_limit_field] = max_output_tokens
         extra_body = _merge_dicts(extra_body, self.config.extra_body)
         extra_body.pop("store", None)
         extra_body.pop("previous_response_id", None)
@@ -559,15 +591,20 @@ class OpenAICompatibleProvider:
             kwargs["response_format"] = _chat_response_format(request.response_format)
         metadata = ModelCallMetadata(
             protocol="chat_completions",
-            requested_reasoning_effort=reasoning.effort if reasoning else None,
+            request_purpose=request.purpose,
+            requested_reasoning_effort=reasoning_effort,
             effective_reasoning_effort=(
                 str(kwargs.get("reasoning_effort"))
                 if kwargs.get("reasoning_effort") is not None
                 else None
             ),
-            requested_budget_tokens=reasoning.budget_tokens if reasoning else None,
-            effective_budget_tokens=effective_budget,
-            ignored_parameters=tuple(ignored),
+            requested_max_output_tokens=(
+                request.max_output_tokens
+                if request.max_output_tokens is not None
+                else self.config.max_output_tokens
+            ),
+            effective_max_output_tokens=max_output_tokens,
+            output_limit_field=output_limit_field,
             fallback_reason=resolution_reason,
         )
         return kwargs, metadata
@@ -591,19 +628,17 @@ class OpenAICompatibleProvider:
             kwargs["tools"] = responses_tools(request.tools)
         if stream:
             kwargs["stream"] = True
-        ignored: list[str] = []
         extra_body: dict[str, Any] = {}
-        reasoning = self.config.reasoning
-        if reasoning is not None and reasoning.effort is not None:
-            kwargs["reasoning"] = {"effort": reasoning.effort}
-        if reasoning is not None and capabilities.server_kind == "vllm":
+        reasoning_effort = self._effective_reasoning_effort(request)
+        if reasoning_effort is not None:
+            kwargs["reasoning"] = {"effort": reasoning_effort}
+        if (
+            self.config.reasoning is not None or request.reasoning_effort is not None
+        ) and capabilities.server_kind == "vllm":
             extra_body["include_reasoning"] = True
-        effective_budget = self._apply_budget(
-            extra_body,
-            capabilities.responses.reasoning_budget,
-            ignored,
-            protocol="responses",
-        )
+        max_output_tokens = self._effective_max_output_tokens(request)
+        if max_output_tokens is not None:
+            kwargs["max_output_tokens"] = max_output_tokens
         extra_body = _merge_dicts(extra_body, self.config.extra_body)
         extra_body.pop("store", None)
         extra_body.pop("previous_response_id", None)
@@ -633,38 +668,34 @@ class OpenAICompatibleProvider:
             }
         metadata = ModelCallMetadata(
             protocol="responses",
-            requested_reasoning_effort=reasoning.effort if reasoning else None,
-            effective_reasoning_effort=reasoning.effort if reasoning else None,
-            requested_budget_tokens=reasoning.budget_tokens if reasoning else None,
-            effective_budget_tokens=effective_budget,
-            ignored_parameters=tuple(ignored),
+            request_purpose=request.purpose,
+            requested_reasoning_effort=reasoning_effort,
+            effective_reasoning_effort=reasoning_effort,
+            requested_max_output_tokens=(
+                request.max_output_tokens
+                if request.max_output_tokens is not None
+                else self.config.max_output_tokens
+            ),
+            effective_max_output_tokens=max_output_tokens,
+            output_limit_field=(
+                "max_output_tokens" if max_output_tokens is not None else None
+            ),
             fallback_reason=resolution_reason,
         )
         return kwargs, metadata
 
-    def _apply_budget(
-        self,
-        extra_body: dict[str, Any],
-        support: CapabilitySupport,
-        ignored: list[str],
-        *,
-        protocol: str,
-    ) -> int | None:
+    def _effective_reasoning_effort(self, request: ModelRequest) -> str | None:
+        if request.reasoning_effort is not None:
+            return request.reasoning_effort
         reasoning = self.config.reasoning
-        budget = reasoning.budget_tokens if reasoning is not None else None
-        if budget is None:
-            return None
-        if support != "supported":
-            ignored.append("budget_tokens")
-            self._warn_once(
-                f"budget-{protocol}-{support}",
-                f"Ignoring reasoning budget for {protocol}: server support is {support}.",
-            )
-            return None
-        # vLLM exposes this as a top-level extension. ``extra_body`` is how the
-        # typed OpenAI SDK forwards non-OpenAI request fields at the JSON root.
-        extra_body["thinking_token_budget"] = budget
-        return budget
+        return reasoning.effort if reasoning is not None else None
+
+    def _effective_max_output_tokens(self, request: ModelRequest) -> int | None:
+        configured = self.config.max_output_tokens
+        requested = request.max_output_tokens
+        if configured is not None and requested is not None:
+            return min(configured, requested)
+        return requested if requested is not None else configured
 
     def _resolved_chat_reasoning_field(
         self,
@@ -686,7 +717,27 @@ class OpenAICompatibleProvider:
     ) -> tuple[Literal["chat_completions", "responses"], str]:
         configured = self.config.protocol
         if configured != "auto":
-            return cast(Literal["chat_completions", "responses"], configured), (
+            protocol = cast(Literal["chat_completions", "responses"], configured)
+            selected = (
+                capabilities.chat_completions
+                if protocol == "chat_completions"
+                else capabilities.responses
+            )
+            if selected.endpoint == "unsupported":
+                raise ProviderCapabilityError(
+                    f"Configured protocol={protocol} is not exposed by the server."
+                )
+            unsupported = tuple(
+                name
+                for name in self._required_capabilities(request, stream=stream)
+                if getattr(selected, name) == "unsupported"
+            )
+            if unsupported:
+                raise ProviderCapabilityError(
+                    f"Configured protocol={protocol} does not support required request "
+                    "capabilities: " + ", ".join(unsupported) + "."
+                )
+            return protocol, (
                 f"protocol={configured} was explicitly configured; cross-protocol "
                 "fallback is disabled."
             )
@@ -749,17 +800,26 @@ class OpenAICompatibleProvider:
             required.append("streaming")
         if request is not None and request.response_format is not None:
             required.append("structured_output")
-        reasoning = self.config.reasoning
+        reasoning_effort = (
+            self._effective_reasoning_effort(request)
+            if request is not None
+            else (
+                self.config.reasoning.effort
+                if self.config.reasoning is not None
+                else None
+            )
+        )
         if (
-            reasoning is not None
+            reasoning_effort is not None
+            or self.config.reasoning is not None
             or request is not None
             and any(getattr(item, "reasoning", "") for item in request.items)
         ):
             required.append("reasoning")
-        if reasoning is not None and reasoning.effort is not None:
+        if reasoning_effort is not None:
             required.append("reasoning_effort")
-        if reasoning is not None and reasoning.budget_tokens is not None:
-            required.append("reasoning_budget")
+        if request is not None and self._effective_max_output_tokens(request) is not None:
+            required.append("output_limit")
         return tuple(required)
 
     async def _probe_capabilities(self) -> ProviderCapabilities:
@@ -873,7 +933,7 @@ class Provider(OpenAICompatibleProvider):
         reasoning: dict[str, Any] | None = None,
         stream_include_usage: bool = False,
         context_window_tokens: int | None = None,
-        output_reserve_tokens: int = 4096,
+        max_output_tokens: int | None = None,
         extra_request_args: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
         client: AsyncOpenAI | None = None,
@@ -891,7 +951,7 @@ class Provider(OpenAICompatibleProvider):
                 reasoning=reasoning,
                 stream_include_usage=stream_include_usage,
                 context_window_tokens=context_window_tokens,
-                output_reserve_tokens=output_reserve_tokens,
+                max_output_tokens=max_output_tokens,
                 extra_request_args=extra_request_args or {},
                 extra_body=extra_body or {},
             ),
@@ -926,17 +986,28 @@ def _protocol_capabilities(
             endpoint="unsupported",
             reasoning="unsupported",
             reasoning_effort="unsupported",
-            reasoning_budget="unsupported",
+            output_limit="unsupported",
             tools="unsupported",
             streaming="unsupported",
             structured_output="unsupported",
         )
     names = _request_property_names(openapi, operation)
+    output_limit_field: Literal[
+        "max_tokens", "max_completion_tokens", "max_output_tokens"
+    ] | None = None
+    if path.endswith("/chat/completions"):
+        if "max_completion_tokens" in names:
+            output_limit_field = "max_completion_tokens"
+        elif "max_tokens" in names:
+            output_limit_field = "max_tokens"
+    elif "max_output_tokens" in names:
+        output_limit_field = "max_output_tokens"
     return ProtocolCapabilities(
         endpoint="supported",
         reasoning=_field_support(names, {"reasoning", "include_reasoning"}),
         reasoning_effort=_field_support(names, {"reasoning_effort", "reasoning"}),
-        reasoning_budget=_field_support(names, {"thinking_token_budget"}),
+        output_limit=("supported" if output_limit_field is not None else "unsupported"),
+        output_limit_field=output_limit_field,
         tools=_field_support(names, {"tools"}),
         streaming=_field_support(names, {"stream"}),
         structured_output=_field_support(names, {"response_format", "text"}),

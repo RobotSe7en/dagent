@@ -631,7 +631,7 @@ export interface ModelProvider {
   reasoning?: ModelReasoningConfig | null;
   stream_include_usage: boolean;
   context_window_tokens: number | null;
-  output_reserve_tokens: number;
+  max_output_tokens: number | null;
   extra_request_args: Record<string, unknown>;
   extra_body: Record<string, unknown>;
 }
@@ -640,7 +640,6 @@ export type ModelApiKeyAction = 'preserve' | 'replace' | 'clear';
 
 export interface ModelReasoningConfig {
   effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
-  budget_tokens?: number | null;
   capture?: 'field' | 'field_and_tags';
 }
 
@@ -659,7 +658,7 @@ export interface ModelProviderInput {
   reasoning?: ModelReasoningConfig | null;
   stream_include_usage: boolean;
   context_window_tokens: number | null;
-  output_reserve_tokens: number;
+  max_output_tokens: number | null;
   extra_request_args: Record<string, unknown>;
   extra_body: Record<string, unknown>;
 }

@@ -31,8 +31,8 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
     assert config.provider.timeout_seconds == 12
     assert config.provider.reasoning is None
     assert config.provider.stream_include_usage is False
-    assert config.provider.context_window_tokens == 32768
-    assert config.provider.output_reserve_tokens == 4096
+    assert config.provider.context_window_tokens is None
+    assert config.provider.max_output_tokens is None
     assert config.provider.extra_request_args == {}
     assert config.provider.extra_body == {}
     assert config.profiles.directory is None
@@ -49,7 +49,7 @@ def test_load_config_parses_stream_usage_and_context_limits(tmp_path: Path) -> N
                 '  model: "qwen3"',
                 "  stream_include_usage: true",
                 "  context_window_tokens: 16384",
-                "  output_reserve_tokens: 2048",
+                "  max_output_tokens: 2048",
             ]
         ),
         encoding="utf-8",
@@ -59,7 +59,7 @@ def test_load_config_parses_stream_usage_and_context_limits(tmp_path: Path) -> N
 
     assert config.provider.stream_include_usage is True
     assert config.provider.context_window_tokens == 16384
-    assert config.provider.output_reserve_tokens == 2048
+    assert config.provider.max_output_tokens == 2048
 
 
 def test_load_config_parses_sdk_builder_planner_frontend(tmp_path: Path) -> None:
@@ -180,7 +180,6 @@ def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path)
                 '  api_key: "local-key"',
                 "  reasoning:",
                 '    effort: "high"',
-                "    budget_tokens: 512",
                 "  extra_request_args:",
                 "    temperature: 0",
                 "  extra_body:",
@@ -195,19 +194,31 @@ def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path)
 
     assert config.provider.reasoning is not None
     assert config.provider.reasoning.effort == "high"
-    assert config.provider.reasoning.budget_tokens == 512
     assert config.provider.extra_request_args == {"temperature": 0}
     assert config.provider.extra_body == {
         "chat_template_kwargs": {"enable_thinking": True},
     }
 
 
-def test_reasoning_none_rejects_a_token_budget() -> None:
-    with pytest.raises(ValueError, match="budget_tokens.*effort is 'none'"):
+def test_reasoning_config_rejects_removed_budget_tokens() -> None:
+    with pytest.raises(ValueError, match="budget_tokens"):
         ProviderConfig(
             base_url="http://localhost:8000/v1",
             model="qwen3",
             reasoning={"effort": "none", "budget_tokens": 64},
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["max_tokens", "max_completion_tokens", "max_output_tokens", "thinking_token_budget"],
+)
+def test_provider_rejects_managed_fields_in_extra_arguments(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            extra_body={field: 64},
         )
 
 

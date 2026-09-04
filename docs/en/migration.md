@@ -25,19 +25,24 @@ The current package version is `0.9.6`.
   encrypted reasoning content, and no persisted provider item IDs.
 - `ReasoningConfig.enabled` was removed. Delete it from Python/YAML config.
   `effort` is now typed as `none|minimal|low|medium|high|xhigh|max`.
-  `budget_tokens` must be positive, cannot accompany `effort="none"`, and maps
-  to discovered vLLM `thinking_token_budget` support. Unsupported budgets are
-  warned and ignored.
+  `budget_tokens` was also removed and is now rejected; use only `effort`.
 - `ContextPolicy.keep_recent_turns` was removed. Replace it with
   `reasoning_replay="none|active_run|all_runs"`; the default is `active_run`.
   Compaction is token-driven and preserves the current input, open tool chain,
   and latest step.
 - `token_counting="auto|vllm|heuristic"` controls exact vLLM `/tokenize`
-  accounting. `context_window_tokens` is optional and acts as a cap on
-  discovered `max_model_len`; the no-discovery fallback remains 32,768.
-- New checkpoints use schema V7. V4, V5, and V6 checkpoints and their legacy
-  loop-limit fields are rejected; there is no conversion or compatibility
-  shim. Finish or explicitly migrate pending reviews before upgrading.
+  accounting. `context_window_tokens=None` uses discovered `max_model_len`; an
+  explicit value overrides it but cannot exceed it. The no-discovery fallback
+  remains 32,768.
+- `output_reserve_tokens` was removed. Use optional `max_output_tokens`, which
+  both reduces input capacity and is sent as the real generation limit. This is
+  not a one-to-one rename; leaving it unset sends no output limit.
+- Context compaction now triggers at 80% of usable input capacity, targets 16%
+  retained recent history, emits summaries up to 8,192 tokens, and uses the
+  independent `compaction_reasoning_effort="low"` by default.
+- New checkpoints use schema V8, RunState V5, and ConversationState V4. Older
+  checkpoints are rejected; there is no conversion or compatibility shim.
+  Finish pending reviews before upgrading.
 
 See [Model Context and Reasoning](model-context-and-reasoning.md) for wire
 examples and the complete selection/replay policy.

@@ -499,17 +499,17 @@ dag.output = work.output
     ))
 
     assert result.output_text == "done"
-    assert result.state.schema_version == 4
+    assert result.state.schema_version == 5
     assert result.state.planner_frontend == "sdk_builder"
     assert result.plan is not None
-    assert result.plan.schema_version == 7
+    assert result.plan.schema_version == 8
     assert result.plan.max_steps == 888
     assert result.plan.runtime_directory == ".runtime"
     assert result.plan.planner_frontend == "sdk_builder"
     assert result.plan.planner_skill is not None
     assert result.plan.planner_skill.name == "generate-dag"
     assert result.checkpoint is not None
-    assert result.checkpoint.schema_version == 7
+    assert result.checkpoint.schema_version == 8
     request = provider.requests[0]
     assert request["response_format"].name == "dagent_dynamic_dag_builder_response"
     assert request["response_format"].schema == builder_planner_response_format().schema
@@ -602,7 +602,7 @@ dag.output = work.output
     class DiscoveringProvider(MockProvider):
         configured_context_window_tokens = None
         context_window_tokens = 32768
-        output_reserve_tokens = 4096
+        max_output_tokens = 4096
 
         async def context_reasoning_field(self, _request, _stream=False):
             return "omit"

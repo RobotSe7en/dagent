@@ -390,7 +390,7 @@ const defaultModelDraft: ModelProviderInput = {
   reasoning: null,
   stream_include_usage: false,
   context_window_tokens: null,
-  output_reserve_tokens: 4096,
+  max_output_tokens: null,
   extra_request_args: {},
   extra_body: {},
 };
@@ -14372,11 +14372,16 @@ function ModelManagementWorkspace({
       setMessage('Context window must be at least 1024 tokens.');
       return;
     }
+    if (draft.max_output_tokens !== null && draft.max_output_tokens < 1) {
+      setMessage('Max output tokens must be positive.');
+      return;
+    }
     if (
       draft.context_window_tokens !== null
-      && draft.output_reserve_tokens >= draft.context_window_tokens
+      && draft.max_output_tokens !== null
+      && draft.max_output_tokens >= draft.context_window_tokens
     ) {
-      setMessage('Output reserve must be smaller than the context window.');
+      setMessage('Max output tokens must be smaller than the context window.');
       return;
     }
     const payload: ModelProviderInput = {
@@ -14508,12 +14513,12 @@ function ModelManagementWorkspace({
                   <label>Token Counting<select disabled={!editable} value={draft.token_counting} onChange={(event) => setDraft((current) => ({ ...current, token_counting: event.target.value as ModelProviderInput['token_counting'] }))}><option value="auto">auto</option><option value="vllm">vllm</option><option value="heuristic">heuristic</option></select></label>
                   <label>Chat Reasoning Field<select disabled={!editable} value={draft.chat_reasoning_field} onChange={(event) => setDraft((current) => ({ ...current, chat_reasoning_field: event.target.value as ModelProviderInput['chat_reasoning_field'] }))}><option value="auto">auto</option><option value="reasoning">reasoning</option><option value="reasoning_content">reasoning_content</option><option value="omit">omit</option></select></label>
                   <label>Context Window<input disabled={!editable} value={draft.context_window_tokens ?? ''} onChange={(event) => setDraft((current) => ({ ...current, context_window_tokens: event.target.value === '' ? null : Number(event.target.value) }))} placeholder="auto" type="number" min="1024" /></label>
-                  <label>Output Reserve<input disabled={!editable} value={draft.output_reserve_tokens} onChange={(event) => setDraft((current) => ({ ...current, output_reserve_tokens: Math.max(0, Number(event.target.value) || 0) }))} type="number" min="0" /></label>
+                  <label>Max Output Tokens<input disabled={!editable} value={draft.max_output_tokens ?? ''} onChange={(event) => setDraft((current) => ({ ...current, max_output_tokens: event.target.value === '' ? null : Number(event.target.value) }))} placeholder="unset" type="number" min="1" /></label>
                   <label className="model-checkbox-row">
                     <input disabled={!editable} checked={draft.stream_include_usage} onChange={(event) => setDraft((current) => ({ ...current, stream_include_usage: event.target.checked }))} type="checkbox" />
                     <span>请求流式 token usage</span>
                   </label>
-                  <label>Reasoning JSON<textarea disabled={!editable} value={reasoningText} onChange={(event) => setReasoningText(event.target.value)} placeholder='{"effort": "medium", "budget_tokens": 2048, "capture": "field_and_tags"}' /></label>
+                  <label>Reasoning JSON<textarea disabled={!editable} value={reasoningText} onChange={(event) => setReasoningText(event.target.value)} placeholder='{"effort": "medium", "capture": "field_and_tags"}' /></label>
                   <label>Extra Request Args<textarea disabled={!editable} value={extraRequestArgsText} onChange={(event) => setExtraRequestArgsText(event.target.value)} /></label>
                   <label>Extra Body<textarea disabled={!editable} value={extraBodyText} onChange={(event) => setExtraBodyText(event.target.value)} /></label>
                 </div>
@@ -14555,7 +14560,7 @@ function modelInputFromProvider(model: ModelProvider): ModelProviderInput {
     reasoning: model.reasoning ?? null,
     stream_include_usage: model.stream_include_usage,
     context_window_tokens: model.context_window_tokens,
-    output_reserve_tokens: model.output_reserve_tokens,
+    max_output_tokens: model.max_output_tokens,
     extra_request_args: model.extra_request_args ?? {},
     extra_body: model.extra_body ?? {},
   };

@@ -7,6 +7,7 @@ from dagent.schemas.context import (
     ContextWindowExceeded,
     ModelCallMetadata,
     ModelTokenUsage,
+    ReasoningEffort,
     ResultStoragePolicy,
 )
 from dagent.schemas.conversation import (
@@ -115,6 +116,7 @@ __all__ = [
     "InlineContent",
     "ModelCallMetadata",
     "ModelTokenUsage",
+    "ReasoningEffort",
     "ResultStoragePolicy",
     "ToolCallItem",
     "ToolResultMessage",

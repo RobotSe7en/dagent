@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterat
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent, validate_agent_name
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
@@ -147,6 +147,7 @@ RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
 _DEFAULT_RUNNER_WORKSPACE = Path.home() / ".dagent"
 _DEFAULT_RUNTIME_DIRECTORY = ".runtime"
+_UNSET_MODEL_LIMIT = object()
 
 
 @dataclass(frozen=True)
@@ -1563,7 +1564,7 @@ class Runner:
         capability_ids = tuple(sorted(capability_ids))
         skill_ids = tuple(sorted(skill_ids))
         state = result.state.model_copy(update={
-            "schema_version": 4,
+            "schema_version": 5,
             "review_level": review_level,
             "dynamic_adjust": dynamic_adjust,
             "planner_frontend": runtime.dag_agent.loop.planner_frontend,
@@ -1584,7 +1585,7 @@ class Runner:
             else runtime.tool_agent.context_assembler
         )
         plan = ResolvedRunPlan(
-            schema_version=7,
+            schema_version=8,
             runtime_kind=state.kind,
             tool_profile=runtime.tool_agent.profile.model_copy(deep=True),
             planner_profile=runtime.dag_agent.profile.model_copy(deep=True),
@@ -1618,7 +1619,7 @@ class Runner:
             result_storage_policy=runtime.tool_agent.result_storage_policy,
             runtime_directory=runtime.runtime_directory,
             context_window_tokens=context_assembler.context_window_tokens,
-            output_reserve_tokens=context_assembler.output_reserve_tokens,
+            max_output_tokens=context_assembler.max_output_tokens,
             extra_system_prompt=runtime.tool_agent.extra_system_prompt,
         )
         finalized = replace(
@@ -2011,7 +2012,7 @@ class Runner:
             result_storage_policy=plan.result_storage_policy,
             runtime_directory=plan.runtime_directory,
             context_window_tokens=plan.context_window_tokens,
-            output_reserve_tokens=plan.output_reserve_tokens,
+            max_output_tokens=plan.max_output_tokens,
             extra_system_prompt=plan.extra_system_prompt,
             skill_prompt_resolver=self._runtime.tool_agent.skill_prompt_resolver,
         )
@@ -2332,7 +2333,7 @@ def _assemble_runtime(
     context_policy: ContextPolicy | None = None,
     result_storage_policy: ResultStoragePolicy | None = None,
     context_window_tokens: int | None = None,
-    output_reserve_tokens: int | None = None,
+    max_output_tokens: int | None | object = _UNSET_MODEL_LIMIT,
     extra_system_prompt: str | None = None,
     skill_prompt_resolver: Callable[
         [tuple[str, ...] | None], tuple[PromptSkill, ...]
@@ -2350,11 +2351,11 @@ def _assemble_runtime(
         if context_window_tokens is None
         else context_window_tokens
     )
-    resolved_output_reserve = (
-        getattr(provider, "output_reserve_tokens", 4096)
-        if output_reserve_tokens is None
-        else output_reserve_tokens
-    )
+    resolved_max_output_tokens: int | None
+    if max_output_tokens is _UNSET_MODEL_LIMIT:
+        resolved_max_output_tokens = getattr(provider, "max_output_tokens", None)
+    else:
+        resolved_max_output_tokens = cast(int | None, max_output_tokens)
     runtime_tool_agent = RuntimeToolAgent(
         loop=ToolAgentLoop(
             provider=provider,
@@ -2370,7 +2371,7 @@ def _assemble_runtime(
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
             context_window_tokens=resolved_context_window,
-            output_reserve_tokens=resolved_output_reserve,
+            max_output_tokens=resolved_max_output_tokens,
             request_token_counter=getattr(provider, "count_tokens", None),
             request_reasoning_field=getattr(
                 provider,
@@ -2400,7 +2401,7 @@ def _assemble_runtime(
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
             context_window_tokens=resolved_context_window,
-            output_reserve_tokens=resolved_output_reserve,
+            max_output_tokens=resolved_max_output_tokens,
             request_token_counter=getattr(provider, "count_tokens", None),
             request_reasoning_field=getattr(
                 provider,

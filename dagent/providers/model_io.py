@@ -15,7 +15,7 @@ from dagent.providers.base import (
     ToolCall,
     separate_reasoning_tags,
 )
-from dagent.schemas.context import ModelCallMetadata, ModelTokenUsage
+from dagent.schemas.context import ModelCallMetadata, ModelTokenUsage, ReasoningEffort
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,9 @@ class ModelRequest:
     items: tuple[ModelInputItem, ...]
     tools: tuple[dict[str, Any], ...] = ()
     response_format: StructuredOutputFormat | None = None
+    max_output_tokens: int | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    purpose: Literal["generation", "compaction"] = "generation"
 
 
 @dataclass(frozen=True)

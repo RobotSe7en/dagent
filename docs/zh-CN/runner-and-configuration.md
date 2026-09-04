@@ -96,11 +96,11 @@ provider = dagent.Provider(
     chat_reasoning_field="auto",
     reasoning={
         "effort": "high",
-        "budget_tokens": 1024,
         "capture": "field_and_tags",
     },
     stream_include_usage=False,
-    output_reserve_tokens=4096,
+    context_window_tokens=None,
+    max_output_tokens=None,
     extra_request_args={},
     extra_body={},
 )
@@ -116,9 +116,8 @@ provider = dagent.Provider(
 两个协议都按无状态方式使用：每次调用发送本次选定的完整上下文。Responses 始终设置
 `store=False`，不使用 `previous_response_id` 或加密 reasoning content。
 `reasoning.effort` 在 Chat 中映射为 `reasoning_effort`，在 Responses 中映射为
-`reasoning.effort`。只有探测到请求 schema 支持时，`budget_tokens` 才映射为 vLLM
-顶层字段 `thinking_token_budget`；否则发出 warning、忽略该字段，并在调用 metadata
-记录。`effort="none"` 不能与 budget 同时使用；已删除的 `reasoning.enabled` 会被拒绝。
+`reasoning.effort`。SDK 不再支持 token 数形式的 reasoning budget；已删除的
+`reasoning.enabled` 和 `reasoning.budget_tokens` 都会被拒绝。
 
 `chat_reasoning_field` 只控制 Chat 的 reasoning 回放序列化。`auto` 对已识别的 vLLM
 使用 `reasoning`，对未知 server 则省略。只有目标兼容 server 明确支持时才显式选择
@@ -128,9 +127,10 @@ provider = dagent.Provider(
 `token_counting="auto"` 会在 vLLM 声明能力时使用 `/tokenize`，请求包含 messages
 和 tool schemas。精确计数不可用时发出 warning，并使用确定性启发式估算；`"vllm"`
 会让 tokenize 失败显式报错，`"heuristic"` 则不为 token 计数做探测。探测得到的
-`max_model_len` 是默认 context limit；显式 `context_window_tokens` 只能把它限制得更小。
-两者都不可用时 fallback 为 32,768。`output_reserve_tokens` 只预留输入空间，不会作为
-输出上限发送给模型。
+`max_model_len` 是默认总 context limit；显式 `context_window_tokens` 会覆盖自动值，但
+成功探测后若显式值更大则拒绝。没有显式值且探测失败时 warning 并 fallback 到 32,768。
+`max_output_tokens` 可选；配置后既从输入容量中扣除，也会作为真实生成上限发送。未配置时
+不发送输出限制字段。
 
 流式 usage metadata 默认关闭，因为部分兼容 endpoint 会拒绝 `stream_options`。
 只有目标 endpoint 支持 OpenAI 的流式 usage 扩展时才设置
@@ -179,7 +179,8 @@ provider:
   chat_reasoning_field: auto
   reasoning:
     effort: "high"
-    budget_tokens: 1024
+  context_window_tokens: null
+  max_output_tokens: null
 profiles:
   directory: "profiles"
 enable_result_validation: false
