@@ -120,10 +120,14 @@ print(capabilities.model_dump())
 effort、budget、tools、streaming、structured output 与 `/tokenize`。探测只读取一次
 `/openapi.json` 和 `/version`，随后使用缓存。
 
-自动模式优先选择 Responses；只有已请求的 budget 明确仅能通过 Chat 使用时才选择 Chat。
-探测不可用时发出 warning 并选择 Chat。显式设置
+自动模式仅在 Responses 支持当前请求所需的全部能力时才优先选择它，包括 tools、
+streaming、structured output 与 reasoning 控制；否则在 Chat 满足请求时选择 Chat，两个
+协议都明确不满足时则在 POST 前报错。探测不可用时发出 warning 并选择 Chat。显式设置
 `protocol="chat_completions"` 或 `"responses"` 是严格选择：endpoint 失败直接返回给调用者，
 不会把可能具有副作用的请求换协议重放。
+
+Responses generation 只有终态为 `completed` 才会被接受；`failed`、`incomplete` 和
+`cancelled` 会抛出 `ProviderResponseError`，流式输出的部分内容不会被转换成成功 run。
 
 每个已记录的 `AssistantMessage.model_call` 都会暴露实际选择的协议、请求值与生效的
 effort/budget、被忽略的参数以及自动选择原因。这些审计元数据会随 conversation 持久化，

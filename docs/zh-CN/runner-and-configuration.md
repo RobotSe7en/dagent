@@ -108,10 +108,10 @@ provider = dagent.Provider(
 
 构造 provider 不会访问网络。第一次模型调用、精确 token 计数，或显式调用
 `await provider.inspect_capabilities()` 时，provider 会读取 vLLM 的
-`/openapi.json` 与 `/version`，并缓存类型化能力报告。`protocol="auto"` 在两个协议
-能力等价时优先选择 Responses；如果只有 Chat 支持已请求的 reasoning budget，则选择
-Chat。探测没有结论时会发出 warning 并使用 Chat。显式协议不会 fallback；一次 POST
-失败后也绝不会换协议重试。
+`/openapi.json` 与 `/version`，并缓存类型化能力报告。`protocol="auto"` 只有在 Responses
+满足当前请求所需的 tools、streaming、structured output 与 reasoning 能力时才优先使用
+它；否则在 Chat 满足请求时选择 Chat。探测没有结论时会发出 warning 并使用 Chat。
+显式协议不会 fallback；一次 POST 失败后也绝不会换协议重试。
 
 两个协议都按无状态方式使用：每次调用发送本次选定的完整上下文。Responses 始终设置
 `store=False`，不使用 `previous_response_id` 或加密 reasoning content。

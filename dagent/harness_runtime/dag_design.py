@@ -86,6 +86,7 @@ async def design_dag(
         conversation=pending_conversation,
         policy=designer.context_policy,
         response_format=response_format,
+        stream=on_event is not None,
     )
     response = await _chat_for_dag(
         designer.loop.provider,

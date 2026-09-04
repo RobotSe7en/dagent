@@ -6,7 +6,7 @@ import json
 import math
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from dagent.providers.base import StructuredOutputFormat, ToolCall
 from dagent.providers.model_io import (
@@ -80,7 +80,15 @@ CompactionFunction = Callable[
     [ContextSummary | None, tuple[ConversationItem, ...], int],
     Awaitable[ContextSummary],
 ]
-RequestTokenCounter = Callable[[ModelRequest], Awaitable[ModelTokenCount | None]]
+ReasoningProjectionField = Literal["reasoning", "reasoning_content", "omit"]
+RequestReasoningField = Callable[
+    [ModelRequest, bool],
+    Awaitable[ReasoningProjectionField],
+]
+RequestTokenCounter = Callable[
+    [ModelRequest, ReasoningProjectionField],
+    Awaitable[ModelTokenCount | None],
+]
 
 
 @dataclass(frozen=True)
@@ -106,6 +114,7 @@ class ContextAssembler:
         output_reserve_tokens: int = 4096,
         token_counter: TokenCounter | None = None,
         request_token_counter: RequestTokenCounter | None = None,
+        request_reasoning_field: RequestReasoningField | None = None,
     ) -> None:
         if context_window_tokens is not None and context_window_tokens < 1024:
             raise ValueError("context_window_tokens must be at least 1024.")
@@ -124,6 +133,7 @@ class ContextAssembler:
         self.output_reserve_tokens = output_reserve_tokens
         self.token_counter = token_counter or HeuristicTokenCounter()
         self.request_token_counter = request_token_counter
+        self.request_reasoning_field = request_reasoning_field
         self.estimator = "custom" if token_counter is not None else "heuristic"
 
     async def prepare(
@@ -136,6 +146,7 @@ class ContextAssembler:
         compact: CompactionFunction | None = None,
         active_run_id: str | None = None,
         response_format: StructuredOutputFormat | None = None,
+        stream: bool = False,
     ) -> PreparedModelContext:
         working = conversation
         compacted_items = 0
@@ -154,7 +165,11 @@ class ContextAssembler:
             omitted_reasoning_ids=omitted_reasoning_ids,
             response_format=response_format,
         )
-        estimate, exact_count = await self._safe_estimate(request, policy)
+        estimate, exact_count = await self._safe_estimate(
+            request,
+            policy,
+            stream=stream,
+        )
         context_window_tokens = _effective_context_window(
             configured=self.configured_context_window_tokens,
             discovered=exact_count.max_model_len if exact_count is not None else None,
@@ -187,7 +202,11 @@ class ContextAssembler:
                 omitted_reasoning_ids=omitted_reasoning_ids,
                 response_format=response_format,
             )
-            estimate, exact_count = await self._safe_estimate(request, policy)
+            estimate, exact_count = await self._safe_estimate(
+                request,
+                policy,
+                stream=stream,
+            )
 
         # Reasoning remains in durable conversation state. Under token pressure,
         # only the request projection sheds the oldest replayable traces.
@@ -225,7 +244,11 @@ class ContextAssembler:
                 omitted_reasoning_ids=omitted_reasoning_ids,
                 response_format=response_format,
             )
-            estimate, exact_count = await self._safe_estimate(request, policy)
+            estimate, exact_count = await self._safe_estimate(
+                request,
+                policy,
+                stream=stream,
+            )
 
         # If one run itself is too large, compact only completed middle steps.
         # Keep that run's initiating user input and its latest atomic tool step.
@@ -257,7 +280,11 @@ class ContextAssembler:
                 omitted_reasoning_ids=omitted_reasoning_ids,
                 response_format=response_format,
             )
-            estimate, exact_count = await self._safe_estimate(request, policy)
+            estimate, exact_count = await self._safe_estimate(
+                request,
+                policy,
+                stream=stream,
+            )
 
         usage = ContextUsage(
             context_window_tokens=context_window_tokens,
@@ -308,9 +335,16 @@ class ContextAssembler:
         self,
         request: ModelRequest,
         policy: ContextPolicy,
+        *,
+        stream: bool,
     ) -> tuple[int, ModelTokenCount | None]:
+        reasoning_field = (
+            await self.request_reasoning_field(request, stream)
+            if self.request_reasoning_field is not None
+            else "omit"
+        )
         exact_count = (
-            await self.request_token_counter(request)
+            await self.request_token_counter(request, reasoning_field)
             if self.request_token_counter is not None
             else None
         )
@@ -318,7 +352,7 @@ class ContextAssembler:
             exact_count.count
             if exact_count is not None
             else self.token_counter.count_request(
-                model_request_to_chat(request, reasoning_field="reasoning"),
+                model_request_to_chat(request, reasoning_field=reasoning_field),
                 request.tools,
             )
         )
@@ -810,6 +844,8 @@ __all__ = [
     "ContextAssembler",
     "HeuristicTokenCounter",
     "PreparedModelContext",
+    "ReasoningProjectionField",
+    "RequestReasoningField",
     "TokenCounter",
     "user_content_for_model",
 ]

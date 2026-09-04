@@ -85,9 +85,12 @@ from dagent import (
     validate_dag_spec,
 )
 from dagent.config import (
+    ChatReasoningField,
     DEFAULT_RUNS_DIR,
     DEFAULT_WORKSPACE,
+    ProtocolMode,
     ReasoningConfig,
+    TokenCountingMode,
     UserDagentConfig,
     UserModelProviderConfig,
     UserOnlyOfficeConfig,
@@ -436,16 +439,22 @@ class ModelProviderRequest(BaseModel):
     api_key_action: ApiKeyAction = "replace"
     api_key_env: str | None = None
     timeout_seconds: float = 60
+    protocol: ProtocolMode = "auto"
+    token_counting: TokenCountingMode = "auto"
+    chat_reasoning_field: ChatReasoningField = "auto"
     reasoning: ReasoningConfig | None = None
     stream_include_usage: bool = False
-    context_window_tokens: int = Field(default=32768, ge=1024)
+    context_window_tokens: int | None = Field(default=None, ge=1024)
     output_reserve_tokens: int = Field(default=4096, ge=0)
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_context_window(self) -> "ModelProviderRequest":
-        if self.output_reserve_tokens >= self.context_window_tokens:
+        if (
+            self.context_window_tokens is not None
+            and self.output_reserve_tokens >= self.context_window_tokens
+        ):
             raise ValueError(
                 "output_reserve_tokens must be smaller than context_window_tokens."
             )
@@ -463,9 +472,12 @@ class ModelProviderPayload(BaseModel):
     api_key_configured: bool
     api_key_saved: bool
     timeout_seconds: float
+    protocol: ProtocolMode
+    token_counting: TokenCountingMode
+    chat_reasoning_field: ChatReasoningField
     reasoning: ReasoningConfig | None = None
     stream_include_usage: bool
-    context_window_tokens: int
+    context_window_tokens: int | None
     output_reserve_tokens: int
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
@@ -3673,6 +3685,9 @@ def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
         "api_key": model.api_key,
         "api_key_env": model.api_key_env,
         "timeout_seconds": model.timeout_seconds,
+        "protocol": model.protocol,
+        "token_counting": model.token_counting,
+        "chat_reasoning_field": model.chat_reasoning_field,
         "stream_include_usage": model.stream_include_usage,
         "context_window_tokens": model.context_window_tokens,
         "output_reserve_tokens": model.output_reserve_tokens,
@@ -3700,9 +3715,16 @@ def _model_request_from_user_config(model_id: str, model: UserModelProviderConfi
         api_key=api_key,
         api_key_env=model.api_key_env,
         timeout_seconds=model.timeout_seconds,
+        protocol=model.protocol,
+        token_counting=model.token_counting,
+        chat_reasoning_field=model.chat_reasoning_field,
         reasoning=model.reasoning,
         stream_include_usage=model.stream_include_usage,
-        context_window_tokens=model.context_window_tokens,
+        context_window_tokens=(
+            model.context_window_tokens
+            if "context_window_tokens" in model.model_fields_set
+            else None
+        ),
         output_reserve_tokens=model.output_reserve_tokens,
         extra_request_args=dict(model.extra_request_args),
         extra_body=dict(model.extra_body),
@@ -3717,6 +3739,9 @@ def _user_model_provider_config(model: ModelProviderRequest) -> UserModelProvide
         api_key=model.api_key,
         api_key_env=model.api_key_env,
         timeout_seconds=model.timeout_seconds,
+        protocol=model.protocol,
+        token_counting=model.token_counting,
+        chat_reasoning_field=model.chat_reasoning_field,
         reasoning=model.reasoning,
         stream_include_usage=model.stream_include_usage,
         context_window_tokens=model.context_window_tokens,
@@ -3775,9 +3800,16 @@ def _config_model_payload(*, active: bool) -> ModelProviderPayload:
         api_key_configured=_api_key_configured(provider.api_key, provider.api_key_env),
         api_key_saved=bool(provider.api_key),
         timeout_seconds=provider.timeout_seconds,
+        protocol=provider.protocol,
+        token_counting=provider.token_counting,
+        chat_reasoning_field=provider.chat_reasoning_field,
         reasoning=provider.reasoning,
         stream_include_usage=provider.stream_include_usage,
-        context_window_tokens=provider.context_window_tokens,
+        context_window_tokens=(
+            provider.context_window_tokens
+            if "context_window_tokens" in provider.model_fields_set
+            else None
+        ),
         output_reserve_tokens=provider.output_reserve_tokens,
         extra_request_args=_redact_json_secrets(provider.extra_request_args),
         extra_body=_redact_json_secrets(provider.extra_body),
@@ -3796,6 +3828,9 @@ def _user_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelPr
         api_key_configured=_api_key_configured(model.api_key, model.api_key_env),
         api_key_saved=bool(model.api_key),
         timeout_seconds=model.timeout_seconds,
+        protocol=model.protocol,
+        token_counting=model.token_counting,
+        chat_reasoning_field=model.chat_reasoning_field,
         reasoning=model.reasoning,
         stream_include_usage=model.stream_include_usage,
         context_window_tokens=model.context_window_tokens,

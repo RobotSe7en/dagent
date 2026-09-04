@@ -4280,6 +4280,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "model": "qwen3-coder",
                 "api_key": "session-secret",
                 "timeout_seconds": 42,
+                "protocol": "responses",
+                "token_counting": "heuristic",
+                "chat_reasoning_field": "omit",
                 "reasoning": {"capture": "field_and_tags"},
                 "stream_include_usage": True,
                 "context_window_tokens": 16384,
@@ -4304,6 +4307,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
         assert created_model["id"] == "local-qwen"
         assert created_model["source"] == "user"
         assert created_model["api_key_configured"] is True
+        assert created_model["protocol"] == "responses"
+        assert created_model["token_counting"] == "heuristic"
+        assert created_model["chat_reasoning_field"] == "omit"
         assert created_model["stream_include_usage"] is True
         assert created_model["context_window_tokens"] == 16384
         assert created_model["output_reserve_tokens"] == 2048
@@ -4317,6 +4323,9 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
         assert state.get_runner().runtime.provider.config.base_url == "http://localhost:8000/v1"
         assert state.get_runner().runtime.provider.config.model == "qwen3-coder"
         assert state.get_runner().runtime.provider.config.timeout_seconds == 42
+        assert state.get_runner().runtime.provider.config.protocol == "responses"
+        assert state.get_runner().runtime.provider.config.token_counting == "heuristic"
+        assert state.get_runner().runtime.provider.config.chat_reasoning_field == "omit"
         assert state.get_runner().runtime.provider.config.stream_include_usage is True
         assert state.get_runner().runtime.provider.config.context_window_tokens == 16384
         assert state.get_runner().runtime.provider.config.output_reserve_tokens == 2048
@@ -4400,6 +4409,47 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
         assert cleared.status_code == 200
         assert cleared.json()["model"]["api_key_configured"] is False
         assert state.custom_model_providers["local-qwen"].api_key is None
+    finally:
+        state.close_runner()
+        state.custom_model_providers.clear()
+        state.active_model_id = None
+
+
+def test_api_model_management_accepts_discovered_context_window(monkeypatch, tmp_path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "provider:",
+                "  base_url: https://config.example/v1",
+                "  model: config-model",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DAGENT_CONFIG", str(config))
+    state.close_runner()
+    state.custom_model_providers.clear()
+    state.active_model_id = None
+    client = TestClient(app)
+
+    try:
+        created = client.post(
+            "/models",
+            json={
+                "id": "auto-window",
+                "name": "Auto Window",
+                "base_url": "http://localhost:8000/v1",
+                "model": "qwen3",
+                "context_window_tokens": None,
+            },
+        )
+        activated = client.post("/models/auto-window/activate")
+
+        assert created.status_code == 200
+        assert created.json()["model"]["context_window_tokens"] is None
+        assert activated.status_code == 200
+        assert state.get_runner().runtime.provider.config.context_window_tokens is None
     finally:
         state.close_runner()
         state.custom_model_providers.clear()

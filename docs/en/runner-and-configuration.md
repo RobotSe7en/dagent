@@ -130,9 +130,10 @@ provider = dagent.Provider(
 Construction performs no network I/O. On the first model call, exact token
 count, or explicit `await provider.inspect_capabilities()`, the provider reads
 vLLM's `/openapi.json` and `/version` and caches a typed capability report.
-`protocol="auto"` prefers Responses when both protocols have equivalent
-capabilities. If only Chat supports a requested reasoning budget, it selects
-Chat. An inconclusive probe emits a warning and selects Chat. An explicit
+`protocol="auto"` prefers Responses only when it supports the current request's
+tools, streaming, structured-output, and reasoning requirements. Otherwise it
+selects Chat when Chat satisfies them. An inconclusive probe emits a warning
+and selects Chat. An explicit
 `protocol` never falls back, and a failed POST is never retried through the
 other protocol.
 

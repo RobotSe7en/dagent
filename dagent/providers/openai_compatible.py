@@ -42,6 +42,20 @@ class ProviderCapabilityWarning(RuntimeWarning):
     """A requested optional provider feature could not be verified or used."""
 
 
+class ProviderCapabilityError(RuntimeError):
+    """The selected private endpoint cannot satisfy a model request."""
+
+
+class ProviderResponseError(RuntimeError):
+    """A Responses generation ended without a successful terminal state."""
+
+    def __init__(self, status: str, details: Any = None) -> None:
+        self.status = status
+        self.details = details
+        suffix = f": {details}" if details not in (None, "") else ""
+        super().__init__(f"Responses generation ended with status '{status}'{suffix}")
+
+
 class OpenAICompatibleProvider:
     """Provider for private OpenAI-compatible endpoints, with vLLM discovery.
 
@@ -87,14 +101,18 @@ class OpenAICompatibleProvider:
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         capabilities = await self.inspect_capabilities()
-        protocol, reason = self._resolve_protocol(capabilities)
+        protocol, reason = self._resolve_protocol(capabilities, request=request)
         if protocol == "responses":
             return await self._responses_complete(request, capabilities, reason)
         return await self._chat_complete(request, capabilities, reason)
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ModelStreamEvent]:
         capabilities = await self.inspect_capabilities()
-        protocol, reason = self._resolve_protocol(capabilities)
+        protocol, reason = self._resolve_protocol(
+            capabilities,
+            request=request,
+            stream=True,
+        )
         if protocol == "responses":
             async for event in self._responses_stream(request, capabilities, reason):
                 yield event
@@ -102,7 +120,28 @@ class OpenAICompatibleProvider:
         async for event in self._chat_stream(request, capabilities, reason):
             yield event
 
-    async def count_tokens(self, request: ModelRequest) -> ModelTokenCount | None:
+    async def context_reasoning_field(
+        self,
+        request: ModelRequest,
+        stream: bool = False,
+    ) -> Literal["reasoning", "reasoning_content", "omit"]:
+        """Resolve the reasoning projection used by this exact request."""
+
+        capabilities = await self.inspect_capabilities()
+        protocol, _ = self._resolve_protocol(
+            capabilities,
+            request=request,
+            stream=stream,
+        )
+        if protocol == "responses":
+            return "reasoning"
+        return self._resolved_chat_reasoning_field(capabilities)
+
+    async def count_tokens(
+        self,
+        request: ModelRequest,
+        reasoning_field: Literal["reasoning", "reasoning_content", "omit"] | None = None,
+    ) -> ModelTokenCount | None:
         """Use vLLM's exact ``/tokenize`` endpoint when configured or available."""
 
         if self.config.token_counting == "heuristic":
@@ -116,7 +155,8 @@ class OpenAICompatibleProvider:
                 raise RuntimeError(message)
             self._warn_once("tokenize-unsupported", message + " Using heuristic counting.")
             return None
-        reasoning_field = self._resolved_chat_reasoning_field(capabilities)
+        if reasoning_field is None:
+            reasoning_field = await self.context_reasoning_field(request)
         body: dict[str, Any] = {
             "model": self.config.model,
             "messages": model_request_to_chat(
@@ -345,11 +385,13 @@ class OpenAICompatibleProvider:
             resolution_reason=resolution_reason,
         )
         response = await self.client.responses.create(**kwargs)
-        return _model_response_from_responses(
+        result = _model_response_from_responses(
             response,
             metadata=metadata,
             capture_tag_reasoning=_reasoning_capture(self.config) == "field_and_tags",
         )
+        _require_completed_response(result, response)
+        return result
 
     async def _responses_stream(
         self,
@@ -369,6 +411,8 @@ class OpenAICompatibleProvider:
         refusal_parts: list[str] = []
         tool_call_parts: dict[str, dict[str, str]] = {}
         completed_response: Any = None
+        terminal_event: Any = None
+        terminal_status: str | None = None
         async for event in response_stream:
             event_type = str(getattr(event, "type", ""))
             delta = str(getattr(event, "delta", None) or "")
@@ -429,8 +473,20 @@ class OpenAICompatibleProvider:
                     },
                 )
                 part["arguments"] += delta
-            elif event_type in {"response.completed", "response.incomplete"}:
+            elif event_type in {
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+                "response.cancelled",
+            }:
+                terminal_event = event
+                terminal_status = event_type.removeprefix("response.")
                 completed_response = getattr(event, "response", None)
+                if completed_response is None and event_type != "response.completed":
+                    raise ProviderResponseError(
+                        terminal_status,
+                        _response_details(event),
+                    )
 
         if completed_response is not None:
             result = _model_response_from_responses(
@@ -450,6 +506,12 @@ class OpenAICompatibleProvider:
                 ),
                 metadata=metadata,
             )
+        if terminal_status not in (None, "completed") and result.status == "completed":
+            raise ProviderResponseError(
+                terminal_status,
+                _response_details(completed_response or terminal_event),
+            )
+        _require_completed_response(result, completed_response)
         yield ModelStreamEvent(type="done", response=result)
 
     def _chat_kwargs(
@@ -618,6 +680,9 @@ class OpenAICompatibleProvider:
     def _resolve_protocol(
         self,
         capabilities: ProviderCapabilities,
+        *,
+        request: ModelRequest | None = None,
+        stream: bool = False,
     ) -> tuple[Literal["chat_completions", "responses"], str]:
         configured = self.config.protocol
         if configured != "auto":
@@ -628,23 +693,39 @@ class OpenAICompatibleProvider:
 
         chat = capabilities.chat_completions.endpoint
         responses = capabilities.responses.endpoint
-        budget_requested = bool(
-            self.config.reasoning
-            and self.config.reasoning.budget_tokens is not None
-        )
+        required = self._required_capabilities(request, stream=stream)
         if responses == "supported":
-            if (
-                budget_requested
-                and capabilities.responses.reasoning_budget != "supported"
-                and capabilities.chat_completions.reasoning_budget == "supported"
+            missing_responses = _missing_capabilities(
+                capabilities.responses,
+                required,
+            )
+            if not missing_responses:
+                return "responses", "Responses supports the current request and is preferred."
+            if chat == "supported" and not _missing_capabilities(
+                capabilities.chat_completions,
+                required,
             ):
                 return (
                     "chat_completions",
-                    "Chat Completions is the only discovered protocol supporting "
-                    "the requested reasoning budget.",
+                    "Chat Completions supports request capabilities missing from "
+                    f"Responses: {', '.join(missing_responses)}.",
                 )
-            return "responses", "Responses is supported and preferred in auto mode."
+            raise ProviderCapabilityError(
+                "Neither discovered protocol supports all required request capabilities: "
+                + ", ".join(missing_responses)
+                + "."
+            )
         if chat == "supported":
+            missing_chat = _missing_capabilities(
+                capabilities.chat_completions,
+                required,
+            )
+            if missing_chat:
+                raise ProviderCapabilityError(
+                    "Chat Completions does not support required request capabilities: "
+                    + ", ".join(missing_chat)
+                    + "."
+                )
             return "chat_completions", "Only Chat Completions was discovered."
         self._warn_once(
             "protocol-probe-fallback",
@@ -654,6 +735,32 @@ class OpenAICompatibleProvider:
             "chat_completions",
             "Capability probing was inconclusive; auto mode conservatively selected Chat Completions.",
         )
+
+    def _required_capabilities(
+        self,
+        request: ModelRequest | None,
+        *,
+        stream: bool,
+    ) -> tuple[str, ...]:
+        required: list[str] = []
+        if request is not None and request.tools:
+            required.append("tools")
+        if stream:
+            required.append("streaming")
+        if request is not None and request.response_format is not None:
+            required.append("structured_output")
+        reasoning = self.config.reasoning
+        if (
+            reasoning is not None
+            or request is not None
+            and any(getattr(item, "reasoning", "") for item in request.items)
+        ):
+            required.append("reasoning")
+        if reasoning is not None and reasoning.effort is not None:
+            required.append("reasoning_effort")
+        if reasoning is not None and reasoning.budget_tokens is not None:
+            required.append("reasoning_budget")
+        return tuple(required)
 
     async def _probe_capabilities(self) -> ProviderCapabilities:
         openapi: Mapping[str, Any] | None = None
@@ -840,6 +947,17 @@ def _field_support(names: set[str], candidates: set[str]) -> CapabilitySupport:
     return "supported" if names.intersection(candidates) else "unsupported"
 
 
+def _missing_capabilities(
+    capabilities: ProtocolCapabilities,
+    required: Sequence[str],
+) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in required
+        if getattr(capabilities, name) != "supported"
+    )
+
+
 def _request_property_names(
     openapi: Mapping[str, Any],
     path_item: Mapping[str, Any],
@@ -962,6 +1080,27 @@ def _model_response_from_responses(
         result,
         capture_tag_reasoning=capture_tag_reasoning,
     )
+
+
+def _require_completed_response(response: ModelResponse, raw_response: Any) -> None:
+    if response.status == "completed":
+        return
+    raise ProviderResponseError(
+        response.status,
+        _response_details(raw_response),
+    )
+
+
+def _response_details(value: Any) -> Any:
+    if value is None:
+        return None
+    for name in ("error", "incomplete_details"):
+        details = getattr(value, name, None)
+        if details is None:
+            continue
+        model_dump = getattr(details, "model_dump", None)
+        return model_dump(mode="json") if callable(model_dump) else details
+    return None
 
 
 def _parse_tool_arguments(raw_arguments: str | None) -> dict[str, Any]:

@@ -20,6 +20,57 @@ def test_context_policy_rejects_removed_turn_count_setting() -> None:
         ContextPolicy.model_validate({"keep_recent_turns": 4})
 
 
+class RecordingTokenCounter:
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+
+    def count_text(self, text: str) -> int:
+        return len(text)
+
+    def count_request(self, messages, tools) -> int:
+        self.messages = list(messages)
+        return 1
+
+
+@pytest.mark.asyncio
+async def test_heuristic_count_omits_reasoning_for_legacy_chat_adapter() -> None:
+    counter = RecordingTokenCounter()
+    conversation = ConversationState(
+        items=(
+            UserMessage(run_id="run_1", content="request"),
+            AssistantMessage(
+                run_id="run_1",
+                content="using tool",
+                reasoning="private trace " * 100,
+                tool_calls=(ToolCallItem(id="call_1", name="lookup"),),
+            ),
+            ToolResultMessage(
+                run_id="run_1",
+                call_id="call_1",
+                name="lookup",
+                status="completed",
+                content=inline_content("ok"),
+            ),
+        )
+    )
+
+    await ContextAssembler(
+        context_window_tokens=4096,
+        output_reserve_tokens=512,
+        token_counter=counter,
+    ).prepare(
+        system_message={"role": "system", "content": "Be useful."},
+        conversation=conversation,
+        policy=ContextPolicy(reasoning_replay="active_run"),
+        active_run_id="run_1",
+    )
+
+    assistant = next(
+        message for message in counter.messages if message["role"] == "assistant"
+    )
+    assert "reasoning" not in assistant
+
+
 def _conversation() -> ConversationState:
     return ConversationState(
         items=(
@@ -83,6 +134,9 @@ async def test_reasoning_replay_modes(mode: str, expected: list[str]) -> None:
 
 @pytest.mark.asyncio
 async def test_pressure_drops_oldest_reasoning_but_keeps_latest_step() -> None:
+    async def include_reasoning(_request, _stream):
+        return "reasoning"
+
     first_reasoning = "old reasoning " * 100
     latest_reasoning = "latest reasoning " * 20
     conversation = ConversationState(
@@ -114,6 +168,7 @@ async def test_pressure_drops_oldest_reasoning_but_keeps_latest_step() -> None:
     prepared = await ContextAssembler(
         context_window_tokens=1024,
         output_reserve_tokens=128,
+        request_reasoning_field=include_reasoning,
     ).prepare(
         system_message={"role": "system", "content": "Be useful."},
         conversation=conversation,
@@ -137,7 +192,7 @@ async def test_pressure_drops_oldest_reasoning_but_keeps_latest_step() -> None:
 
 @pytest.mark.asyncio
 async def test_exact_counter_supplies_server_window_and_observability() -> None:
-    async def count(_request):
+    async def count(_request, _reasoning_field):
         return ModelTokenCount(count=100, max_model_len=65536, estimator="vllm")
 
     prepared = await ContextAssembler(

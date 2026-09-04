@@ -128,11 +128,19 @@ The report uses `supported`, `unsupported`, and `unknown` for Chat, Responses,
 reasoning, effort, budget, tools, streaming, structured output, and `/tokenize`.
 Discovery reads `/openapi.json` and `/version` once and caches the result.
 
-Auto selection prefers Responses, except when the requested budget is known to
-work only through Chat. If discovery is unavailable, it warns and selects Chat.
+Auto selection prefers Responses only when it supports every capability needed
+by the current request, including tools, streaming, structured output, and
+reasoning controls. Otherwise it selects Chat when Chat satisfies the request;
+if neither discovered protocol does, it fails before issuing a POST. If
+discovery is unavailable, it warns and selects Chat.
 Setting `protocol="chat_completions"` or `"responses"` is strict: endpoint
 failure is returned to the caller and never triggers cross-protocol replay of a
 possibly side-effecting request.
+
+A Responses generation is accepted only with terminal status `completed`.
+`failed`, `incomplete`, and `cancelled` terminal states raise
+`ProviderResponseError`; partial streaming output is never converted into a
+successful run.
 
 Each recorded `AssistantMessage.model_call` exposes the selected protocol,
 requested and effective effort/budget, ignored parameters, and the auto-selection

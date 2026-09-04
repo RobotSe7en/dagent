@@ -12,7 +12,9 @@ from dagent.providers.capabilities import ProtocolCapabilities, ProviderCapabili
 from dagent.providers.openai_compatible import (
     OpenAICompatibleProvider,
     Provider,
+    ProviderCapabilityError,
     ProviderCapabilityWarning,
+    ProviderResponseError,
 )
 
 __all__ = [
@@ -22,8 +24,10 @@ __all__ = [
     "MockProvider",
     "OpenAICompatibleProvider",
     "Provider",
+    "ProviderCapabilityError",
     "ProviderCapabilities",
     "ProviderCapabilityWarning",
+    "ProviderResponseError",
     "ProtocolCapabilities",
     "StructuredOutputFormat",
     "ToolCall",

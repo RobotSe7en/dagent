@@ -41,6 +41,11 @@ class ProfiledAgent:
             ),
             output_reserve_tokens=getattr(provider, "output_reserve_tokens", 4096),
             request_token_counter=getattr(provider, "count_tokens", None),
+            request_reasoning_field=getattr(
+                provider,
+                "context_reasoning_field",
+                None,
+            ),
         )
 
     async def run_text_response(

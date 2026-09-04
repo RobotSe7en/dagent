@@ -163,6 +163,11 @@ class DAGAgent:
             ),
             output_reserve_tokens=getattr(loop.provider, "output_reserve_tokens", 4096),
             request_token_counter=getattr(loop.provider, "count_tokens", None),
+            request_reasoning_field=getattr(
+                loop.provider,
+                "context_reasoning_field",
+                None,
+            ),
         )
         self.loop.context_policy = self.context_policy
         self.loop.context_assembler = self.context_assembler
@@ -470,6 +475,11 @@ class DAGAgentLoop:
             ),
             output_reserve_tokens=getattr(provider, "output_reserve_tokens", 4096),
             request_token_counter=getattr(provider, "count_tokens", None),
+            request_reasoning_field=getattr(
+                provider,
+                "context_reasoning_field",
+                None,
+            ),
         )
         self.context_usages: list[ContextUsage] = []
         self.latest_context_summary: ContextSummary | None = None
@@ -531,6 +541,7 @@ class DAGAgentLoop:
                 run_id=resolved_task_id,
                 on_event=on_event,
             ),
+            stream=on_token is not None or on_event is not None,
         )
         self.context_usages.append(prepared.usage)
         self.latest_context_summary = prepared.conversation.summary

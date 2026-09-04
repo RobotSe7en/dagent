@@ -1578,6 +1578,11 @@ class Runner:
             if runtime.validator is not None
             else None
         )
+        context_assembler = (
+            runtime.dag_agent.context_assembler
+            if state.kind == "dynamic_dag"
+            else runtime.tool_agent.context_assembler
+        )
         plan = ResolvedRunPlan(
             schema_version=7,
             runtime_kind=state.kind,
@@ -1612,12 +1617,8 @@ class Runner:
             context_policy=runtime.tool_agent.context_policy,
             result_storage_policy=runtime.tool_agent.result_storage_policy,
             runtime_directory=runtime.runtime_directory,
-            context_window_tokens=(
-                runtime.tool_agent.context_assembler.context_window_tokens
-            ),
-            output_reserve_tokens=(
-                runtime.tool_agent.context_assembler.output_reserve_tokens
-            ),
+            context_window_tokens=context_assembler.context_window_tokens,
+            output_reserve_tokens=context_assembler.output_reserve_tokens,
             extra_system_prompt=runtime.tool_agent.extra_system_prompt,
         )
         finalized = replace(
@@ -2371,6 +2372,11 @@ def _assemble_runtime(
             context_window_tokens=resolved_context_window,
             output_reserve_tokens=resolved_output_reserve,
             request_token_counter=getattr(provider, "count_tokens", None),
+            request_reasoning_field=getattr(
+                provider,
+                "context_reasoning_field",
+                None,
+            ),
         ),
     )
     runtime_dag_agent = RuntimeDAGAgent(
@@ -2396,6 +2402,11 @@ def _assemble_runtime(
             context_window_tokens=resolved_context_window,
             output_reserve_tokens=resolved_output_reserve,
             request_token_counter=getattr(provider, "count_tokens", None),
+            request_reasoning_field=getattr(
+                provider,
+                "context_reasoning_field",
+                None,
+            ),
         ),
     )
     return HarnessRuntime(

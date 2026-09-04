@@ -38,7 +38,7 @@ provider = dagent.Provider(
     base_url="https://api.deepseek.com",
     model="deepseek-v4-pro",
     api_key_env="DEEPSEEK_API_KEY",
-    reasoning={"enabled": True, "effort": "high"},
+    reasoning={"effort": "high"},
 )
 ```
 

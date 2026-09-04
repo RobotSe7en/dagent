@@ -155,6 +155,11 @@ class ToolAgent:
             ),
             output_reserve_tokens=getattr(loop.provider, "output_reserve_tokens", 4096),
             request_token_counter=getattr(loop.provider, "count_tokens", None),
+            request_reasoning_field=getattr(
+                loop.provider,
+                "context_reasoning_field",
+                None,
+            ),
         )
         self.prompt_context = prompt_context
         self.tools = self.loop.available_capabilities()
@@ -740,6 +745,7 @@ class ToolAgentLoop:
                         context_assembler=context_assembler,
                         context_policy=context_policy,
                     ),
+                    stream=on_token is not None or on_event is not None,
                 )
                 loop_conversation = prepared.conversation
                 context_usages.append(prepared.usage)

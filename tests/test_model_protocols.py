@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import httpx
@@ -7,7 +8,14 @@ import pytest
 from openai import AsyncOpenAI
 
 from dagent.config import ProviderConfig
-from dagent.providers import OpenAICompatibleProvider, ProviderCapabilityWarning, ToolCall
+from dagent.providers import (
+    OpenAICompatibleProvider,
+    ProviderCapabilityError,
+    ProviderCapabilityWarning,
+    ProviderResponseError,
+    StructuredOutputFormat,
+    ToolCall,
+)
 from dagent.providers.model_io import (
     ModelAssistantTurn,
     ModelRequest,
@@ -79,6 +87,24 @@ class _Completions:
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
+        if kwargs.get("stream"):
+            return _AsyncStream(
+                [
+                    SimpleNamespace(
+                        usage=None,
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    content="chat stream",
+                                    reasoning=None,
+                                    refusal=None,
+                                    tool_calls=[],
+                                )
+                            )
+                        ],
+                    )
+                ]
+            )
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -232,6 +258,13 @@ def _request() -> ModelRequest:
     )
 
 
+def _simple_request() -> ModelRequest:
+    return ModelRequest(
+        instructions="Be useful.",
+        items=(ModelUserInput(source_id="u1", content="hello"),),
+    )
+
+
 @pytest.mark.asyncio
 async def test_auto_prefers_stateless_responses_and_replays_items() -> None:
     client = DualProtocolClient()
@@ -295,6 +328,97 @@ async def test_auto_uses_chat_when_only_chat_supports_reasoning_budget() -> None
     assert response.metadata is not None
     assert response.metadata.protocol == "chat_completions"
     assert response.metadata.effective_budget_tokens == 512
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("missing_field", "model_request"),
+    [
+        ("tools", _request()),
+        ("reasoning", _request()),
+        (
+            "text",
+            replace(
+                _simple_request(),
+                response_format=StructuredOutputFormat(
+                    name="answer",
+                    schema={"type": "object"},
+                ),
+            ),
+        ),
+    ],
+)
+async def test_auto_uses_chat_when_responses_lacks_request_capability(
+    missing_field: str,
+    model_request: ModelRequest,
+) -> None:
+    spec = _openapi()
+    response_properties = spec["paths"]["/v1/responses"]["post"]["requestBody"][
+        "content"
+    ]["application/json"]["schema"]["properties"]
+    response_properties.pop(missing_field)
+    client = DualProtocolClient(openapi=spec)
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    response = await provider.complete(model_request)
+
+    assert not client.responses.calls
+    assert client.completions.calls
+    assert response.metadata is not None
+    assert response.metadata.protocol == "chat_completions"
+    assert response.metadata.fallback_reason is not None
+    assert (
+        missing_field.replace("text", "structured_output")
+        in response.metadata.fallback_reason
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_uses_chat_stream_when_responses_lacks_streaming() -> None:
+    spec = _openapi()
+    response_properties = spec["paths"]["/v1/responses"]["post"]["requestBody"][
+        "content"
+    ]["application/json"]["schema"]["properties"]
+    response_properties.pop("stream")
+    client = DualProtocolClient(openapi=spec)
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(base_url="http://localhost:8000/v1", model="qwen3"),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    events = [event async for event in provider.stream(_simple_request())]
+
+    assert not client.responses.calls
+    assert client.completions.calls[0]["stream"] is True
+    assert events[-1].response is not None
+    assert events[-1].response.metadata is not None
+    assert events[-1].response.metadata.protocol == "chat_completions"
+
+
+@pytest.mark.asyncio
+async def test_auto_rejects_request_when_neither_protocol_supports_it() -> None:
+    spec = _openapi()
+    spec["paths"]["/v1/responses"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]["properties"].pop("tools")
+    spec["components"]["schemas"]["ChatRequest"]["properties"].pop("tools")
+    client = DualProtocolClient(openapi=spec)
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(base_url="http://localhost:8000/v1", model="qwen3"),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ProviderCapabilityError, match="tools"):
+        await provider.complete(_request())
+
+    assert not client.responses.calls
+    assert not client.completions.calls
 
 
 @pytest.mark.asyncio
@@ -370,6 +494,71 @@ async def test_explicit_responses_failure_never_retries_chat() -> None:
 
     assert len(client.responses.calls) == 1
     assert not client.completions.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["failed", "incomplete"])
+async def test_responses_non_success_status_raises(status: str) -> None:
+    client = DualProtocolClient()
+
+    async def create(**kwargs):
+        client.responses.calls.append(kwargs)
+        return SimpleNamespace(
+            status=status,
+            error=SimpleNamespace(message="generation stopped"),
+            incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+            output=[],
+            usage=None,
+        )
+
+    client.responses.create = create
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            protocol="responses",
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ProviderResponseError, match=status):
+        await provider.complete(_simple_request())
+
+    assert not client.completions.calls
+
+
+@pytest.mark.asyncio
+async def test_responses_failed_stream_never_emits_done() -> None:
+    client = DualProtocolClient()
+    failed_response = SimpleNamespace(
+        status="failed",
+        error=SimpleNamespace(message="engine failed"),
+        output=[],
+        usage=None,
+    )
+
+    async def create(**kwargs):
+        client.responses.calls.append(kwargs)
+        return _AsyncStream(
+            [SimpleNamespace(type="response.failed", response=failed_response)]
+        )
+
+    client.responses.create = create
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            protocol="responses",
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+    events = []
+
+    with pytest.raises(ProviderResponseError, match="failed"):
+        async for event in provider.stream(_simple_request()):
+            events.append(event)
+
+    assert not any(event.type == "done" for event in events)
 
 
 @pytest.mark.asyncio
