@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.6`.
+The current package version is `0.9.7`.
 
 ## Unreleased
+
+## 0.9.7
 
 ### Breaking: unified private-vLLM model context
 
@@ -46,6 +48,15 @@ The current package version is `0.9.6`.
 
 See [Model Context and Reasoning](model-context-and-reasoning.md) for wire
 examples and the complete selection/replay policy.
+
+### Verification and known limitations
+
+- Release validation covers the full Python suite, WebUI tests and production
+  build, and wheel/sdist metadata checks.
+- Automatic capability and context-window discovery depends on private vLLM
+  exposing `/openapi.json`, `/version`, and `/tokenize`. When discovery is
+  unavailable, the documented warnings, protocol choice, token estimator, and
+  32,768-token context fallback apply.
 
 ## 0.9.6
 

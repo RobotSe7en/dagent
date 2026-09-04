@@ -4,9 +4,11 @@
 
 ## 当前发布线
 
-当前包版本是 `0.9.6`。
+当前包版本是 `0.9.7`。
 
 ## Unreleased
+
+## 0.9.7
 
 ### 破坏性变更：统一私有 vLLM 模型上下文
 
@@ -36,6 +38,13 @@
   会被拒绝，不提供转换或兼容 shim。升级前应完成 pending review。
 
 wire 示例与完整选择/回放策略见[模型上下文与推理](model-context-and-reasoning.md)。
+
+### 验证与已知限制
+
+- 发布验证覆盖完整 Python 测试、WebUI 测试与生产构建，以及 wheel/sdist 元数据检查。
+- 自动能力与上下文窗口探测依赖私有 vLLM 暴露 `/openapi.json`、`/version` 和
+  `/tokenize`。无法探测时，会采用文档说明的 warning、协议选择、token estimator 与
+  32,768-token 上下文 fallback。
 
 ## 0.9.6
 
