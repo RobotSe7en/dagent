@@ -17,6 +17,8 @@
 
 - [Runner 和配置](runner-and-configuration.md)：provider、`Runner(...)`、
   `Runner.from_config(...)`、validation、MCP 注册和运行时 capability 管理。
+- [模型上下文与推理](model-context-and-reasoning.md)：私有 vLLM 的 Chat/Responses
+  选择、reasoning 回放、token 计数和压缩。
 - [Capabilities](capabilities.md)：Python 工具、MCP capability id、结构化结果、
   policy 和 boundary。
 - [Agents](agents.md)：什么时候使用 `ToolAgent`、`AutoAgent` 或 `DagAgent`。

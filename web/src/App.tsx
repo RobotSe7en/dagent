@@ -384,9 +384,12 @@ const defaultModelDraft: ModelProviderInput = {
   api_key_action: 'replace',
   api_key_env: '',
   timeout_seconds: 60,
+  protocol: 'auto',
+  token_counting: 'auto',
+  chat_reasoning_field: 'auto',
   reasoning: null,
   stream_include_usage: false,
-  context_window_tokens: 32768,
+  context_window_tokens: null,
   output_reserve_tokens: 4096,
   extra_request_args: {},
   extra_body: {},
@@ -14365,11 +14368,14 @@ function ModelManagementWorkspace({
       setMessage('Reasoning must be a JSON object.');
       return;
     }
-    if (draft.context_window_tokens < 1024) {
+    if (draft.context_window_tokens !== null && draft.context_window_tokens < 1024) {
       setMessage('Context window must be at least 1024 tokens.');
       return;
     }
-    if (draft.output_reserve_tokens >= draft.context_window_tokens) {
+    if (
+      draft.context_window_tokens !== null
+      && draft.output_reserve_tokens >= draft.context_window_tokens
+    ) {
       setMessage('Output reserve must be smaller than the context window.');
       return;
     }
@@ -14498,13 +14504,16 @@ function ModelManagementWorkspace({
                 <div className="model-config-form model-advanced-content">
                   <label>API Key Env<input disabled={!editable} value={draft.api_key_env ?? ''} onChange={(event) => setDraft((current) => ({ ...current, api_key_env: event.target.value }))} /></label>
                   <label>Timeout<input disabled={!editable} value={draft.timeout_seconds} onChange={(event) => setDraft((current) => ({ ...current, timeout_seconds: Number(event.target.value) || 60 }))} type="number" min="1" /></label>
-                  <label>Context Window<input disabled={!editable} value={draft.context_window_tokens} onChange={(event) => setDraft((current) => ({ ...current, context_window_tokens: Number(event.target.value) || 32768 }))} type="number" min="1024" /></label>
+                  <label>Protocol<select disabled={!editable} value={draft.protocol} onChange={(event) => setDraft((current) => ({ ...current, protocol: event.target.value as ModelProviderInput['protocol'] }))}><option value="auto">auto</option><option value="chat_completions">chat_completions</option><option value="responses">responses</option></select></label>
+                  <label>Token Counting<select disabled={!editable} value={draft.token_counting} onChange={(event) => setDraft((current) => ({ ...current, token_counting: event.target.value as ModelProviderInput['token_counting'] }))}><option value="auto">auto</option><option value="vllm">vllm</option><option value="heuristic">heuristic</option></select></label>
+                  <label>Chat Reasoning Field<select disabled={!editable} value={draft.chat_reasoning_field} onChange={(event) => setDraft((current) => ({ ...current, chat_reasoning_field: event.target.value as ModelProviderInput['chat_reasoning_field'] }))}><option value="auto">auto</option><option value="reasoning">reasoning</option><option value="reasoning_content">reasoning_content</option><option value="omit">omit</option></select></label>
+                  <label>Context Window<input disabled={!editable} value={draft.context_window_tokens ?? ''} onChange={(event) => setDraft((current) => ({ ...current, context_window_tokens: event.target.value === '' ? null : Number(event.target.value) }))} placeholder="auto" type="number" min="1024" /></label>
                   <label>Output Reserve<input disabled={!editable} value={draft.output_reserve_tokens} onChange={(event) => setDraft((current) => ({ ...current, output_reserve_tokens: Math.max(0, Number(event.target.value) || 0) }))} type="number" min="0" /></label>
                   <label className="model-checkbox-row">
                     <input disabled={!editable} checked={draft.stream_include_usage} onChange={(event) => setDraft((current) => ({ ...current, stream_include_usage: event.target.checked }))} type="checkbox" />
                     <span>请求流式 token usage</span>
                   </label>
-                  <label>Reasoning JSON<textarea disabled={!editable} value={reasoningText} onChange={(event) => setReasoningText(event.target.value)} placeholder='{"enabled": true, "effort": "medium", "capture": "field_and_tags"}' /></label>
+                  <label>Reasoning JSON<textarea disabled={!editable} value={reasoningText} onChange={(event) => setReasoningText(event.target.value)} placeholder='{"effort": "medium", "budget_tokens": 2048, "capture": "field_and_tags"}' /></label>
                   <label>Extra Request Args<textarea disabled={!editable} value={extraRequestArgsText} onChange={(event) => setExtraRequestArgsText(event.target.value)} /></label>
                   <label>Extra Body<textarea disabled={!editable} value={extraBodyText} onChange={(event) => setExtraBodyText(event.target.value)} /></label>
                 </div>
@@ -14540,6 +14549,9 @@ function modelInputFromProvider(model: ModelProvider): ModelProviderInput {
     api_key_action: 'preserve',
     api_key_env: model.api_key_env ?? '',
     timeout_seconds: model.timeout_seconds,
+    protocol: model.protocol,
+    token_counting: model.token_counting,
+    chat_reasoning_field: model.chat_reasoning_field,
     reasoning: model.reasoning ?? null,
     stream_include_usage: model.stream_include_usage,
     context_window_tokens: model.context_window_tokens,

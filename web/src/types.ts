@@ -625,9 +625,12 @@ export interface ModelProvider {
   api_key_configured: boolean;
   api_key_saved: boolean;
   timeout_seconds: number;
+  protocol: 'auto' | 'chat_completions' | 'responses';
+  token_counting: 'auto' | 'vllm' | 'heuristic';
+  chat_reasoning_field: 'auto' | 'reasoning' | 'reasoning_content' | 'omit';
   reasoning?: ModelReasoningConfig | null;
   stream_include_usage: boolean;
-  context_window_tokens: number;
+  context_window_tokens: number | null;
   output_reserve_tokens: number;
   extra_request_args: Record<string, unknown>;
   extra_body: Record<string, unknown>;
@@ -636,8 +639,7 @@ export interface ModelProvider {
 export type ModelApiKeyAction = 'preserve' | 'replace' | 'clear';
 
 export interface ModelReasoningConfig {
-  enabled?: boolean | null;
-  effort?: string | null;
+  effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
   budget_tokens?: number | null;
   capture?: 'field' | 'field_and_tags';
 }
@@ -651,9 +653,12 @@ export interface ModelProviderInput {
   api_key_action: ModelApiKeyAction;
   api_key_env?: string | null;
   timeout_seconds: number;
+  protocol: 'auto' | 'chat_completions' | 'responses';
+  token_counting: 'auto' | 'vllm' | 'heuristic';
+  chat_reasoning_field: 'auto' | 'reasoning' | 'reasoning_content' | 'omit';
   reasoning?: ModelReasoningConfig | null;
   stream_include_usage: boolean;
-  context_window_tokens: number;
+  context_window_tokens: number | null;
   output_reserve_tokens: number;
   extra_request_args: Record<string, unknown>;
   extra_body: Record<string, unknown>;

@@ -10,6 +10,7 @@ from typing import Any
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
 from dagent.providers.base import normalize_chat_response
+from dagent.providers.model_io import chat_response_from_model, complete_model
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.execution_usage import record_model_turn
 from dagent.schemas import ContextPolicy, ContextUsage, ConversationState, UserMessage
@@ -33,8 +34,18 @@ class ProfiledAgent:
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.context_policy = context_policy or ContextPolicy()
         self.context_assembler = context_assembler or ContextAssembler(
-            context_window_tokens=getattr(provider, "context_window_tokens", 32768),
+            context_window_tokens=getattr(
+                provider,
+                "configured_context_window_tokens",
+                getattr(provider, "context_window_tokens", None),
+            ),
             output_reserve_tokens=getattr(provider, "output_reserve_tokens", 4096),
+            request_token_counter=getattr(provider, "count_tokens", None),
+            request_reasoning_field=getattr(
+                provider,
+                "context_reasoning_field",
+                None,
+            ),
         )
 
     async def run_text_response(
@@ -69,7 +80,7 @@ class ProfiledAgent:
         )
         record_model_turn()
         response = normalize_chat_response(
-            await self.provider.chat(prepared.messages)
+            chat_response_from_model(await complete_model(self.provider, prepared.request))
         )
         return response, prepared.usage
 

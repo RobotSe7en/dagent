@@ -9,6 +9,39 @@ The current package version is `0.9.6`.
 
 ## Unreleased
 
+### Breaking: unified private-vLLM model context
+
+- The built-in `Provider` now supports private vLLM Chat Completions and
+  Responses through one internal request/response contract. All SDK model call
+  sites use it. Existing custom `ChatProvider` implementations remain supported
+  by an explicit Chat adapter; the public `Provider` and
+  `OpenAICompatibleProvider` class names are unchanged.
+- `Provider.protocol` is `auto`, `chat_completions`, or `responses`. Auto mode
+  probes `/openapi.json` and `/version`, prefers Responses when capabilities are
+  equivalent, and falls back to Chat with a warning only when discovery is
+  inconclusive. Explicit protocols never cross-fallback, including after a
+  failed POST.
+- Responses calls are stateless: `store=False`, no `previous_response_id`, no
+  encrypted reasoning content, and no persisted provider item IDs.
+- `ReasoningConfig.enabled` was removed. Delete it from Python/YAML config.
+  `effort` is now typed as `none|minimal|low|medium|high|xhigh|max`.
+  `budget_tokens` must be positive, cannot accompany `effort="none"`, and maps
+  to discovered vLLM `thinking_token_budget` support. Unsupported budgets are
+  warned and ignored.
+- `ContextPolicy.keep_recent_turns` was removed. Replace it with
+  `reasoning_replay="none|active_run|all_runs"`; the default is `active_run`.
+  Compaction is token-driven and preserves the current input, open tool chain,
+  and latest step.
+- `token_counting="auto|vllm|heuristic"` controls exact vLLM `/tokenize`
+  accounting. `context_window_tokens` is optional and acts as a cap on
+  discovered `max_model_len`; the no-discovery fallback remains 32,768.
+- New checkpoints use schema V7. V4, V5, and V6 checkpoints and their legacy
+  loop-limit fields are rejected; there is no conversion or compatibility
+  shim. Finish or explicitly migrate pending reviews before upgrading.
+
+See [Model Context and Reasoning](model-context-and-reasoning.md) for wire
+examples and the complete selection/replay policy.
+
 ## 0.9.6
 
 ### Breaking: one agent-owned execution bound

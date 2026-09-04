@@ -43,9 +43,11 @@ request in this order:
 3. recent typed conversation/model-thread items;
 4. tool schemas or planner response schemas.
 
-Assistant reasoning is deliberately excluded from this projection. It remains
-available on `AssistantMessage.reasoning` for display and audit, but it is never
-replayed to a later model call.
+Assistant reasoning remains available on `AssistantMessage.reasoning` for
+display and audit. `ContextPolicy.reasoning_replay` controls its request
+projection: the default `active_run` replays reasoning only between model/tool
+steps of the current run, `none` never replays it, and `all_runs` also replays
+earlier conversation runs.
 
 Tool calls and matching tool results remain structurally complete. Tool-result
 text can be head/tail truncated for model context without deleting its audit
@@ -53,8 +55,10 @@ record or breaking `tool_call_id` pairing.
 
 ## Context limits and compaction
 
-OpenAI-compatible local endpoints do not reliably publish their context size, so
-the provider defaults to a 32K context window and a 4K output reserve:
+The private-vLLM provider uses `/tokenize` for exact request counts and
+`max_model_len` when available. An explicit context value is a smaller cap; if
+neither value is available the fallback is a 32K context window. The output
+reserve defaults to 4K:
 
 ```python
 provider = dagent.Provider(
@@ -71,8 +75,8 @@ Configure per-agent context behavior with `ContextPolicy`:
 agent = dagent.ToolAgent(
     profile="conversation",
     context=dagent.ContextPolicy(
+        reasoning_replay="active_run",
         compaction_trigger_ratio=0.8,
-        keep_recent_turns=4,
         summary_max_tokens=1024,
         max_tool_result_tokens=2048,
         max_total_tool_result_tokens=8192,
@@ -80,16 +84,20 @@ agent = dagent.ToolAgent(
 )
 ```
 
-When the trigger is crossed, dagent summarizes complete old turns and retains
-recent turns. The normal path uses the configured model and consumes one model
-turn from the execution budget. If that call fails, a deterministic bounded
-summary is used and the fallback reason is recorded. If mandatory input still
-does not fit, `ContextWindowExceeded` is raised before the provider is called.
+When the trigger is crossed, dagent summarizes complete older runs, omits the
+oldest replayed reasoning from the active request if needed, then summarizes
+completed middle steps of an oversized active run. This is token-driven; there
+is no minimum retained-turn count. The current user input, open tool chain, and
+latest atomic step remain. The normal compaction path uses the configured model
+and consumes one model turn from telemetry. If that call fails, a deterministic
+bounded summary is used and the fallback reason is recorded. If mandatory input
+still does not fit, `ContextWindowExceeded` is raised before generation.
 The compactor request is independently budgeted. `ContextSummary` records
 whether its source was truncated, its provider usage, context estimate, and any
 captured reasoning; only `ContextSummary.content` is projected later.
 
-Inspect `result.context_usage` for estimates, included/compacted item counts,
+Inspect `result.context_usage` for exact/estimated counts, the discovered
+server limit, reasoning replay/omission, included/compacted item counts,
 tool-result truncation, and the compaction method.
 
 ## Reasoning and provider usage

@@ -21,6 +21,7 @@ from dagent.harness_runtime.planner_schema import (
     parse_builder_planner_response,
 )
 from dagent.providers import ChatResponse, MockProvider
+from dagent.providers.model_io import ModelTokenCount
 from dagent.schemas import (
     CapabilityDefinition,
     CapabilityInvocation,
@@ -501,14 +502,14 @@ dag.output = work.output
     assert result.state.schema_version == 4
     assert result.state.planner_frontend == "sdk_builder"
     assert result.plan is not None
-    assert result.plan.schema_version == 6
+    assert result.plan.schema_version == 7
     assert result.plan.max_steps == 888
     assert result.plan.runtime_directory == ".runtime"
     assert result.plan.planner_frontend == "sdk_builder"
     assert result.plan.planner_skill is not None
     assert result.plan.planner_skill.name == "generate-dag"
     assert result.checkpoint is not None
-    assert result.checkpoint.schema_version == 6
+    assert result.checkpoint.schema_version == 7
     request = provider.requests[0]
     assert request["response_format"].name == "dagent_dynamic_dag_builder_response"
     assert request["response_format"].schema == builder_planner_response_format().schema
@@ -584,6 +585,52 @@ dag.output = work.output
     assert checkpoint.plan.planner_skill.content in (
         provider.requests[-1]["messages"][0]["content"]
     )
+
+
+def test_dynamic_dag_checkpoint_uses_discovered_planner_window(tmp_path) -> None:
+    @dagent.tool
+    def echo(text: str) -> str:
+        return text
+
+    code = '''
+dag = dagent.Dag("generated")
+work = dagent.Node("work", target="tool.echo", inputs={"text": dag.input.request})
+dag.add_node(work)
+dag.output = work.output
+'''
+
+    class DiscoveringProvider(MockProvider):
+        configured_context_window_tokens = None
+        context_window_tokens = 32768
+        output_reserve_tokens = 4096
+
+        async def context_reasoning_field(self, _request, _stream=False):
+            return "omit"
+
+        async def count_tokens(self, _request, _reasoning_field):
+            return ModelTokenCount(count=100, max_model_len=131072)
+
+    provider = DiscoveringProvider(
+        [ChatResponse(content=_builder_response(code))]
+    )
+    runner = dagent.Runner(
+        runtime_directory=".runtime",
+        workspace=tmp_path,
+        provider=provider,
+        capabilities=[echo],
+        planner_frontend="sdk_builder",
+    )
+
+    result = run(
+        runner.run(
+            dagent.DagAgent(capabilities=[echo], review="careful"),
+            input="echo it",
+        )
+    )
+
+    assert result.requires_review
+    assert result.checkpoint is not None
+    assert result.checkpoint.plan.context_window_tokens == 131072
 
 
 def test_builder_validation_error_uses_existing_planner_cycle(tmp_path) -> None:

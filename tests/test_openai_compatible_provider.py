@@ -70,6 +70,39 @@ class FakeClient:
         )
         self.chat = SimpleNamespace(completions=self.completions)
 
+    def with_options(self, **_kwargs):
+        return self
+
+    async def get(self, path, **_kwargs):
+        if path == "/version":
+            return {"version": "test"}
+        return {
+            "info": {"title": "vLLM"},
+            "paths": {
+                "/v1/chat/completions": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "properties": {
+                                            "tools": {},
+                                            "stream": {},
+                                            "reasoning_effort": {},
+                                            "thinking_token_budget": {},
+                                            "response_format": {},
+                                            "include_reasoning": {},
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/tokenize": {"post": {}},
+            },
+        }
+
 
 class FakeStream:
     def __init__(self, chunks) -> None:
@@ -241,7 +274,7 @@ async def test_openai_compatible_provider_forwards_reasoning_and_extra_request_o
             base_url="http://localhost:8000/v1",
             model="deepseek",
             api_key="local-key",
-            reasoning={"enabled": True, "effort": "high", "budget_tokens": 512},
+            reasoning={"effort": "high", "budget_tokens": 512},
             extra_request_args={"temperature": 0},
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         ),
@@ -251,10 +284,11 @@ async def test_openai_compatible_provider_forwards_reasoning_and_extra_request_o
     await provider.chat([{"role": "user", "content": "hello"}])
 
     assert client.completions.kwargs["reasoning_effort"] == "high"
-    assert client.completions.kwargs["thinking_token_budget"] == 512
+    assert client.completions.kwargs["extra_body"]["thinking_token_budget"] == 512
     assert client.completions.kwargs["temperature"] == 0
     assert client.completions.kwargs["extra_body"] == {
-        "thinking": {"type": "enabled"},
+        "thinking_token_budget": 512,
+        "include_reasoning": True,
         "chat_template_kwargs": {"enable_thinking": True},
     }
 
@@ -267,7 +301,7 @@ async def test_openai_compatible_provider_preserves_explicit_request_args_over_r
             base_url="http://localhost:8000/v1",
             model="deepseek",
             api_key="local-key",
-            reasoning={"enabled": True, "effort": "high"},
+            reasoning={"effort": "high"},
             extra_request_args={"reasoning_effort": "low"},
             extra_body={"thinking": {"type": "disabled"}},
         ),
@@ -278,6 +312,7 @@ async def test_openai_compatible_provider_preserves_explicit_request_args_over_r
 
     assert client.completions.kwargs["reasoning_effort"] == "low"
     assert client.completions.kwargs["extra_body"] == {
+        "include_reasoning": True,
         "thinking": {"type": "disabled"},
     }
 
@@ -341,7 +376,15 @@ async def test_openai_compatible_provider_uses_json_object_and_surfaces_refusal(
         response_format=response_format,
     )
 
-    assert client.completions.kwargs["response_format"] == {"type": "json_object"}
+    assert client.completions.kwargs["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "result",
+            "description": "Structured result.",
+            "schema": response_format.schema,
+            "strict": True,
+        },
+    }
     assert client.completions.kwargs["messages"] == messages
     assert response.refusal == "cannot comply"
 

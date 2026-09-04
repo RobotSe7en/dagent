@@ -320,8 +320,18 @@ class AgentCapabilityProvider:
             context_policy=context_policy,
             result_storage_policy=result_storage_policy,
             context_assembler=ContextAssembler(
-                context_window_tokens=getattr(provider, "context_window_tokens", 32768),
+                context_window_tokens=getattr(
+                    provider,
+                    "configured_context_window_tokens",
+                    getattr(provider, "context_window_tokens", None),
+                ),
                 output_reserve_tokens=getattr(provider, "output_reserve_tokens", 4096),
+                request_token_counter=getattr(provider, "count_tokens", None),
+                request_reasoning_field=getattr(
+                    provider,
+                    "context_reasoning_field",
+                    None,
+                ),
             ),
             prompt_context=_agent_runtime_context(
                 context,

@@ -8,7 +8,14 @@ from dagent.providers.base import (
     ToolCall,
 )
 from dagent.providers.mock import MockProvider
-from dagent.providers.openai_compatible import OpenAICompatibleProvider, Provider
+from dagent.providers.capabilities import ProtocolCapabilities, ProviderCapabilities
+from dagent.providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    Provider,
+    ProviderCapabilityError,
+    ProviderCapabilityWarning,
+    ProviderResponseError,
+)
 
 __all__ = [
     "ChatProvider",
@@ -17,6 +24,11 @@ __all__ = [
     "MockProvider",
     "OpenAICompatibleProvider",
     "Provider",
+    "ProviderCapabilityError",
+    "ProviderCapabilities",
+    "ProviderCapabilityWarning",
+    "ProviderResponseError",
+    "ProtocolCapabilities",
     "StructuredOutputFormat",
     "ToolCall",
 ]

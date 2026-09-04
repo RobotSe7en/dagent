@@ -104,9 +104,9 @@ def echo(text: str) -> str:
 
 async def main():
     provider = dagent.Provider(
-        base_url="https://api.openai.com/v1",
-        model="your-model",
-        api_key_env="OPENAI_API_KEY",
+        base_url="http://localhost:8000/v1",
+        model="your-vllm-model",
+        api_key="local",
     )
     runner = dagent.Runner(provider=provider, capabilities=[echo])
     agent = dagent.ToolAgent(profile="conversation", capabilities=["tool.echo"])
@@ -127,6 +127,9 @@ subdirectory; pass either path explicitly when the host owns its storage layout.
 
 For a complete first run, static DAG example, provider configuration, and local
 development setup, read the [Quick Start](docs/en/quick-start.md).
+Private-vLLM Chat/Responses selection, reasoning replay, and exact token
+accounting are covered in
+[Model Context and Reasoning](docs/en/model-context-and-reasoning.md).
 
 Run offline examples from the repository root:
 

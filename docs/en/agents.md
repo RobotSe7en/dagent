@@ -183,7 +183,7 @@ execution observations or failures.
 Custom providers used with `DagAgent` must implement the `response_format`
 keyword on `chat(...)` and `stream_chat(...)` and return an object conforming to
 the compact JSON Schema included in the system prompt. The built-in `Provider`
-requests OpenAI-compatible Chat Completions `json_object` response formatting.
+maps the full schema to Chat `json_schema` or Responses `text.format`.
 
 Run the offline dynamic DAG example:
 

@@ -5,6 +5,7 @@ from dagent.schemas.context import (
     ContextPolicy,
     ContextUsage,
     ContextWindowExceeded,
+    ModelCallMetadata,
     ModelTokenUsage,
     ResultStoragePolicy,
 )
@@ -112,6 +113,7 @@ __all__ = [
     "ConversationItem",
     "ConversationState",
     "InlineContent",
+    "ModelCallMetadata",
     "ModelTokenUsage",
     "ResultStoragePolicy",
     "ToolCallItem",

@@ -586,7 +586,6 @@ async def test_validator_preserves_applied_steers_across_compaction_and_retry(
                 profile="conversation",
                 context=dagent.ContextPolicy(
                     compaction_trigger_ratio=0.2,
-                    keep_recent_turns=1,
                     summary_max_tokens=64,
                 ),
             ),

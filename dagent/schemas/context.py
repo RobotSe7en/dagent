@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+ReasoningReplayMode: TypeAlias = Literal["none", "active_run", "all_runs"]
 
 
 class ContextPolicy(BaseModel):
@@ -12,8 +15,8 @@ class ContextPolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    reasoning_replay: ReasoningReplayMode = "active_run"
     compaction_trigger_ratio: float = Field(default=0.8, gt=0, le=1)
-    keep_recent_turns: int = Field(default=4, ge=1)
     summary_max_tokens: int = Field(default=1024, ge=64)
     max_tool_result_tokens: int = Field(default=2048, ge=64)
     max_total_tool_result_tokens: int = Field(default=8192, ge=64)
@@ -53,7 +56,15 @@ class ContextUsage(BaseModel):
     included_items: int = Field(default=0, ge=0)
     compacted_items: int = Field(default=0, ge=0)
     truncated_tool_results: int = Field(default=0, ge=0)
-    estimator: Literal["heuristic", "custom"] = "heuristic"
+    estimator: Literal["heuristic", "custom", "vllm"] = "heuristic"
+    server_max_model_len: int | None = Field(default=None, ge=1)
+    configured_context_limit: int | None = Field(default=None, ge=1)
+    reasoning_replay_mode: ReasoningReplayMode = "active_run"
+    replayed_reasoning_items: int = Field(default=0, ge=0)
+    replayed_reasoning_tokens: int = Field(default=0, ge=0)
+    omitted_reasoning_items: int = Field(default=0, ge=0)
+    omitted_reasoning_tokens: int = Field(default=0, ge=0)
+    compacted_active_run_items: int = Field(default=0, ge=0)
     compaction_method: Literal["none", "model", "deterministic_fallback"] = "none"
     compaction_reason: str | None = None
 
@@ -76,6 +87,20 @@ class ModelTokenUsage(BaseModel):
         return self
 
 
+class ModelCallMetadata(BaseModel):
+    """Resolved protocol and reasoning controls for one provider call."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    protocol: Literal["chat_completions", "responses"]
+    requested_reasoning_effort: str | None = None
+    effective_reasoning_effort: str | None = None
+    requested_budget_tokens: int | None = Field(default=None, ge=1)
+    effective_budget_tokens: int | None = Field(default=None, ge=1)
+    ignored_parameters: tuple[str, ...] = ()
+    fallback_reason: str | None = None
+
+
 class ContextWindowExceeded(RuntimeError):
     """Raised before provider invocation when mandatory input cannot fit."""
 
@@ -88,6 +113,8 @@ __all__ = [
     "ContextPolicy",
     "ContextUsage",
     "ContextWindowExceeded",
+    "ModelCallMetadata",
     "ModelTokenUsage",
+    "ReasoningReplayMode",
     "ResultStoragePolicy",
 ]

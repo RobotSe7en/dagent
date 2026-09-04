@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 import dagent
 from dagent.harness_runtime.dag_builder import DAGValidationError, validate_dag_spec
-from dagent.providers import ChatResponse, MockProvider
+from dagent.providers import MockProvider
 
 
 def run(coro):

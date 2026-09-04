@@ -5,7 +5,8 @@ dagent is published on PyPI as `dagent-ai` and imported in Python as `dagent`.
 ## Requirements
 
 - Python 3.11 or newer
-- An OpenAI-compatible chat completions endpoint for model-backed runs
+- A private vLLM OpenAI-compatible Chat Completions or Responses endpoint for
+  model-backed runs
 - Optional: Node.js if you register MCP servers that are distributed through
   `npx`
 
@@ -27,7 +28,7 @@ pip install "dagent-ai[mcp]"
 environment-variable form is preferred for applications and examples:
 
 ```bash
-export OPENAI_API_KEY="..."
+export VLLM_API_KEY="local"
 ```
 
 ```python
@@ -35,9 +36,9 @@ import dagent
 
 
 provider = dagent.Provider(
-    base_url="https://api.openai.com/v1",
-    model="your-model",
-    api_key_env="OPENAI_API_KEY",
+    base_url="http://localhost:8000/v1",
+    model="your-vllm-model",
+    api_key_env="VLLM_API_KEY",
 )
 ```
 

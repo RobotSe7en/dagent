@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -28,13 +28,37 @@ def resolve_run_workspace_root(workspace_root: str | Path, run_workspace_root: s
     return (Path(workspace_root).expanduser() / root).resolve()
 
 
+ProtocolMode: TypeAlias = Literal["auto", "chat_completions", "responses"]
+TokenCountingMode: TypeAlias = Literal["auto", "vllm", "heuristic"]
+ChatReasoningField: TypeAlias = Literal[
+    "auto",
+    "reasoning",
+    "reasoning_content",
+    "omit",
+]
+ReasoningEffort: TypeAlias = Literal[
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+]
+
+
 class ReasoningConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool | None = None
-    effort: str | None = None
-    budget_tokens: int | None = None
+    effort: ReasoningEffort | None = None
+    budget_tokens: int | None = Field(default=None, ge=1)
     capture: Literal["field", "field_and_tags"] = "field_and_tags"
+
+    @model_validator(mode="after")
+    def validate_budget(self) -> "ReasoningConfig":
+        if self.effort == "none" and self.budget_tokens is not None:
+            raise ValueError("budget_tokens cannot be set when effort is 'none'.")
+        return self
 
 
 class ProviderConfig(BaseModel):
@@ -45,16 +69,22 @@ class ProviderConfig(BaseModel):
     api_key: str | None = None
     api_key_env: str | None = None
     timeout_seconds: float = 60
+    protocol: ProtocolMode = "auto"
+    token_counting: TokenCountingMode = "auto"
+    chat_reasoning_field: ChatReasoningField = "auto"
     reasoning: ReasoningConfig | None = None
     stream_include_usage: bool = False
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
-    context_window_tokens: int = Field(default=32768, ge=1024)
+    context_window_tokens: int | None = Field(default=32768, ge=1024)
     output_reserve_tokens: int = Field(default=4096, ge=0)
 
     @model_validator(mode="after")
     def validate_context_window(self) -> "ProviderConfig":
-        if self.output_reserve_tokens >= self.context_window_tokens:
+        if (
+            self.context_window_tokens is not None
+            and self.output_reserve_tokens >= self.context_window_tokens
+        ):
             raise ValueError(
                 "output_reserve_tokens must be smaller than context_window_tokens."
             )
@@ -308,6 +338,8 @@ def _provider_storage_data(provider: ProviderConfig) -> dict[str, Any]:
         data.pop("extra_body", None)
     if not data.get("stream_include_usage"):
         data.pop("stream_include_usage", None)
+    if "context_window_tokens" not in provider.model_fields_set:
+        data.pop("context_window_tokens", None)
     return data
 
 

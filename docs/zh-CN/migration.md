@@ -8,6 +8,32 @@
 
 ## Unreleased
 
+### 破坏性变更：统一私有 vLLM 模型上下文
+
+- 内置 `Provider` 现在通过统一内部 request/response contract 支持私有 vLLM Chat
+  Completions 与 Responses；SDK 中所有模型调用点都走这条路径。已有 custom
+  `ChatProvider` 由明确的 Chat adapter 继续支持；公开类名 `Provider` 和
+  `OpenAICompatibleProvider` 不变。
+- `Provider.protocol` 可选 `auto`、`chat_completions` 或 `responses`。自动模式探测
+  `/openapi.json` 和 `/version`，能力等价时优先 Responses；只有探测无结论时才 warning
+  并使用 Chat。显式协议绝不跨协议 fallback，包括 POST 已失败之后。
+- Responses 调用无状态：`store=False`，不使用 `previous_response_id`、encrypted
+  reasoning content，也不持久化 provider item ID。
+- 删除 `ReasoningConfig.enabled`，请从 Python/YAML 配置中移除。`effort` 现在类型化为
+  `none|minimal|low|medium|high|xhigh|max`。`budget_tokens` 必须为正数，不能与
+  `effort="none"` 同时使用，并映射到探测到的 vLLM `thinking_token_budget` 能力；
+  不支持时 warning 并忽略。
+- 删除 `ContextPolicy.keep_recent_turns`。请改用
+  `reasoning_replay="none|active_run|all_runs"`，默认 `active_run`。压缩完全由 token
+  驱动，并保留当前输入、未闭合工具链和最新步骤。
+- `token_counting="auto|vllm|heuristic"` 控制 vLLM `/tokenize` 精确计数。
+  `context_window_tokens` 改为可选值，作为探测到的 `max_model_len` 上限；无法探测时
+  fallback 仍为 32,768。
+- 新 checkpoint 使用 schema V7。V4、V5、V6 checkpoint 及其 legacy loop-limit 字段会
+  被拒绝，不提供转换或兼容 shim。升级前应完成 pending review，或由 host 显式迁移。
+
+wire 示例与完整选择/回放策略见[模型上下文与推理](model-context-and-reasoning.md)。
+
 ## 0.9.6
 
 ### 破坏性变更：由 Agent 拥有单一执行上限
