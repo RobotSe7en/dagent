@@ -40,16 +40,18 @@ Review resume 会恢复 checkpoint 中冻结的值。
 3. 最近的有类型会话或内部 model thread；
 4. 工具 schema 或 planner response schema。
 
-助手推理内容不会进入这个投影。它保留在 `AssistantMessage.reasoning` 中供展示和审计，
-但绝不会回放到后续模型请求。
+助手推理内容会保留在 `AssistantMessage.reasoning` 中供展示和审计。
+`ContextPolicy.reasoning_replay` 控制请求投影：默认 `active_run` 只在当前 run 的
+模型/工具步骤之间回放；`none` 从不回放；`all_runs` 还会回放更早的 conversation runs。
 
 工具调用与对应工具结果始终保持结构完整。工具结果文本可以在模型上下文中做首尾截断，
 但不会删除审计记录，也不会破坏 `tool_call_id` 配对。
 
 ## 上下文限制与压缩
 
-本地 OpenAI-compatible endpoint 通常不会可靠声明上下文大小，因此 provider 默认使用
-32K 上下文窗口，并预留 4K 输出：
+私有 vLLM provider 在可用时通过 `/tokenize` 获取精确请求计数与 `max_model_len`。
+显式 context value 是更小的 cap；两者都不可用时 fallback 为 32K context window。
+output reserve 默认为 4K：
 
 ```python
 provider = dagent.Provider(
@@ -66,8 +68,8 @@ provider = dagent.Provider(
 agent = dagent.ToolAgent(
     profile="conversation",
     context=dagent.ContextPolicy(
+        reasoning_replay="active_run",
         compaction_trigger_ratio=0.8,
-        keep_recent_turns=4,
         summary_max_tokens=1024,
         max_tool_result_tokens=2048,
         max_total_tool_result_tokens=8192,
@@ -75,14 +77,18 @@ agent = dagent.ToolAgent(
 )
 ```
 
-达到阈值后，达智会总结完整的旧轮次并保留最近轮次。正常路径调用当前模型，并消耗一次
-模型调用预算；如果摘要调用失败，则使用确定性的有界摘要，并记录 fallback 原因。如果必须
-保留的输入仍然放不下，会在调用 provider 前抛出 `ContextWindowExceeded`。
+达到阈值后，达智会先总结完整旧 run；需要时从 active request 省略最旧的已回放
+reasoning；然后总结过大 active run 中已完成的中间步骤。该过程完全由 token 驱动，
+不存在最低保留轮数。当前用户输入、未闭合工具链和最新原子步骤会保留。正常压缩路径调用
+当前模型并计入一次 model turn telemetry；摘要调用失败时使用确定性有界摘要并记录
+fallback 原因。如果必须保留的输入仍然放不下，会在 generation 前抛出
+`ContextWindowExceeded`。
 compactor 请求本身也会独立做预算。`ContextSummary` 会记录 source 是否被截断、
 provider usage、上下文估算和捕获到的 reasoning；后续只投影
 `ContextSummary.content`。
 
-`result.context_usage` 会提供 token 估算、保留/压缩 item 数、工具结果截断数以及压缩方法。
+`result.context_usage` 会提供精确/估算 token 数、发现的 server limit、reasoning
+回放/省略、保留/压缩 item 数、工具结果截断数以及压缩方法。
 
 ## 推理内容与 provider usage
 

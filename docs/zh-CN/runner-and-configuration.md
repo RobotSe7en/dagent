@@ -82,43 +82,68 @@ boundary、绕过 review 或改变 workspace 权限。
 
 ## Provider 选项
 
-`dagent.Provider` 面向 OpenAI-compatible chat completions endpoints：
+`dagent.Provider` 面向私有 vLLM 部署，同时支持 OpenAI Chat Completions 和
+Responses：
 
 ```python
 provider = dagent.Provider(
-    base_url="https://api.deepseek.com",
-    model="deepseek-v4-pro",
-    api_key_env="DEEPSEEK_API_KEY",
+    base_url="http://localhost:8000/v1",
+    model="Qwen/Qwen3-Coder",
+    api_key="local",
     timeout_seconds=60,
+    protocol="auto",
+    token_counting="auto",
+    chat_reasoning_field="auto",
     reasoning={
-        "enabled": True,
         "effort": "high",
         "budget_tokens": 1024,
         "capture": "field_and_tags",
     },
     stream_include_usage=False,
-    context_window_tokens=32768,
     output_reserve_tokens=4096,
     extra_request_args={},
     extra_body={},
 )
 ```
 
-使用 `reasoning` 传递常见 reasoning controls。只有当目标 endpoint 支持对应字段时，
-才使用 `extra_request_args` 和 `extra_body` 传递 provider-specific 参数。
+构造 provider 不会访问网络。第一次模型调用、精确 token 计数，或显式调用
+`await provider.inspect_capabilities()` 时，provider 会读取 vLLM 的
+`/openapi.json` 与 `/version`，并缓存类型化能力报告。`protocol="auto"` 在两个协议
+能力等价时优先选择 Responses；如果只有 Chat 支持已请求的 reasoning budget，则选择
+Chat。探测没有结论时会发出 warning 并使用 Chat。显式协议不会 fallback；一次 POST
+失败后也绝不会换协议重试。
 
-reasoning 字段和 `<think>` tag 会被单独捕获，不会回放到后续模型输入。由于很多私有
-OpenAI-compatible endpoint 不会报告模型限制，因此需要显式配置上下文和输出预留。
+两个协议都按无状态方式使用：每次调用发送本次选定的完整上下文。Responses 始终设置
+`store=False`，不使用 `previous_response_id` 或加密 reasoning content。
+`reasoning.effort` 在 Chat 中映射为 `reasoning_effort`，在 Responses 中映射为
+`reasoning.effort`。只有探测到请求 schema 支持时，`budget_tokens` 才映射为 vLLM
+顶层字段 `thinking_token_budget`；否则发出 warning、忽略该字段，并在调用 metadata
+记录。`effort="none"` 不能与 budget 同时使用；已删除的 `reasoning.enabled` 会被拒绝。
+
+`chat_reasoning_field` 只控制 Chat 的 reasoning 回放序列化。`auto` 对已识别的 vLLM
+使用 `reasoning`，对未知 server 则省略。只有目标兼容 server 明确支持时才显式选择
+`reasoning_content`。响应解析会接受常见的两种输出字段名，并统一保存到
+`AssistantMessage.reasoning`。
+
+`token_counting="auto"` 会在 vLLM 声明能力时使用 `/tokenize`，请求包含 messages
+和 tool schemas。精确计数不可用时发出 warning，并使用确定性启发式估算；`"vllm"`
+会让 tokenize 失败显式报错，`"heuristic"` 则不为 token 计数做探测。探测得到的
+`max_model_len` 是默认 context limit；显式 `context_window_tokens` 只能把它限制得更小。
+两者都不可用时 fallback 为 32,768。`output_reserve_tokens` 只预留输入空间，不会作为
+输出上限发送给模型。
+
 流式 usage metadata 默认关闭，因为部分兼容 endpoint 会拒绝 `stream_options`。
 只有目标 endpoint 支持 OpenAI 的流式 usage 扩展时才设置
 `stream_include_usage=True`；SDK 结果中的 usage 始终是可选值。
 `capture="field_and_tags"` 会记录专用 reasoning 字段和 tag 内容；
 `capture="field"` 只信任专用字段并丢弃 tag 内容；tag 不会残留在可见正文中。
 
-对于 structured planner call，达智会把 runtime JSON Schema 计入请求预算，并在本地
-校验返回对象。内置 OpenAI-compatible provider 固定请求
-`{"type": "json_object"}`，不再发送 `response_format.type="json_schema"`，也不会根据
-provider 或 model 名称选择不同路径。
+对于 structured planner call，达智会在本地校验返回对象，并把完整 schema 映射到 Chat
+的 `response_format.type="json_schema"` 或 Responses 的
+`text.format.type="json_schema"`。
+
+reasoning 回放模式、直观 wire 示例、压缩顺序和能力探测细节见
+[模型上下文与推理](model-context-and-reasoning.md)。
 
 `timeout_seconds` 控制 provider request timeout。Tool-agent 和动态 DAG 的 planning/replanning
 LLM 调用会在请求失败或超时时最多重试 5 次，重试前分别等待 `1`、`2`、`5`、`10`、`30` 秒。
@@ -146,11 +171,13 @@ runner = dagent.Runner.from_config(
 
 ```yaml
 provider:
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-pro"
-  api_key_env: "DEEPSEEK_API_KEY"
+  base_url: "http://localhost:8000/v1"
+  model: "Qwen/Qwen3-Coder"
+  api_key: "local"
+  protocol: auto
+  token_counting: auto
+  chat_reasoning_field: auto
   reasoning:
-    enabled: true
     effort: "high"
     budget_tokens: 1024
 profiles:

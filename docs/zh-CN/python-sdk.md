@@ -40,11 +40,11 @@ import dagent
 | DAG design | `Runner.design_dag`（包括可选的 `RunStreamEvent` 观察）、`DAGDesignSelection`, `DAGDesignResult`, `DAGDesignProposal`, `DAGDesignNoChange`, `DAGDesignAnswer`, `DAGDesignFailure`, `DAGDiagnostic`, `DAGDiagnosticSeverity`, `inspect_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
-| Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ModelTokenUsage`, `ResultStoragePolicy` |
+| Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ModelCallMetadata`, `ModelTokenUsage`, `ResultStoragePolicy` |
 | Reviews and results | `RunResult`（包含 `output_text` 和静态结构化 `output_value`）、`RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
 | Tool-run steering | `Runner.steer`, `SteerReceipt`, `SteerError`, `RunNotActiveError`, `RunNotSteerableError`, `SteerQueueFullError` |
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionUsage`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
-| Providers | `Provider`；`dagent.providers` 也导出 `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于 custom providers 和 tests |
+| Providers | `Provider`；`dagent.providers` 也导出 `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于能力查看、custom providers 和 tests |
 
 ## 最小 Runner
 
@@ -53,9 +53,9 @@ import dagent
 
 
 provider = dagent.Provider(
-    base_url="https://api.openai.com/v1",
-    model="your-model",
-    api_key_env="OPENAI_API_KEY",
+    base_url="http://localhost:8000/v1",
+    model="your-vllm-model",
+    api_key="local",
 )
 runner = dagent.Runner(
     workspace="agent-workspace",

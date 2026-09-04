@@ -85,10 +85,11 @@ async def design_dag(
         system_message=system_message,
         conversation=pending_conversation,
         policy=designer.context_policy,
+        response_format=response_format,
     )
     response = await _chat_for_dag(
         designer.loop.provider,
-        prepared.messages,
+        prepared.request,
         retry_policy=designer.loop.llm_retry_policy,
         retry_sleep=designer.loop.llm_retry_sleep,
         response_format=response_format,
@@ -106,6 +107,7 @@ async def design_dag(
                     reasoning=response.reasoning_content,
                     refusal=response.refusal,
                     usage=response.usage,
+                    model_call=response.metadata,
                     scope="planner",
                 ),
             ),

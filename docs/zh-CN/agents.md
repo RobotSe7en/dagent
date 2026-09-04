@@ -166,7 +166,8 @@ if result.requires_review and result.review is not None:
 
 用于 `DagAgent` 的 custom provider 必须在 `chat(...)` 和 `stream_chat(...)` 中实现
 `response_format` keyword，并返回符合 system prompt 中 compact JSON Schema 的对象。
-内置 `Provider` 使用 OpenAI-compatible Chat Completions 的 `json_object` response format。
+内置 `Provider` 会把完整 schema 映射到 Chat `json_schema` 或 Responses
+`text.format`。
 
 运行离线 dynamic DAG 示例：
 

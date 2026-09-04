@@ -103,35 +103,63 @@ runner's later configuration, has a different `extra_system_prompt`.
 
 ## Provider Options
 
-`dagent.Provider` targets OpenAI-compatible chat completions endpoints:
+`dagent.Provider` targets private vLLM deployments and supports both OpenAI Chat
+Completions and Responses:
 
 ```python
 provider = dagent.Provider(
-    base_url="https://api.deepseek.com",
-    model="deepseek-v4-pro",
-    api_key_env="DEEPSEEK_API_KEY",
+    base_url="http://localhost:8000/v1",
+    model="Qwen/Qwen3-Coder",
+    api_key="local",
     timeout_seconds=60,
+    protocol="auto",
+    token_counting="auto",
+    chat_reasoning_field="auto",
     reasoning={
-        "enabled": True,
         "effort": "high",
         "budget_tokens": 1024,
         "capture": "field_and_tags",
     },
     stream_include_usage=False,
-    context_window_tokens=32768,
     output_reserve_tokens=4096,
     extra_request_args={},
     extra_body={},
 )
 ```
 
-Use `reasoning` for common reasoning controls. Use `extra_request_args` and
-`extra_body` only for provider-specific parameters supported by the target
-endpoint.
+Construction performs no network I/O. On the first model call, exact token
+count, or explicit `await provider.inspect_capabilities()`, the provider reads
+vLLM's `/openapi.json` and `/version` and caches a typed capability report.
+`protocol="auto"` prefers Responses when both protocols have equivalent
+capabilities. If only Chat supports a requested reasoning budget, it selects
+Chat. An inconclusive probe emits a warning and selects Chat. An explicit
+`protocol` never falls back, and a failed POST is never retried through the
+other protocol.
 
-Reasoning fields and `<think>` tags are captured separately and are not replayed
-into later model input. Context and output-reserve values are required because
-many private OpenAI-compatible endpoints do not report their model limits.
+Both protocols are stateless: dagent sends the complete selected context on
+every call. Responses always uses `store=False` and never uses
+`previous_response_id` or encrypted reasoning content. `reasoning.effort` maps
+to `reasoning_effort` for Chat and `reasoning.effort` for Responses.
+`budget_tokens` maps to vLLM's top-level `thinking_token_budget` only when the
+discovered request schema supports it; otherwise it is ignored with a warning
+and recorded in call metadata. `effort="none"` cannot be combined with a
+budget. The removed `reasoning.enabled` field is rejected.
+
+`chat_reasoning_field` controls only replay serialization for Chat. `auto`
+uses `reasoning` for a detected vLLM server and omits replay on an unknown
+server. Set `reasoning_content` explicitly only for a compatible server that
+documents that input field. Response parsing accepts both common output field
+names and normalizes them into `AssistantMessage.reasoning`.
+
+`token_counting="auto"` uses vLLM `/tokenize` when advertised, including
+messages and tool schemas. It emits a warning and uses the deterministic
+heuristic when exact counting is unavailable. `"vllm"` makes a tokenize
+failure explicit; `"heuristic"` skips probing for token counts. A discovered
+`max_model_len` supplies the context limit. An explicit
+`context_window_tokens` may only cap it to a smaller value; when neither is
+available the fallback is 32,768. `output_reserve_tokens` remains an input
+reservation and is not sent as an output limit.
+
 Streaming usage metadata is disabled by default because some compatible
 endpoints reject `stream_options`. Set `stream_include_usage=True` only when the
 target endpoint supports OpenAI's streamed usage extension; usage remains
@@ -140,11 +168,12 @@ optional in SDK results.
 content. `capture="field"` trusts only the dedicated field and discards tag
 content; tags are never left in visible content.
 
-For structured planner calls, dagent counts the runtime JSON Schema in the
-request budget and validates the returned object locally. The built-in
-OpenAI-compatible provider requests
-`{"type": "json_object"}`; it does not send `response_format.type="json_schema"`
-or select behavior from provider or model names.
+For structured planner calls, dagent validates the returned object locally and
+maps the full schema to Chat `response_format.type="json_schema"` or Responses
+`text.format.type="json_schema"`.
+
+See [Model Context and Reasoning](model-context-and-reasoning.md) for replay
+modes, wire examples, compaction order, and capability details.
 
 `timeout_seconds` controls the provider request timeout. Tool-agent and dynamic
 DAG planning/replanning calls retry failed or timed-out LLM requests up to five
@@ -175,11 +204,13 @@ Example `config.yaml`:
 
 ```yaml
 provider:
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-pro"
-  api_key_env: "DEEPSEEK_API_KEY"
+  base_url: "http://localhost:8000/v1"
+  model: "Qwen/Qwen3-Coder"
+  api_key: "local"
+  protocol: auto
+  token_counting: auto
+  chat_reasoning_field: auto
   reasoning:
-    enabled: true
     effort: "high"
     budget_tokens: 1024
 profiles:

@@ -20,6 +20,8 @@ Simplified Chinese documentation is available at
 - [Runner and Configuration](runner-and-configuration.md): providers,
   `Runner(...)`, `Runner.from_config(...)`, validation, MCP registration, and
   runtime capability management.
+- [Model Context and Reasoning](model-context-and-reasoning.md): private vLLM
+  Chat/Responses selection, reasoning replay, token counting, and compaction.
 - [Capabilities](capabilities.md): Python tools, MCP capability ids, structured
   results, policies, and boundaries.
 - [Agents](agents.md): when to use `ToolAgent`, `AutoAgent`, or `DagAgent`.

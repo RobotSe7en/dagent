@@ -25,7 +25,6 @@ from dagent.capabilities.mcp.config import (
 )
 from dagent.capabilities.providers import (
     AgentCapabilityProvider,
-    _agent_config_fingerprint,
 )
 from dagent.capabilities.python_tools import (
     load_python_tool_sources,
@@ -1580,7 +1579,7 @@ class Runner:
             else None
         )
         plan = ResolvedRunPlan(
-            schema_version=6,
+            schema_version=7,
             runtime_kind=state.kind,
             tool_profile=runtime.tool_agent.profile.model_copy(deep=True),
             planner_profile=runtime.dag_agent.profile.model_copy(deep=True),
@@ -1659,57 +1658,6 @@ class Runner:
             ).encode("utf-8")
             fingerprints[capability_id] = hashlib.sha256(canonical).hexdigest()
         return fingerprints
-
-    def _legacy_agent_capability_fingerprint(
-        self,
-        capability_id: str,
-        *,
-        max_steps: int | None = None,
-    ) -> str:
-        definition = self._runtime.capability_catalog.get(capability_id)
-        if definition is None:
-            raise KeyError(f"Capability '{capability_id}' is not registered.")
-        payload = definition.model_dump(mode="json")
-        if max_steps is not None:
-            agent_name = capability_id.removeprefix("agent.")
-            config = self._registered_agent_runtime_configs.get(agent_name)
-            if config is None:
-                raise KeyError(
-                    f"Registered agent configuration '{capability_id}' is missing."
-                )
-            enabled_toolsets = tuple(config.get("enabled_toolsets") or ("builtin",))
-            tool_adapter = config["tool_adapter"]
-            capability_ids = tuple(
-                item.id for item in tool_adapter.capabilities(enabled_toolsets)
-            )
-            definition_config = dict(payload["config"])
-            definition_config["execution_fingerprint"] = _agent_config_fingerprint(
-                profile=config["profile"],
-                max_steps=max_steps,
-                context_policy=config["context_policy"],
-                result_storage_policy=config["result_storage_policy"],
-                capability_ids=capability_ids,
-                skills=config.get("skills"),
-                enabled_toolsets=enabled_toolsets,
-            )
-            payload["config"] = definition_config
-        parameters = dict(payload["parameters"])
-        properties = dict(parameters.get("properties") or {})
-        properties["max_steps"] = {
-            "type": "integer",
-            "description": "Maximum tool-loop steps for this agent node.",
-            "default": 8,
-            "minimum": 1,
-        }
-        parameters["properties"] = properties
-        payload["parameters"] = parameters
-        canonical = json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        return hashlib.sha256(canonical).hexdigest()
 
     async def stream(
         self,
@@ -2019,31 +1967,6 @@ class Runner:
                 checkpoint.plan.capability_fingerprints[capability_id]
                 != current_fingerprint
             ):
-                legacy_agent_match = (
-                    checkpoint.plan.schema_version < 6
-                    and capability_id in checkpoint.plan.agent_ids
-                    and checkpoint.plan.capability_fingerprints[capability_id]
-                    == self._legacy_agent_capability_fingerprint(capability_id)
-                )
-                if legacy_agent_match:
-                    continue
-                legacy_default_match = (
-                    checkpoint.plan.schema_version < 6
-                    and capability_id in checkpoint.plan.agent_ids
-                    and capability_id.removeprefix("agent.")
-                    in self._registered_agent_runtime_configs
-                    and checkpoint.plan.capability_fingerprints[capability_id]
-                    == self._legacy_agent_capability_fingerprint(
-                        capability_id,
-                        max_steps=8,
-                    )
-                )
-                if legacy_default_match:
-                    raise ValueError(
-                        f"Legacy checkpoint capability '{capability_id}' used "
-                        "ToolAgent(max_steps=8). Register that child agent with "
-                        "max_steps=8 while resuming this run."
-                    )
                 raise ValueError(
                     "Checkpoint capability definition changed: "
                     f"{capability_id}"
@@ -2417,8 +2340,14 @@ def _assemble_runtime(
 ) -> HarnessRuntime:
     resolved_context_policy = context_policy or ContextPolicy()
     resolved_result_storage_policy = result_storage_policy or ResultStoragePolicy()
-    resolved_context_window = context_window_tokens or getattr(
-        provider, "context_window_tokens", 32768
+    resolved_context_window = (
+        getattr(
+            provider,
+            "configured_context_window_tokens",
+            getattr(provider, "context_window_tokens", None),
+        )
+        if context_window_tokens is None
+        else context_window_tokens
     )
     resolved_output_reserve = (
         getattr(provider, "output_reserve_tokens", 4096)
@@ -2441,6 +2370,7 @@ def _assemble_runtime(
         context_assembler=ContextAssembler(
             context_window_tokens=resolved_context_window,
             output_reserve_tokens=resolved_output_reserve,
+            request_token_counter=getattr(provider, "count_tokens", None),
         ),
     )
     runtime_dag_agent = RuntimeDAGAgent(
@@ -2465,6 +2395,7 @@ def _assemble_runtime(
         context_assembler=ContextAssembler(
             context_window_tokens=resolved_context_window,
             output_reserve_tokens=resolved_output_reserve,
+            request_token_counter=getattr(provider, "count_tokens", None),
         ),
     )
     return HarnessRuntime(

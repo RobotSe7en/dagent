@@ -5,7 +5,8 @@
 ## 环境要求
 
 - Python 3.11 或更新版本
-- 运行模型驱动任务时，需要一个 OpenAI-compatible chat completions endpoint
+- 运行模型驱动任务时，需要一个私有 vLLM OpenAI-compatible Chat Completions 或
+  Responses endpoint
 - 可选：如果注册通过 `npx` 分发的 MCP server，需要 Node.js
 
 ## 从 PyPI 安装
@@ -26,7 +27,7 @@ pip install "dagent-ai[mcp]"
 `api_key_env`。应用和示例通常推荐使用环境变量：
 
 ```bash
-export OPENAI_API_KEY="..."
+export VLLM_API_KEY="local"
 ```
 
 ```python
@@ -34,9 +35,9 @@ import dagent
 
 
 provider = dagent.Provider(
-    base_url="https://api.openai.com/v1",
-    model="your-model",
-    api_key_env="OPENAI_API_KEY",
+    base_url="http://localhost:8000/v1",
+    model="your-vllm-model",
+    api_key_env="VLLM_API_KEY",
 )
 ```
 

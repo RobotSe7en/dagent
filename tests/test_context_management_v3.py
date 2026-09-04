@@ -168,10 +168,9 @@ def test_context_compaction_has_explicit_deterministic_fallback() -> None:
         assembler.prepare(
             system_message={"role": "system", "content": "Be useful."},
             conversation=conversation,
-            policy=ContextPolicy(
-                compaction_trigger_ratio=0.2,
-                keep_recent_turns=1,
-                summary_max_tokens=128,
+                policy=ContextPolicy(
+                    compaction_trigger_ratio=0.2,
+                    summary_max_tokens=128,
             ),
             compact=broken_compactor,
         )
@@ -434,10 +433,9 @@ def test_compaction_is_visible_in_typed_stream_events(tmp_path: Path) -> None:
     agent = dagent.ToolAgent(
         profile="conversation",
         capabilities=[],
-        context=dagent.ContextPolicy(
-            compaction_trigger_ratio=0.2,
-            keep_recent_turns=1,
-            summary_max_tokens=64,
+            context=dagent.ContextPolicy(
+                compaction_trigger_ratio=0.2,
+                summary_max_tokens=64,
         ),
     )
     first = run(runner.run(agent, input="x" * 600))
@@ -495,10 +493,9 @@ def test_dag_audit_delta_survives_planner_context_compaction(
     runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
     agent = dagent.DagAgent(
         capabilities=[],
-        context=dagent.ContextPolicy(
-            compaction_trigger_ratio=0.2,
-            keep_recent_turns=1,
-            summary_max_tokens=64,
+            context=dagent.ContextPolicy(
+                compaction_trigger_ratio=0.2,
+                summary_max_tokens=64,
         ),
     )
 

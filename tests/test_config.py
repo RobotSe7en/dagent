@@ -5,7 +5,7 @@ import yaml
 import pytest
 
 import dagent
-from dagent.config import load_config, resolve_config_relative_path
+from dagent.config import ProviderConfig, load_config, resolve_config_relative_path
 
 
 def test_load_config_from_yaml(tmp_path: Path) -> None:
@@ -179,7 +179,6 @@ def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path)
                 '  model: "deepseek-v4-pro"',
                 '  api_key: "local-key"',
                 "  reasoning:",
-                "    enabled: true",
                 '    effort: "high"',
                 "    budget_tokens: 512",
                 "  extra_request_args:",
@@ -195,13 +194,30 @@ def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path)
     config = load_config(config_path)
 
     assert config.provider.reasoning is not None
-    assert config.provider.reasoning.enabled is True
     assert config.provider.reasoning.effort == "high"
     assert config.provider.reasoning.budget_tokens == 512
     assert config.provider.extra_request_args == {"temperature": 0}
     assert config.provider.extra_body == {
         "chat_template_kwargs": {"enable_thinking": True},
     }
+
+
+def test_reasoning_none_rejects_a_token_budget() -> None:
+    with pytest.raises(ValueError, match="budget_tokens.*effort is 'none'"):
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            reasoning={"effort": "none", "budget_tokens": 64},
+        )
+
+
+def test_reasoning_config_rejects_removed_enabled_field() -> None:
+    with pytest.raises(ValueError, match="enabled"):
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            reasoning={"enabled": True},
+        )
 
 
 def test_user_config_round_trips_runtime_models_without_materializing_env_secret(
@@ -245,6 +261,8 @@ def test_user_config_round_trips_runtime_models_without_materializing_env_secret
     assert loaded.model_providers["local-qwen"].api_key_env == "LOCAL_QWEN_API_KEY"
     assert raw["model_providers"]["local-qwen"]["api_key_env"] == "LOCAL_QWEN_API_KEY"
     assert "api_key" not in raw["model_providers"]["local-qwen"]
+    assert "context_window_tokens" not in raw["model_providers"]["local-qwen"]
+    assert "context_window_tokens" not in raw["model_providers"]["saved-key"]
     assert raw["model_providers"]["saved-key"]["api_key"] == "literal-secret"
     assert raw["mcp_servers"]["search"] == {"command": "fake", "args": ["--stdio"]}
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o600

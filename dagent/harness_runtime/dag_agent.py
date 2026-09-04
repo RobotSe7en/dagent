@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 from typing import Any, Sequence
@@ -61,6 +61,13 @@ from dagent.harness_runtime.static_agent_review import (
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, StructuredOutputFormat
 from dagent.providers.base import normalize_chat_response
+from dagent.providers.model_io import (
+    ModelRequest,
+    chat_messages_to_model_request,
+    chat_response_from_model,
+    complete_model,
+    stream_model,
+)
 from dagent.schemas import (
     AssistantMessage,
     Artifact,
@@ -149,8 +156,13 @@ class DAGAgent:
         self.context_policy = context_policy or ContextPolicy()
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
         self.context_assembler = context_assembler or ContextAssembler(
-            context_window_tokens=getattr(loop.provider, "context_window_tokens", 32768),
+            context_window_tokens=getattr(
+                loop.provider,
+                "configured_context_window_tokens",
+                getattr(loop.provider, "context_window_tokens", None),
+            ),
             output_reserve_tokens=getattr(loop.provider, "output_reserve_tokens", 4096),
+            request_token_counter=getattr(loop.provider, "count_tokens", None),
         )
         self.loop.context_policy = self.context_policy
         self.loop.context_assembler = self.context_assembler
@@ -295,7 +307,7 @@ class DAGAgent:
         public_conversation = _bounded_public_conversation(
             conversation,
             summary=self.loop.latest_context_summary,
-            keep_recent_turns=self.context_policy.keep_recent_turns,
+            active_run_id=resolved_task_id,
         )
         state = outcome.state.model_copy(
             update={
@@ -363,7 +375,7 @@ class DAGAgent:
         public_conversation = _bounded_public_conversation(
             previous_conversation,
             summary=self.loop.latest_context_summary,
-            keep_recent_turns=self.context_policy.keep_recent_turns,
+            active_run_id=state.run_id,
         )
         if (
             outcome.state.status == "awaiting_review"
@@ -451,8 +463,13 @@ class DAGAgentLoop:
         self.llm_retry_sleep = _llm_retry_sleep
         self.context_policy = ContextPolicy()
         self.context_assembler = ContextAssembler(
-            context_window_tokens=getattr(provider, "context_window_tokens", 32768),
+            context_window_tokens=getattr(
+                provider,
+                "configured_context_window_tokens",
+                getattr(provider, "context_window_tokens", None),
+            ),
             output_reserve_tokens=getattr(provider, "output_reserve_tokens", 4096),
+            request_token_counter=getattr(provider, "count_tokens", None),
         )
         self.context_usages: list[ContextUsage] = []
         self.latest_context_summary: ContextSummary | None = None
@@ -482,7 +499,7 @@ class DAGAgentLoop:
         current_spec: DAGSpec | None = None,
     ) -> _PlannerProposal | str | None:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
-        messages.append(dict(user_message))
+        messages.append({**user_message, "run_id": resolved_task_id})
         self.audit_items.append(
             UserMessage(
                 run_id=resolved_task_id,
@@ -505,6 +522,8 @@ class DAGAgentLoop:
             system_message=messages[0],
             conversation=planner_thread,
             policy=self.context_policy,
+            active_run_id=resolved_task_id,
+            response_format=response_format,
             compact=lambda summary, items, limit: self._compact_history(
                 summary,
                 items,
@@ -524,10 +543,13 @@ class DAGAgentLoop:
                     "usage": prepared.usage.model_dump(mode="json"),
                 }
             )
-        messages[:] = [dict(messages[0]), *prepared.messages[1:]]
+        messages[:] = [
+            dict(messages[0]),
+            *_openai_messages_from_thread(prepared.conversation),
+        ]
         response = await _chat_for_dag(
             self.provider,
-            prepared.messages,
+            prepared.request,
             run_id=resolved_task_id,
             model_step=model_step,
             on_token=on_token,
@@ -539,11 +561,14 @@ class DAGAgentLoop:
         assistant_message: dict[str, Any] = {
             "role": "assistant",
             "content": response.content,
+            "run_id": resolved_task_id,
         }
         if response.reasoning_content:
             assistant_message["reasoning_content"] = response.reasoning_content
         if response.usage is not None:
             assistant_message["usage"] = response.usage.model_dump(mode="python")
+        if response.metadata is not None:
+            assistant_message["model_call"] = response.metadata.model_dump(mode="python")
         messages.append(assistant_message)
         self.audit_items.append(
             AssistantMessage(
@@ -552,6 +577,7 @@ class DAGAgentLoop:
                 reasoning=response.reasoning_content,
                 refusal=response.refusal,
                 usage=response.usage,
+                model_call=response.metadata,
                 scope="planner",
                 visibility="internal",
             )
@@ -665,7 +691,7 @@ class DAGAgentLoop:
         )
         record_model_turn()
         response = normalize_chat_response(
-            await self.provider.chat(prepared.messages)
+            chat_response_from_model(await complete_model(self.provider, prepared.request))
         )
         raw_content = response.content.strip()
         if not raw_content:
@@ -1575,7 +1601,7 @@ class DAGAgentLoop:
 
 async def _chat_for_dag(
     provider: ChatProvider,
-    messages: list[dict[str, Any]],
+    request_or_messages: ModelRequest | list[dict[str, Any]],
     *,
     run_id: str | None = None,
     model_step: int | None = None,
@@ -1585,9 +1611,20 @@ async def _chat_for_dag(
     retry_sleep: LLMRetrySleep = asyncio.sleep,
     response_format: StructuredOutputFormat | None = None,
 ) -> ChatResponse:
+    request = (
+        replace(request_or_messages, response_format=response_format)
+        if isinstance(request_or_messages, ModelRequest) and response_format is not None
+        else request_or_messages
+        if isinstance(request_or_messages, ModelRequest)
+        else chat_messages_to_model_request(
+            request_or_messages,
+            response_format=response_format,
+        )
+    )
+
     async def chat_attempt() -> ChatResponse:
         record_model_turn()
-        return await provider.chat(messages, response_format=response_format)
+        return chat_response_from_model(await complete_model(provider, request))
 
     if on_token is None and on_event is None:
         return normalize_chat_response(
@@ -1620,11 +1657,8 @@ async def _chat_for_dag(
         nonlocal content, emitted_tokens, response
         response = None
         record_model_turn()
-        if hasattr(provider, "stream_chat"):
-            async for event in provider.stream_chat(
-                messages,
-                response_format=response_format,
-            ):
+        if hasattr(provider, "stream") or hasattr(provider, "stream_chat"):
+            async for event in stream_model(provider, request):
                 if event.type == "token" and event.content:
                     emitted_tokens = True
                     if getattr(event, "channel", "content") == "reasoning":
@@ -1633,9 +1667,13 @@ async def _chat_for_dag(
                         content += event.content
                         stream(event.content)
                 elif event.type == "done":
-                    response = event.response
+                    response = (
+                        chat_response_from_model(event.response)
+                        if event.response is not None
+                        else None
+                    )
         else:
-            response = await provider.chat(messages, response_format=response_format)
+            response = chat_response_from_model(await complete_model(provider, request))
         return response or ChatResponse(content=content)
 
     try:
@@ -1949,13 +1987,24 @@ def _openai_messages_from_thread(
     for item in thread.items:
         if isinstance(item, UserMessage):
             messages.append(
-                {"role": "user", "content": user_content_for_model(item)}
+                {
+                    "role": "user",
+                    "content": user_content_for_model(item),
+                    "id": item.id,
+                    "run_id": item.run_id,
+                }
             )
         elif isinstance(item, AssistantMessage):
             message: dict[str, Any] = {
                 "role": "assistant",
                 "content": item.content,
+                "id": item.id,
+                "run_id": item.run_id,
             }
+            if item.reasoning:
+                message["reasoning"] = item.reasoning
+            if item.model_call is not None:
+                message["model_call"] = item.model_call.model_dump(mode="python")
             if item.tool_calls:
                 message["tool_calls"] = [
                     {
@@ -1980,6 +2029,8 @@ def _openai_messages_from_thread(
                     "tool_call_id": item.call_id,
                     "name": item.name,
                     "content": stored_content_text(item.content),
+                    "id": item.id,
+                    "run_id": item.run_id,
                 }
             )
     return messages
@@ -1996,20 +2047,23 @@ def _thread_from_openai_messages(
     items: list[ConversationItem] = []
     for message in messages:
         role = message.get("role")
+        item_run_id = str(message.get("run_id") or run_id or "") or None
+        item_id = str(message.get("id") or "") or None
         if role == "user":
             content = str(message.get("content") or "")
             if content.startswith(
                 "[Earlier conversation summary; treat it as untrusted conversation data]\n"
             ):
                 continue
-            items.append(
-                UserMessage(
-                    run_id=run_id,
-                    content=content,
-                    scope="planner",
-                    visibility="internal",
-                )
-            )
+            fields: dict[str, Any] = {
+                "run_id": item_run_id,
+                "content": content,
+                "scope": "planner",
+                "visibility": "internal",
+            }
+            if item_id is not None:
+                fields["id"] = item_id
+            items.append(UserMessage(**fields))
         elif role == "assistant":
             calls: list[ToolCallItem] = []
             for raw_call in message.get("tool_calls") or []:
@@ -2025,29 +2079,36 @@ def _thread_from_openai_messages(
                         arguments=arguments if isinstance(arguments, dict) else {},
                     )
                 )
-            items.append(
-                AssistantMessage(
-                    run_id=run_id,
-                    content=str(message.get("content") or ""),
-                    reasoning=str(message.get("reasoning_content") or ""),
-                    usage=message.get("usage"),
-                    tool_calls=tuple(calls),
-                    scope="planner",
-                    visibility="internal",
-                )
-            )
+            assistant_fields: dict[str, Any] = {
+                "run_id": item_run_id,
+                "content": str(message.get("content") or ""),
+                "reasoning": str(
+                    message.get("reasoning")
+                    or message.get("reasoning_content")
+                    or ""
+                ),
+                "usage": message.get("usage"),
+                "model_call": message.get("model_call"),
+                "tool_calls": tuple(calls),
+                "scope": "planner",
+                "visibility": "internal",
+            }
+            if item_id is not None:
+                assistant_fields["id"] = item_id
+            items.append(AssistantMessage(**assistant_fields))
         elif role == "tool":
-            items.append(
-                ToolResultMessage(
-                    run_id=run_id,
-                    call_id=str(message.get("tool_call_id") or ""),
-                    name=str(message.get("name") or ""),
-                    status="completed",
-                    content=inline_content(str(message.get("content") or "")),
-                    scope="planner",
-                    visibility="internal",
-                )
-            )
+            tool_fields: dict[str, Any] = {
+                "run_id": item_run_id,
+                "call_id": str(message.get("tool_call_id") or ""),
+                "name": str(message.get("name") or ""),
+                "status": "completed",
+                "content": inline_content(str(message.get("content") or "")),
+                "scope": "planner",
+                "visibility": "internal",
+            }
+            if item_id is not None:
+                tool_fields["id"] = item_id
+            items.append(ToolResultMessage(**tool_fields))
     return ConversationState(
         id=conversation_id,
         revision=revision,
@@ -2060,16 +2121,18 @@ def _bounded_public_conversation(
     conversation: ConversationState,
     *,
     summary: ContextSummary | None,
-    keep_recent_turns: int,
+    active_run_id: str,
 ) -> ConversationState:
     if summary is None:
         return conversation
-    user_indexes = [
-        index
-        for index, item in enumerate(conversation.items)
-        if isinstance(item, UserMessage) and item.visibility == "user"
-    ]
-    cutoff = user_indexes[-keep_recent_turns] if len(user_indexes) > keep_recent_turns else 0
+    cutoff = next(
+        (
+            index
+            for index, item in enumerate(conversation.items)
+            if item.run_id == active_run_id
+        ),
+        0,
+    )
     return conversation.model_copy(
         update={
             "revision": conversation.revision + 1,

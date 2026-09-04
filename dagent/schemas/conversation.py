@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from dagent.schemas.context import ContextUsage, ModelTokenUsage
+from dagent.schemas.context import ContextUsage, ModelCallMetadata, ModelTokenUsage
 
 
 ModelScope = Literal["conversation", "router", "planner", "validator", "subagent", "compactor"]
@@ -99,7 +99,7 @@ class UserMessage(BaseModel):
 
 
 class AssistantMessage(BaseModel):
-    """One model response, including auditable but non-replayed reasoning."""
+    """One model response, including auditable, policy-controlled reasoning."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -110,6 +110,7 @@ class AssistantMessage(BaseModel):
     reasoning: str = ""
     refusal: str = ""
     usage: ModelTokenUsage | None = None
+    model_call: ModelCallMetadata | None = None
     tool_calls: tuple[ToolCallItem, ...] = ()
     scope: ModelScope = "conversation"
     visibility: ItemVisibility = "user"

@@ -48,6 +48,12 @@ from dagent.review import ReviewLevel, _append_reviewer_feedback, _review_policy
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.providers.base import normalize_chat_response
+from dagent.providers.model_io import (
+    ModelRequest,
+    chat_response_from_model,
+    complete_model,
+    stream_model,
+)
 from dagent.schemas import (
     AssistantMessage,
     Boundary,
@@ -142,8 +148,13 @@ class ToolAgent:
         self.context_policy = context_policy or ContextPolicy()
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
         self.context_assembler = context_assembler or ContextAssembler(
-            context_window_tokens=getattr(loop.provider, "context_window_tokens", 32768),
+            context_window_tokens=getattr(
+                loop.provider,
+                "configured_context_window_tokens",
+                getattr(loop.provider, "context_window_tokens", None),
+            ),
             output_reserve_tokens=getattr(loop.provider, "output_reserve_tokens", 4096),
+            request_token_counter=getattr(loop.provider, "count_tokens", None),
         )
         self.prompt_context = prompt_context
         self.tools = self.loop.available_capabilities()
@@ -719,6 +730,7 @@ class ToolAgentLoop:
                     conversation=loop_conversation,
                     tools=tool_definitions,
                     policy=context_policy,
+                    active_run_id=resolved_run_id,
                     compact=lambda summary, items, limit: self._compact_history(
                         summary,
                         items,
@@ -747,8 +759,7 @@ class ToolAgentLoop:
                     break
                 apply_steers(late_steers)
             response = await self._chat(
-                prepared.messages,
-                tools=tool_definitions,
+                prepared.request,
                 run_id=resolved_run_id,
                 step=step,
                 on_token=on_token,
@@ -1185,7 +1196,7 @@ class ToolAgentLoop:
         )
         record_model_turn()
         response = normalize_chat_response(
-            await self.provider.chat(prepared.messages)
+            chat_response_from_model(await complete_model(self.provider, prepared.request))
         )
         raw_content = response.content.strip()
         if not raw_content:
@@ -1218,9 +1229,8 @@ class ToolAgentLoop:
 
     async def _chat(
         self,
-        messages: list[dict[str, Any]],
+        request: ModelRequest,
         *,
-        tools: list[dict[str, Any]],
         run_id: str | None,
         step: int,
         on_token: TokenHandler | None,
@@ -1228,7 +1238,7 @@ class ToolAgentLoop:
     ) -> ChatResponse:
         async def chat_attempt() -> ChatResponse:
             record_model_turn()
-            return await self.provider.chat(messages, tools=tools)
+            return chat_response_from_model(await complete_model(self.provider, request))
 
         if on_token is None and on_event is None:
             return normalize_chat_response(
@@ -1260,8 +1270,8 @@ class ToolAgentLoop:
             nonlocal emitted_tokens, response
             response = None
             record_model_turn()
-            if hasattr(self.provider, "stream_chat"):
-                async for event in self.provider.stream_chat(messages, tools=tools):
+            if hasattr(self.provider, "stream") or hasattr(self.provider, "stream_chat"):
+                async for event in stream_model(self.provider, request):
                     if event.type == "token" and event.content:
                         emitted_tokens = True
                         if getattr(event, "channel", "content") == "reasoning":
@@ -1269,9 +1279,15 @@ class ToolAgentLoop:
                         else:
                             stream(event.content)
                     elif event.type == "done":
-                        response = event.response
+                        response = (
+                            chat_response_from_model(event.response)
+                            if event.response is not None
+                            else None
+                        )
             else:
-                response = await self.provider.chat(messages, tools=tools)
+                response = chat_response_from_model(
+                    await complete_model(self.provider, request)
+                )
             return response or ChatResponse()
 
         try:
@@ -1293,6 +1309,7 @@ class ToolAgentLoop:
             reasoning=response.reasoning_content,
             refusal=response.refusal,
             usage=response.usage,
+            model_call=response.metadata,
             tool_calls=tuple(
                 ToolCallItem(
                     id=tool_call.id,

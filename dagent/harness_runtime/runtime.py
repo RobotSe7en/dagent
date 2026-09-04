@@ -51,6 +51,7 @@ from dagent.harness_runtime.steering import (
 from dagent.review import ReviewLevel
 from dagent.providers import ChatProvider
 from dagent.providers.base import normalize_chat_response
+from dagent.providers.model_io import chat_response_from_model, complete_model
 from dagent.result import RunResult
 from dagent.schemas import (
     AssistantMessage,
@@ -219,6 +220,7 @@ class HarnessRuntime:
                 reasoning=response.reasoning_content,
                 refusal=response.refusal,
                 usage=response.usage,
+                model_call=response.metadata,
                 scope="validator",
                 visibility="internal",
             )
@@ -682,7 +684,9 @@ class HarnessRuntime:
         try:
             record_model_turn()
             response = normalize_chat_response(
-                await self.provider.chat(prepared.messages)
+                chat_response_from_model(
+                    await complete_model(self.provider, prepared.request)
+                )
             )
             decision = response.content.strip().lower()
             audit_item = AssistantMessage(
@@ -690,6 +694,7 @@ class HarnessRuntime:
                 reasoning=response.reasoning_content,
                 refusal=response.refusal,
                 usage=response.usage,
+                model_call=response.metadata,
                 scope="router",
                 visibility="internal",
             )

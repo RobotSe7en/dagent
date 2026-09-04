@@ -148,7 +148,10 @@ def test_provider_is_public_from_package_root() -> None:
         base_url="https://example.test/v1",
         model="test-model",
         api_key="test-key",
-        reasoning={"enabled": True, "effort": "medium"},
+        protocol="responses",
+        token_counting="vllm",
+        chat_reasoning_field="reasoning",
+        reasoning={"effort": "medium"},
         extra_request_args={"temperature": 0},
         extra_body={"chat_template_kwargs": {"enable_thinking": True}},
     )
@@ -156,14 +159,17 @@ def test_provider_is_public_from_package_root() -> None:
     assert provider.config.base_url == "https://example.test/v1"
     assert provider.config.model == "test-model"
     assert provider.config.api_key == "test-key"
+    assert provider.config.protocol == "responses"
+    assert provider.config.token_counting == "vllm"
+    assert provider.config.chat_reasoning_field == "reasoning"
     assert provider.config.reasoning is not None
-    assert provider.config.reasoning.enabled is True
     assert provider.config.reasoning.effort == "medium"
     assert provider.config.extra_request_args == {"temperature": 0}
     assert provider.config.extra_body == {
         "chat_template_kwargs": {"enable_thinking": True},
     }
     assert "config" not in inspect.signature(dagent.Provider).parameters
+    assert "inspect_capabilities" in dir(provider)
 
 
 def test_review_handle_decisions_accept_reviewer_feedback() -> None:

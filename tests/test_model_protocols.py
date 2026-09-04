@@ -1,0 +1,437 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from openai import AsyncOpenAI
+
+from dagent.config import ProviderConfig
+from dagent.providers import OpenAICompatibleProvider, ProviderCapabilityWarning, ToolCall
+from dagent.providers.model_io import (
+    ModelAssistantTurn,
+    ModelRequest,
+    ModelToolResultInput,
+    ModelUserInput,
+)
+
+
+def _openapi(*, responses_budget: bool = True, tokenize: bool = True) -> dict:
+    response_properties = {
+        "input": {},
+        "tools": {},
+        "stream": {},
+        "reasoning": {},
+        "text": {},
+    }
+    if responses_budget:
+        response_properties["thinking_token_budget"] = {}
+    paths = {
+        "/v1/chat/completions": {
+            "post": {
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/ChatRequest"}
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/responses": {
+            "post": {
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"properties": response_properties}
+                        }
+                    }
+                }
+            }
+        },
+    }
+    if tokenize:
+        paths["/tokenize"] = {"post": {}}
+    return {
+        "info": {"title": "vLLM OpenAI-Compatible API"},
+        "paths": paths,
+        "components": {
+            "schemas": {
+                "ChatRequest": {
+                    "properties": {
+                        "messages": {},
+                        "tools": {},
+                        "stream": {},
+                        "reasoning_effort": {},
+                        "thinking_token_budget": {},
+                        "include_reasoning": {},
+                        "response_format": {},
+                    }
+                }
+            }
+        },
+    }
+
+
+class _Completions:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="chat answer",
+                        reasoning="chat reasoning",
+                        tool_calls=[],
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+
+class _Responses:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.calls: list[dict] = []
+        self.error = error
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        if kwargs.get("stream"):
+            return _AsyncStream(
+                [
+                    SimpleNamespace(
+                        type="response.reasoning_text.delta",
+                        delta="stream thought",
+                    ),
+                    SimpleNamespace(
+                        type="response.output_text.delta",
+                        delta="stream answer",
+                    ),
+                    SimpleNamespace(
+                        type="response.output_item.added",
+                        output_index=1,
+                        item=SimpleNamespace(
+                            type="function_call",
+                            id="fc_stream",
+                            call_id="call_stream",
+                            name="lookup",
+                            arguments="",
+                        ),
+                    ),
+                    SimpleNamespace(
+                        type="response.function_call_arguments.delta",
+                        item_id="fc_stream",
+                        delta='{"query":"stream"}',
+                    ),
+                ]
+            )
+        return SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    content=[SimpleNamespace(text="response reasoning")],
+                    summary=[],
+                ),
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="response answer")],
+                ),
+                SimpleNamespace(
+                    type="function_call",
+                    call_id="call_next",
+                    id="fc_next",
+                    name="lookup",
+                    arguments='{"query":"next"}',
+                ),
+            ],
+            usage=None,
+        )
+
+
+class _AsyncStream:
+    def __init__(self, values: list) -> None:
+        self.values = values
+
+    def __aiter__(self):
+        self.iterator = iter(self.values)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self.iterator)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
+class DualProtocolClient:
+    def __init__(
+        self,
+        *,
+        openapi: dict | None = None,
+        responses_error: Exception | None = None,
+    ) -> None:
+        self.openapi = openapi or _openapi()
+        self.completions = _Completions()
+        self.chat = SimpleNamespace(completions=self.completions)
+        self.responses = _Responses(error=responses_error)
+        self.raw_posts: list[tuple[str, dict]] = []
+
+    def with_options(self, **_kwargs):
+        return self
+
+    async def get(self, path, **_kwargs):
+        if path == "/version":
+            return {"version": "0.test"}
+        if path == "/openapi.json":
+            return self.openapi
+        raise AssertionError(path)
+
+    async def post(self, path, *, body, **_kwargs):
+        self.raw_posts.append((path, body))
+        return {"count": 321, "max_model_len": 131072, "tokens": [1, 2]}
+
+
+def _request() -> ModelRequest:
+    return ModelRequest(
+        instructions="Be useful.",
+        items=(
+            ModelUserInput(source_id="u1", content="first"),
+            ModelAssistantTurn(
+                source_id="a1",
+                content="checking",
+                reasoning="private trace",
+                tool_calls=(
+                    ToolCall(id="call_1", name="lookup", arguments={"query": "x"}),
+                ),
+            ),
+            ModelToolResultInput(
+                source_id="t1",
+                call_id="call_1",
+                name="lookup",
+                content="result",
+            ),
+            ModelUserInput(source_id="u2", content="continue"),
+        ),
+        tools=(
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Look up data.",
+                    "parameters": {"type": "object"},
+                },
+            },
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_prefers_stateless_responses_and_replays_items() -> None:
+    client = DualProtocolClient()
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            api_key="local",
+            reasoning={"effort": "high"},
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    capabilities = await provider.inspect_capabilities()
+    response = await provider.complete(_request())
+
+    assert capabilities.server_kind == "vllm"
+    assert capabilities.resolved_protocol == "responses"
+    assert not client.completions.calls
+    kwargs = client.responses.calls[0]
+    assert kwargs["store"] is False
+    assert "previous_response_id" not in kwargs
+    assert kwargs["reasoning"] == {"effort": "high"}
+    assert kwargs["extra_body"]["include_reasoning"] is True
+    assert [item["type"] for item in kwargs["input"] if "type" in item] == [
+        "reasoning",
+        "message",
+        "function_call",
+        "function_call_output",
+    ]
+    assert kwargs["input"][1]["content"][0]["text"] == "private trace"
+    assert kwargs["tools"][0]["name"] == "lookup"
+    assert response.content == "response answer"
+    assert response.reasoning == "response reasoning"
+    assert response.tool_calls[0].id == "call_next"
+    assert response.metadata is not None
+    assert response.metadata.protocol == "responses"
+
+
+@pytest.mark.asyncio
+async def test_auto_uses_chat_when_only_chat_supports_reasoning_budget() -> None:
+    client = DualProtocolClient(openapi=_openapi(responses_budget=False))
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="deepseek",
+            api_key="local",
+            reasoning={"effort": "medium", "budget_tokens": 512},
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    response = await provider.complete(_request())
+
+    assert not client.responses.calls
+    kwargs = client.completions.calls[0]
+    assert kwargs["reasoning_effort"] == "medium"
+    assert kwargs["extra_body"]["thinking_token_budget"] == 512
+    assistant = next(message for message in kwargs["messages"] if message["role"] == "assistant")
+    assert assistant["reasoning"] == "private trace"
+    assert response.metadata is not None
+    assert response.metadata.protocol == "chat_completions"
+    assert response.metadata.effective_budget_tokens == 512
+
+
+@pytest.mark.asyncio
+async def test_unsupported_budget_is_warned_and_ignored() -> None:
+    spec = _openapi(responses_budget=False)
+    spec["components"]["schemas"]["ChatRequest"]["properties"].pop(
+        "thinking_token_budget"
+    )
+    client = DualProtocolClient(openapi=spec)
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="glm",
+            api_key="local",
+            protocol="responses",
+            reasoning={"budget_tokens": 256},
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    with pytest.warns(ProviderCapabilityWarning, match="Ignoring reasoning budget"):
+        response = await provider.complete(_request())
+
+    assert "thinking_token_budget" not in client.responses.calls[0]["extra_body"]
+    assert client.responses.calls[0]["extra_body"]["include_reasoning"] is True
+    assert response.metadata is not None
+    assert response.metadata.ignored_parameters == ("budget_tokens",)
+
+
+@pytest.mark.asyncio
+async def test_vllm_tokenize_is_exact_and_caps_discovered_window() -> None:
+    client = DualProtocolClient()
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            api_key="local",
+            context_window_tokens=65536,
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    count = await provider.count_tokens(_request())
+
+    assert count is not None
+    assert count.count == 321
+    assert count.max_model_len == 131072
+    assert provider.context_window_tokens == 65536
+    assert client.raw_posts[0][0] == "/tokenize"
+    assistant = next(
+        message
+        for message in client.raw_posts[0][1]["messages"]
+        if message["role"] == "assistant"
+    )
+    assert assistant["reasoning"] == "private trace"
+
+
+@pytest.mark.asyncio
+async def test_explicit_responses_failure_never_retries_chat() -> None:
+    client = DualProtocolClient(responses_error=RuntimeError("responses failed"))
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            api_key="local",
+            protocol="responses",
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="responses failed"):
+        await provider.complete(_request())
+
+    assert len(client.responses.calls) == 1
+    assert not client.completions.calls
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_normalizes_reasoning_content_and_tool_calls() -> None:
+    client = DualProtocolClient()
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            api_key="local",
+            protocol="responses",
+        ),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    events = [event async for event in provider.stream(_request())]
+
+    assert [(event.channel, event.content) for event in events[:-1]] == [
+        ("reasoning", "stream thought"),
+        ("content", "stream answer"),
+    ]
+    response = events[-1].response
+    assert response is not None
+    assert response.content == "stream answer"
+    assert response.reasoning == "stream thought"
+    assert response.tool_calls[0].id == "call_stream"
+    assert response.tool_calls[0].arguments == {"query": "stream"}
+
+
+@pytest.mark.asyncio
+async def test_capability_and_tokenize_probes_use_vllm_root_with_real_sdk() -> None:
+    paths: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/openapi.json":
+            return httpx.Response(200, json=_openapi())
+        if request.url.path == "/version":
+            return httpx.Response(200, json={"version": "test"})
+        if request.url.path == "/tokenize":
+            return httpx.Response(
+                200,
+                json={"count": 42, "max_model_len": 65536, "tokens": [1]},
+            )
+        return httpx.Response(404, json={"detail": "not found"})
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = AsyncOpenAI(
+        api_key="local",
+        base_url="http://vllm.test/v1",
+        http_client=http_client,
+    )
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(base_url="http://vllm.test/v1", model="qwen3"),
+        client=client,
+    )
+    try:
+        capabilities = await provider.inspect_capabilities()
+        count = await provider.count_tokens(_request())
+    finally:
+        await http_client.aclose()
+
+    assert capabilities.server_kind == "vllm"
+    assert count is not None and count.count == 42
+    assert paths == ["/openapi.json", "/version", "/tokenize"]

@@ -16,6 +16,7 @@ from dagent.schemas import (
     CapabilityDefinition,
     ContextPolicy,
     ConversationState,
+    ModelCallMetadata,
     ResultStoragePolicy,
     UserMessage,
 )
@@ -106,7 +107,13 @@ def test_tool_agent_loop_run_does_not_accept_control_tool_handler() -> None:
 
 
 def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
-    provider = MockProvider([ChatResponse(content="Done.")])
+    metadata = ModelCallMetadata(
+        protocol="responses",
+        requested_reasoning_effort="medium",
+        effective_reasoning_effort="medium",
+        fallback_reason="Responses is supported and preferred in auto mode.",
+    )
+    provider = MockProvider([ChatResponse(content="Done.", metadata=metadata)])
     loop = make_loop(tmp_path, provider)
 
     result = run(
@@ -122,6 +129,7 @@ def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
     assert result.state.model_thread is not None
     assert result.state.model_thread.items[-1].type == "assistant"
     assert result.state.model_thread.items[-1].content == "Done."
+    assert result.state.model_thread.items[-1].model_call == metadata
 
 
 def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:

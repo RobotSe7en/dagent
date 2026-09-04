@@ -41,11 +41,11 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | DAG design | `Runner.design_dag` (including optional `RunStreamEvent` observation), `DAGDesignSelection`, `DAGDesignResult`, `DAGDesignProposal`, `DAGDesignNoChange`, `DAGDesignAnswer`, `DAGDesignFailure`, `DAGDiagnostic`, `DAGDiagnosticSeverity`, `inspect_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
-| Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ModelTokenUsage`, `ResultStoragePolicy` |
+| Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ModelCallMetadata`, `ModelTokenUsage`, `ResultStoragePolicy` |
 | Reviews and results | `RunResult` (`output_text` plus structured static `output_value`), `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
 | Tool-run steering | `Runner.steer`, `SteerReceipt`, `SteerError`, `RunNotActiveError`, `RunNotSteerableError`, `SteerQueueFullError` |
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionUsage`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
-| Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
+| Providers | `Provider`; `dagent.providers` also exports `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for capability inspection, custom providers, and tests |
 
 ## Minimal Runner
 
@@ -54,9 +54,9 @@ import dagent
 
 
 provider = dagent.Provider(
-    base_url="https://api.openai.com/v1",
-    model="your-model",
-    api_key_env="OPENAI_API_KEY",
+    base_url="http://localhost:8000/v1",
+    model="your-vllm-model",
+    api_key="local",
 )
 runner = dagent.Runner(
     workspace="agent-workspace",

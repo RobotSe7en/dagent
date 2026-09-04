@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Literal, Protocol
 
-from dagent.schemas.context import ModelTokenUsage
+from dagent.schemas.context import ModelCallMetadata, ModelTokenUsage
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class ChatResponse:
     refusal: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: ModelTokenUsage | None = None
+    metadata: ModelCallMetadata | None = None
 
 
 @dataclass(frozen=True)
