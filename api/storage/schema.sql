@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     status TEXT NOT NULL DEFAULT 'active',
     workspace_uri TEXT NOT NULL,
     last_run_id TEXT,
-    conversation_schema_version INTEGER NOT NULL DEFAULT 3,
+    conversation_schema_version INTEGER NOT NULL DEFAULT 4,
     conversation_state_json TEXT,
     conversation_revision INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,

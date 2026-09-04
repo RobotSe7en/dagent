@@ -56,7 +56,7 @@ async def test_heuristic_count_omits_reasoning_for_legacy_chat_adapter() -> None
 
     await ContextAssembler(
         context_window_tokens=4096,
-        output_reserve_tokens=512,
+        max_output_tokens=512,
         token_counter=counter,
     ).prepare(
         system_message={"role": "system", "content": "Be useful."},
@@ -167,7 +167,7 @@ async def test_pressure_drops_oldest_reasoning_but_keeps_latest_step() -> None:
 
     prepared = await ContextAssembler(
         context_window_tokens=1024,
-        output_reserve_tokens=128,
+        max_output_tokens=128,
         request_reasoning_field=include_reasoning,
     ).prepare(
         system_message={"role": "system", "content": "Be useful."},
@@ -196,12 +196,12 @@ async def test_exact_counter_supplies_server_window_and_observability() -> None:
         return ModelTokenCount(count=100, max_model_len=65536, estimator="vllm")
 
     prepared = await ContextAssembler(
-        output_reserve_tokens=4096,
+        max_output_tokens=4096,
         request_token_counter=count,
     ).prepare(
         system_message={"role": "system", "content": "Be useful."},
         conversation=ConversationState(items=(UserMessage(content="hello"),)),
-        policy=ContextPolicy(token_safety_margin=0),
+        policy=ContextPolicy(token_safety_margin=0.15),
     )
 
     assert prepared.usage.estimator == "vllm"
@@ -209,3 +209,6 @@ async def test_exact_counter_supplies_server_window_and_observability() -> None:
     assert prepared.usage.server_max_model_len == 65536
     assert prepared.usage.context_window_tokens == 65536
     assert prepared.usage.configured_context_limit is None
+    assert prepared.usage.max_output_tokens == 4096
+    assert prepared.usage.input_budget_tokens == 61440
+    assert prepared.usage.compaction_trigger_tokens == 49152

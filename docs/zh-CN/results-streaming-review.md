@@ -50,15 +50,15 @@ Review resume 会恢复 checkpoint 中冻结的值。
 ## 上下文限制与压缩
 
 私有 vLLM provider 在可用时通过 `/tokenize` 获取精确请求计数与 `max_model_len`。
-显式 context value 是更小的 cap；两者都不可用时 fallback 为 32K context window。
-output reserve 默认为 4K：
+默认自动使用探测到的 context value；显式值会覆盖它，但不能超过已探测的 server limit。
+探测失败会 warning 并 fallback 到 32K context window。输出长度默认不设置：
 
 ```python
 provider = dagent.Provider(
     base_url="http://localhost:8000/v1",
     model="local-model",
-    context_window_tokens=32768,
-    output_reserve_tokens=4096,
+    context_window_tokens=None,
+    max_output_tokens=None,
 )
 ```
 
@@ -70,7 +70,9 @@ agent = dagent.ToolAgent(
     context=dagent.ContextPolicy(
         reasoning_replay="active_run",
         compaction_trigger_ratio=0.8,
-        summary_max_tokens=1024,
+        compaction_retain_ratio=0.16,
+        summary_max_tokens=8192,
+        compaction_reasoning_effort="low",
         max_tool_result_tokens=2048,
         max_total_tool_result_tokens=8192,
     ),
@@ -83,9 +85,9 @@ reasoning；然后总结过大 active run 中已完成的中间步骤。该过�
 当前模型并计入一次 model turn telemetry；摘要调用失败时使用确定性有界摘要并记录
 fallback 原因。如果必须保留的输入仍然放不下，会在 generation 前抛出
 `ContextWindowExceeded`。
-compactor 请求本身也会独立做预算。`ContextSummary` 会记录 source 是否被截断、
-provider usage、上下文估算和捕获到的 reasoning；后续只投影
-`ContextSummary.content`。
+compactor 请求本身有独立的输出限制和 reasoning effort。`ContextSummary` 会记录 source
+是否被截断、provider usage、模型调用 metadata 和上下文估算。摘要 reasoning 会被丢弃；
+后续只投影 `ContextSummary.content`。
 
 `result.context_usage` 会提供精确/估算 token 数、发现的 server limit、reasoning
 回放/省略、保留/压缩 item 数、工具结果截断数以及压缩方法。

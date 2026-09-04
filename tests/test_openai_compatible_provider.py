@@ -89,7 +89,7 @@ class FakeClient:
                                             "tools": {},
                                             "stream": {},
                                             "reasoning_effort": {},
-                                            "thinking_token_budget": {},
+                                            "max_tokens": {},
                                             "response_format": {},
                                             "include_reasoning": {},
                                         }
@@ -274,7 +274,8 @@ async def test_openai_compatible_provider_forwards_reasoning_and_extra_request_o
             base_url="http://localhost:8000/v1",
             model="deepseek",
             api_key="local-key",
-            reasoning={"effort": "high", "budget_tokens": 512},
+            reasoning={"effort": "high"},
+            max_output_tokens=512,
             extra_request_args={"temperature": 0},
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         ),
@@ -284,10 +285,9 @@ async def test_openai_compatible_provider_forwards_reasoning_and_extra_request_o
     await provider.chat([{"role": "user", "content": "hello"}])
 
     assert client.completions.kwargs["reasoning_effort"] == "high"
-    assert client.completions.kwargs["extra_body"]["thinking_token_budget"] == 512
+    assert client.completions.kwargs["max_tokens"] == 512
     assert client.completions.kwargs["temperature"] == 0
     assert client.completions.kwargs["extra_body"] == {
-        "thinking_token_budget": 512,
         "include_reasoning": True,
         "chat_template_kwargs": {"enable_thinking": True},
     }

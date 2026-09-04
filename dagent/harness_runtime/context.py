@@ -21,6 +21,7 @@ from dagent.schemas.context import (
     ContextPolicy,
     ContextUsage,
     ContextWindowExceeded,
+    ReasoningEffort,
 )
 from dagent.schemas.conversation import (
     AssistantMessage,
@@ -111,26 +112,26 @@ class ContextAssembler:
         self,
         *,
         context_window_tokens: int | None = None,
-        output_reserve_tokens: int = 4096,
+        max_output_tokens: int | None = None,
         token_counter: TokenCounter | None = None,
         request_token_counter: RequestTokenCounter | None = None,
         request_reasoning_field: RequestReasoningField | None = None,
     ) -> None:
         if context_window_tokens is not None and context_window_tokens < 1024:
             raise ValueError("context_window_tokens must be at least 1024.")
+        if max_output_tokens is not None and max_output_tokens < 1:
+            raise ValueError("max_output_tokens must be positive.")
         if (
-            output_reserve_tokens < 0
-            or (
-                context_window_tokens is not None
-                and output_reserve_tokens >= context_window_tokens
-            )
+            context_window_tokens is not None
+            and max_output_tokens is not None
+            and max_output_tokens >= context_window_tokens
         ):
             raise ValueError(
-                "output_reserve_tokens must be non-negative and smaller than the context window."
+                "max_output_tokens must be smaller than the context window."
             )
         self.configured_context_window_tokens = context_window_tokens
         self.context_window_tokens = context_window_tokens or 32768
-        self.output_reserve_tokens = output_reserve_tokens
+        self.max_output_tokens = max_output_tokens
         self.token_counter = token_counter or HeuristicTokenCounter()
         self.request_token_counter = request_token_counter
         self.request_reasoning_field = request_reasoning_field
@@ -147,6 +148,9 @@ class ContextAssembler:
         active_run_id: str | None = None,
         response_format: StructuredOutputFormat | None = None,
         stream: bool = False,
+        max_output_tokens: int | None = None,
+        reasoning_effort: ReasoningEffort | None = None,
+        purpose: Literal["generation", "compaction"] = "generation",
     ) -> PreparedModelContext:
         working = conversation
         compacted_items = 0
@@ -155,6 +159,10 @@ class ContextAssembler:
         compaction_reason: str | None = None
         omitted_reasoning_ids: set[str] = set()
         active_run_id = active_run_id or _latest_run_id(working.items)
+        request_max_output_tokens = _effective_max_output_tokens(
+            configured=self.max_output_tokens,
+            requested=max_output_tokens,
+        )
 
         request, projection = self._project(
             system_message=system_message,
@@ -164,6 +172,9 @@ class ContextAssembler:
             active_run_id=active_run_id,
             omitted_reasoning_ids=omitted_reasoning_ids,
             response_format=response_format,
+            max_output_tokens=request_max_output_tokens,
+            reasoning_effort=reasoning_effort,
+            purpose=purpose,
         )
         estimate, exact_count = await self._safe_estimate(
             request,
@@ -175,13 +186,27 @@ class ContextAssembler:
             discovered=exact_count.max_model_len if exact_count is not None else None,
         )
         self.context_window_tokens = context_window_tokens
-        if self.output_reserve_tokens >= context_window_tokens:
-            input_budget = 1
-        else:
-            input_budget = context_window_tokens - self.output_reserve_tokens
-        trigger = math.floor(input_budget * policy.compaction_trigger_ratio)
+        if (
+            request_max_output_tokens is not None
+            and request_max_output_tokens >= context_window_tokens
+        ):
+            raise ValueError(
+                "max_output_tokens must be smaller than the effective context window."
+            )
+        input_budget = (
+            context_window_tokens - request_max_output_tokens
+            if request_max_output_tokens is not None
+            else context_window_tokens - 1
+        )
+        trigger = max(1, math.floor(input_budget * policy.compaction_trigger_ratio))
+        retain = max(1, math.floor(input_budget * policy.compaction_retain_ratio))
 
-        compactable = _compaction_prefix(working.items, active_run_id=active_run_id)
+        compactable = _compaction_prefix(
+            working.items,
+            active_run_id=active_run_id,
+            retain_tokens=retain,
+            counter=self.token_counter,
+        )
         if estimate > trigger and compactable:
             working, method, reason = await self._compact_slice(
                 working,
@@ -201,6 +226,9 @@ class ContextAssembler:
                 active_run_id=active_run_id,
                 omitted_reasoning_ids=omitted_reasoning_ids,
                 response_format=response_format,
+                max_output_tokens=request_max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                purpose=purpose,
             )
             estimate, exact_count = await self._safe_estimate(
                 request,
@@ -243,6 +271,57 @@ class ContextAssembler:
                 active_run_id=active_run_id,
                 omitted_reasoning_ids=omitted_reasoning_ids,
                 response_format=response_format,
+                max_output_tokens=request_max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                purpose=purpose,
+            )
+            estimate, exact_count = await self._safe_estimate(
+                request,
+                policy,
+                stream=stream,
+            )
+
+        # Retention is a soft target. If fixed input such as system instructions
+        # and tool schemas still causes a hard overflow, compact the oldest
+        # retained cross-run groups before touching the active run.
+        while estimate > input_budget:
+            retained_item_tokens = sum(
+                _conversation_item_tokens(item, self.token_counter)
+                for item in working.items
+            )
+            compactable = _compaction_prefix(
+                working.items,
+                active_run_id=active_run_id,
+                retain_tokens=max(
+                    0,
+                    retained_item_tokens - (estimate - input_budget),
+                ),
+                counter=self.token_counter,
+            )
+            if not compactable:
+                break
+            working, method, reason = await self._compact_slice(
+                working,
+                start=0,
+                end=len(compactable),
+                policy=policy,
+                compact=compact,
+            )
+            compacted_items += len(compactable)
+            if method == "deterministic_fallback" or compaction_method == "none":
+                compaction_method = method
+            compaction_reason = reason or compaction_reason
+            request, projection = self._project(
+                system_message=system_message,
+                conversation=working,
+                tools=tools,
+                policy=policy,
+                active_run_id=active_run_id,
+                omitted_reasoning_ids=omitted_reasoning_ids,
+                response_format=response_format,
+                max_output_tokens=request_max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                purpose=purpose,
             )
             estimate, exact_count = await self._safe_estimate(
                 request,
@@ -279,6 +358,9 @@ class ContextAssembler:
                 active_run_id=active_run_id,
                 omitted_reasoning_ids=omitted_reasoning_ids,
                 response_format=response_format,
+                max_output_tokens=request_max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                purpose=purpose,
             )
             estimate, exact_count = await self._safe_estimate(
                 request,
@@ -288,8 +370,10 @@ class ContextAssembler:
 
         usage = ContextUsage(
             context_window_tokens=context_window_tokens,
-            output_reserve_tokens=self.output_reserve_tokens,
+            max_output_tokens=request_max_output_tokens,
             input_budget_tokens=input_budget,
+            compaction_trigger_tokens=trigger,
+            compaction_retain_tokens=retain,
             estimated_input_tokens=estimate,
             system_tokens=self.token_counter.count_text(str(system_message.get("content") or "")),
             schema_tokens=self.token_counter.count_text(
@@ -321,7 +405,8 @@ class ContextAssembler:
             raise ContextWindowExceeded(
                 (
                     f"Model input requires approximately {estimate} tokens, "
-                    f"but only {input_budget} tokens are available after output reserve."
+                    f"but only {input_budget} input tokens are available for the "
+                    "configured context and output limits."
                 ),
                 usage=usage,
             )
@@ -356,7 +441,18 @@ class ContextAssembler:
                 request.tools,
             )
         )
-        return math.ceil(raw * (1 + policy.token_safety_margin)), exact_count
+        if exact_count is not None:
+            return raw, exact_count
+        return math.ceil(raw * (1 + policy.token_safety_margin)), None
+
+    def compaction_limits(self, summary_max_tokens: int) -> tuple[int, int]:
+        """Return safe output and source-token limits for an internal summary call."""
+
+        output_limit = min(summary_max_tokens, max(1, self.context_window_tokens // 4))
+        if self.max_output_tokens is not None:
+            output_limit = min(output_limit, self.max_output_tokens)
+        input_budget = max(1, self.context_window_tokens - output_limit)
+        return output_limit, max(1, math.floor(input_budget * 0.7))
 
     async def _compact_slice(
         self,
@@ -368,13 +464,14 @@ class ContextAssembler:
         compact: CompactionFunction | None,
     ) -> tuple[ConversationState, str, str | None]:
         compactable = conversation.items[start:end]
+        summary_limit, _ = self.compaction_limits(policy.summary_max_tokens)
         try:
             if compact is None:
                 raise RuntimeError("No model compactor is configured.")
             summary = await compact(
                 conversation.summary,
                 compactable,
-                policy.summary_max_tokens,
+                summary_limit,
             )
             method = "model"
             reason = None
@@ -382,7 +479,7 @@ class ContextAssembler:
             summary = _deterministic_summary(
                 conversation.summary,
                 compactable,
-                policy.summary_max_tokens,
+                summary_limit,
                 self.token_counter,
                 reason=f"{type(exc).__name__}: {exc}",
             )
@@ -420,6 +517,9 @@ class ContextAssembler:
         active_run_id: str | None,
         omitted_reasoning_ids: set[str],
         response_format: StructuredOutputFormat | None,
+        max_output_tokens: int | None,
+        reasoning_effort: ReasoningEffort | None,
+        purpose: Literal["generation", "compaction"],
     ) -> tuple[ModelRequest, "_ProjectionUsage"]:
         items: list[ModelUserInput | ModelAssistantTurn | ModelToolResultInput] = []
         summary_tokens = 0
@@ -528,6 +628,10 @@ class ContextAssembler:
             items=tuple(items),
             tools=tuple(dict(tool) for tool in tools),
             response_format=response_format,
+            max_output_tokens=max_output_tokens,
+            inherit_provider_max_output_tokens=False,
+            reasoning_effort=reasoning_effort,
+            purpose=purpose,
         )
         return request, _ProjectionUsage(
             summary_tokens=summary_tokens,
@@ -557,6 +661,8 @@ def _compaction_prefix(
     items: tuple[ConversationItem, ...],
     *,
     active_run_id: str | None,
+    retain_tokens: int,
+    counter: TokenCounter,
 ) -> tuple[ConversationItem, ...]:
     if not items:
         return ()
@@ -574,7 +680,48 @@ def _compaction_prefix(
             index for index, item in enumerate(items) if isinstance(item, UserMessage)
         ]
         cutoff = user_indexes[-1] if user_indexes else 0
-    return items[:cutoff]
+    if cutoff <= 0:
+        return ()
+
+    retained_tokens = sum(
+        _conversation_item_tokens(item, counter) for item in items[cutoff:]
+    )
+    retained_start = cutoff
+    for group_start, group_end in reversed(
+        _atomic_groups(items, start=0, end=cutoff)
+    ):
+        group_tokens = sum(
+            _conversation_item_tokens(item, counter)
+            for item in items[group_start:group_end]
+        )
+        if retained_tokens + group_tokens > retain_tokens:
+            break
+        retained_tokens += group_tokens
+        retained_start = group_start
+    return items[:retained_start]
+
+
+def _conversation_item_tokens(item: ConversationItem, counter: TokenCounter) -> int:
+    if isinstance(item, UserMessage):
+        value: Any = {"role": "user", "content": user_content_for_model(item)}
+    elif isinstance(item, AssistantMessage):
+        value = {
+            "role": "assistant",
+            "content": item.content,
+            "reasoning": item.reasoning,
+            "refusal": item.refusal,
+            "tool_calls": [call.model_dump(mode="json") for call in item.tool_calls],
+        }
+    else:
+        value = {
+            "role": "tool",
+            "tool_call_id": item.call_id,
+            "name": item.name,
+            "content": stored_content_text(item.content),
+        }
+    return counter.count_text(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    )
 
 
 def _latest_run_id(items: tuple[ConversationItem, ...]) -> str | None:
@@ -590,12 +737,27 @@ def _effective_context_window(
     discovered: int | None,
 ) -> int:
     if configured is not None and discovered is not None:
-        return min(configured, discovered)
+        if configured > discovered:
+            raise ValueError(
+                f"Configured context_window_tokens ({configured}) exceeds the "
+                f"server max_model_len ({discovered})."
+            )
+        return configured
     if discovered is not None:
         return discovered
     if configured is not None:
         return configured
     return 32768
+
+
+def _effective_max_output_tokens(
+    *,
+    configured: int | None,
+    requested: int | None,
+) -> int | None:
+    if configured is not None and requested is not None:
+        return min(configured, requested)
+    return requested if requested is not None else configured
 
 
 def _should_replay_reasoning(

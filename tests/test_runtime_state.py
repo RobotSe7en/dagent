@@ -114,15 +114,15 @@ def test_pending_capability_review_requires_tool_name() -> None:
         RunResult.model_validate({"state": payload, "output_text": ""})
 
 
-def test_run_state_defaults_missing_schema_version_to_v4() -> None:
+def test_run_state_defaults_missing_schema_version_to_v5() -> None:
     state = RunState.model_validate({
         "run_id": "run_1",
         "kind": "tool",
         "status": "completed",
     })
 
-    assert state.schema_version == 4
-    assert state.model_dump(mode="json")["schema_version"] == 4
+    assert state.schema_version == 5
+    assert state.model_dump(mode="json")["schema_version"] == 5
 
 
 def test_run_state_rejects_unsupported_schema_version() -> None:
@@ -135,8 +135,8 @@ def test_run_state_rejects_unsupported_schema_version() -> None:
         })
 
 
-def test_run_state_v3_rejects_input_artifact_file_manifests() -> None:
-    with pytest.raises(ValidationError, match="RunState V3"):
+def test_run_state_rejects_v3_payloads() -> None:
+    with pytest.raises(ValidationError, match="Input should be 5"):
         RunState(
             schema_version=3,
             run_id="run_1",

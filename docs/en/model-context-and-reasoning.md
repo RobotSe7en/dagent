@@ -95,21 +95,18 @@ provider = dagent.Provider(
     protocol="auto",
     reasoning={
         "effort": "medium",
-        "budget_tokens": 2048,
         "capture": "field_and_tags",
     },
+    context_window_tokens=None,
+    max_output_tokens=None,
 )
 ```
 
 `effort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 The SDK sends it as `reasoning_effort` to Chat or `reasoning.effort` to
 Responses. Model support is still determined by the model served by vLLM.
-
-`budget_tokens` is a positive integer and maps to vLLM's
-`thinking_token_budget`. The SDK sends it only when the discovered schema for
-the selected protocol contains that field. Unsupported or unknown budget
-support produces `ProviderCapabilityWarning`; the request continues without the
-field. In `auto` mode, Chat is selected when only Chat exposes budget support.
+Token-based reasoning budgets are not part of the SDK contract; configure only
+the effort level. Unknown reasoning fields are rejected instead of ignored.
 
 `capture="field_and_tags"` combines the dedicated response reasoning field with
 `<think>` content. `capture="field"` trusts only the dedicated field. In both
@@ -125,7 +122,7 @@ print(capabilities.model_dump())
 ```
 
 The report uses `supported`, `unsupported`, and `unknown` for Chat, Responses,
-reasoning, effort, budget, tools, streaming, structured output, and `/tokenize`.
+reasoning, effort, output limits, tools, streaming, structured output, and `/tokenize`.
 Discovery reads `/openapi.json` and `/version` once and caches the result.
 
 Auto selection prefers Responses only when it supports every capability needed
@@ -139,13 +136,14 @@ possibly side-effecting request.
 
 A Responses generation is accepted only with terminal status `completed`.
 `failed`, `incomplete`, and `cancelled` terminal states raise
-`ProviderResponseError`; partial streaming output is never converted into a
-successful run.
+`ProviderResponseError`. Chat Completions also raises this error when
+`finish_reason="length"` reports output-limit exhaustion. Partial streaming
+output is never converted into a successful run.
 
 Each recorded `AssistantMessage.model_call` exposes the selected protocol,
-requested and effective effort/budget, ignored parameters, and the auto-selection
-reason. This audit metadata is persisted with the conversation but never projected
-back into model input.
+request purpose, requested and effective effort/output limit, actual wire field,
+and the auto-selection reason. This audit metadata is persisted with the
+conversation but never projected back into model input.
 
 ## Token accounting and compaction
 
@@ -155,17 +153,48 @@ tools when the endpoint is advertised. `ContextUsage.estimator` is then
 `token_counting="vllm"` to fail when exact counting is unavailable, or
 `"heuristic"` to always use the local deterministic estimate.
 
+With `context_window_tokens=None`, the discovered `max_model_len` is the total
+window. Discovery failure warns and falls back to 32,768. An explicit value
+overrides discovery, but a value larger than the server limit is rejected before
+generation. `max_output_tokens=None` sends no output-limit field. A configured
+value maps to Chat's discovered `max_completion_tokens` or `max_tokens`, and to
+Responses `max_output_tokens`.
+
+For total window `W` and output limit `O`, the input budget is `W - O`; without
+an output limit it is `W - 1`. Exact vLLM counts are not inflated. The safety
+margin applies only to heuristic/custom counters.
+
 Compaction is based on token pressure, not a minimum number of conversation
 turns. At the configured trigger, dagent applies reductions in this order:
 
-1. summarize complete items from older runs;
+1. summarize old history while retaining a recent raw-history target of 16%;
 2. omit the oldest replayed reasoning from the active request projection;
 3. summarize completed middle steps of an oversized active run.
 
 The current run's initiating user input, an open assistant/tool-result chain,
 and the latest atomic step are retained. Tool-call/result pairs are not split.
-If required input still exceeds the effective window after reductions,
+The 16% retention target is soft: when fixed input would otherwise cause a hard
+overflow, dagent summarizes additional oldest cross-run history first. If
+required input still exceeds the effective window after reductions,
 `ContextWindowExceeded` is raised before generation.
+
+The default trigger is 80% of input capacity and is a soft threshold: after all
+safe reductions, a request between the trigger and the hard input budget may
+still run. Summaries default to at most 8,192 output tokens and use the separate
+`compaction_reasoning_effort="low"`, regardless of the normal provider effort:
+
+```python
+context = dagent.ContextPolicy(
+    compaction_trigger_ratio=0.8,
+    compaction_retain_ratio=0.16,
+    summary_max_tokens=8192,
+    compaction_reasoning_effort="low",
+)
+```
+
+Summary reasoning is discarded. If the summary call or its requested effort is
+unsupported, dagent records the reason and uses the bounded deterministic
+fallback without failing the agent run.
 
 `ContextUsage` reports the replay mode, replayed and omitted reasoning counts
 and token estimates, active-run compaction, exact/heuristic estimator, effective

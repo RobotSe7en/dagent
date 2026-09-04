@@ -117,11 +117,11 @@ provider = dagent.Provider(
     chat_reasoning_field="auto",
     reasoning={
         "effort": "high",
-        "budget_tokens": 1024,
         "capture": "field_and_tags",
     },
     stream_include_usage=False,
-    output_reserve_tokens=4096,
+    context_window_tokens=None,
+    max_output_tokens=None,
     extra_request_args={},
     extra_body={},
 )
@@ -141,10 +141,8 @@ Both protocols are stateless: dagent sends the complete selected context on
 every call. Responses always uses `store=False` and never uses
 `previous_response_id` or encrypted reasoning content. `reasoning.effort` maps
 to `reasoning_effort` for Chat and `reasoning.effort` for Responses.
-`budget_tokens` maps to vLLM's top-level `thinking_token_budget` only when the
-discovered request schema supports it; otherwise it is ignored with a warning
-and recorded in call metadata. `effort="none"` cannot be combined with a
-budget. The removed `reasoning.enabled` field is rejected.
+Token-based reasoning budgets are not supported. The removed
+`reasoning.enabled` and `reasoning.budget_tokens` fields are rejected.
 
 `chat_reasoning_field` controls only replay serialization for Chat. `auto`
 uses `reasoning` for a detected vLLM server and omits replay on an unknown
@@ -156,10 +154,12 @@ names and normalizes them into `AssistantMessage.reasoning`.
 messages and tool schemas. It emits a warning and uses the deterministic
 heuristic when exact counting is unavailable. `"vllm"` makes a tokenize
 failure explicit; `"heuristic"` skips probing for token counts. A discovered
-`max_model_len` supplies the context limit. An explicit
-`context_window_tokens` may only cap it to a smaller value; when neither is
-available the fallback is 32,768. `output_reserve_tokens` remains an input
-reservation and is not sent as an output limit.
+`max_model_len` supplies the default total context limit. An explicit
+`context_window_tokens` overrides discovery but is rejected when it exceeds a
+successfully discovered server limit. Discovery failure warns and falls back to
+32,768 when no value was configured. `max_output_tokens` is optional; when set,
+it is both reserved from input capacity and sent as the real generation limit.
+When unset, no output-limit field is sent.
 
 Streaming usage metadata is disabled by default because some compatible
 endpoints reject `stream_options`. Set `stream_include_usage=True` only when the
@@ -213,7 +213,8 @@ provider:
   chat_reasoning_field: auto
   reasoning:
     effort: "high"
-    budget_tokens: 1024
+  context_window_tokens: null
+  max_output_tokens: null
 profiles:
   directory: "profiles"
 enable_result_validation: false

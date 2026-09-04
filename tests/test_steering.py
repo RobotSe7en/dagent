@@ -68,7 +68,7 @@ class GatedProvider:
 
 class GatedCompactionProvider(GatedProvider):
     context_window_tokens = 2048
-    output_reserve_tokens = 256
+    max_output_tokens = 256
 
     async def chat(
         self,

@@ -445,18 +445,34 @@ class ModelProviderRequest(BaseModel):
     reasoning: ReasoningConfig | None = None
     stream_include_usage: bool = False
     context_window_tokens: int | None = Field(default=None, ge=1024)
-    output_reserve_tokens: int = Field(default=4096, ge=0)
+    max_output_tokens: int | None = Field(default=None, ge=1)
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_context_window(self) -> "ModelProviderRequest":
+    def validate_model_limits(self) -> "ModelProviderRequest":
         if (
             self.context_window_tokens is not None
-            and self.output_reserve_tokens >= self.context_window_tokens
+            and self.max_output_tokens is not None
+            and self.max_output_tokens >= self.context_window_tokens
         ):
             raise ValueError(
-                "output_reserve_tokens must be smaller than context_window_tokens."
+                "max_output_tokens must be smaller than context_window_tokens."
+            )
+        reserved = {
+            "max_tokens",
+            "max_completion_tokens",
+            "max_output_tokens",
+            "thinking_token_budget",
+        }
+        conflicts = sorted(
+            reserved.intersection(self.extra_request_args)
+            | reserved.intersection(self.extra_body)
+        )
+        if conflicts:
+            raise ValueError(
+                "Provider-managed request fields cannot be set through "
+                "extra_request_args or extra_body: " + ", ".join(conflicts)
             )
         return self
 
@@ -478,7 +494,7 @@ class ModelProviderPayload(BaseModel):
     reasoning: ReasoningConfig | None = None
     stream_include_usage: bool
     context_window_tokens: int | None
-    output_reserve_tokens: int
+    max_output_tokens: int | None
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
@@ -3690,7 +3706,7 @@ def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
         "chat_reasoning_field": model.chat_reasoning_field,
         "stream_include_usage": model.stream_include_usage,
         "context_window_tokens": model.context_window_tokens,
-        "output_reserve_tokens": model.output_reserve_tokens,
+        "max_output_tokens": model.max_output_tokens,
         "reasoning": (
             None
             if model.reasoning is None
@@ -3725,7 +3741,7 @@ def _model_request_from_user_config(model_id: str, model: UserModelProviderConfi
             if "context_window_tokens" in model.model_fields_set
             else None
         ),
-        output_reserve_tokens=model.output_reserve_tokens,
+        max_output_tokens=model.max_output_tokens,
         extra_request_args=dict(model.extra_request_args),
         extra_body=dict(model.extra_body),
     )
@@ -3745,7 +3761,7 @@ def _user_model_provider_config(model: ModelProviderRequest) -> UserModelProvide
         reasoning=model.reasoning,
         stream_include_usage=model.stream_include_usage,
         context_window_tokens=model.context_window_tokens,
-        output_reserve_tokens=model.output_reserve_tokens,
+        max_output_tokens=model.max_output_tokens,
         extra_request_args=dict(model.extra_request_args),
         extra_body=dict(model.extra_body),
     )
@@ -3810,7 +3826,7 @@ def _config_model_payload(*, active: bool) -> ModelProviderPayload:
             if "context_window_tokens" in provider.model_fields_set
             else None
         ),
-        output_reserve_tokens=provider.output_reserve_tokens,
+        max_output_tokens=provider.max_output_tokens,
         extra_request_args=_redact_json_secrets(provider.extra_request_args),
         extra_body=_redact_json_secrets(provider.extra_body),
     )
@@ -3834,7 +3850,7 @@ def _user_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelPr
         reasoning=model.reasoning,
         stream_include_usage=model.stream_include_usage,
         context_window_tokens=model.context_window_tokens,
-        output_reserve_tokens=model.output_reserve_tokens,
+        max_output_tokens=model.max_output_tokens,
         extra_request_args=_redact_json_secrets(model.extra_request_args),
         extra_body=_redact_json_secrets(model.extra_body),
     )
@@ -4168,7 +4184,7 @@ async def _resume_persisted_review_stream(
             raise HTTPException(status_code=404, detail="Conversation not found.")
         if project is not None and conversation.project_id != project.id:
             raise HTTPException(status_code=404, detail="Conversation not found.")
-        _require_v3_conversation(conversation)
+        _require_v4_conversation(conversation)
         conversation_state = await _conversation_state_for(conversation, store)
         workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, run.workspace_uri)
         orchestration_session = None
@@ -4831,7 +4847,7 @@ async def _persisted_context_from_conversation(
         raise HTTPException(status_code=400, detail="project_id must be provided for project conversations.")
     if project is not None and conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    _require_v3_conversation(conversation)
+    _require_v4_conversation(conversation)
     if conversation.project_id is not None:
         if project is None:
             project = await run_in_threadpool(store.get_project, conversation.project_id)
@@ -4869,12 +4885,12 @@ async def _persisted_context_from_conversation(
     )
 
 
-def _require_v3_conversation(conversation: Conversation) -> None:
-    if conversation.conversation_schema_version != 3:
+def _require_v4_conversation(conversation: Conversation) -> None:
+    if conversation.conversation_schema_version != 4:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Conversation predates the V3 context contract. "
+                "Conversation predates the V4 context contract. "
                 "Start a new conversation or migrate it offline."
             ),
         )

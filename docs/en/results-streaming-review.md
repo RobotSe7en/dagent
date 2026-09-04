@@ -56,16 +56,17 @@ record or breaking `tool_call_id` pairing.
 ## Context limits and compaction
 
 The private-vLLM provider uses `/tokenize` for exact request counts and
-`max_model_len` when available. An explicit context value is a smaller cap; if
-neither value is available the fallback is a 32K context window. The output
-reserve defaults to 4K:
+`max_model_len` when available. Automatic discovery is the default; an explicit
+context value overrides it but cannot exceed a discovered server limit. Failed
+discovery warns and falls back to a 32K context window. Output length is unset
+by default:
 
 ```python
 provider = dagent.Provider(
     base_url="http://localhost:8000/v1",
     model="local-model",
-    context_window_tokens=32768,
-    output_reserve_tokens=4096,
+    context_window_tokens=None,
+    max_output_tokens=None,
 )
 ```
 
@@ -77,7 +78,9 @@ agent = dagent.ToolAgent(
     context=dagent.ContextPolicy(
         reasoning_replay="active_run",
         compaction_trigger_ratio=0.8,
-        summary_max_tokens=1024,
+        compaction_retain_ratio=0.16,
+        summary_max_tokens=8192,
+        compaction_reasoning_effort="low",
         max_tool_result_tokens=2048,
         max_total_tool_result_tokens=8192,
     ),
@@ -92,9 +95,10 @@ latest atomic step remain. The normal compaction path uses the configured model
 and consumes one model turn from telemetry. If that call fails, a deterministic
 bounded summary is used and the fallback reason is recorded. If mandatory input
 still does not fit, `ContextWindowExceeded` is raised before generation.
-The compactor request is independently budgeted. `ContextSummary` records
-whether its source was truncated, its provider usage, context estimate, and any
-captured reasoning; only `ContextSummary.content` is projected later.
+The compactor request has its own output limit and reasoning effort.
+`ContextSummary` records whether its source was truncated, provider usage,
+model-call metadata, and context estimate. Summary reasoning is discarded; only
+`ContextSummary.content` is projected later.
 
 Inspect `result.context_usage` for exact/estimated counts, the discovered
 server limit, reasoning replay/omission, included/compacted item counts,

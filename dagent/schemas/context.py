@@ -8,6 +8,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 ReasoningReplayMode: TypeAlias = Literal["none", "active_run", "all_runs"]
+ReasoningEffort: TypeAlias = Literal[
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+]
 
 
 class ContextPolicy(BaseModel):
@@ -17,13 +26,20 @@ class ContextPolicy(BaseModel):
 
     reasoning_replay: ReasoningReplayMode = "active_run"
     compaction_trigger_ratio: float = Field(default=0.8, gt=0, le=1)
-    summary_max_tokens: int = Field(default=1024, ge=64)
+    compaction_retain_ratio: float = Field(default=0.16, gt=0, lt=1)
+    summary_max_tokens: int = Field(default=8192, ge=64)
+    compaction_reasoning_effort: ReasoningEffort = "low"
     max_tool_result_tokens: int = Field(default=2048, ge=64)
     max_total_tool_result_tokens: int = Field(default=8192, ge=64)
     token_safety_margin: float = Field(default=0.15, ge=0, le=1)
 
     @model_validator(mode="after")
     def validate_tool_budgets(self) -> "ContextPolicy":
+        if self.compaction_retain_ratio >= self.compaction_trigger_ratio:
+            raise ValueError(
+                "compaction_retain_ratio must be smaller than "
+                "compaction_trigger_ratio."
+            )
         if self.max_tool_result_tokens > self.max_total_tool_result_tokens:
             raise ValueError(
                 "max_tool_result_tokens cannot exceed max_total_tool_result_tokens."
@@ -45,8 +61,10 @@ class ContextUsage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     context_window_tokens: int = Field(ge=1)
-    output_reserve_tokens: int = Field(ge=0)
+    max_output_tokens: int | None = Field(default=None, ge=1)
     input_budget_tokens: int = Field(ge=1)
+    compaction_trigger_tokens: int = Field(ge=1)
+    compaction_retain_tokens: int = Field(ge=1)
     estimated_input_tokens: int = Field(ge=0)
     system_tokens: int = Field(default=0, ge=0)
     schema_tokens: int = Field(default=0, ge=0)
@@ -93,10 +111,16 @@ class ModelCallMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     protocol: Literal["chat_completions", "responses"]
+    request_purpose: Literal["generation", "compaction"] = "generation"
     requested_reasoning_effort: str | None = None
     effective_reasoning_effort: str | None = None
-    requested_budget_tokens: int | None = Field(default=None, ge=1)
-    effective_budget_tokens: int | None = Field(default=None, ge=1)
+    requested_max_output_tokens: int | None = Field(default=None, ge=1)
+    effective_max_output_tokens: int | None = Field(default=None, ge=1)
+    output_limit_field: Literal[
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+    ] | None = None
     ignored_parameters: tuple[str, ...] = ()
     fallback_reason: str | None = None
 
@@ -115,6 +139,7 @@ __all__ = [
     "ContextWindowExceeded",
     "ModelCallMetadata",
     "ModelTokenUsage",
+    "ReasoningEffort",
     "ReasoningReplayMode",
     "ResultStoragePolicy",
 ]

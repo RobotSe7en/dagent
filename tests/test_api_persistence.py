@@ -356,8 +356,8 @@ def test_sqlite_store_marks_pre_v3_conversations_during_migration(
     assert migrated_legacy is not None
     assert migrated_legacy.conversation_schema_version == 0
     assert migrated_current is not None
-    assert migrated_current.conversation_schema_version == 3
-    assert created_after_migration.conversation_schema_version == 3
+    assert migrated_current.conversation_schema_version == 4
+    assert created_after_migration.conversation_schema_version == 4
     migrated.close()
 
 
@@ -2105,7 +2105,7 @@ def test_api_message_stream_rejects_legacy_conversation_before_loading_run_state
 
     assert response.status_code == 409
     assert response.json()["detail"] == (
-        "Conversation predates the V3 context contract. "
+        "Conversation predates the V4 context contract. "
         "Start a new conversation or migrate it offline."
     )
 

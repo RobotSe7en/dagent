@@ -89,7 +89,7 @@ class ResolvedRunPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[7] = 7
+    schema_version: Literal[8] = 8
     runtime_kind: RunStateKind
     tool_profile: AgentProfile
     planner_profile: AgentProfile
@@ -109,7 +109,7 @@ class ResolvedRunPlan(BaseModel):
     result_storage_policy: ResultStoragePolicy = Field(default_factory=ResultStoragePolicy)
     runtime_directory: str
     context_window_tokens: int = Field(default=32768, ge=1024)
-    output_reserve_tokens: int = Field(default=4096, ge=0)
+    max_output_tokens: int | None = Field(default=None, ge=1)
     extra_system_prompt: str | None = None
     fingerprint: str = ""
 
@@ -156,9 +156,12 @@ class ResolvedRunPlan(BaseModel):
             raise ValueError("sdk_builder plans require a frozen planner skill.")
         if self.planner_frontend == "typed_spec" and self.planner_skill is not None:
             raise ValueError("typed_spec plans cannot include a builder planner skill.")
-        if self.output_reserve_tokens >= self.context_window_tokens:
+        if (
+            self.max_output_tokens is not None
+            and self.max_output_tokens >= self.context_window_tokens
+        ):
             raise ValueError(
-                "output_reserve_tokens must be smaller than context_window_tokens."
+                "max_output_tokens must be smaller than context_window_tokens."
             )
         if self.validation_enabled and self.validator_profile is None:
             raise ValueError(
@@ -278,7 +281,7 @@ class RunState(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[3, 4] = 4
+    schema_version: Literal[5] = 5
     run_id: str
     kind: RunStateKind
     status: LoopStatus
@@ -303,20 +306,9 @@ class RunState(BaseModel):
     static_agent_continuation: _StaticDagAgentContinuation | None = None
     input_artifact_files: tuple[ArtifactFileManifest, ...] = ()
 
-    @model_serializer(mode="wrap")
-    def serialize_legacy_state_without_file_manifest(self, serializer):
-        payload = serializer(self)
-        if self.schema_version == 3:
-            payload.pop("input_artifact_files", None)
-        return payload
-
     @model_validator(mode="after")
     def validate_input_artifact_files(self) -> "RunState":
         manifests = self.input_artifact_files
-        if self.schema_version == 3:
-            if manifests:
-                raise ValueError("RunState V3 cannot contain input artifact file manifests.")
-            return self
         artifact_ids = [manifest.artifact_id for manifest in manifests]
         if len(set(artifact_ids)) != len(artifact_ids):
             raise ValueError("Run input artifact manifests must have unique artifact ids.")
@@ -348,7 +340,7 @@ class RunCheckpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[7] = 7
+    schema_version: Literal[8] = 8
     state: RunState
     plan: ResolvedRunPlan
     usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
@@ -358,7 +350,7 @@ class RunCheckpoint(BaseModel):
         self.plan.validate_fingerprint()
         if self.schema_version != self.plan.schema_version:
             raise ValueError("Checkpoint schema version does not match the resolved run plan.")
-        expected_state_version = 4
+        expected_state_version = 5
         if self.state.schema_version != expected_state_version:
             raise ValueError(
                 f"Checkpoint V{self.schema_version} requires RunState V{expected_state_version}."

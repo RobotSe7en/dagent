@@ -11,6 +11,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from dagent.schemas.capability import validate_capability_id_segment
+from dagent.schemas.context import ReasoningEffort
 from dagent.schemas.results import PlannerFrontend
 from dagent.schemas.sandbox import SandboxConfig
 
@@ -36,29 +37,11 @@ ChatReasoningField: TypeAlias = Literal[
     "reasoning_content",
     "omit",
 ]
-ReasoningEffort: TypeAlias = Literal[
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-]
-
-
 class ReasoningConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     effort: ReasoningEffort | None = None
-    budget_tokens: int | None = Field(default=None, ge=1)
     capture: Literal["field", "field_and_tags"] = "field_and_tags"
-
-    @model_validator(mode="after")
-    def validate_budget(self) -> "ReasoningConfig":
-        if self.effort == "none" and self.budget_tokens is not None:
-            raise ValueError("budget_tokens cannot be set when effort is 'none'.")
-        return self
 
 
 class ProviderConfig(BaseModel):
@@ -76,17 +59,33 @@ class ProviderConfig(BaseModel):
     stream_include_usage: bool = False
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
-    context_window_tokens: int | None = Field(default=32768, ge=1024)
-    output_reserve_tokens: int = Field(default=4096, ge=0)
+    context_window_tokens: int | None = Field(default=None, ge=1024)
+    max_output_tokens: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
-    def validate_context_window(self) -> "ProviderConfig":
+    def validate_model_limits(self) -> "ProviderConfig":
         if (
             self.context_window_tokens is not None
-            and self.output_reserve_tokens >= self.context_window_tokens
+            and self.max_output_tokens is not None
+            and self.max_output_tokens >= self.context_window_tokens
         ):
             raise ValueError(
-                "output_reserve_tokens must be smaller than context_window_tokens."
+                "max_output_tokens must be smaller than context_window_tokens."
+            )
+        reserved = {
+            "max_tokens",
+            "max_completion_tokens",
+            "max_output_tokens",
+            "thinking_token_budget",
+        }
+        conflicts = sorted(
+            reserved.intersection(self.extra_request_args)
+            | reserved.intersection(self.extra_body)
+        )
+        if conflicts:
+            raise ValueError(
+                "Provider-managed request fields cannot be set through "
+                "extra_request_args or extra_body: " + ", ".join(conflicts)
             )
         return self
 

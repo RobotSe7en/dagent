@@ -155,6 +155,7 @@ class ContextSummary(BaseModel):
     output_truncated: bool = False
     reasoning: str = ""
     usage: ModelTokenUsage | None = None
+    model_call: ModelCallMetadata | None = None
     context_usage: ContextUsage | None = None
 
 
@@ -163,7 +164,7 @@ class ConversationState(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     id: str = Field(default_factory=lambda: f"conversation_{uuid4().hex}")
     revision: int = Field(default=0, ge=0)
     summary: ContextSummary | None = None

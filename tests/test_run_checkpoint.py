@@ -43,8 +43,8 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     assert restored.plan.runtime_kind == "tool"
     assert restored.plan.capability_ids == ()
     assert restored.plan.skill_ids == ()
-    assert restored.schema_version == 7
-    assert restored.plan.schema_version == 7
+    assert restored.schema_version == 8
+    assert restored.plan.schema_version == 8
     assert restored.plan.max_steps == 888
     assert "max_tool_steps" not in restored.plan.model_dump(mode="json")
     assert "max_dag_cycles" not in restored.plan.model_dump(mode="json")
@@ -69,7 +69,7 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     legacy = checkpoint.model_dump(mode="json")
     legacy["schema_version"] = 3
     legacy["plan"]["schema_version"] = 3
-    with pytest.raises(ValidationError, match="Input should be 7"):
+    with pytest.raises(ValidationError, match="Input should be 8"):
         dagent.RunCheckpoint.model_validate(legacy)
 
     copied_plan = restored.plan.model_copy(update={"max_steps": 99})
@@ -81,8 +81,8 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
         )
 
 
-@pytest.mark.parametrize("schema_version", [4, 5, 6])
-def test_checkpoint_rejects_pre_v7_payloads(tmp_path, schema_version: int) -> None:
+@pytest.mark.parametrize("schema_version", [4, 5, 6, 7])
+def test_checkpoint_rejects_pre_v8_payloads(tmp_path, schema_version: int) -> None:
     runner = dagent.Runner(
         runtime_directory=".runtime",
         workspace=tmp_path,
@@ -99,7 +99,7 @@ def test_checkpoint_rejects_pre_v7_payloads(tmp_path, schema_version: int) -> No
     payload["plan"]["schema_version"] = schema_version
     payload["plan"]["fingerprint"] = ""
 
-    with pytest.raises(ValidationError, match="Input should be 7"):
+    with pytest.raises(ValidationError, match="Input should be 8"):
         dagent.RunCheckpoint.model_validate(payload)
 
 
@@ -262,7 +262,7 @@ def test_checkpoint_resume_keeps_context_limits_across_multiple_review_gates(
         ]
     )
     provider.context_window_tokens = 16384
-    provider.output_reserve_tokens = 2048
+    provider.max_output_tokens = 2048
     runner = dagent.Runner(
         runtime_directory=".runtime",
         workspace=tmp_path,
@@ -279,11 +279,11 @@ def test_checkpoint_resume_keeps_context_limits_across_multiple_review_gates(
     assert first.requires_review
     assert first.checkpoint is not None
     assert first.checkpoint.plan.context_window_tokens == 16384
-    assert first.checkpoint.plan.output_reserve_tokens == 2048
+    assert first.checkpoint.plan.max_output_tokens == 2048
     assert first.checkpoint.plan.runtime_directory == ".runtime"
 
     provider.context_window_tokens = 4096
-    provider.output_reserve_tokens = 512
+    provider.max_output_tokens = 512
     second = run(
         runner.resume(
             first.review.approve(),  # type: ignore[union-attr]
@@ -294,7 +294,7 @@ def test_checkpoint_resume_keeps_context_limits_across_multiple_review_gates(
     assert second.requires_review
     assert second.checkpoint is not None
     assert second.checkpoint.plan.context_window_tokens == 16384
-    assert second.checkpoint.plan.output_reserve_tokens == 2048
+    assert second.checkpoint.plan.max_output_tokens == 2048
     assert second.checkpoint.plan.runtime_directory == ".runtime"
     runner.close()
 

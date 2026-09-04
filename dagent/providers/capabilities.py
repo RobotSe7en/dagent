@@ -16,7 +16,12 @@ class ProtocolCapabilities(BaseModel):
     endpoint: CapabilitySupport = "unknown"
     reasoning: CapabilitySupport = "unknown"
     reasoning_effort: CapabilitySupport = "unknown"
-    reasoning_budget: CapabilitySupport = "unknown"
+    output_limit: CapabilitySupport = "unknown"
+    output_limit_field: Literal[
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+    ] | None = None
     tools: CapabilitySupport = "unknown"
     streaming: CapabilitySupport = "unknown"
     structured_output: CapabilitySupport = "unknown"
