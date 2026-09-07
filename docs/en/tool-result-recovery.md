@@ -74,11 +74,13 @@ runtime event callback (`capability.result.storage_warning` in `Runner.stream`),
 retains the actual execution status, and allows bounded
 model display to continue. Received text may remain inline beyond the normal
 threshold in this degraded case. It does not rerun the tool. Failure to store a
-required binary value or artifact instead raises a result-storage error and
-blocks dependent execution; the original execution result is retained on the
-exception. A failed DAG result returns `checkpoint=None`. Its serializable audit
+required binary value or artifact instead stops execution. DAG runs return a
+failed result; Tool runs raise public `dagent.RunExecutionError` with a failed
+`exc.result`, or emit `run.failed` with `event.data.result` when streaming.
+These failure results expose `checkpoint=None`. Their serializable trace audit
 retains execution status and marks any omitted in-memory binary value in
 `retention.unavailable_fields`; that marker is not a recovery reference.
+See [failure auditing](results-streaming-review.md#audit-a-tool-execution-failure).
 
 MCP retention covers what the SDK actually receives. It cannot restore content
 already discarded by a remote server or infer remote completeness. No remote

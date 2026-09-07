@@ -252,3 +252,34 @@ async for event in runner.stream(agent, input="准备答案。"):
 `output_value`；静态 run 中它是 `DAGSpec.output` 的精确解析值，而 `output_text` 保持
 兼容 rendering。`RunStreamEvent.model_validate(...)` 会恢复同样的 typed event payload，
 并根据 envelope `type` 保留精确 data class，即使多个 event payload 的字段完全相同。
+
+### 审计 Tool 执行失败
+
+必需结果存储失败会立即停止 Tool 执行，包括审核恢复路径。
+`Runner.run()` 和 `Runner.resume()` 抛出公共异常
+`dagent.RunExecutionError`，其 `result` 是失败的 `RunResult`；
+原始存储异常保留在 `__cause__` 中供诊断。
+
+```python
+try:
+    result = await runner.run(agent, input="生成报告")
+except dagent.RunExecutionError as exc:
+    audit = exc.result.model_dump(mode="json")
+```
+
+`Runner.stream()` 和 `Runner.resume_stream()` 则发出唯一终态事件
+`run.failed`。`event.data.result` 携带同样的失败快照；原有的
+`message`、`error_type` 保留，`error_type="ResultStorageError"`。
+无法形成快照的其他错误仍使用 `result=None`。
+
+通过失败调用的 `trace` 条目读取调用参数和 `CapabilityResult`。
+执行状态与存储失败独立：工具已完成时，
+`capability_execution.result.status="completed"`，但调用 trace 和运行状态为失败。
+`retention.storage_warnings` 标明失败字段和 I/O 错误，
+`retention.unavailable_fields` 标明省略的二进制数据。
+快照用于审计，不能作为可续跑的模型会话。
+
+`result.checkpoint` 和 `runner.run_checkpoint(result.run_id)` 均为 `None`。
+SDK 不会重试工具，也不会在此失败后调用结果验证模型。
+宿主负责审计持久化和 Workspace 发布；工具已产生的副作用不会回滚。
+流处理示例见 `examples/streaming.py`。

@@ -284,3 +284,34 @@ static runs this is the exact resolved `DAGSpec.output`, while `output_text`
 keeps the compatibility rendering. `RunStreamEvent.model_validate(...)` restores
 the same typed event payload and uses the envelope `type` to preserve the exact
 data class even when multiple event payloads have identical fields.
+
+### Audit a Tool execution failure
+
+Required result-storage failures stop Tool execution immediately, including
+review continuations. `Runner.run()` and `Runner.resume()` raise the public
+`dagent.RunExecutionError`; its `result` is a failed `RunResult`. The original
+storage exception is preserved as `__cause__` for diagnostics.
+
+```python
+try:
+    result = await runner.run(agent, input="Generate the report")
+except dagent.RunExecutionError as exc:
+    audit = exc.result.model_dump(mode="json")
+```
+
+`Runner.stream()` and `Runner.resume_stream()` instead emit one terminal
+`run.failed` event. `event.data.result` contains the same failure snapshot;
+`message` and `error_type` remain available, with `error_type="ResultStorageError"`.
+Other errors without a snapshot leave `result=None`.
+
+Read the failed call's `trace` entry for its invocation and `CapabilityResult`.
+Execution status is preserved independently of storage failure: a tool that
+completed still has `capability_execution.result.status="completed"`, while its
+trace node and run are failed. `retention.storage_warnings` identifies the failed
+field and I/O error; `retention.unavailable_fields` marks omitted binary data.
+The snapshot is audit data, not a resumable model conversation.
+
+Both `result.checkpoint` and `runner.run_checkpoint(result.run_id)` are `None`.
+The SDK does not retry the tool or invoke validation after this failure. Host
+applications own audit persistence and Workspace publication; completed tool
+side effects are not rolled back. See `examples/streaming.py` for stream handling.

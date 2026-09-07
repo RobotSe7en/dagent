@@ -19,6 +19,7 @@ from dagent.capabilities.sandbox_context import current_run_execution
 from dagent.capabilities.workspace import current_workspace_root
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
+    ToolResultStorageFailure,
     LoopEventHandler,
     TokenHandler,
 )
@@ -305,7 +306,28 @@ class HarnessRuntime:
                     audit_items.append(feedback_item)
                 if loop_outcome is not None:
                     set_run_steering_phase(loop_outcome.state.run_id, "active")
-                loop_outcome = await run_once(feedback_item)
+                try:
+                    next_outcome = await run_once(feedback_item)
+                except ToolResultStorageFailure as exc:
+                    failed = exc.outcome
+                    failed_state = failed.state.model_copy(update={
+                        "context_usage": [
+                            *run_context_usages, *validation_usages,
+                            *failed.state.context_usage,
+                        ],
+                    })
+                    if (
+                        loop_outcome is not None
+                        and loop_outcome.state.trace is not None
+                        and failed_state.trace is not None
+                    ):
+                        failed_state.trace = loop_outcome.state.trace.merge(failed_state.trace)
+                    exc.outcome = failed.model_copy(update={
+                        "state": failed_state,
+                        "new_items": (*audit_items, *failed.new_items),
+                    })
+                    raise
+                loop_outcome = next_outcome
                 audit_items.extend(loop_outcome.new_items)
                 applied_steers.extend(
                     _applied_steers(loop_outcome.new_items, loop_outcome.state.run_id)
@@ -461,11 +483,17 @@ class HarnessRuntime:
             )
             return next_outcome
 
-        outcome = await self._run_with_review_and_validation(
-            user_request,
-            run_once=run_once,
-            on_event=on_event,
-        )
+        failure: ToolResultStorageFailure | None = None
+        try:
+            outcome = await self._run_with_review_and_validation(
+                user_request,
+                run_once=run_once,
+                on_event=on_event,
+            )
+        except ToolResultStorageFailure as exc:
+            failure = exc
+            outcome = exc.outcome
+
         if route_item is not None or route_usage is not None:
             state = outcome.state.model_copy(
                 update={
@@ -489,6 +517,9 @@ class HarnessRuntime:
         outcome = outcome.model_copy(
             update={"new_items": (input_item, *outcome.new_items)}
         )
+        if failure is not None:
+            failure.outcome = outcome
+            raise failure
         return self._finish_loop_outcome(
             outcome,
             user_request,
