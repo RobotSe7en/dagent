@@ -84,7 +84,10 @@ async def main():
                 comparison = await explicit.chat(second["messages"], tools=second["tools"])
                 assert "acceptance-value-42" in comparison.content
                 assert transport.bodies[2]["messages"] == second["messages"]
+                latest = next(m for m in reversed(result.conversation.items)
+                              if isinstance(m, dagent.AssistantMessage))
                 print(json.dumps({"accepted": True, "model": config.model,
+                    "request_reasoning": latest.model_call.request_reasoning.model_dump(mode="json"),
                     "generation_requests": len(transport.bodies),
                     "replayed_items": len(replayed),
                     "replayed_characters": sum(map(len, replayed)),

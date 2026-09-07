@@ -251,3 +251,46 @@ Provide the test credential through `API_KEY`; the example prints counts and
 validation results, not reasoning, requests, or credentials. Each generation
 has a 1024-token output limit and retries are disabled. Failure stops the check;
 a truncated generation is a failed check, not a reason to retry automatically.
+
+## Observe reasoning carried by a request
+
+`ContextUsage.replayed_reasoning_items` / `replayed_reasoning_tokens` retain
+their existing meaning: reasoning retained in the internal context projection.
+The `omitted_reasoning_*` fields count projection omissions. Neither proves
+that a Chat field was serialized. Historical counters are not redefined.
+
+Since 0.9.11, `AssistantMessage.model_call.request_reasoning` (also available
+on compaction model-call metadata) reports text from the final serialized HTTP
+request, after `extra_request_args` and `extra_body` overrides:
+
+| Field | Meaning |
+| --- | --- |
+| `resolved_field` | Provider mapping: `reasoning`, `reasoning_content`, or `omit`. |
+| `serialized_fields` | Actual nonempty text fields; `("omit",)` when absent. Both Chat fields can be listed if a raw override supplies both. |
+| `serialized_items` | Number of nonempty assistant reasoning fields, or Responses reasoning input items with text. |
+| `serialized_characters` | Sum of Unicode code points after JSON decoding; excludes JSON escapes/wrappers and is not a token count. |
+| `omission_reasons` | Context or serialization omissions; multiple reasons may coexist. |
+
+Reasons are `policy_none`, `outside_active_run`, `context_budget`,
+`explicit_omit`, `auto_unsupported`, `request_override`, and
+`no_reasoning_available`. Context reasons describe the projection supplied to
+the provider; raw overrides may subsequently supply different content.
+Responses counts text in reasoning `content` and `summary`, once per item;
+`reasoning.effort`, encrypted data, and generated response reasoning are excluded.
+An empty reasoning string contributes zero.
+
+```python
+for item in result.conversation.items:
+    if isinstance(item, dagent.AssistantMessage) and item.model_call:
+        observation = item.model_call.request_reasoning
+        if observation is not None:
+            print(observation.model_dump(mode="json"))
+```
+
+`RequestReasoning` lives in `dagent.schemas.context`; it is not a package-root
+export. Missing metadata means **unknown**, including old saved records and
+providers that do not instrument their requests. It does not mean zero sent.
+The summary travels with normal response metadata, including the final stream
+result; it is not a separate failed-request or transport-attempt log. It adds
+no reasoning text, complete request, or credentials to logs or persistence.
+It establishes only what the request carried, not what the server used.

@@ -8,6 +8,17 @@
 
 ## Unreleased
 
+### 最终请求推理可观测性
+
+- `ModelCallMetadata.request_reasoning` 新增可选类型化摘要，统计最终 HTTP 请求的
+  推理字段、条数、字符数及省略原因。原 `ContextUsage` 推理计数保持内部投影语义。
+- 旧数据加载时 `request_reasoning=None`，表示未知而非零。沿用可选字段扩展契约：
+  Checkpoint V8、RunState V5、ConversationState V4 不变，不转换或回填历史数据。
+- 严格校验持久化或流式嵌套元数据的宿主，读取新数据前须接受新增字段或升级 SDK
+  与解析器；不保证旧 SDK 能读取新记录。应协调消费者升级，避免回滚后用旧解析器
+  读取新数据。不新增推理正文、完整请求或凭据日志。
+
+
 ### DeepSeek 推理字段映射
 
 - Chat `auto` 对已确认的官方 DeepSeek V4 端点和模型发送 `reasoning_content`。

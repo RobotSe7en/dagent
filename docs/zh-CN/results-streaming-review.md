@@ -283,3 +283,6 @@ except dagent.RunExecutionError as exc:
 SDK 不会重试工具，也不会在此失败后调用结果验证模型。
 宿主负责审计持久化和 Workspace 发布；工具已产生的副作用不会回滚。
 流处理示例见 `examples/streaming.py`。
+
+内部投影计数与最终 HTTP 请求推理统计的区别，详见
+[请求推理可观测性](model-context-and-reasoning.md#观察请求实际携带的推理)。

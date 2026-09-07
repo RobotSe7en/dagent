@@ -87,6 +87,7 @@ class ContextUsage(BaseModel):
     model_context_window_tokens: int | None = Field(default=None, ge=1)
     configured_context_limit: int | None = Field(default=None, ge=1)
     reasoning_replay_mode: ReasoningReplayMode = "active_run"
+    # These are context-projection statistics, not final HTTP serialization counts.
     replayed_reasoning_items: int = Field(default=0, ge=0)
     replayed_reasoning_tokens: int = Field(default=0, ge=0)
     omitted_reasoning_items: int = Field(default=0, ge=0)
@@ -114,6 +115,24 @@ class ModelTokenUsage(BaseModel):
         return self
 
 
+ReasoningOmissionReason: TypeAlias = Literal[
+    "policy_none", "outside_active_run", "context_budget", "explicit_omit",
+    "auto_unsupported", "request_override", "no_reasoning_available",
+]
+
+
+class RequestReasoning(BaseModel):
+    """Text reasoning carried by a serialized request, not server-side usage."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    resolved_field: Literal["reasoning", "reasoning_content", "omit"]
+    serialized_fields: tuple[Literal["reasoning", "reasoning_content", "omit"], ...]
+    serialized_items: int = Field(ge=0)
+    serialized_characters: int = Field(ge=0)
+    omission_reasons: tuple[ReasoningOmissionReason, ...] = ()
+
+
 class ModelCallMetadata(BaseModel):
     """Resolved protocol and reasoning controls for one provider call."""
 
@@ -132,6 +151,8 @@ class ModelCallMetadata(BaseModel):
     ] | None = None
     ignored_parameters: tuple[str, ...] = ()
     fallback_reason: str | None = None
+    # None means unobserved (including old persisted records), never zero sent.
+    request_reasoning: RequestReasoning | None = None
 
 
 class ContextWindowExceeded(RuntimeError):
@@ -150,5 +171,6 @@ __all__ = [
     "ModelTokenUsage",
     "ReasoningEffort",
     "ReasoningReplayMode",
+    "RequestReasoning",
     "ResultStoragePolicy",
 ]

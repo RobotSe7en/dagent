@@ -15,7 +15,9 @@ from dagent.providers.base import (
     ToolCall,
     separate_reasoning_tags,
 )
-from dagent.schemas.context import ModelCallMetadata, ModelTokenUsage, ReasoningEffort
+from dagent.schemas.context import (
+    ModelCallMetadata, ModelTokenUsage, ReasoningEffort, ReasoningOmissionReason,
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,8 @@ class ModelRequest:
     inherit_provider_max_output_tokens: bool = True
     reasoning_effort: ReasoningEffort | None = None
     purpose: Literal["generation", "compaction"] = "generation"
+    # Context-only audit provenance; never serialized into provider input.
+    reasoning_omission_reasons: tuple[ReasoningOmissionReason, ...] = ()
 
 
 @dataclass(frozen=True)

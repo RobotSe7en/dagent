@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from tests.provider_fakes import RawResponseEndpoint
 from openai import AsyncOpenAI
 
 from dagent.config import ProviderConfig
@@ -81,7 +82,7 @@ def _openapi(*, responses_output: bool = True, tokenize: bool = True) -> dict:
     }
 
 
-class _Completions:
+class _Completions(RawResponseEndpoint):
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
@@ -119,7 +120,7 @@ class _Completions:
         )
 
 
-class _Responses:
+class _Responses(RawResponseEndpoint):
     def __init__(self, *, error: Exception | None = None) -> None:
         self.calls: list[dict] = []
         self.error = error

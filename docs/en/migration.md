@@ -9,6 +9,20 @@ The current package version is `0.9.10a0`.
 
 ## Unreleased
 
+### Final-request reasoning observability
+
+- `ModelCallMetadata.request_reasoning` is a new optional typed summary of
+  final HTTP request reasoning fields, item/character counts and omission reasons.
+  Existing `ContextUsage` reasoning counters keep their projection semantics.
+- Old records load with `request_reasoning=None` (unknown, not zero). This uses
+  the existing optional-field extension policy: Checkpoint V8, RunState V5 and
+  ConversationState V4 remain unchanged. No conversion or historical backfill.
+- Hosts that strictly validate persisted or streamed nested metadata must accept
+  this field or upgrade their SDK/parser before reading new records. New records
+  are not guaranteed to load in older SDKs; coordinate consumer upgrades and
+  avoid rollback readers on new data. No extra reasoning/body/credential logging.
+
+
 ### DeepSeek replay mapping
 
 - Chat `auto` now sends `reasoning_content` for recognized official DeepSeek V4

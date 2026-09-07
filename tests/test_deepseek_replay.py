@@ -107,9 +107,20 @@ async def test_run_tool_exchange_serializes_reasoning(tmp_path, mode, field, exp
             if stream:
                 events = [event async for event in runner.stream(agent, input="Look up the value.")]
                 assert events[-1].type == "run.finished"
+                result = events[-1].data.result
             else:
                 result = await runner.run(agent, input="Look up the value.")
                 assert result.output_text == "done"
+            latest = next(m for m in reversed(result.conversation.items)
+                          if isinstance(m, dagent.AssistantMessage))
+            observation = latest.model_call.request_reasoning
+            assert observation.serialized_items == int(expected is not None)
+            assert observation.serialized_characters == (len(reasoning) if expected else 0)
+            assert result.context_usage[-1].replayed_reasoning_items == int(mode != "none")
+            if mode == "none":
+                assert observation.omission_reasons == ("policy_none",)
+            restored = dagent.RunCheckpoint.model_validate_json(result.checkpoint.model_dump_json())
+            assert restored == result.checkpoint
         finally:
             runner.close()
     assert len(bodies) == 2
@@ -152,7 +163,8 @@ async def test_active_run_does_not_serialize_other_runs():
             base_url="https://api.deepseek.com", model="deepseek-v4-flash",
             protocol="chat_completions"), client=client)
         provider._capabilities = capabilities()
-        await provider.complete(prepared.request)
+        response = await provider.complete(prepared.request)
+        assert response.metadata.request_reasoning.omission_reasons == ("outside_active_run",)
     assistants = [m for m in bodies[0]["messages"] if m["role"] == "assistant"]
     assert "reasoning_content" not in assistants[0]
     assert assistants[1]["reasoning_content"] == "PLAIN"
