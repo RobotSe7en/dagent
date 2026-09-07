@@ -12,7 +12,7 @@ from dagent.capabilities.tools.registry import ToolRegistry, ToolOutput
 from dagent.capabilities.tools.output_capture import collect_output
 
 
-SHELL_OUTPUT_MAX_LINES = 200
+SHELL_OUTPUT_MAX_LINES = 2000
 SHELL_OUTPUT_MAX_BYTES = 100_000
 SHELL_TRUNCATION_HEADER = "[TRUNCATED] output exceeded limits; showing tail\n"
 SHELL_TERMINATION_GRACE_SECONDS = 0.5

@@ -18,12 +18,14 @@ from pydantic import (
 
 from dagent.profiles import AgentProfile
 from dagent.schemas.common import (
+    Boundary,
+    RiskLevel,
     validate_extra_system_prompt,
     validate_runtime_directory,
 )
 from dagent.schemas.dag import DAG, DAGSpec
 from dagent.schemas.artifact import ArtifactFileManifest
-from dagent.schemas.capability import CapabilityInvocation
+from dagent.schemas.capability import CapabilityInvocation, CapabilityResult
 from dagent.schemas.run_trace import RunTrace
 from dagent.schemas.sandbox import RunExecution
 from dagent.schemas.context import (
@@ -33,6 +35,9 @@ from dagent.schemas.context import (
     ResultStoragePolicy,
 )
 from dagent.schemas.conversation import (
+    AssistantMessage,
+    ToolCallItem,
+    ToolResultMessage,
     ConversationItem,
     ConversationState,
 )
@@ -94,7 +99,7 @@ class ResolvedRunPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[8] = 8
+    schema_version: Literal[9] = 9
     runtime_kind: RunStateKind
     tool_profile: AgentProfile
     planner_profile: AgentProfile
@@ -247,6 +252,27 @@ class PendingCapabilityCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class PendingCapabilityReviewItem(PendingCapabilityCall):
+    """One review requirement, independent of its single/batch presentation."""
+
+    message: str = ""
+    risk: RiskLevel = "low"
+    reason: Literal["risk", "boundary_violation"] = "risk"
+    boundary_paths: tuple[str, ...] = ()
+    error: str | None = None
+
+    def single_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"capability_id": self.capability_id, "risk": self.risk}
+        if self.reason == "boundary_violation":
+            payload.update(reason=self.reason, error=self.error, boundary_paths=list(self.boundary_paths))
+        return payload
+
+    def call(self) -> PendingCapabilityCall:
+        return PendingCapabilityCall(**self.model_dump(include={
+            "invocation_id", "capability_id", "tool_name", "arguments",
+        }))
+
+
 class PendingReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -257,16 +283,88 @@ class PendingReview(BaseModel):
     proposed_dag_spec: DAGSpec | None = None
     rerun_nodes: tuple[str, ...] = ()
     capability_call: PendingCapabilityCall | None = None
+    capability_calls: tuple[PendingCapabilityReviewItem, ...] = ()
+    queued_call_count: int = Field(default=0, ge=0)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def capability_items(self) -> tuple[PendingCapabilityReviewItem, ...]:
+        if self.capability_call is None:
+            return self.capability_calls
+        return (PendingCapabilityReviewItem(
+            **self.capability_call.model_dump(), message=self.message,
+            risk=self.payload.get("risk", "low"),
+            reason=self.payload.get("reason", "risk"),
+            boundary_paths=self.payload.get("boundary_paths", ()),
+            error=self.payload.get("error"),
+        ),)
 
     @model_validator(mode="after")
     def validate_review_payload(self) -> "PendingReview":
-        if self.kind == "capability_review" and self.capability_call is None:
-            raise ValueError("Capability reviews require capability_call.")
-        if self.kind == "capability_review" and self.rerun_nodes:
-            raise ValueError("Capability reviews cannot request DAG node reruns.")
+        if self.kind == "capability_review":
+            if (self.capability_call is not None) == bool(self.capability_calls):
+                raise ValueError("Capability reviews require exactly one single or batch presentation.")
+            if self.capability_calls and len(self.capability_calls) < 2:
+                raise ValueError("Batch capability reviews require at least two calls.")
+            ids = [item.invocation_id for item in self.capability_items]
+            if len(ids) != len(set(ids)):
+                raise ValueError("Capability review invocation ids must be unique.")
+            if self.rerun_nodes:
+                raise ValueError("Capability reviews cannot request DAG node reruns.")
+        elif self.capability_call is not None or self.capability_calls:
+            raise ValueError("DAG reviews cannot contain capability calls.")
         if len(set(self.rerun_nodes)) != len(self.rerun_nodes):
             raise ValueError("Pending review rerun_nodes must be unique.")
+        return self
+
+
+class _PendingToolCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    call: ToolCallItem
+    invocation: CapabilityInvocation | None = None
+    review: PendingCapabilityReviewItem | None = None
+    error: str | None = None
+    error_result: CapabilityResult | None = None
+    approved: bool | None = None
+    feedback: str | None = None
+    started: bool = False
+
+    @model_validator(mode="after")
+    def validate_call(self) -> "_PendingToolCall":
+        invocation = self.invocation
+        if invocation is None:
+            if self.error is None or self.review is not None or self.approved is not None:
+                raise ValueError("Unresolved tool calls require a preflight error and cannot be approved.")
+            return self
+        if invocation.invocation_id != self.call.id or invocation.arguments != self.call.arguments:
+            raise ValueError("Pending tool call and invocation do not match.")
+        if self.review is not None and (
+            self.review.call() != PendingCapabilityCall(
+                invocation_id=self.call.id, capability_id=invocation.capability_id,
+                tool_name=self.call.name, arguments=self.call.arguments,
+            )
+        ):
+            raise ValueError("Pending capability review does not match its invocation.")
+        if self.approved is not None and self.review is None:
+            raise ValueError("Only reviewed tool calls can carry a decision.")
+        return self
+
+
+class _PendingToolBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    calls: tuple[_PendingToolCall, ...]
+    next_index: int = Field(default=0, ge=0)
+    boundary: Boundary
+
+    @model_validator(mode="after")
+    def validate_batch(self) -> "_PendingToolBatch":
+        ids = [item.call.id for item in self.calls]
+        if not ids or len(ids) != len(set(ids)):
+            raise ValueError("Pending tool batch requires unique call ids.")
+        if self.next_index >= len(self.calls):
+            raise ValueError("Pending tool batch cursor is outside its calls.")
         return self
 
 
@@ -286,7 +384,7 @@ class RunState(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[5] = 5
+    schema_version: Literal[6] = 6
     run_id: str
     kind: RunStateKind
     status: LoopStatus
@@ -297,7 +395,7 @@ class RunState(BaseModel):
     dag_spec: DAGSpec | None = None
     trace: RunTrace | None = None
     pending_review: PendingReview | None = None
-    pending_invocation: CapabilityInvocation | None = None
+    pending_tool_batch: _PendingToolBatch | None = None
     user_request: str = ""
     review_level: ReviewLevelValue = "fast"
     runtime_mode: RuntimeModeValue = "auto"
@@ -345,7 +443,7 @@ class RunCheckpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[8] = 8
+    schema_version: Literal[9] = 9
     state: RunState
     plan: ResolvedRunPlan
     usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
@@ -355,7 +453,7 @@ class RunCheckpoint(BaseModel):
         self.plan.validate_fingerprint()
         if self.schema_version != self.plan.schema_version:
             raise ValueError("Checkpoint schema version does not match the resolved run plan.")
-        expected_state_version = 5
+        expected_state_version = 6
         if self.state.schema_version != expected_state_version:
             raise ValueError(
                 f"Checkpoint V{self.schema_version} requires RunState V{expected_state_version}."
@@ -388,53 +486,47 @@ class RunCheckpoint(BaseModel):
         if self.state.capability_scope.skills != self.plan.skill_ids:
             raise ValueError("Checkpoint skill scope does not match the resolved run plan.")
         pending_review = self.state.pending_review
-        pending_invocation = self.state.pending_invocation
         if (self.state.status == "awaiting_review") != (pending_review is not None):
-            raise ValueError(
-                "Checkpoint awaiting_review status and pending review must agree."
-            )
-        if pending_review is not None and pending_review.kind == "capability_review":
-            pending_call = pending_review.capability_call
-            if pending_call is None or pending_invocation is None:
-                raise ValueError(
-                    "Capability review checkpoints require a pending invocation."
-                )
-            if (
-                pending_call.invocation_id != pending_invocation.invocation_id
-                or pending_call.capability_id != pending_invocation.capability_id
-                or pending_call.arguments != pending_invocation.arguments
-            ):
-                raise ValueError(
-                    "Checkpoint pending capability call and invocation do not match."
-                )
-            if pending_invocation.capability_id not in self.plan.capability_ids:
-                raise ValueError(
-                    "Checkpoint pending capability is outside the resolved scope."
-                )
-        elif pending_invocation is not None:
-            raise ValueError(
-                "Checkpoint pending invocation requires a capability review."
-            )
+            raise ValueError("Checkpoint awaiting_review status and pending review must agree.")
         continuation = self.state.static_agent_continuation
+        tool_state = self.state
         if continuation is not None:
-            child = continuation.agent_state
+            tool_state = continuation.agent_state
             if (
                 self.state.kind != "static_dag"
-                or child.status != "awaiting_review"
-                or child.pending_review != pending_review
-                or child.pending_invocation != pending_invocation
+                or tool_state.status != "awaiting_review"
+                or tool_state.pending_review != pending_review
+                or self.state.pending_tool_batch is not None
             ):
-                raise ValueError(
-                    "Static agent continuation does not match its mirrored review state."
-                )
+                raise ValueError("Static agent continuation does not match its mirrored review state.")
             if continuation.invocation.capability_id not in self.plan.capability_ids:
-                raise ValueError(
-                    "Static agent continuation is outside the resolved scope."
-                )
+                raise ValueError("Static agent continuation is outside the resolved scope.")
         elif self.state.kind == "static_dag" and pending_review is not None:
-            raise ValueError(
-                "Static DAG capability reviews require a static agent continuation."
-            )
+            raise ValueError("Static DAG capability reviews require a static agent continuation.")
+        batch = tool_state.pending_tool_batch
+        if pending_review is not None and pending_review.kind == "capability_review":
+            if batch is None:
+                raise ValueError("Capability review checkpoints require a pending tool batch.")
+            expected = tuple(item.review for item in batch.calls[batch.next_index:]
+                             if item.review is not None and item.approved is None)
+            if pending_review.capability_items != expected:
+                raise ValueError("Checkpoint pending capability calls and batch do not match.")
+            scope = (self.plan.capability_ids if continuation is None
+                     else tool_state.capability_scope.capability_ids)
+            for item in batch.calls:
+                if item.invocation is not None and scope is not None and item.invocation.capability_id not in scope:
+                    raise ValueError("Checkpoint pending capability is outside the resolved scope.")
+            thread = tool_state.model_thread or tool_state.conversation
+            assistant = next((item for item in reversed(thread.items if thread else ())
+                              if isinstance(item, AssistantMessage)), None)
+            if assistant is None or assistant.tool_calls != tuple(item.call for item in batch.calls):
+                raise ValueError("Checkpoint tool batch does not match its model reply.")
+            results = [item.call_id for item in (thread.items if thread else ())
+                       if isinstance(item, ToolResultMessage) and item.call_id in {c.call.id for c in batch.calls}]
+            if results != [item.call.id for item in batch.calls[:batch.next_index]]:
+                raise ValueError("Checkpoint tool results do not match its batch cursor.")
+        elif batch is not None:
+            raise ValueError("Pending tool batch requires a capability review.")
         return self
 
 

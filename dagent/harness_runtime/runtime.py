@@ -6,6 +6,8 @@ It does not know how loops execute internally; it only consumes LoopOutcome.
 
 from __future__ import annotations
 
+from dagent.review import CapabilityReviewDecision
+
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping
 import hashlib
 import mimetypes
@@ -539,7 +541,8 @@ class HarnessRuntime:
         *,
         run_state: RunState | None = None,
         dag: DAG | None = None,
-        approved: bool = True,
+        approved: bool | None = True,
+        capability_decisions: tuple[CapabilityReviewDecision, ...] = (),
         review_level: ReviewLevel | None = None,
         feedback: str | None = None,
         on_token: TokenHandler | None = None,
@@ -559,6 +562,7 @@ class HarnessRuntime:
             outcome = await self.dag_agent.loop.resume_static_review(
                 state,
                 approved=approved,
+                capability_decisions=capability_decisions,
                 feedback=feedback,
                 on_token=on_token,
                 on_event=on_event,
@@ -579,6 +583,7 @@ class HarnessRuntime:
                 initial_outcome = await self.tool_agent.resume_review(
                     state,
                     approved=approved,
+                    capability_decisions=capability_decisions,
                     feedback=feedback,
                     on_token=on_token,
                     on_event=on_event,
@@ -913,7 +918,7 @@ class HarnessRuntime:
             "execution": current_run_execution(),
             "capability_scope": capability_scope_to_state(capability_scope),
             "pending_review": outcome.state.pending_review,
-            "pending_invocation": outcome.state.pending_invocation,
+            "pending_tool_batch": outcome.state.pending_tool_batch,
         }
         # Low-level callers may invoke loops under a sandbox context without
         # providing a run workspace. Preserve the mounted capability workspace

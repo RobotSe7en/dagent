@@ -45,7 +45,7 @@ from dagent.harness_runtime import (
 from dagent.profiles import AgentProfile, ProfileStore, list_builtin_profiles, load_builtin_profile
 from dagent.providers import Provider
 from dagent.result import RunExecutionError, RunResult, RunStreamEvent
-from dagent.review import ReviewDecision, ReviewHandle, ReviewLevel
+from dagent.review import CapabilityReviewDecision, ReviewDecision, ReviewHandle, ReviewLevel
 from dagent.runner import Runner
 from dagent.steering import (
     RunNotActiveError,
@@ -174,6 +174,7 @@ __all__ = [
     "ResolvedRunPlan",
     "ResultStoragePolicy",
     "ReviewLevel",
+    "CapabilityReviewDecision",
     "ReviewDecision",
     "ReviewHandle",
     "RiskLevel",

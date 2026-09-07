@@ -1,6 +1,6 @@
 """Unified harness runtime package."""
 
-from dagent.harness_runtime.tool_agent import ToolAgent, ToolAgentLoop, ControlToolResult
+from dagent.harness_runtime.tool_agent import ToolAgent, ToolAgentLoop
 from dagent.harness_runtime.dag_executor import (
     DAGExecutionError,
     DAGExecutor,
@@ -32,7 +32,6 @@ from dagent.schemas import (
 __all__ = [
     "ToolAgentLoop",
     "ToolAgent",
-    "ControlToolResult",
     "DAGCreationError",
     "DAGInputValidationError",
     "ArtifactUpload",

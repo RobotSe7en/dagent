@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from dagent.review import ReviewLevel
+from dagent.review import CapabilityReviewDecision, ReviewLevel
 from dagent.schemas import CapabilityInvocation, RunState, RunTrace
 
 
@@ -15,12 +15,13 @@ class StaticAgentExecutionControl:
     review_level: ReviewLevel
     agent_state: RunState | None = None
     node_id: str | None = None
-    approved: bool = True
+    approved: bool | None = True
+    capability_decisions: tuple[CapabilityReviewDecision, ...] = ()
     feedback: str | None = None
 
     def for_node(self, *, resume: bool) -> "StaticAgentExecutionControl":
         """Return control for a node, retaining state only for its resume."""
-        return self if resume else replace(self, agent_state=None, feedback=None)
+        return self if resume else replace(self, agent_state=None, feedback=None, capability_decisions=())
 
 
 class StaticAgentReviewRequired(RuntimeError):

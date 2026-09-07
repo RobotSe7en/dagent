@@ -4945,3 +4945,24 @@ def _walk_trace(trace_or_node: dict):
         node = stack.pop(0)
         yield node
         stack[0:0] = node.get("children", [])
+
+
+def test_api_in_memory_batch_review_rejects_incomplete_decision_then_resumes(tmp_path):
+    state.runner = Runner(workspace=tmp_path, runtime_directory=".runtime", provider=MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id=str(i), name="tool_write_file", arguments={"path": f"{i}.txt", "content": str(i)}) for i in range(2)]),
+        ChatResponse(content="done"),
+    ]))
+    client = TestClient(app)
+    first = client.post("/messages/stream", json=_message_request("write", target="tool", review_level="careful", capability_ids=["tool.write_file"]))
+    result = _stream_result(_sse_events(first.text)[-1])
+    pending = result["state"]["pending_review"]
+    base = {"review_id": pending["review_id"], "run_id": result["state"]["run_id"]}
+    assert client.post("/messages/resume", json={**base, "capability_decisions": [{"invocation_id": "0", "approved": True}]}).status_code == 422
+    second = client.post("/messages/resume", json={**base, "capability_decisions": [
+        {"invocation_id": "0", "approved": True}, {"invocation_id": "1", "approved": False},
+    ]})
+    events = _sse_events(second.text)
+    assert _stream_result(events[-1])["state"]["status"] == "completed"
+    assert [(event["type"], event["data"]["invocation_id"]) for event in events if event["type"] in {"capability.call.completed", "capability.call.failed"}] == [
+        ("capability.call.completed", "0"), ("capability.call.failed", "1"),
+    ]

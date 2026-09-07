@@ -128,7 +128,10 @@ def write_file(path: str | Path, content: str) -> str:
     return f"Wrote {len(data)} bytes to {resolved}."
 
 
-def edit_file(path: str | Path, old_string: str, new_string: str) -> str:
+def edit_file(path: str | Path, old_string: str, new_string: str, *,
+              replace_all: bool = False) -> str:
+    if not isinstance(replace_all, bool):
+        raise TypeError("replace_all must be a boolean.")
     if not old_string:
         raise ValueError("old_string must not be empty.")
     if old_string == new_string:
@@ -141,20 +144,24 @@ def edit_file(path: str | Path, old_string: str, new_string: str) -> str:
             raise ValueError(
                 f"old_string was not found in {resolved}. Read the file and copy the exact text."
             )
-        if count > 1:
+        if count > 1 and not replace_all:
             raise ValueError(
                 f"old_string matched {count} locations in {resolved}; "
                 "include more surrounding context to make it unique."
             )
 
         first_line = text.count("\n", 0, text.index(old_string)) + 1
-        updated = text.replace(old_string, new_string, 1)
+        updated = text.replace(old_string, new_string, -1 if replace_all else 1)
         data = updated.encode("utf-8")
         if had_bom:
             data = codecs.BOM_UTF8 + data
         _atomic_write(resolved, data)
 
-    summary = f"Edited {resolved}: 1 replacement at line {first_line}."
+    summary = (
+        f"Edited {resolved}: 1 replacement at line {first_line}."
+        if count == 1
+        else f"Edited {resolved}: {count} replacements; first at line {first_line}."
+    )
     diff = _unified_diff_excerpt(text, updated, path=resolved)
     return f"{summary}\n{diff}" if diff else summary
 
@@ -586,9 +593,10 @@ def register_file_tools(registry: ToolRegistry) -> None:
         path_args=("path",),
         risk="medium",
         description=(
-            "Replace one exact text occurrence in a UTF-8 file. "
-            "old_string must match the file content exactly once; "
-            "read the file first and include enough surrounding context to make it unique."
+            "Replace exact text in a UTF-8 file, preserving line endings and BOM. "
+            "By default old_string must match exactly once; read the file and add context "
+            "to make it unique. Set replace_all=true to replace every non-overlapping "
+            "occurrence. Matching includes exact line endings."
         ),
         parameters={
             "type": "object",
@@ -596,11 +604,16 @@ def register_file_tools(registry: ToolRegistry) -> None:
                 "path": {"type": "string", "description": "File path to edit."},
                 "old_string": {
                     "type": "string",
-                    "description": "Exact existing text to replace; must be unique in the file.",
+                    "description": "Exact existing text; must be unique unless replace_all is true.",
                 },
                 "new_string": {
                     "type": "string",
                     "description": "Replacement text.",
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Replace all non-overlapping exact matches (default false).",
                 },
             },
             "required": ["path", "old_string", "new_string"],

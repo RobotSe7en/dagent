@@ -1083,3 +1083,49 @@ def test_list_files_fails_on_non_directory(tmp_path: Path) -> None:
 
     assert result.status == "failed"
     assert "is not a directory" in (result.error or "")
+
+
+@pytest.mark.parametrize("content,old,new,expected,count", [
+    (b"x x x\n", "x", "xx", b"xx xx xx\n", 3),
+    (b"x\r\nx\nx\r\n", "x", "", b"\r\n\n\r\n", 3),
+    (b"\xef\xbb\xbfold\r\nold\r\n", "old\r\n", "new\r\n", b"\xef\xbb\xbfnew\r\nnew\r\n", 2),
+    (b"aaaaa", "aa", "b", b"bba", 2),
+])
+def test_edit_file_replace_all_is_exact_nonrecursive_and_preserves_bytes(tmp_path, content, old, new, expected, count):
+    target = tmp_path / "replace.txt"
+    target.write_bytes(content)
+    result = execute(make_executor(tmp_path), "edit_file", {
+        "path": "replace.txt", "old_string": old, "new_string": new, "replace_all": True,
+    }, boundary=Boundary(allowed_paths=["."]))
+    assert result.status == "completed"
+    assert f"{count} replacements" in result.content
+    assert target.read_bytes() == expected
+
+
+@pytest.mark.parametrize("args", [
+    {"old_string": "missing", "new_string": "x", "replace_all": True},
+    {"old_string": "x\n", "new_string": "y\n", "replace_all": True},
+    {"old_string": "", "new_string": "x", "replace_all": True},
+    {"old_string": "x", "new_string": "x", "replace_all": True},
+    {"old_string": "x", "new_string": "y", "replace_all": "false"},
+])
+def test_edit_file_replace_all_rejects_invalid_request_without_mutating(tmp_path, args):
+    target = tmp_path / "replace.txt"
+    target.write_bytes(b"x\r\nx\r\n")
+    result = execute(make_executor(tmp_path), "edit_file", {"path": "replace.txt", **args}, boundary=Boundary(allowed_paths=["."]))
+    assert result.status == "failed"
+    assert target.read_bytes() == b"x\r\nx\r\n"
+
+
+def test_shell_preview_default_is_2000_lines_with_independent_byte_cap():
+    from dagent.capabilities.tools.shell_tools import _tail_truncate
+    exactly = "\n".join(f"line{i}" for i in range(2000))
+    assert _tail_truncate(exactly) == exactly
+    oversized = _tail_truncate(exactly + "\nline2000")
+    assert oversized.startswith("[TRUNCATED]")
+    assert "\nline0\n" not in oversized
+    assert len(oversized.splitlines()) == 2001  # 2000 preview lines plus the marker.
+    assert oversized.endswith("line2000")
+    wide = _tail_truncate(("长" * 200 + "\n") * 1000)
+    assert len(wide.encode("utf-8")) <= 100_000
+    assert "\ufffd" not in wide

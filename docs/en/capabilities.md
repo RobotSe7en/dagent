@@ -40,10 +40,10 @@ remain enforced at either level.
 | --- | --- | --- |
 | `tool.read_file` | low | Read a UTF-8 text window. Line `offset` is one-based; `offset_chars` is zero-based Unicode code points. Follow the returned display cursor first and do not mix units. Limits: 2000 lines / 200,000 bytes. `[SOURCE_TRUNCATED]` marks source pagination; `[TRUNCATED]` in model display marks budget shortening. Exact window text preserves line endings and excludes an initial UTF-8 BOM; binary files fail. |
 | `tool.write_file` | medium | Write UTF-8 text to a file, creating parent directories. New files follow the process umask, replacement writes preserve the existing file mode, and replacement writes detach the target path from any hardlinked siblings. Returns the byte count written. |
-| `tool.edit_file` | medium | Replace one exact occurrence of `old_string` with `new_string`. The match must be unique and byte-for-byte after UTF-8 decoding: zero matches and ambiguous matches fail with instructions to read the file and add surrounding context. Existing line endings and a UTF-8 BOM are preserved; the result includes a short unified diff. |
+| `tool.edit_file` | medium | Replace exact occurrences of `old_string` with `new_string`. With `replace_all=False` (default), the match must be unique. `replace_all=True` replaces every non-overlapping match in the original text and reports the count. Matching is exact after UTF-8 decoding, including line endings; zero matches always fail. Existing line endings and a UTF-8 BOM are preserved; the result includes a short unified diff. |
 | `tool.list_files` | low | List files and directories under a path (directories end with `/`), up to `depth` levels (default 3). With `glob` (e.g. `*.py`) it lists matching files only. Output stops after 500 entries; the structured result value is the shown entry list, so DAG map nodes can fan out over it. |
 | `tool.grep` | low | Search files with Python regular-expression syntax and an optional `glob` filename filter. Delegates to ripgrep with compatible flags when `rg` is on `PATH` (argv invocation, never a shell) and falls back to a pure-Python scan otherwise. Project ignore files are not applied; built-in heavy directory exclusions are applied in both backends. Output is `file:line:content`, capped at 200 matches. |
-| `tool.shell` | high | Run a shell command in a bounded working directory with a 30s default timeout. Dangerous patterns are hard-blocked, the working directory must exist, explicit shell path arguments are checked against the boundary, and oversized output keeps the tail (200 lines / 100 KB) under a `[TRUNCATED]` header. A timeout terminates the command's process group, including children in pipelines, drains its output, and returns a terminal `timed out after ... seconds` error. |
+| `tool.shell` | high | Run a shell command in a bounded working directory with a 30s default timeout. Dangerous patterns are hard-blocked, the working directory must exist, explicit shell path arguments are checked against the boundary, and oversized output keeps the tail (2000 lines / 100 KB) under a `[TRUNCATED]` header. A timeout terminates the command's process group, including children in pipelines, drains its output, and returns a terminal `timed out after ... seconds` error. |
 
 Each capability has three names. `id` is the stable execution identity used in
 scopes, traces, reviews, and DAG invocation payloads. `name` is the LLM-visible
@@ -56,6 +56,24 @@ underscores; when `display_name` is omitted, it defaults to `name`.
 read result can be passed to `tool_edit_file` as `old_string` unchanged. The
 intended editing flow is: read the file, copy the exact text to change, then
 call `tool_edit_file` with enough surrounding context to make the match unique.
+
+The shell limit is a **preview** limit: 2000 lines and 100,000 bytes, whichever
+binds first, plus the existing truncation marker within the byte budget. Output
+capture separately uses `ResultStoragePolicy.max_shell_output_bytes` (64 MiB by
+default). Model display still obeys `ContextPolicy.max_tool_result_tokens` (2048
+by default). Follow the stored-result reference with `read_file` for more output.
+
+For exact replacement of every occurrence:
+
+```python
+# Arguments for tool.edit_file; omit replace_all for the original unique-match behavior.
+arguments = {"path": "notes.txt", "old_string": "draft", "new_string": "ready", "replace_all": True}
+```
+
+An empty `old_string`, identical strings, missing matches, or a non-boolean
+`replace_all` fail without changing the file. LF and CRLF remain distinct. This
+adds no read-before-write/version policy. See the runnable
+[batch review example](../../examples/batch_tool_review.py).
 
 ## Sandbox Execution
 

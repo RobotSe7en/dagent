@@ -480,12 +480,27 @@ export interface CapabilityCallPayload {
   arguments: Record<string, unknown>;
 }
 
+export interface CapabilityReviewDecision {
+  invocation_id: string;
+  approved: boolean;
+}
+
+export interface CapabilityReviewItem extends CapabilityCallPayload {
+  message: string;
+  risk: RiskLevel;
+  reason: 'risk' | 'boundary_violation';
+  boundary_paths: string[];
+  error?: string | null;
+}
+
 export interface ReviewEventPayload {
   review_id: string;
   kind: 'initial_dag' | 'dag_replan' | 'capability_review';
   message: string;
   proposed_dag?: Dag | null;
   capability_call?: CapabilityCallPayload;
+  capability_calls?: CapabilityReviewItem[];
+  queued_call_count?: number;
   payload?: Record<string, unknown>;
 }
 

@@ -43,8 +43,8 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     assert restored.plan.runtime_kind == "tool"
     assert restored.plan.capability_ids == ()
     assert restored.plan.skill_ids == ()
-    assert restored.schema_version == 8
-    assert restored.plan.schema_version == 8
+    assert restored.schema_version == 9
+    assert restored.plan.schema_version == 9
     assert restored.plan.max_steps == 888
     assert "max_tool_steps" not in restored.plan.model_dump(mode="json")
     assert "max_dag_cycles" not in restored.plan.model_dump(mode="json")
@@ -69,7 +69,7 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
     legacy = checkpoint.model_dump(mode="json")
     legacy["schema_version"] = 3
     legacy["plan"]["schema_version"] = 3
-    with pytest.raises(ValidationError, match="Input should be 8"):
+    with pytest.raises(ValidationError, match="Input should be 9"):
         dagent.RunCheckpoint.model_validate(legacy)
 
     copied_plan = restored.plan.model_copy(update={"max_steps": 99})
@@ -81,8 +81,8 @@ def test_runner_result_exposes_round_trippable_checkpoint(tmp_path) -> None:
         )
 
 
-@pytest.mark.parametrize("schema_version", [4, 5, 6, 7])
-def test_checkpoint_rejects_pre_v8_payloads(tmp_path, schema_version: int) -> None:
+@pytest.mark.parametrize("schema_version", [4, 5, 6, 7, 8])
+def test_checkpoint_rejects_pre_v9_payloads(tmp_path, schema_version: int) -> None:
     runner = dagent.Runner(
         runtime_directory=".runtime",
         workspace=tmp_path,
@@ -99,7 +99,7 @@ def test_checkpoint_rejects_pre_v8_payloads(tmp_path, schema_version: int) -> No
     payload["plan"]["schema_version"] = schema_version
     payload["plan"]["fingerprint"] = ""
 
-    with pytest.raises(ValidationError, match="Input should be 8"):
+    with pytest.raises(ValidationError, match="Input should be 9"):
         dagent.RunCheckpoint.model_validate(payload)
 
 
@@ -140,10 +140,15 @@ def test_checkpoint_rejects_pending_capability_outside_plan_scope(tmp_path) -> N
     assert first.checkpoint is not None
 
     payload = first.checkpoint.model_dump(mode="json")
-    payload["state"]["pending_invocation"]["capability_id"] = "tool.outside"
+    queued = payload["state"]["pending_tool_batch"]["calls"][0]
+    queued["invocation"]["capability_id"] = "tool.outside"
+    queued["call"]["name"] = "tool_outside"
+    queued["review"]["capability_id"] = "tool.outside"
+    queued["review"]["tool_name"] = "tool_outside"
     capability_call = payload["state"]["pending_review"]["capability_call"]
     capability_call["capability_id"] = "tool.outside"
     capability_call["tool_name"] = "tool_outside"
+    payload["state"]["pending_review"]["payload"]["capability_id"] = "tool.outside"
 
     with pytest.raises(ValidationError, match="outside the resolved scope"):
         dagent.RunCheckpoint.model_validate(payload)

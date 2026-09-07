@@ -9,6 +9,37 @@ The current package version is `0.9.11`.
 
 ## Unreleased
 
+### Batch tool review and editing
+
+- `tool.edit_file` adds optional `replace_all=False`. Explicit `True` replaces
+  all non-overlapping exact matches; default unique-match, newline and BOM
+  behavior stays unchanged. The capability id is unchanged.
+- Shell previews now retain up to 2000 lines instead of 200, still capped at
+  100,000 bytes. Capture/storage and model token budgets are unchanged.
+- Tool rounds preflight before any execution and wait as a whole when review is
+  needed. Unreviewed siblings are saved rather than marked skipped. Rejection or
+  an ordinary failure does not stop subsequent calls; required storage failures
+  and cancellation still stop execution.
+- Existing single-review payloads and `approve/reject` helpers remain supported.
+  Hosts must accept the new batch `capability_calls` field and optionally submit
+  typed `CapabilityReviewDecision` entries through `capability_decisions`.
+  Whole-batch decisions and per-call decisions are mutually exclusive. Rejected
+  calls now emit `capability.call.failed` rather than a successful result event.
+- **Checkpoint break:** new checkpoints and resolved plans use V9; RunState uses
+  V6 with `pending_tool_batch` replacing `pending_invocation`. ConversationState
+  remains V4. Complete pending runs before upgrading. V8/older checkpoints are
+  rejected without conversion; use the original SDK to finish them or start a
+  new run. The edit-tool schema also changes its frozen capability fingerprint.
+- Upgrade SDK and API/WebUI consumers together. Historical conversation data is
+  not rewritten. Persistence remains JSON-backed; no new database columns are
+  required. Cross-process review claiming remains the host's responsibility.
+- Verification covers mixed decisions, full-round waiting, restart/cursor
+  recovery, boundary rechecks, static Agent nodes, file-byte preservation, shell
+  limits, API persistence, WebUI selection and full-argument inspection. Real
+  Docker tests depend on a Docker daemon; the feature adds no nested-DAG review
+  support or cross-node review aggregation.
+
+
 ## 0.9.11
 
 ### File windows and display budgets

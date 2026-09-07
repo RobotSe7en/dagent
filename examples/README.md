@@ -10,6 +10,7 @@ credentials.
 
 | Example | Demonstrates | Related docs |
 | --- | --- | --- |
+| `batch_tool_review.py` | Exact replace-all editing, mixed batch review, saved-queue resume and shell execution | [Capabilities](../docs/en/capabilities.md), [Review](../docs/en/results-streaming-review.md) |
 | `deepseek_replay.py` | Opt-in, bounded official DeepSeek tool-replay acceptance using synthetic data. | [Model context and reasoning](../docs/en/model-context-and-reasoning.md#deepseek-chat-tool-replay) |
 | `tool_result_recovery.py` | Recover a saved report, distinguish received/displayed file windows and cursors, page through searches, and retain shell logs offline. | [Tool result recovery](../docs/en/tool-result-recovery.md) |
 | `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/en/agents.md), [Capabilities](../docs/en/capabilities.md) |
