@@ -5,9 +5,9 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.11`.
+The current package version is `0.9.12`.
 
-## Unreleased
+## 0.9.12
 
 ### Batch tool review and editing
 
@@ -38,6 +38,16 @@ The current package version is `0.9.11`.
   limits, API persistence, WebUI selection and full-argument inspection. Real
   Docker tests depend on a Docker daemon; the feature adds no nested-DAG review
   support or cross-node review aggregation.
+
+
+### Release verification and upgrade
+
+- Install with `pip install --upgrade dagent-ai==0.9.12`. Complete old pending
+  runs using the original SDK before upgrading; old checkpoints cannot resume
+  on this release. Upgrade API/WebUI consumers alongside the SDK.
+- Verification: 1,279 Python tests passed (3 skipped), 128 web tests passed,
+  the production web build and whitespace checks passed. Browser review
+  interactions and the batch-review example were also verified.
 
 
 ## 0.9.11

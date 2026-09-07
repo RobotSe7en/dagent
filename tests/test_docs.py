@@ -15,7 +15,7 @@ def test_migration_notes_record_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.7.6")
+    english_096 = _section(english, "## 0.9.6", "## 0.9.5")
     english_076 = _section(english, "## 0.7.6", "## 0.7.5")
     english_075 = _section(english, "## 0.7.5", "## 0.7.4")
     english_074 = _section(english, "## 0.7.4", "## 0.7.3")
@@ -30,7 +30,7 @@ def test_migration_notes_record_release_history() -> None:
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.6")
+    chinese_096 = _section(chinese, "## 0.9.6", "## 0.9.5")
     chinese_076 = _section(chinese, "## 0.7.6", "## 0.7.5")
     chinese_075 = _section(chinese, "## 0.7.5", "## 0.7.4")
     chinese_074 = _section(chinese, "## 0.7.4", "## 0.7.3")
@@ -47,10 +47,10 @@ def test_migration_notes_record_release_history() -> None:
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
     collapsed_english_076 = _collapsed(english_076)
-    assert "one agent-owned execution bound" in english_unreleased
-    assert "New checkpoints use schema V6" in english_unreleased
-    assert "invocation-level `max_steps`" in english_unreleased
-    assert "explicitly pinned" in english_unreleased
+    assert "one agent-owned execution bound" in english_096
+    assert "New checkpoints use schema V6" in english_096
+    assert "invocation-level `max_steps`" in english_096
+    assert "explicitly pinned" in english_096
     assert "`Runtime Context` system-prompt section" in collapsed_english_076
     assert "resolved managed run workspace" in collapsed_english_076
     assert "Profile contents remain immutable" in collapsed_english_076
@@ -71,7 +71,7 @@ def test_migration_notes_record_release_history() -> None:
     assert "ResolvedRunPlan" in english_071
     assert "ExecutionLimits" in english_071
     assert "checkpoint=..." in english_071
-    assert "inherit_local_tools=True" not in english_unreleased
+    assert "inherit_local_tools=True" not in english_096
     assert "inherit_local_tools=True" in english_070
     assert "exclude_local_tool_ids" in english_070
     assert "caller-supplied Run IDs" in english_070
@@ -98,12 +98,12 @@ def test_migration_notes_record_release_history() -> None:
     assert "orchestration drafts are stored through the API persistence layer" not in english_063
     assert "Capability definitions now separate stable ids from call names" in english_released
     assert "Runner.add_tools is now atomic" in english_released
-    assert "Capability definitions now separate stable ids from call names" not in english_unreleased
+    assert "Capability definitions now separate stable ids from call names" not in english_096
     collapsed_chinese_076 = _collapsed(chinese_076)
-    assert "由 Agent 拥有单一执行上限" in chinese_unreleased
-    assert "新 checkpoint 使用 schema V6" in chinese_unreleased
-    assert "调用级 `max_steps`" in _collapsed(chinese_unreleased)
-    assert "显式固定" in chinese_unreleased
+    assert "由 Agent 拥有单一执行上限" in chinese_096
+    assert "新 checkpoint 使用 schema V6" in chinese_096
+    assert "调用级 `max_steps`" in _collapsed(chinese_096)
+    assert "显式固定" in chinese_096
     assert "动态 `Runtime Context` 段" in collapsed_chinese_076
     assert "managed run workspace" in collapsed_chinese_076
     assert "Profile 内容保持不可变" in collapsed_chinese_076
@@ -124,7 +124,7 @@ def test_migration_notes_record_release_history() -> None:
     assert "ResolvedRunPlan" in chinese_071
     assert "ExecutionLimits" in chinese_071
     assert "checkpoint=..." in chinese_071
-    assert "inherit_local_tools=True" not in chinese_unreleased
+    assert "inherit_local_tools=True" not in chinese_096
     assert "inherit_local_tools=True" in chinese_070
     assert "exclude_local_tool_ids" in chinese_070
     assert "调用方提供的 Run ID" in chinese_070
@@ -150,7 +150,7 @@ def test_migration_notes_record_release_history() -> None:
     assert "编排 draft 已通过 API 持久化层保存" not in chinese_063
     assert "Capability definitions 现在把稳定 id 和调用名分开" in chinese_released
     assert "Runner.add_tools 现在是原子的" in chinese_released
-    assert "Capability definitions 现在把稳定 id 和调用名分开" not in chinese_unreleased
+    assert "Capability definitions 现在把稳定 id 和调用名分开" not in chinese_096
 
 
 def test_070_docs_describe_library_boundary_and_removed_process_api() -> None:
