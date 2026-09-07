@@ -3586,7 +3586,14 @@ def test_interrupted_auto_capability_review_rejection_clears_pending_review_and_
             message="Review capability call: tool.read_file",
             capability_call=pending_call,
         ),
-        pending_invocation=invocation,
+        pending_tool_batch={
+            "boundary": invocation.boundary,
+            "calls": [{
+                "call": {"id": invocation.invocation_id, "name": "tool_read_file", "arguments": invocation.arguments},
+                "invocation": invocation,
+                "review": {**pending_call.model_dump(), "message": "Review capability call: tool.read_file"},
+            }],
+        },
         user_request="read outside",
         review_level="careful",
         runtime_mode="auto",
@@ -3698,7 +3705,7 @@ def test_interrupted_auto_capability_review_rejection_clears_pending_review_and_
     assert stored_state is not None
     assert stored_state.status == "failed"
     assert stored_state.pending_review is None
-    assert stored_state.pending_invocation is None
+    assert stored_state.pending_tool_batch is None
     assert stored_review is not None
     assert stored_review.status == "resolved"
     assert len(messages) == 1
@@ -3781,7 +3788,7 @@ def test_auto_capability_review_rejection_is_persisted_before_resume_stream_body
     assert stored_state is not None
     assert stored_state.status == "failed"
     assert stored_state.pending_review is None
-    assert stored_state.pending_invocation is None
+    assert stored_state.pending_tool_batch is None
     assert stored_review is not None
     assert stored_review.status == "resolved"
     assert stored_checkpoint is None
@@ -3801,3 +3808,61 @@ def _sse_events(text: str) -> list[dict[str, object]]:
         assert line.startswith("data: ")
         events.append(json.loads(line.removeprefix("data: ")))
     return events
+
+
+@pytest.mark.parametrize("project_scoped", [False, True])
+def test_batch_review_persists_mixed_decisions_and_restarts_without_replay(persistence_client, project_scoped):
+    provider = MockProvider([ChatResponse(tool_calls=[
+        ToolCall(id="inspect", name="tool_read_file", arguments={"path": "source.txt"}),
+        *(ToolCall(id=f"write_{i}", name="tool_write_file", arguments={"path": f"file{i}.txt", "content": str(i)}) for i in range(3)),
+    ])])
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=provider)
+    project = (persistence_client.post("/projects", json={"name": "Batch", "slug": "batch"}).json()["project"]
+               if project_scoped else None)
+    base = f"/projects/{project['id']}" if project else ""
+    conversation = persistence_client.post(f"{base}/conversations", json={"title": "Batch review"}).json()["conversation"]
+    workspace = state.get_workspaces().local_path_for(conversation["workspace_uri"])
+    (workspace / "source.txt").write_text("source")
+    response = persistence_client.post("/messages/stream", json={
+        "input": "read and write", "target": "tool", "review_level": "careful",
+        "capability_ids": ["tool.read_file", "tool.write_file"],
+        "conversation_id": conversation["id"], **({"project_id": project["id"]} if project else {}),
+    })
+    events = _sse_events(response.text)
+    assert "result" in events[-1]["data"], events
+    result = events[-1]["data"]["result"]
+    pending = result["state"]["pending_review"]
+    review_id = pending["review_id"]
+    assert result["usage"]["capability_calls"] == 0
+    assert len(pending["capability_calls"]) == 3
+    assert all(not (workspace / f"file{i}.txt").exists() for i in range(3))
+    resume_url = f"{base}/reviews/{review_id}/resume"
+    good = [{"invocation_id": f"write_{i}", "approved": i != 1} for i in range(3)]
+    for invalid in [
+        {"capability_decisions": good[:1]},
+        {"capability_decisions": [good[0], good[0], good[2]]},
+        {"capability_decisions": [*good[:2], {"invocation_id": "unknown", "approved": True}]},
+        {"capability_decisions": good, "approved": True},
+    ]:
+        failed = persistence_client.post(resume_url, json=invalid)
+        assert failed.status_code == 422, failed.text
+        assert state.get_store().get_review(review_id).status == "pending"
+        assert all(not (workspace / f"file{i}.txt").exists() for i in range(3))
+    state.close_runner()
+    state.runner = Runner(workspace=".dagent", runtime_directory=".runtime", provider=MockProvider([ChatResponse(content="done")]))
+    resumed = persistence_client.post(resume_url, json={"capability_decisions": good, "feedback": "Skip the second write."})
+    assert resumed.status_code == 200
+    resumed_events = _sse_events(resumed.text)
+    final = resumed_events[-1]["data"]["result"]
+    assert final["state"]["status"] == "completed"
+    assert final["usage"]["capability_calls"] == 3
+    assert (workspace / "file0.txt").read_text() == "0"
+    assert not (workspace / "file1.txt").exists()
+    assert (workspace / "file2.txt").read_text() == "2"
+    review = state.get_store().get_review(review_id)
+    assert review.status == "resolved"
+    assert json.loads(review.decision_json)["capability_decisions"] == good
+    messages = persistence_client.get(f"{base}/conversations/{conversation['id']}/messages").json()["messages"]
+    statuses = {item["event"]["invocation_id"]: item["status"] for item in messages[-1]["timeline"] if item["type"] == "capability"}
+    assert statuses == {"inspect": "completed", "write_0": "completed", "write_1": "rejected", "write_2": "completed"}
+    assert persistence_client.post(resume_url, json={"capability_decisions": good}).status_code == 409

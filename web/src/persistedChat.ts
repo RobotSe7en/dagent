@@ -1,3 +1,4 @@
+import { capabilityReviewCalls } from './capabilityReview';
 import type { ApiRunEvent, ApiRunResult, ApiRunState, StreamEnvelope } from './api';
 import { dispatchStreamEnvelope, mapRunTrace } from './api';
 import type {
@@ -350,9 +351,13 @@ function settleRejectedCapabilityReviews(
 ): MessageTimelineItem[] {
   let next = timeline;
   for (const review of reviews) {
-    const invocationId = review.capability_call?.invocation_id;
-    if (!invocationId || capabilityCallHasResult(next, invocationId)) continue;
-    next = appendCapabilityReviewDecisionTimeline(next, review, false);
+    const undecided = capabilityReviewCalls(review).filter((call) => !capabilityCallHasResult(next, call.invocation_id));
+    if (!undecided.length) continue;
+    const decisions = capabilityReviewCalls(review).map((call) => ({
+      invocation_id: call.invocation_id,
+      approved: !undecided.some((item) => item.invocation_id === call.invocation_id),
+    }));
+    next = appendCapabilityReviewDecisionTimeline(next, review, decisions);
   }
   return next;
 }

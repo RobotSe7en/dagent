@@ -138,7 +138,7 @@ const {
   processTimelineSummary,
   shouldCollapseProcessTimeline,
   upsertDagMessageTimeline,
-} = await importTypeScript('../src/chatTimeline.ts');
+} = await importTypeScriptModule('../src/chatTimeline.ts', ['../src/chatTimeline.ts', '../src/capabilityReview.ts']);
 const {
   responseDeltaPayload,
   runStartedPayload,
@@ -810,6 +810,7 @@ test('api helpers send agent preset and single-input chat request bodies', async
   const { createAgent, listRunEvents, streamTask, updateAgent } = await importTypeScriptModule('../src/api.ts', [
     '../src/agentScope.ts',
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
   ]);
@@ -914,6 +915,7 @@ test('api helper lists persisted conversation messages for standalone and projec
   const { listConversationMessages } = await importTypeScriptModule('../src/api.ts', [
     '../src/agentScope.ts',
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
   ]);
@@ -962,6 +964,7 @@ test('saved DAG api helpers preserve metadata and layout', async () => {
   const { listSavedDags, saveSavedDag } = await importTypeScriptModule('../src/api.ts', [
     '../src/agentScope.ts',
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
   ]);
@@ -1069,6 +1072,7 @@ test('orchestration history api helpers use expected endpoints', async () => {
   } = await importTypeScriptModule('../src/api.ts', [
     '../src/agentScope.ts',
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
   ]);
@@ -1595,7 +1599,7 @@ assert.match(appSource, /const resumeStaticCapabilityReview = async[\s\S]*resume
 assert.match(appSource, /selectStaticRunHistory[\s\S]*pending_review\?\.kind === 'capability_review'[\s\S]*showStaticCapabilityReview\(nextState\.pending_review/);
 assert.match(appSource, /selectStaticRunHistory[\s\S]*selectedRun\?\.conversation_id[\s\S]*legacyConversation/);
 assert.match(appSource, /resumeStaticCapabilityReview[\s\S]*catch \(exc\)[\s\S]*setCapabilityReview\(review\);[\s\S]*setStaticCapabilityReviewContext\(context\);/);
-assert.match(appSource, /const confirmCapabilityReview = async[\s\S]*if \(staticCapabilityReviewContext\) \{[\s\S]*await resumeStaticCapabilityReview\(approved\);/);
+assert.match(appSource, /const confirmCapabilityReview = async[\s\S]*if \(staticCapabilityReviewContext\) \{[\s\S]*await resumeStaticCapabilityReview\(selection\);/);
   assert.match(apiSource, /export async function runSavedDagStream/);
   assert.match(apiSource, /\/saved-dags\/\$\{encodeURIComponent\(savedDagId\)\}\/run\/stream/);
   assert.doesNotMatch(apiSource.match(/export async function runSavedDagStream[\s\S]*?\n\}/)?.[0] ?? '', /conversation_id|project_id/);
@@ -2679,6 +2683,7 @@ test('capability review rejection settles the running tool card', () => {
 test('stream parser preserves capability review tool name', async () => {
   const { streamTask } = await importTypeScriptModule('../src/api.ts', [
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/agentScope.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
@@ -2722,6 +2727,7 @@ test('stream parser preserves capability review tool name', async () => {
 test('stream parser rejects capability review payloads without tool name', async () => {
   const { streamTask } = await importTypeScriptModule('../src/api.ts', [
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/agentScope.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
@@ -2932,6 +2938,7 @@ test('persisted conversation hydration rebuilds one assistant turn with capabili
     '../src/persistedChat.ts',
     '../src/chatTimeline.ts',
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/agentScope.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
@@ -3018,6 +3025,7 @@ test('persisted conversation hydration appends run finished answer after replaye
     '../src/persistedChat.ts',
     '../src/chatTimeline.ts',
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/agentScope.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
@@ -3071,6 +3079,7 @@ test('persisted dynamic DAG hydration uses the explicit user request', async () 
     '../src/persistedChat.ts',
     '../src/chatTimeline.ts',
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/agentScope.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
@@ -3110,6 +3119,7 @@ test('persisted dynamic DAG hydration rebuilds visible turns from stream events'
     '../src/persistedChat.ts',
     '../src/chatTimeline.ts',
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/agentScope.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
@@ -3158,6 +3168,7 @@ test('persisted dynamic DAG hydration merges approved review resume into the ori
     '../src/persistedChat.ts',
     '../src/chatTimeline.ts',
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/agentScope.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
@@ -3310,6 +3321,7 @@ test('project conversation deletion uses the project-scoped route', async () => 
   const { deleteProjectConversation } = await importTypeScriptModule('../src/api.ts', [
     '../src/agentScope.ts',
     '../src/api.ts',
+    '../src/capabilityReview.ts',
     '../src/dagArtifacts.ts',
     '../src/streamProtocol.ts',
   ]);
@@ -3622,8 +3634,8 @@ test('rejected review actions display as rejected instead of running', async () 
   assert.match(resumeDagSource, /status: approved \? 'running' : 'rejected'/);
   assert.match(resumeDagSource, /const rejectedDag = \{ \.\.\.dag, status: 'rejected' as const \};/);
   assert.match(resumeDagSource, /attachDagToLastAssistant\(rejectedDag\);/);
-  assert.match(resumeCapabilitySource, /status: approved \? 'running' : 'rejected'/);
-  assert.match(resumeCapabilitySource, /appendCapabilityReviewDecisionTimeline\(message\.timeline, capabilityReview, approved, feedback\)/);
+  assert.match(resumeCapabilitySource, /status: 'running'/);
+  assert.match(resumeCapabilitySource, /appendCapabilityReviewDecisionTimeline\(message\.timeline, capabilityReview, selection, feedback\)/);
   assert.match(css, /\.trace-row\.rejected \.trace-icon/);
   assert.match(css, /\.status-badge\[data-status="rejected"\]/);
 });
@@ -5007,4 +5019,58 @@ test('conversation review hydration only restores the latest pending assistant r
   assert.equal(latestPendingReviewFromApiConversationMessages([
     { role: 'assistant', status: 'completed', pending_review: review },
   ]), null);
+});
+
+const {
+  capabilityReviewCalls, capabilityDecisionBody, completeCapabilityDecisions,
+} = await importTypeScript('../src/capabilityReview.ts');
+
+function batchReviewFixture() {
+  return {
+    review_id: 'review_batch', kind: 'capability_review', message: 'Review three calls',
+    capability_calls: [0, 1, 2].map((index) => ({
+      invocation_id: `call_${index}`, capability_id: 'tool.write_file', tool_name: 'tool_write_file',
+      arguments: { path: `${index}.txt`, content: String(index) }, risk: 'medium', reason: 'risk',
+      message: 'Review write', boundary_paths: [],
+    })),
+  };
+}
+
+test('batch review requires an explicit decision for every call and retains call order', () => {
+  const review = batchReviewFixture();
+  assert.equal(completeCapabilityDecisions(review, {}), null);
+  assert.equal(completeCapabilityDecisions(review, {call_0: true, call_2: false}), null);
+  const choices = {call_2: true, call_0: true, call_1: false};
+  const decisions = completeCapabilityDecisions(review, choices);
+  assert.deepEqual(decisions, [
+    {invocation_id: 'call_0', approved: true},
+    {invocation_id: 'call_1', approved: false},
+    {invocation_id: 'call_2', approved: true},
+  ]);
+  assert.deepEqual(capabilityDecisionBody(decisions), {capability_decisions: decisions});
+  assert.deepEqual(capabilityDecisionBody(false), {approved: false});
+  assert.deepEqual(choices, {call_2: true, call_0: true, call_1: false});
+});
+
+test('single review keeps its released payload and uses the same choice interface', () => {
+  const review = {
+    review_id: 'single', kind: 'capability_review', message: 'Review boundary',
+    capability_call: {invocation_id: 'one', capability_id: 'tool.read_file', tool_name: 'tool_read_file', arguments: {path: '../secret'}},
+    payload: {risk: 'low', reason: 'boundary_violation', boundary_paths: ['../secret'], error: 'outside'},
+  };
+  assert.equal(capabilityReviewCalls(review)[0].reason, 'boundary_violation');
+  assert.deepEqual(completeCapabilityDecisions(review, {one: false}), [{invocation_id: 'one', approved: false}]);
+});
+
+test('mixed batch review updates every denied timeline item and does not mark approved calls rejected', () => {
+  const review = batchReviewFixture();
+  const timeline = review.capability_calls.map((call) => ({
+    type: 'capability', status: 'awaiting_review', event: {type: 'capability.call.started', ...call},
+  }));
+  const decisions = completeCapabilityDecisions(review, {call_0: false, call_1: true, call_2: false});
+  const result = appendCapabilityReviewDecisionTimeline(timeline, review, decisions, 'Skip these two.');
+  assert.deepEqual(result.map((item) => item.status), ['rejected', 'awaiting_review', 'rejected']);
+  assert.equal(result[1].result, undefined);
+  assert.match(result[2].result.content, /Skip these two/);
+  assert.equal(timeline[0].result, undefined);
 });

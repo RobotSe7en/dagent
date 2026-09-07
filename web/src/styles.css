@@ -9943,3 +9943,9 @@ pre.readonly-field {
   color: var(--text-muted);
   background: var(--bg-raised);
 }
+
+.capability-review-item { border: 1px solid var(--border-color, #d5d9e0); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+.capability-review-item-heading { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.capability-review-item-heading select { margin-left: auto; padding: 6px 10px; }
+.capability-review-item pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
+.capability-review-item summary { cursor: pointer; padding: 8px 0; }

@@ -499,17 +499,17 @@ dag.output = work.output
     ))
 
     assert result.output_text == "done"
-    assert result.state.schema_version == 5
+    assert result.state.schema_version == 6
     assert result.state.planner_frontend == "sdk_builder"
     assert result.plan is not None
-    assert result.plan.schema_version == 8
+    assert result.plan.schema_version == 9
     assert result.plan.max_steps == 888
     assert result.plan.runtime_directory == ".runtime"
     assert result.plan.planner_frontend == "sdk_builder"
     assert result.plan.planner_skill is not None
     assert result.plan.planner_skill.name == "generate-dag"
     assert result.checkpoint is not None
-    assert result.checkpoint.schema_version == 8
+    assert result.checkpoint.schema_version == 9
     request = provider.requests[0]
     assert request["response_format"].name == "dagent_dynamic_dag_builder_response"
     assert request["response_format"].schema == builder_planner_response_format().schema

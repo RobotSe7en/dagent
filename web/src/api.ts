@@ -1,3 +1,4 @@
+import { capabilityDecisionBody, type CapabilityReviewSelection } from './capabilityReview';
 import type {
   AgentPreset,
   AgentPresetInput,
@@ -1237,6 +1238,24 @@ function reviewPayload(data: Record<string, unknown>): ReviewEventPayload {
       arguments: isRecord(data.capability_call.arguments) ? data.capability_call.arguments : {},
     };
   }
+  if (Array.isArray(data.capability_calls) && data.capability_calls.length) {
+    payload.capability_calls = data.capability_calls.map((raw) => {
+      if (!isRecord(raw) || typeof raw.tool_name !== 'string' || !raw.tool_name.trim()
+        || typeof raw.invocation_id !== 'string' || typeof raw.capability_id !== 'string') {
+        throw new Error('Invalid batch capability review call.');
+      }
+      return {
+        invocation_id: raw.invocation_id, capability_id: raw.capability_id,
+        tool_name: raw.tool_name, arguments: isRecord(raw.arguments) ? raw.arguments : {},
+        message: String(raw.message ?? ''),
+        risk: raw.risk === 'high' || raw.risk === 'medium' ? raw.risk : 'low',
+        reason: raw.reason === 'boundary_violation' ? 'boundary_violation' : 'risk',
+        boundary_paths: Array.isArray(raw.boundary_paths) ? raw.boundary_paths.map(String) : [],
+        error: typeof raw.error === 'string' ? raw.error : null,
+      };
+    });
+  }
+  payload.queued_call_count = Number(data.queued_call_count ?? 0);
   if (isRecord(data.payload)) {
     payload.payload = data.payload;
   }
@@ -1367,7 +1386,7 @@ function clip(value: string): string {
 
 export async function resumeCapabilityReview(
   reviewId: string,
-  approved: boolean,
+  selection: CapabilityReviewSelection,
   handlers: StreamHandlers,
   runId?: string | null,
   feedback?: string,
@@ -1384,13 +1403,13 @@ export async function resumeCapabilityReview(
     : `${API_BASE}/messages/resume`;
   const body = persistedResume
     ? {
-        approved,
+        ...capabilityDecisionBody(selection),
         ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
       }
     : {
         review_id: reviewId,
         run_id: runId,
-        approved,
+        ...capabilityDecisionBody(selection),
         ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
       };
   const response = await fetch(url, {

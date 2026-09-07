@@ -1580,7 +1580,7 @@ class Runner:
             "user_request": user_request,
             "review_level": review_level,
             "pending_review": None,
-            "pending_invocation": None,
+            "pending_tool_batch": None,
         })
         state = self._runtime.session.save_run_state(state)
         self._run_checkpoints.pop(state.run_id, None)
@@ -1603,7 +1603,7 @@ class Runner:
         capability_ids = tuple(sorted(capability_ids))
         skill_ids = tuple(sorted(skill_ids))
         state = result.state.model_copy(update={
-            "schema_version": 5,
+            "schema_version": 6,
             "review_level": review_level,
             "dynamic_adjust": dynamic_adjust,
             "planner_frontend": runtime.dag_agent.loop.planner_frontend,
@@ -1624,7 +1624,7 @@ class Runner:
             else runtime.tool_agent.context_assembler
         )
         plan = ResolvedRunPlan(
-            schema_version=8,
+            schema_version=9,
             runtime_kind=state.kind,
             tool_profile=runtime.tool_agent.profile.model_copy(deep=True),
             planner_profile=runtime.dag_agent.profile.model_copy(deep=True),
@@ -1949,6 +1949,7 @@ class Runner:
                     run_state=resume_state,
                     dag=decision.dag,
                     approved=decision.approved,
+                    capability_decisions=decision.capability_decisions,
                     review_level=decision.review_level,
                     feedback=decision.feedback,
                     on_token=on_token,
@@ -1981,7 +1982,7 @@ class Runner:
             failed_update: dict[str, Any] = {
                 "status": "failed",
                 "pending_review": None,
-                "pending_invocation": None,
+                "pending_tool_batch": None,
                 "static_agent_continuation": None,
             }
             if (
@@ -2629,6 +2630,7 @@ def _decision_for_resume_state(decision: ReviewDecision, state: RunState) -> Rev
             f"resume state review_id '{pending_review.review_id}' does not match "
             f"decision review_id '{decision.review_id}'."
         )
+    decision.validate_for(pending_review)
     if (
         decision.approved
         and decision.dag is None

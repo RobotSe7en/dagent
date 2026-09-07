@@ -200,6 +200,61 @@ a changed profile or runtime setting cannot silently alter a resumed run. See
 [Static DAGs](static-dag.md#agent-node-tool-review) for the supported topology
 and policy behavior.
 
+### Review a whole tool round
+
+The runtime preflights all tool calls in one model reply before executing any of
+them. If any require review, the entire round waits, including low-risk calls.
+`review.capability_calls` lists the review requirements in model order. A single
+requirement retains `pending_review.capability_call` and `payload`; two or more
+use `pending_review.capability_calls` and leave the single-call field empty.
+Each batch item includes the invocation, risk, reason and boundary details.
+`queued_call_count` counts the other calls still waiting in the round.
+
+```python
+choices = [
+    dagent.CapabilityReviewDecision(invocation_id=call.invocation_id, approved=index != 1)
+    for index, call in enumerate(result.review.capability_calls)
+]
+resumed = await runner.resume(
+    result.review.decide(choices, feedback="Skip the second reviewed call."),
+    checkpoint=result.checkpoint,
+)
+```
+
+Every pending invocation must have exactly one decision. Missing, duplicate or
+unknown ids fail before execution and leave the review available for correction.
+`ReviewDecision.capability_decisions` and the whole-review `approved` field are
+mutually exclusive. Existing `review.approve()` / `review.reject()` and
+`ReviewDecision(review_id=..., approved=...)` still work; for a batch they decide
+all reviewed calls. `review.capability_call` remains available for single reviews.
+
+After submission, calls run in their original order. Rejected calls produce
+`denied`; ordinary errors produce `failed`; the remaining calls continue. There
+is no review-induced `skipped` result and no extra model call to reissue siblings.
+Cancellation, steering and required-result storage failures retain their stopping
+semantics. Execution rechecks boundaries: newly required authorization pauses the
+remaining queue without replaying its completed prefix. Only approved boundary
+requirements add paths to the current run's authorization.
+
+The checkpoint saves the ordered queue, decisions and execution cursor. This also
+works inside supported direct static-DAG Agent nodes; batches do not span model
+replies or aggregate separate DAG nodes. The next model request is made only once
+the pending tool round has been settled.
+
+The local API's existing resume routes accept either `{"approved": true}` or:
+
+```json
+{"capability_decisions": [{"invocation_id": "call_1", "approved": true}, {"invocation_id": "call_2", "approved": false}]}
+```
+
+Do not send `approved` with `capability_decisions`. Existing requests without
+either field keep their default whole-review approval. The WebUI requires an
+explicit choice per item, supports approve/reject all, displays full arguments,
+and submits the decisions together. Review claim/locking remains host-owned.
+See [batch_tool_review.py](../../examples/batch_tool_review.py) for a deterministic
+example and [migration notes](migration.md#unreleased) before upgrading pending runs.
+
+
 ## Steer an active tool-agent run
 
 Use `Runner.steer(...)` to add text guidance to a currently executing root

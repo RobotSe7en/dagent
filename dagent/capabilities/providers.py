@@ -365,6 +365,7 @@ class AgentCapabilityProvider:
                 outcome = await agent.resume_review(
                     control.agent_state,
                     approved=control.approved,
+                    capability_decisions=control.capability_decisions,
                     feedback=control.feedback,
                     capability_context=capability_context,
                     on_token=callbacks.on_token,

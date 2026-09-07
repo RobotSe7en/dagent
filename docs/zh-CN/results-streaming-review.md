@@ -177,6 +177,52 @@ capability definition 指纹、策略、限制、planner 模式和已消耗预�
 scope。直接 Agent 节点的执行配置会写入指纹，profile 或运行时设置变更时不会悄然改变续跑。
 支持的拓扑和策略行为见[静态 DAG](static-dag.md#agent-节点工具审核)。
 
+### 一次审核整轮工具调用
+
+运行时先预检同一模型回复中的全部工具；只要有待审核项，整轮都等待，包括低风险工具。
+`review.capability_calls` 按模型顺序列出待审项。只有一个待审项时，继续使用
+`pending_review.capability_call` 和 `payload`；多个待审项使用
+`pending_review.capability_calls`，单项字段为空。批量条目包含调用身份、参数、风险、
+原因和边界详情。`queued_call_count` 表示这一轮其他仍在等待的调用数量。
+
+```python
+choices = [
+    dagent.CapabilityReviewDecision(invocation_id=call.invocation_id, approved=index != 1)
+    for index, call in enumerate(result.review.capability_calls)
+]
+resumed = await runner.resume(
+    result.review.decide(choices, feedback="拒绝第二个待审调用。"),
+    checkpoint=result.checkpoint,
+)
+```
+
+每个待审调用必须恰有一个决定。遗漏、重复、未知 ID 在执行前报错，审核仍可重新提交。
+`ReviewDecision.capability_decisions` 与整批 `approved` 互斥。
+现有 `review.approve()` / `review.reject()` 和
+`ReviewDecision(review_id=..., approved=...)` 继续有效；批量场景表示决定全部待审项。
+旧 `review.capability_call` 仍供单项审核使用。
+
+提交后按原始顺序处理调用：拒绝项返回 `denied`，普通工具错误返回 `failed`，其余继续。
+不会因审核将剩余调用标为 `skipped`，也无需额外调用模型重新发起这些工具。
+取消、steer 和必需结果存储失败仍按既有语义中止。执行时再次检查边界；出现新的授权
+要求时暂停剩余队列，不重复执行已完成前缀。只有已批准的边界项才能增加当前 run 的路径授权。
+
+Checkpoint 保存完整顺序、决定和执行位置，也适用于已支持的静态 DAG 直接 Agent 节点。
+批次不跨模型回复，也不合并不同 DAG 节点；处理完当前工具轮后才再次调用模型。
+
+本地 API 的现有审核恢复路由支持 `{"approved": true}`，或逐项决定：
+
+```json
+{"capability_decisions": [{"invocation_id": "call_1", "approved": true}, {"invocation_id": "call_2", "approved": false}]}
+```
+
+逐项请求不得同时传入 `approved`。旧请求未提供这两个字段时，保留默认整批批准行为。
+WebUI 要求每项明确选择，支持全选批准/拒绝、查看完整参数以及一次提交。
+审核认领和锁仍由宿主管理。确定性示例见
+[batch_tool_review.py](../../examples/batch_tool_review.py)；升级待审运行前参阅
+[迁移说明](migration.md#unreleased)。
+
+
 ## 调整正在运行的 ToolAgent
 
 使用 `Runner.steer(...)` 可以在不取消当前模型调用或 capability 调用的前提下，为正在执行的

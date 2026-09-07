@@ -103,7 +103,7 @@ def test_required_storage_failure_returns_audit(tmp_path, monkeypatch, stream, s
         assert result.state.workspace_path
         assert result.checkpoint is None
         assert result.pending_review is None
-        assert result.state.pending_invocation is None
+        assert result.state.pending_tool_batch is None
         assert runner.run_checkpoint(result.run_id) is None
         assert runner.run_state(result.run_id).status == "failed"
         assert result.trace.root.status == "failed"

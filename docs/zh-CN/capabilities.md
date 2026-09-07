@@ -33,10 +33,10 @@ Raw `CapabilityDefinition.id` 必须以受支持的 kind 前缀开头（`tool`�
 | --- | --- | --- |
 | `tool.read_file` | low | 读取 UTF-8 文本窗口。行 `offset` 从 1 起，`offset_chars` 为从 0 起的 Unicode 码点；优先沿返回的展示游标续读，不混用单位。上限 2000 行 / 200,000 字节。`[SOURCE_TRUNCATED]` 表示源分页，模型展示中的 `[TRUNCATED]` 表示预算缩短。窗口正文保留换行、排除初始 UTF-8 BOM；二进制文件报错。 |
 | `tool.write_file` | medium | 写入 UTF-8 文本并自动创建父目录。新文件遵循进程 umask；覆盖已有文件时保留原文件权限；替换写入会让目标路径与同 inode 的其他硬链接断开。返回写入字节数。 |
-| `tool.edit_file` | medium | 将 `old_string` 的唯一一次精确匹配替换为 `new_string`。匹配必须唯一，并且在 UTF-8 解码后逐字精确匹配：零匹配或多处匹配都会失败，并提示先读文件、补充上下文。保留既有换行与 UTF-8 BOM；结果附带一段简短 unified diff。 |
+| `tool.edit_file` | medium | `replace_all=False`（默认）时，将唯一一次精确匹配替换为 `new_string`；`replace_all=True` 时替换原文中全部不重叠的匹配，并报告次数。UTF-8 解码后逐字匹配，包括换行；零匹配始终失败。保留既有换行与 UTF-8 BOM；结果附带一段简短 unified diff。 |
 | `tool.list_files` | low | 列出路径下的文件与目录（目录以 `/` 结尾），最多 `depth` 层（默认 3）。传入 `glob`（如 `*.py`）时只列匹配的文件。输出达到 500 条后停止；结构化返回值就是已展示条目列表，DAG map 节点可直接对其扇出。 |
 | `tool.grep` | low | 使用 Python 正则语法搜索文件，可选 `glob` 文件名过滤。`PATH` 上有 `rg` 时使用兼容参数委托 ripgrep（argv 调用，绝不经过 shell），否则回退纯 Python 扫描。两种后端都不应用项目 ignore 文件，但都会排除内置的重型目录。输出为 `file:line:content`，上限 200 条。 |
-| `tool.shell` | high | 在受限工作目录内执行 shell 命令，默认 30s 超时。危险模式被硬性拦截，工作目录必须存在，显式 shell 路径参数会经过 boundary 检查，超长输出保留尾部（200 行 / 100 KB）并加 `[TRUNCATED]` 头。超时会终止命令的整个进程组（包括管道中的子进程）、回收输出，并返回终态 `timed out after ... seconds` 错误。 |
+| `tool.shell` | high | 在受限工作目录内执行 shell 命令，默认 30s 超时。危险模式被硬性拦截，工作目录必须存在，显式 shell 路径参数会经过 boundary 检查，超长输出保留尾部（2000 行 / 100 KB）并加 `[TRUNCATED]` 头。超时会终止命令的整个进程组（包括管道中的子进程）、回收输出，并返回终态 `timed out after ... seconds` 错误。 |
 
 每个 capability 有三个名字。`id` 是稳定执行身份，用于 scopes、traces、reviews 和
 DAG invocation payloads。`name` 是 LLM 可见函数名，用于 provider tool calls；
@@ -47,6 +47,23 @@ UI 展示。省略 `name` 时，达智默认把 capability id 中的点替换为
 `tool_read_file` 的输出不带行号前缀，从读取结果中复制的文本可以原样作为
 `tool_edit_file` 的 `old_string`。推荐的编辑流程：先读文件，复制要修改的原文，
 再用足够的上下文调用 `tool_edit_file` 使匹配唯一。
+
+Shell 限制针对**输出预览**：最多 2000 行、100,000 字节，先触及哪个就按哪个截断；
+截断提示沿用既有计数方式，并计入字节预算。输出留存另受
+`ResultStoragePolicy.max_shell_output_bytes` 限制，默认 64 MiB；模型展示仍受
+`ContextPolicy.max_tool_result_tokens` 限制，默认 2048 tokens。
+需要更多输出时，通过返回的保存结果引用使用 `read_file` 续读。
+
+全部精确替换示例：
+
+```python
+# tool.edit_file 的参数；省略 replace_all 即保持原有唯一匹配行为。
+arguments = {"path": "notes.txt", "old_string": "draft", "new_string": "ready", "replace_all": True}
+```
+
+空 `old_string`、新旧字符串相同、零匹配、非布尔 `replace_all` 均报错且不修改文件。
+LF 与 CRLF 仍严格区分；本次不增加先读后写或版本保护。完整示例见
+[批量工具审核](../../examples/batch_tool_review.py)。
 
 ## Sandbox 执行
 

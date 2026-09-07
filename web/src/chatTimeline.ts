@@ -1,3 +1,4 @@
+import { capabilityReviewCalls, capabilityDecisionApproved, type CapabilityReviewSelection } from './capabilityReview';
 import type {
   CapabilityStreamEvent,
   Dag,
@@ -192,35 +193,37 @@ export function appendValidationTimeline(
 export function appendCapabilityReviewDecisionTimeline(
   timeline: MessageTimelineItem[] | undefined,
   review: ReviewEventPayload,
-  approved: boolean,
+  selection: CapabilityReviewSelection,
   feedback?: string,
 ): MessageTimelineItem[] {
-  if (approved || review.kind !== 'capability_review' || !review.capability_call) return timeline ?? [];
+  if (review.kind !== 'capability_review') return timeline ?? [];
   const items = [...(timeline ?? [])];
-  const invocation = review.capability_call;
-  const content = feedback?.trim()
-    ? `人工审核已拒绝。\n\n反馈：${feedback.trim()}`
-    : '人工审核已拒绝。';
-  const result: CapabilityStreamEvent = {
-    type: 'capability.call.failed',
-    invocation_id: invocation.invocation_id,
-    capability_id: invocation.capability_id,
-    arguments: invocation.arguments,
-    content,
-  };
-  const existingIndex = items.findIndex(
-    (item) => item.type === 'capability' && item.event.invocation_id === invocation.invocation_id,
-  );
+  for (const invocation of capabilityReviewCalls(review)) {
+    if (capabilityDecisionApproved(selection, invocation.invocation_id)) continue;
+    const content = feedback?.trim()
+      ? `人工审核已拒绝。\n\n反馈：${feedback.trim()}`
+      : '人工审核已拒绝。';
+    const result: CapabilityStreamEvent = {
+      type: 'capability.call.failed',
+      invocation_id: invocation.invocation_id,
+      capability_id: invocation.capability_id,
+      arguments: invocation.arguments,
+      content,
+    };
+    const existingIndex = items.findIndex(
+      (item) => item.type === 'capability' && item.event.invocation_id === invocation.invocation_id,
+    );
 
-  if (existingIndex !== -1) {
-    const existing = items[existingIndex];
-    if (existing.type === 'capability') {
-      items[existingIndex] = { ...existing, result };
+    if (existingIndex !== -1) {
+      const existing = items[existingIndex];
+      if (existing.type === 'capability') {
+        items[existingIndex] = { ...existing, result, status: 'rejected' };
+      }
+      continue;
     }
-    return items;
-  }
 
-  items.push({ type: 'capability', event: result, result });
+    items.push({ type: 'capability', event: result, result, status: 'rejected' });
+  }
   return items;
 }
 
@@ -284,6 +287,8 @@ function capabilityTimelineItemFailed(item: Extract<MessageTimelineItem, { type:
 function capabilityTimelineItemRejected(item: Extract<MessageTimelineItem, { type: 'capability' }>): boolean {
   return Boolean(
     item.status === 'rejected'
+    || item.result?.content?.startsWith('[DENIED]')
+    || item.event.content?.startsWith('[DENIED]')
     || item.result?.content?.startsWith('人工审核已拒绝')
     || item.event.content?.startsWith('人工审核已拒绝'),
   );

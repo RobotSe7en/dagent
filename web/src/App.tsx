@@ -1,4 +1,5 @@
-﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { capabilityReviewCalls, completeCapabilityDecisions, type CapabilityReviewSelection } from './capabilityReview';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -1605,6 +1606,8 @@ export function App() {
   const [dagReviewFeedback, setDagReviewFeedback] = useState('');
   const [capabilityReview, setCapabilityReview] = useState<ReviewEventPayload | null>(null);
   const [capabilityReviewFeedback, setCapabilityReviewFeedback] = useState('');
+  const [capabilityReviewChoices, setCapabilityReviewChoices] = useState<{ reviewId: string; choices: Record<string, boolean> }>({ reviewId: '', choices: {} });
+  const capabilityReviewSubmitting = useRef(false);
   const [staticCapabilityReviewContext, setStaticCapabilityReviewContext] = useState<StaticCapabilityReviewContext | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const validationRequestIdRef = useRef(0);
@@ -4116,25 +4119,24 @@ export function App() {
     ));
   };
 
-  const resumeStaticCapabilityReview = async (approved: boolean) => {
-    if (!capabilityReview || !staticCapabilityReviewContext || editorRunning) return;
+  const resumeStaticCapabilityReview = async (selection: CapabilityReviewSelection) => {
+    if (!capabilityReview || !staticCapabilityReviewContext || editorRunning || capabilityReviewSubmitting.current) return;
+    capabilityReviewSubmitting.current = true;
     const review = capabilityReview;
     const context = staticCapabilityReviewContext;
     const feedback = capabilityReviewFeedback.trim();
-    setCapabilityReview(null);
-    setCapabilityReviewFeedback('');
-    setStaticCapabilityReviewContext(null);
     editorRunInFlightRef.current = true;
     setEditorRunning(true);
-    setEditorMessage(approved ? '正在批准工具调用...' : '正在拒绝工具调用...');
-    if (!approved) {
+    setEditorMessage('正在提交工具审核...');
+    if (selection === false || (Array.isArray(selection) && selection.some((item) => !item.approved))) {
       setEditorRunTimeline((items) => appendRunTranscriptToken(
         items,
         `\n\nTool call rejected.${feedback ? ` ${feedback}` : ''}`,
       ));
     }
     try {
-      await resumeCapabilityReview(review.review_id, approved, {
+      await resumeCapabilityReview(review.review_id, selection, {
+        onStarted: () => { setCapabilityReview(null); setStaticCapabilityReviewContext(null); },
         onTrace: (event) => {
           setEditorTrace((items) => [...items, event]);
           setEditorRunTimeline((items) => appendRunTranscriptTraceEvent(items, event));
@@ -4162,6 +4164,7 @@ export function App() {
       setCapabilityReviewFeedback(feedback);
       setStaticCapabilityReviewContext(context);
     } finally {
+      capabilityReviewSubmitting.current = false;
       editorRunInFlightRef.current = false;
       setEditorRunning(false);
     }
@@ -4617,18 +4620,17 @@ export function App() {
     void resumeDag(false);
   };
 
-  const confirmCapabilityReview = async (approved: boolean) => {
-    if (!capabilityReview || streaming) return;
+  const confirmCapabilityReview = async (selection: CapabilityReviewSelection) => {
+    if (!capabilityReview || streaming || capabilityReviewSubmitting.current) return;
     if (staticCapabilityReviewContext) {
-      await resumeStaticCapabilityReview(approved);
+      await resumeStaticCapabilityReview(selection);
       return;
     }
+    capabilityReviewSubmitting.current = true;
     const previousCapabilityReview = capabilityReview;
     const previousCapabilityReviewFeedback = capabilityReviewFeedback;
     const previousMessages = messages;
     const feedback = capabilityReviewFeedback.trim();
-    setCapabilityReview(null);
-    setCapabilityReviewFeedback('');
     setError(null);
     tokenQueueRef.current = [];
     contentStreamedRef.current = false;
@@ -4637,22 +4639,23 @@ export function App() {
     appendTrace({
       type: 'model',
       label: 'capability_review_resumed',
-      detail: `Capability review ${approved ? 'approved' : 'rejected'}.`,
-      status: approved ? 'running' : 'rejected',
+      detail: 'Capability review decisions submitted.',
+      status: 'running',
     });
-    if (!approved) {
+    {
       flushQueuedTokensNow();
       closeAssistantReasoning();
       updateLastAssistantText((message) => ({
         ...message,
-        timeline: appendCapabilityReviewDecisionTimeline(message.timeline, capabilityReview, approved, feedback),
+        timeline: appendCapabilityReviewDecisionTimeline(message.timeline, capabilityReview, selection, feedback),
       }));
     }
 
     const signal = beginStreamRequest();
     try {
-      await resumeCapabilityReview(capabilityReview.review_id, approved, {
+      await resumeCapabilityReview(capabilityReview.review_id, selection, {
         onStarted: (event) => {
+          setCapabilityReview(null);
           activeStreamRunIdRef.current = event.run_id;
         },
         onTrace: appendRuntimeTrace,
@@ -4688,10 +4691,12 @@ export function App() {
         }
         return;
       }
+      restoreCapabilityReviewAfterAbort(previousCapabilityReview, previousCapabilityReviewFeedback, previousMessages);
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
       appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
     } finally {
+      capabilityReviewSubmitting.current = false;
       clearStreamRequest(signal);
       await waitForTokenQueue();
       setStreaming(false);
@@ -5522,8 +5527,10 @@ export function App() {
           review={capabilityReview}
           feedback={capabilityReviewFeedback}
           onFeedbackChange={setCapabilityReviewFeedback}
-          onApprove={() => confirmCapabilityReview(true)}
-          onReject={() => confirmCapabilityReview(false)}
+          choices={capabilityReviewChoices.reviewId === capabilityReview.review_id ? capabilityReviewChoices.choices : {}}
+          onChoicesChange={(choices) => setCapabilityReviewChoices({ reviewId: capabilityReview.review_id, choices })}
+          busy={streaming || editorRunning}
+          onSubmit={(decisions) => { void confirmCapabilityReview(decisions); }}
           onClose={() => {
             setCapabilityReview(null);
             setCapabilityReviewFeedback('');
@@ -9354,7 +9361,7 @@ function CapabilityEventCard({ item }: { item: Extract<MessageTimelineItem, { ty
   const { event, result } = item;
   const resultContent = result?.content || (event.type !== 'capability.call.started' ? event.content || '' : '');
   const isError = result?.type === 'capability.call.failed' || event.type === 'capability.call.failed';
-  const rejectedByReview = Boolean(result?.content?.startsWith('人工审核已拒绝'));
+  const rejectedByReview = Boolean(result?.content?.startsWith('人工审核已拒绝') || result?.content?.startsWith('[DENIED]'));
   const isExitError = !isError && hasNonZeroExitCode(resultContent);
   const showError = isError || isExitError;
   const explicitStatus = item.status;
@@ -9677,89 +9684,62 @@ function ArtifactEditDialog({
 }
 
 function CapabilityReviewDialog({
-  review,
-  feedback,
-  onFeedbackChange,
-  onApprove,
-  onReject,
-  onClose,
+  review, feedback, onFeedbackChange, choices, onChoicesChange, busy, onSubmit, onClose,
 }: {
   review: ReviewEventPayload;
   feedback: string;
   onFeedbackChange: (value: string) => void;
-  onApprove: () => void;
-  onReject: () => void;
+  choices: Record<string, boolean>;
+  onChoicesChange: (value: Record<string, boolean>) => void;
+  busy: boolean;
+  onSubmit: (decisions: NonNullable<ReturnType<typeof completeCapabilityDecisions>>) => void;
   onClose: () => void;
 }) {
-  const capabilityCall = review.capability_call;
-  const argsText = capabilityCall ? JSON.stringify(capabilityCall.arguments, null, 2) : '';
-  const payload = review.payload ?? {};
-  const reason = payloadString(payload.reason);
-  const error = payloadString(payload.error);
-  const risk = riskFromPayload(payload.risk);
-  const isBoundaryOverride = reason === 'boundary_violation';
-  const title = isBoundaryOverride ? 'Boundary Override' : 'Capability Review';
-  const detail = isBoundaryOverride
-    ? 'This tool call needs approval to cross its configured boundary.'
-    : review.message;
+  const calls = capabilityReviewCalls(review);
+  const decisions = completeCapabilityDecisions(review, choices);
+  const chooseAll = (approved: boolean) => onChoicesChange(Object.fromEntries(calls.map((call) => [call.invocation_id, approved])));
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Capability review">
       <div className="dag-modal capability-review-modal">
         <header className="modal-header">
           <div>
-            <div className="modal-title">
-              <AlertTriangle size={20} />
-              <span>{title}</span>
-              <span className={`risk-badge risk-${risk}`}>{risk.toUpperCase()}</span>
-            </div>
-            <p>{detail}</p>
+            <div className="modal-title"><AlertTriangle size={20} /><span>工具审核</span></div>
+            <p>{calls.length} 项待审核，{review.queued_call_count ?? 0} 项其他调用等待执行。提交后按原顺序处理。</p>
           </div>
           <div className="modal-actions">
-            <button className="secondary-button compact-button" onClick={onReject} type="button">
-              <X size={16} />
-              Reject
+            <button className="secondary-button compact-button" disabled={busy} onClick={() => chooseAll(true)} type="button">全部批准</button>
+            <button className="secondary-button compact-button" disabled={busy} onClick={() => chooseAll(false)} type="button">全部拒绝</button>
+            <button className="primary-button" disabled={busy || !decisions} onClick={() => decisions && onSubmit(decisions)} type="button">
+              <Check size={17} />{busy ? '提交中…' : '提交决定'}
             </button>
-            <button className="primary-button" onClick={onApprove} type="button">
-              <Check size={17} />
-              Approve
-            </button>
-            <button className="icon-button" onClick={onClose} title="Close" type="button">
-              <X size={18} />
-            </button>
+            <button className="icon-button" disabled={busy} onClick={onClose} title="关闭" type="button"><X size={18} /></button>
           </div>
         </header>
         <div className="modal-body capability-review-body">
-          {isBoundaryOverride && error ? (
-            <div className="capability-review-warning">
-              <strong>Boundary violation</strong>
-              <span>{error}</span>
-            </div>
-          ) : null}
-          {capabilityCall ? (
-            <div className="capability-section">
-              <div className="capability-section-label">Capability</div>
-              <p><strong>{capabilityCall.capability_id}</strong></p>
-            </div>
-          ) : null}
-          {reason ? (
-            <div className="capability-section">
-              <div className="capability-section-label">Reason</div>
-              <p>{reason.replace(/_/g, ' ')}</p>
-            </div>
-          ) : null}
-          {argsText ? (
-            <div className="capability-section">
-              <div className="capability-section-label">Arguments</div>
-              <pre>{clipText(argsText, 1200)}</pre>
-            </div>
-          ) : null}
-          <label className="review-feedback-field">
-            <span>Reviewer feedback</span>
-            <textarea
-              value={feedback}
-              onChange={(event) => onFeedbackChange(event.target.value)}
-              placeholder="Reason or next instruction"
-            />
+          {calls.map((call, index) => (
+            <section className="capability-review-item" key={call.invocation_id}>
+              <div className="capability-review-item-heading">
+                <strong>{index + 1}. {call.tool_name}</strong>
+                <span className={`risk-badge risk-${call.risk}`}>{call.risk.toUpperCase()}</span>
+                <select aria-label={`审核 ${call.tool_name} ${index + 1}`} disabled={busy}
+                  value={choices[call.invocation_id] === undefined ? '' : choices[call.invocation_id] ? 'approve' : 'reject'}
+                  onChange={(event) => {
+                    const next = { ...choices };
+                    if (event.target.value === '') delete next[call.invocation_id];
+                    else next[call.invocation_id] = event.target.value === 'approve';
+                    onChoicesChange(next);
+                  }}>
+                  <option value="">未决定</option><option value="approve">批准</option><option value="reject">拒绝</option>
+                </select>
+              </div>
+              <p>{call.capability_id} · {call.reason === 'boundary_violation' ? '需要越界授权' : '风险审核'}</p>
+              {call.error ? <div className="capability-review-warning">{call.error}</div> : null}
+              {call.boundary_paths.length ? <pre>{call.boundary_paths.join('\n')}</pre> : null}
+              <details><summary>查看完整参数</summary><pre>{JSON.stringify(call.arguments, null, 2)}</pre></details>
+            </section>
+          ))}
+          <label className="review-feedback-field"><span>审核反馈</span>
+            <textarea disabled={busy} value={feedback} onChange={(event) => onFeedbackChange(event.target.value)} placeholder="原因或下一步指示" />
           </label>
         </div>
       </div>

@@ -534,7 +534,8 @@ def test_tool_agent_rejects_review_with_sibling_tool_call_keeps_provider_history
     assert target.read_text(encoding="utf-8") == "secret"
     assert agent.conversation.items[2].call_id == "call_1"
     assert agent.conversation.items[3].call_id == "call_2"
-    assert "[TOOL_SKIPPED]" in agent.conversation.items[3].content.text
+    assert agent.conversation.items[3].status == "completed"
+    assert agent.conversation.items[3].content.text == "allowed"
 
 
 def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -> None:

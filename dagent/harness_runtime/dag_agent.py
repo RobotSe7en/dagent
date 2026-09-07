@@ -1,6 +1,8 @@
 """DAG agent and loop."""
 
 from __future__ import annotations
+
+from dagent.review import CapabilityReviewDecision
 from dagent.harness_runtime.context import compaction_source
 
 import asyncio
@@ -750,7 +752,7 @@ class DAGAgentLoop:
     ) -> LoopOutcome:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         record = RunState(
-            schema_version=5,
+            schema_version=6,
             run_id=resolved_task_id,
             kind="dynamic_dag",
             status="completed",
@@ -871,7 +873,8 @@ class DAGAgentLoop:
         self,
         state: RunState,
         *,
-        approved: bool,
+        approved: bool | None,
+        capability_decisions: tuple[CapabilityReviewDecision, ...] = (),
         feedback: str | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -888,7 +891,6 @@ class DAGAgentLoop:
         node.payload.invocation = continuation.invocation.model_copy(deep=True)
         record.trace = _without_dag_node_trace(record.trace, continuation.node_id)
         record.pending_review = None
-        record.pending_invocation = None
         record.static_agent_continuation = None
         record.dag.status = "approved"
         workspace = Path(record.workspace_path or "").expanduser().resolve()
@@ -919,6 +921,7 @@ class DAGAgentLoop:
                 ),
                 node_id=continuation.node_id,
                 approved=approved,
+                capability_decisions=capability_decisions,
                 feedback=feedback,
             ),
             on_token=on_token,
@@ -957,7 +960,6 @@ class DAGAgentLoop:
             )
             record.trace = trace
             record.pending_review = pause.agent_state.pending_review
-            record.pending_invocation = pause.agent_state.pending_invocation
             record.static_agent_continuation = _StaticDagAgentContinuation(
                 node_id=pause.node_id,
                 invocation=pause.invocation,
@@ -977,7 +979,6 @@ class DAGAgentLoop:
                 dag=record.dag,
                 trace=trace,
                 pending_review=record.pending_review,
-                pending_invocation=record.pending_invocation,
             )
 
         if trace is None:
@@ -1941,14 +1942,12 @@ def _dag_loop_outcome(
     spec_id: str | None = None,
     workspace_path: str | None = None,
     pending_review: PendingReview | None = None,
-    pending_invocation: CapabilityInvocation | None = None,
 ) -> LoopOutcome:
     state = record.model_copy(update={
         "status": status,
         "dag": dag,
         "trace": trace,
         "pending_review": pending_review,
-        "pending_invocation": pending_invocation,
         "spec_id": spec_id if spec_id is not None else record.spec_id,
         "workspace_path": workspace_path if workspace_path is not None else record.workspace_path,
     })

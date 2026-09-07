@@ -8,6 +8,28 @@
 
 ## Unreleased
 
+### 工具批量审核与编辑
+
+- `tool.edit_file` 新增可选 `replace_all=False`；显式设为 `True` 时替换原文中全部
+  不重叠的精确匹配。默认唯一匹配、换行及 BOM 行为保持不变，capability id 不变。
+- Shell 预览由最多 200 行提高到 2000 行，仍限制为 100,000 字节；留存和模型 token
+  预算保持不变。
+- 工具轮在执行前整体预检，有待审项则整轮等待；兄弟调用保存在队列中，不再因审核
+  标为 skipped。拒绝或普通工具错误后继续其他调用；必需存储失败和取消仍终止执行。
+- 保留单项审核 payload 和 `approve/reject` 用法。宿主需支持批量 `capability_calls`，
+  并可通过 `capability_decisions` 提交类型化 `CapabilityReviewDecision`。
+  整批决定与逐项决定互斥；拒绝项改为发出 `capability.call.failed`，不再表现为成功事件。
+- **Checkpoint 破坏性变更：**新 checkpoint 和 resolved plan 使用 V9，RunState 使用 V6，
+  以 `pending_tool_batch` 替换 `pending_invocation`；ConversationState 仍为 V4。
+  升级前完成待审运行。V8 及更早 checkpoint 明确拒绝且不转换；请使用原 SDK 完成，
+  或重新启动运行。编辑工具新增参数也会改变冻结的 capability 指纹。
+- SDK 与 API/WebUI 消费者应同步升级。不重写历史会话；继续使用 JSON 持久化，不新增
+  数据库列。跨进程的审核认领仍由宿主负责。
+- 验证覆盖混合决定、整轮等待、重启/游标恢复、边界重检、静态 Agent 节点、文件字节
+  保留、shell 上限、API 持久化和界面逐项选择/完整参数。真实 Docker 测试依赖 daemon；
+  本次不扩展嵌套 DAG 审核或跨节点聚合审核。
+
+
 ## 0.9.11
 
 ### 文件窗口与展示预算

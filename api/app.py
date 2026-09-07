@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dagent.review import CapabilityReviewDecision
+from dagent.schemas import PendingReview
+
 import asyncio
 import base64
 import binascii
@@ -213,24 +216,61 @@ class MessageRequest(BaseModel):
     conversation_id: str | None = None
 
 
-class ResumeReviewRequest(BaseModel):
+class _ReviewDecisionFields(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    dag: DAG | None = None
+    approved: bool | None = None
+    review_level: ReviewLevel | None = None
+    feedback: str | None = None
+    capability_decisions: tuple[CapabilityReviewDecision, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_decision_form(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if "capability_decisions" in value:
+            if "approved" in value:
+                raise ValueError("Provide approved or capability_decisions, not both.")
+            if not value["capability_decisions"]:
+                raise ValueError("capability_decisions cannot be empty.")
+        else:
+            # Released single/whole-review requests default to approval when omitted.
+            value = {"approved": True, **value}
+            if value["approved"] is None:
+                raise ValueError("approved must be a boolean.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> "_ReviewDecisionFields":
+        self.decision("validation")
+        return self
+
+    def decision(self, review_id: str) -> ReviewDecision:
+        return ReviewDecision(
+            review_id=review_id, approved=self.approved, dag=self.dag,
+            review_level=self.review_level, feedback=self.feedback,
+            capability_decisions=self.capability_decisions,
+        )
+
+
+class ResumeReviewRequest(_ReviewDecisionFields):
     review_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
-    dag: DAG | None = None
-    approved: bool = True
-    review_level: ReviewLevel | None = None
-    feedback: str | None = None
 
 
-class ProjectResumeReviewRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class ProjectResumeReviewRequest(_ReviewDecisionFields):
+    pass
 
-    dag: DAG | None = None
-    approved: bool = True
-    review_level: ReviewLevel | None = None
-    feedback: str | None = None
+
+def _validate_pending_decision(decision: ReviewDecision, pending: PendingReview | None) -> None:
+    if pending is None:
+        raise HTTPException(status_code=409, detail="Run has no pending review.")
+    try:
+        decision.validate_for(pending)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 class ProjectCreateRequest(BaseModel):
@@ -801,23 +841,21 @@ class ConversationMessageProjection:
     async def apply_review_decision(self, decision: ReviewDecision) -> None:
         if not self.pending_review:
             return
-        if not decision.approved:
-            capability_call = self.pending_review.get("capability_call")
-            if isinstance(capability_call, dict):
-                invocation_id = str(capability_call.get("invocation_id") or "")
-                capability_id = str(capability_call.get("capability_id") or "")
-                if invocation_id:
-                    content = "人工审核已拒绝。"
-                    if decision.feedback:
-                        content = f"{content}\n\n反馈：{decision.feedback}"
-                    result = {
-                        "type": "capability.call.failed",
-                        "invocation_id": invocation_id,
-                        "capability_id": capability_id,
-                        "arguments": capability_call.get("arguments") or {},
-                        "content": content,
-                    }
-                    self._upsert_capability_result(invocation_id, result, status="rejected")
+        pending = PendingReview.model_validate(self.pending_review)
+        if pending.kind == "capability_review":
+            decisions = decision.decisions_for(pending)
+            for call in pending.capability_items:
+                if decisions[call.invocation_id]:
+                    continue
+                content = "人工审核已拒绝。"
+                if decision.feedback:
+                    content = f"{content}\n\n反馈：{decision.feedback}"
+                result = {
+                    "type": "capability.call.failed", "invocation_id": call.invocation_id,
+                    "capability_id": call.capability_id, "arguments": call.arguments,
+                    "content": content,
+                }
+                self._upsert_capability_result(call.invocation_id, result, status="rejected")
         self.pending_review = None
         self.status = "running"
         await self.save()
@@ -846,7 +884,8 @@ class ConversationMessageProjection:
                 self._upsert_capability_result(str(event.get("invocation_id") or ""), event, status="completed")
         elif event_type == "capability.call.failed":
             event = _stream_timeline_event(payload)
-            self._upsert_capability_result(str(event.get("invocation_id") or ""), event, status="failed")
+            status = "rejected" if str(event.get("content") or "").startswith("[DENIED]") else "failed"
+            self._upsert_capability_result(str(event.get("invocation_id") or ""), event, status=status)
         elif event_type == "dag.updated":
             dag = data.get("dag")
             if isinstance(dag, dict):
@@ -863,9 +902,9 @@ class ConversationMessageProjection:
         elif event_type == "review.required":
             self.pending_review = data
             self.status = "awaiting_review"
-            capability_call = data.get("capability_call")
-            if isinstance(capability_call, dict):
-                self._mark_capability_status(str(capability_call.get("invocation_id") or ""), "awaiting_review")
+            pending = PendingReview.model_validate(data)
+            for call in pending.capability_items:
+                self._mark_capability_status(call.invocation_id, "awaiting_review")
         elif event_type == "run.finished":
             result = data.get("result")
             if isinstance(result, dict):
@@ -4159,10 +4198,18 @@ async def _resume_persisted_review_stream(
     run = await run_in_threadpool(store.get_run, review.run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found.")
-    checkpoint = await run_in_threadpool(store.get_run_checkpoint, run.id)
+    try:
+        checkpoint = await run_in_threadpool(store.get_run_checkpoint, run.id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Run checkpoint is incompatible or invalid. Complete old pending reviews with the original SDK, or start a new run.",
+        ) from exc
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Run checkpoint not found.")
     run_state = checkpoint.state
+    decision = request.decision(review_id)
+    _validate_pending_decision(decision, run_state.pending_review)
     lock = None
     message_projection = None
     if run.conversation_id is None:
@@ -4218,17 +4265,8 @@ async def _resume_persisted_review_stream(
             )
         except ConversationBusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-    decision = ReviewDecision(
-        review_id=review_id,
-        approved=request.approved,
-        dag=request.dag,
-        review_level=request.review_level,
-        feedback=request.feedback,
-    )
     try:
         decision_json = _review_decision_json(decision)
-        if isinstance(context, PersistedMessageContext):
-            message_projection = await ConversationMessageProjection.resume_for_review(run_state, context, decision)
         claimed = await run_in_threadpool(
             store.claim_review,
             review_id,
@@ -4239,6 +4277,8 @@ async def _resume_persisted_review_stream(
                 status_code=409,
                 detail="Review is already being resumed or has been resolved.",
             )
+        if isinstance(context, PersistedMessageContext):
+            message_projection = await ConversationMessageProjection.resume_for_review(run_state, context, decision)
     except BaseException:
         if lock is not None:
             await run_in_threadpool(lock.release)
@@ -4705,7 +4745,7 @@ async def _persist_interrupted_run(
         interrupted_state = stored_state.model_copy(update={
             "status": "failed",
             "pending_review": None,
-            "pending_invocation": None,
+            "pending_tool_batch": None,
         })
         await run_in_threadpool(
             store.save_run_state,
@@ -4945,13 +4985,8 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
             status_code=409,
             detail="Run checkpoint does not match the requested review.",
         )
-    decision = ReviewDecision(
-        review_id=request.review_id,
-        approved=request.approved,
-        dag=request.dag,
-        review_level=request.review_level,
-        feedback=request.feedback,
-    )
+    decision = request.decision(request.review_id)
+    _validate_pending_decision(decision, pending_review)
 
     async def events():
         sent_error = False
@@ -5942,7 +5977,8 @@ def _review_decision_json(decision: ReviewDecision) -> str:
     return json.dumps(
         {
             "review_id": decision.review_id,
-            "approved": decision.approved,
+            **({"capability_decisions": [item.model_dump(mode="json") for item in decision.capability_decisions]}
+               if decision.capability_decisions else {"approved": decision.approved}),
             "dag": None if decision.dag is None else decision.dag.model_dump(mode="json"),
             "review_level": decision.review_level,
             "feedback": decision.feedback,
@@ -5968,5 +6004,8 @@ def _chat_stream_event_payload(event: RunStreamEvent, runner: Runner) -> dict[st
     review_payload = pending_review.model_dump(mode="json")
     if review_payload.get("capability_call") is not None:
         data["capability_call"] = review_payload["capability_call"]
+    if review_payload.get("capability_calls"):
+        data["capability_calls"] = review_payload["capability_calls"]
+    data["queued_call_count"] = review_payload["queued_call_count"]
     data["payload"] = review_payload.get("payload") or {}
     return payload
