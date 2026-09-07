@@ -8,6 +8,19 @@
 
 ## Unreleased
 
+### Tool 结果存储失败审计
+
+- `RunFailedData.result` 新增可选 `RunResult` 字段，默认 `None`。
+  使用严格 payload schema 的流消费者需要接受此新增字段。
+  终态仍为 `run.failed`，原有错误消息和错误类型不变。
+- Tool 必需结果存储失败时，`run()` / `resume()` 改为抛出公共异常
+  `dagent.RunExecutionError`。原先导入、捕获内部 `ResultStorageError`
+  的调用方应改为捕获 `dagent.RunExecutionError`，通过 `exc.result` 审计。
+  该异常仍继承 `RuntimeError`，原异常通过异常链保留。
+- 失败快照保留实际执行及结果留存审计，停止后续执行，不提供 checkpoint，
+  包括审核恢复失败。DAG 失败结果和可恢复的文本存储告警行为保持不变。
+
+
 ## 0.9.10
 
 ### Fast 默认批准边界审核

@@ -60,8 +60,11 @@ shell 并发排空 stdout/stderr，以有界内存采集，两者共用单次调
 （`Runner.stream` 中为 `capability.result.storage_warning`），
 保持工具实际执行状态，并允许有界展示继续。降级情况下，已收到的文本可能超过正常阈值仍内联保留。
 SDK 不会重跑工具。必需的二进制值或产物无法保存时，改为报告结果存储故障并阻止依赖执行；
-异常对象保留原始执行结果。失败的 DAG 结果返回 `checkpoint=None`；可序列化审计保留执行状态，
+DAG 返回失败结果；Tool 抛出公共异常 `dagent.RunExecutionError`，通过 `exc.result`
+携带失败结果，流式接口则通过 `run.failed` 的 `event.data.result` 返回。
+这些失败结果均返回 `checkpoint=None`；可序列化 trace 审计保留执行状态，
 并通过 `retention.unavailable_fields` 标明未能保留的内存二进制值，该标记不是恢复引用。
+详见[失败审计](results-streaming-review.md#审计-tool-执行失败)。
 
 MCP 的保留保证仅覆盖 SDK 实际收到的内容，无法恢复远端已丢弃的数据，也不推断远端完整性。
 SDK 不会自动下载远端资源。

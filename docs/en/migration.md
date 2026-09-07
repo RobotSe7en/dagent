@@ -9,6 +9,20 @@ The current package version is `0.9.10`.
 
 ## Unreleased
 
+### Tool result-storage failure audit
+
+- `RunFailedData.result` is a new optional `RunResult` field, defaulting to `None`.
+  Stream consumers with strict payload schemas must accept this additional field.
+  The terminal event remains `run.failed`, with unchanged message/error type.
+- Tool required-storage failures from `run()` / `resume()` now raise public
+  `dagent.RunExecutionError`. Replace imports/catches of internal
+  `ResultStorageError` with `dagent.RunExecutionError` and audit `exc.result`.
+  It remains a `RuntimeError`; the original exception is chained as its cause.
+- Failure snapshots preserve execution and retention audit, stop subsequent
+  execution, and expose no checkpoint, including after review. DAG failure
+  results and recoverable text-storage warnings retain their existing behavior.
+
+
 ## 0.9.10
 
 ### Fast review automatically approves boundary overrides

@@ -92,6 +92,37 @@ from dagent.schemas.conversation import (
 from dagent.schemas.common import validate_runtime_directory
 
 
+class ToolResultStorageFailure(RuntimeError):
+    """Carry the stopped loop snapshot to the public Runner boundary."""
+
+    def __init__(self, cause: ResultStorageError, outcome: LoopOutcome) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.outcome = outcome
+
+
+def _record_storage_failure(
+    trace: RunTrace, invocation: CapabilityInvocation, error: ResultStorageError,
+) -> None:
+    node = _find_capability_node(trace.root, invocation.invocation_id)
+    if node is None:
+        node = RunTraceNode.capability_call(
+            parent_id=trace.root.id,
+            invocation=invocation,
+            result=error.audit_result,
+        )
+        trace.root.children.append(node)
+    else:
+        assert node.capability_execution is not None
+        node.capability_execution.result = error.audit_result
+    node.status = "failed"
+    node.ended_at = datetime.now(timezone.utc)
+    node.error = RunTraceError(message=str(error), code="ResultStorageError")
+    trace.root.status = "failed"
+    trace.root.error = node.error.model_copy()
+    trace.root.ended_at = datetime.now(timezone.utc)
+
+
 MAX_TOOL_RESULT_CONTEXT_CHARS = 4000
 _REVIEW_SKIPPED_TOOL_CONTENT = (
     "[TOOL_SKIPPED] Not executed because another tool call from the same "
@@ -335,9 +366,18 @@ class ToolAgent:
                     run_id=state.run_id,
                     content=feed_content,
                 )
-            except ResultStorageError:
-                # Execution happened; do not continue or mislabel a storage failure.
-                raise
+            except ResultStorageError as exc:
+                trace = state.trace
+                if trace is None:
+                    raise RuntimeError("Tool review checkpoint has no trace.") from exc
+                _record_storage_failure(trace, invocation, exc)
+                failed_state = state.model_copy(update={
+                    "status": "failed",
+                    "pending_review": None,
+                    "pending_invocation": None,
+                })
+                self.trace = trace
+                raise ToolResultStorageFailure(exc, LoopOutcome(state=failed_state)) from exc
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
                 self.loop._emit_capability_event(
@@ -392,23 +432,29 @@ class ToolAgent:
             and item.call_id == invocation.invocation_id
         )
         reviewed_trace = state.trace
-        outcome = await self._continue_conversation(
-            conversation,
-            run_id=state.run_id,
-            review_level=state.review_level,
-            boundary=continuation_boundary,
-            capability_scope=capability_scope,
-            capability_context=replace(
-                capability_context
-                or CapabilityExecutionContext(task_id=state.run_id),
-                task_id=state.run_id,
-                workspace_path=state.workspace_path,
-                skills=capability_scope.skills,
-                extra_system_prompt=self.extra_system_prompt,
-            ),
-            on_token=on_token,
-            on_event=on_event,
-        )
+        failure: ToolResultStorageFailure | None = None
+        try:
+            outcome = await self._continue_conversation(
+                conversation,
+                run_id=state.run_id,
+                review_level=state.review_level,
+                boundary=continuation_boundary,
+                capability_scope=capability_scope,
+                capability_context=replace(
+                    capability_context
+                    or CapabilityExecutionContext(task_id=state.run_id),
+                    task_id=state.run_id,
+                    workspace_path=state.workspace_path,
+                    skills=capability_scope.skills,
+                    extra_system_prompt=self.extra_system_prompt,
+                ),
+                on_token=on_token,
+                on_event=on_event,
+            )
+        except ToolResultStorageFailure as exc:
+            failure = exc
+            outcome = exc.outcome
+
         state_update: dict[str, Any] = {
             "context_usage": [
                 *state.context_usage,
@@ -425,6 +471,9 @@ class ToolAgent:
             }
         )
         self.trace = next_state.trace
+        if failure is not None:
+            failure.outcome = outcome
+            raise failure
         return outcome
 
     async def _continue_conversation(
@@ -463,24 +512,30 @@ class ToolAgent:
                 )
             ),
         )
-        outcome = await self.loop.run(
-            conversation,
-            run_id=run_id,
-            boundary=boundary,
-            max_steps=self.max_steps,
-            system_message=system_message,
-            context_policy=self.context_policy,
-            result_storage_policy=self.result_storage_policy,
-            context_assembler=self.context_assembler,
-            control_tool_names=control_tool_names,
-            review_level=review_level,
-            capability_ids=capability_scope.capability_ids,
-            capability_scope=capability_scope,
-            capability_context=capability_context,
-            skills=capability_scope.skills,
-            on_token=on_token,
-            on_event=on_event,
-        )
+        failure: ToolResultStorageFailure | None = None
+        try:
+            outcome = await self.loop.run(
+                conversation,
+                run_id=run_id,
+                boundary=boundary,
+                max_steps=self.max_steps,
+                system_message=system_message,
+                context_policy=self.context_policy,
+                result_storage_policy=self.result_storage_policy,
+                context_assembler=self.context_assembler,
+                control_tool_names=control_tool_names,
+                review_level=review_level,
+                capability_ids=capability_scope.capability_ids,
+                capability_scope=capability_scope,
+                capability_context=capability_context,
+                skills=capability_scope.skills,
+                on_token=on_token,
+                on_event=on_event,
+            )
+        except ToolResultStorageFailure as exc:
+            failure = exc
+            outcome = exc.outcome
+
         if review_level is not None:
             outcome = outcome.model_copy(
                 update={
@@ -491,6 +546,9 @@ class ToolAgent:
             )
         self.conversation = outcome.state.model_thread or conversation
         self.trace = outcome.state.trace
+        if failure is not None:
+            failure.outcome = outcome
+            raise failure
         return outcome
 
     def reviewable_tool_names(self, capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE) -> set[str]:
@@ -950,14 +1008,18 @@ class ToolAgentLoop:
                     stored_content: Any = None
                     attachments: tuple[Any, ...] = ()
                     if recorded_result is not None:
-                        normalized = normalize_capability_result(
-                            recorded_result,
-                            workspace_path=execution_context.workspace_path
-                            or current_workspace_root(self.capability_executor.workspace_root),
-                            runtime_directory=self.runtime_directory,
-                            policy=result_storage_policy,
-                            on_event=on_event,
-                        )
+                        try:
+                            normalized = normalize_capability_result(
+                                recorded_result,
+                                workspace_path=execution_context.workspace_path
+                                or current_workspace_root(self.capability_executor.workspace_root),
+                                runtime_directory=self.runtime_directory,
+                                policy=result_storage_policy,
+                                on_event=on_event,
+                            )
+                        except ResultStorageError as exc:
+                            _record_storage_failure(trace, invocation, exc)
+                            raise ToolResultStorageFailure(exc, failed_outcome()) from exc
                         recorded_result = normalized.result
                         stored_content = normalized.content
                         attachments = normalized.references
@@ -1127,14 +1189,18 @@ class ToolAgentLoop:
                             break
                         return failed_outcome()
                     continue
-                normalized = normalize_capability_result(
-                    capability_result,
-                    workspace_path=execution_context.workspace_path
-                    or current_workspace_root(self.capability_executor.workspace_root),
-                    runtime_directory=self.runtime_directory,
-                    policy=result_storage_policy,
-                    on_event=on_event,
-                )
+                try:
+                    normalized = normalize_capability_result(
+                        capability_result,
+                        workspace_path=execution_context.workspace_path
+                        or current_workspace_root(self.capability_executor.workspace_root),
+                        runtime_directory=self.runtime_directory,
+                        policy=result_storage_policy,
+                        on_event=on_event,
+                    )
+                except ResultStorageError as exc:
+                    _record_storage_failure(trace, invocation, exc)
+                    raise ToolResultStorageFailure(exc, failed_outcome()) from exc
                 capability_result = normalized.result
                 stored_content = normalized.content
                 attachments = normalized.references

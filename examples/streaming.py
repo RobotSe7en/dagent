@@ -34,6 +34,10 @@ async def main() -> None:
             print(event.data.delta, end="")
         elif event.type == "response.finished":
             print()
+        elif event.type == "run.failed":
+            print(f"{event.data.error_type}: {event.data.message}")
+            if event.data.result is not None:
+                print(event.data.result.model_dump(mode="json"))
         elif event.type == "run.finished":
             result = event.data.result
             if result.requires_review:

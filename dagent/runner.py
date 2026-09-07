@@ -73,7 +73,11 @@ from dagent.harness_runtime.steering import (
     RunSteeringControl,
     run_steering_context,
 )
-from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
+from dagent.harness_runtime.tool_agent import (
+    LoopEventHandler,
+    TokenHandler,
+    ToolResultStorageFailure,
+)
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
 from dagent.result import (
@@ -87,6 +91,7 @@ from dagent.result import (
     ResponseFinishedData,
     ResponseStartedData,
     ReviewRequiredData,
+    RunExecutionError,
     RunFailedData,
     RunFinishedData,
     RunResult,
@@ -1329,22 +1334,31 @@ class Runner:
             execution_usage_scope(usage_tracker),
             self._steering_scope(on_event) as steering_on_event,
         ):
-            return await self._run_dispatch(
-                target,
-                input=input,
-                conversation=conversation,
-                graph_input=graph_input,
-                review=review,
-                dynamic_adjust=dynamic_adjust,
-                usage_tracker=usage_tracker,
-                workspace_root=workspace_root,
-                workspace_path=resolved_workspace_path,
-                run_id=run_id,
-                input_uploads=input_uploads,
-                artifact_uploads=artifact_uploads,
-                on_token=on_token,
-                on_event=steering_on_event,
-            )
+            try:
+                return await self._run_dispatch(
+                    target,
+                    input=input,
+                    conversation=conversation,
+                    graph_input=graph_input,
+                    review=review,
+                    dynamic_adjust=dynamic_adjust,
+                    usage_tracker=usage_tracker,
+                    workspace_root=workspace_root,
+                    workspace_path=resolved_workspace_path,
+                    run_id=run_id,
+                    input_uploads=input_uploads,
+                    artifact_uploads=artifact_uploads,
+                    on_token=on_token,
+                    on_event=steering_on_event,
+                )
+            except ToolResultStorageFailure as exc:
+                raise self._storage_failure_error(
+                    exc,
+                    usage=usage_tracker.snapshot(),
+                    execution=resolved_execution,
+                    user_request=input if isinstance(input, str) else "",
+                    review_level=review or exc.outcome.state.review_level,
+                ) from exc.cause
 
     async def _run_dispatch(
         self,
@@ -1549,6 +1563,30 @@ class Runner:
             review_level=review_level,
             dynamic_adjust=True,
             usage=usage,
+        )
+
+    def _storage_failure_error(
+        self,
+        failure: ToolResultStorageFailure,
+        *,
+        usage: ExecutionUsage,
+        execution: RunExecution,
+        user_request: str,
+        review_level: ReviewLevel,
+    ) -> RunExecutionError:
+        outcome = failure.outcome
+        state = outcome.state.model_copy(update={
+            "execution": execution,
+            "user_request": user_request,
+            "review_level": review_level,
+            "pending_review": None,
+            "pending_invocation": None,
+        })
+        state = self._runtime.session.save_run_state(state)
+        self._run_checkpoints.pop(state.run_id, None)
+        return RunExecutionError(
+            str(failure.cause),
+            result=RunResult(state=state, new_items=outcome.new_items, usage=usage),
         )
 
     def _finalize_run_result(
@@ -1819,7 +1857,15 @@ class Runner:
             yield with_sequence(
                 RunStreamEvent(
                     type="run.failed",
-                    data=RunFailedData(message=str(exc), error_type=type(exc).__name__),
+                    data=RunFailedData(
+                        message=str(exc),
+                        error_type=(
+                            type(exc.__cause__).__name__
+                            if isinstance(exc, RunExecutionError) and exc.__cause__ is not None
+                            else type(exc).__name__
+                        ),
+                        result=exc.result if isinstance(exc, RunExecutionError) else None,
+                    ),
                     run_id=run_id,
                 )
             )
@@ -1921,6 +1967,15 @@ class Runner:
                     dynamic_adjust=plan.dynamic_adjust,
                     usage=usage_tracker.snapshot(),
                 )
+        except ToolResultStorageFailure as exc:
+            runtime.session.discard_review(decision.review_id)
+            raise self._storage_failure_error(
+                exc,
+                usage=usage_tracker.snapshot(),
+                execution=resolved_execution,
+                user_request=resume_state.user_request,
+                review_level=review_level,
+            ) from exc.cause
         except BaseException:
             usage = usage_tracker.snapshot()
             failed_update: dict[str, Any] = {

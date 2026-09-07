@@ -345,6 +345,15 @@ class RunFinishedData:
 class RunFailedData:
     message: str
     error_type: str
+    result: RunResult | None = None
+
+
+class RunExecutionError(RuntimeError):
+    """Execution stopped with an auditable, non-resumable failure result."""
+
+    def __init__(self, message: str, *, result: RunResult) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 RunStreamEventData = (
