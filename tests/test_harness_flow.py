@@ -619,12 +619,10 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
     assert result.status == "completed"
     assert dag_node_trace(result, "answer").output == "echo:adjusted_value"
     request = runtime.dag_agent.loop.provider.requests[0]["messages"][-1]["content"]
-    assert "Node executions:" in request
-    assert "- node: inspect" in request
-    assert "  tool: tool.echo" in request
-    assert '  args: {"text": "discovered_path"}' in request
-    assert "  status: completed" in request
-    assert "  content:" in request
+    assert "Result inspect:" in request
+    assert "tool=tool.echo" in request
+    assert 'args={"text": "discovered_path"}' in request
+    assert "status=completed" in request
     assert "echo:discovered_path" in request
 
 
@@ -828,12 +826,10 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
     assert result.status == "completed"
     assert dag_node_trace(result, "fallback").output == "echo:recovered"
     request = runtime.dag_agent.loop.provider.requests[0]["messages"][-1]["content"]
-    assert "Node executions:" in request
-    assert "- node: try_bad_tool" in request
-    assert "  tool: tool.fail_tool" in request
-    assert '  args: {"text": "boom"}' in request
-    assert "  status: failed" in request
-    assert "  content:" in request
+    assert "Result try_bad_tool:" in request
+    assert "tool=tool.fail_tool" in request
+    assert 'args={"text": "boom"}' in request
+    assert "status=failed" in request
     assert "failed:boom" in request
     assert "User request:" not in request
 

@@ -1,5 +1,8 @@
 # Runner and Configuration
 
+For result display budgets, typed retention metadata and file/search pagination, see
+[Tool Result Recovery](tool-result-recovery.md).
+
 `Runner` is the public SDK entrypoint for executing agents and DAGs. It owns
 provider wiring, capability registration, skill store access, MCP registration,
 runtime state, and review resume flow.
@@ -155,7 +158,10 @@ failure explicit; `"heuristic"` skips probing for token counts. A discovered
 `max_model_len` supplies the default total context limit. An explicit
 `context_window_tokens` overrides discovery but is rejected when it exceeds a
 successfully discovered server limit. Discovery failure warns and falls back to
-32,768 when no value was configured. `max_output_tokens` is optional; when set,
+131,072 (128K) when no value was configured. Official DeepSeek V4 models use
+their documented 1M window through endpoint/model recognition, including with
+heuristic counting; see [model context](model-context-and-reasoning.md#token-accounting-and-compaction).
+`max_output_tokens` is optional; when set,
 it is both reserved from input capacity and sent as the real generation limit.
 When unset, no output-limit field is sent.
 

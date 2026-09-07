@@ -646,11 +646,11 @@ async def test_tokenize_failure_uses_automatic_fallback_window() -> None:
         client=client,  # type: ignore[arg-type]
     )
 
-    with pytest.warns(ProviderCapabilityWarning, match="32,768-token fallback"):
+    with pytest.warns(ProviderCapabilityWarning, match="131,072-token fallback"):
         count = await provider.count_tokens(_simple_request())
 
     assert count is None
-    assert provider.context_window_tokens == 32768
+    assert provider.context_window_tokens == 131072
 
 
 @pytest.mark.asyncio

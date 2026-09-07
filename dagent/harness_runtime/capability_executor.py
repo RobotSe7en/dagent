@@ -36,6 +36,8 @@ class CapabilityExecutionContext:
     extra_system_prompt: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     approved_boundary_invocation_id: str | None = None
+    runtime_directory: str = ".dagent"
+    max_shell_output_bytes: int = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)

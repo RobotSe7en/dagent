@@ -10,6 +10,8 @@ from dagent.harness_runtime.profiled_agent import ProfiledAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
 from dagent.schemas import ContextUsage, ValidationIssue, ValidationResult
+from dagent.schemas.conversation import ResultObservation
+from dagent.harness_runtime.result_storage import ResultStore
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,8 @@ class ValidatorAgent:
         final_answer: str,
         execution_context: str = "",
         workspace_path: str | Path | None = None,
+        result_observations: tuple[ResultObservation, ...] = (),
+        result_store: ResultStore | None = None,
     ) -> tuple[ValidationResult, ChatResponse | None, ContextUsage | None]:
         response_schema = json.dumps(
             {
@@ -72,6 +76,8 @@ class ValidatorAgent:
             payload, response, usage = await self.agent.run_json_response(
                 task_content="\n\n".join(sections),
                 workspace_path=workspace_path,
+                result_observations=result_observations,
+                result_store=result_store,
             )
         except ValueError as exc:
             logger.warning("Validator agent returned invalid JSON; skipping validation: %s", exc)

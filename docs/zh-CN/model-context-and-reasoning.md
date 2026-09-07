@@ -1,5 +1,7 @@
 # 模型上下文与推理
 
+结果展示预算、类型化保留元信息及文件/搜索分页，见[工具结果恢复](tool-result-recovery.md)。
+
 dagent 对私有 vLLM 模型使用统一的 provider-neutral conversation model，并在每次请求时
 序列化为 OpenAI Chat Completions 或 Responses。Runtime 不持久化 provider response ID，
 也不依赖 server-side state。
@@ -140,9 +142,20 @@ messages 与 tools。此时 `ContextUsage.estimator` 为 `"vllm"`，
 报错；设置 `"heuristic"` 则始终使用本地确定性估算。
 
 `context_window_tokens=None` 时使用探测到的 `max_model_len`；探测失败会 warning 并
-fallback 到 32,768。显式值覆盖自动值，但大于 server limit 时会在 generation 前被拒绝。
+fallback 到 131,072（128K）。显式值覆盖自动值，但大于 server limit 时会在 generation 前被拒绝。
 `max_output_tokens=None` 不发送输出限制；显式值映射到 Chat 已探测到的
 `max_completion_tokens`/`max_tokens`，或 Responses 的 `max_output_tokens`。
+
+对于 DeepSeek 官网 API（`https://api.deepseek.com`，可带 `/v1` 或 `/beta`），SDK
+识别 `deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-v4-flash-vision-exp` 的 1M
+上下文窗口。依据 2026-09-07 核对的[官方模型目录示例](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/)，
+采用 1,048,576-token 上限。这是官网端点与模型 ID 的匹配，不是实时长度查询：
+DeepSeek `/models` 不提供上下文长度。未知模型回退到 128K；第三方端点不会套用官网上限。
+显式配置优先，但不能超过已知模型上限。构造 Provider 仍不访问网络。
+DeepSeek 的 `auto` 计数使用启发式估算，不调用 `/tokenize`；显式选择 `vllm` 会报错。
+`ContextUsage.model_context_window_tokens` 记录已知模型上限，与
+`server_max_model_len` 和 `estimator` 分开，避免把模型识别误认为精确 token 计数。
+设置 `token_counting="heuristic"` 时仍会识别官网模型窗口。
 
 总窗口为 `W`、输出上限为 `O` 时，输入预算是 `W - O`；未配置输出上限时为 `W - 1`。
 vLLM 精确计数不增加安全系数，安全系数只应用于 heuristic/custom counter。

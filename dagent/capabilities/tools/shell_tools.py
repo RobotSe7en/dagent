@@ -6,10 +6,10 @@ import os
 import signal
 import subprocess
 import threading
-import time
 from pathlib import Path
 
-from dagent.capabilities.tools.registry import ToolRegistry
+from dagent.capabilities.tools.registry import ToolRegistry, ToolOutput
+from dagent.capabilities.tools.output_capture import collect_output
 
 
 SHELL_OUTPUT_MAX_LINES = 200
@@ -19,125 +19,64 @@ SHELL_TERMINATION_GRACE_SECONDS = 0.5
 
 
 class ShellExecutionError(RuntimeError):
-    """Raised when a shell tool exits unsuccessfully."""
+    """Execution failure with the independently retained output."""
+
+    def __init__(self, message: str, *, output: ToolOutput | None = None) -> None:
+        self.output = output
+        super().__init__(message)
 
 
 def shell(
-    command: str,
-    cwd: str | Path = ".",
-    timeout_seconds: int = 30,
-    *,
+    command: str, cwd: str | Path = ".", timeout_seconds: int = 30, *,
     _dagent_cancel_event: threading.Event | None = None,
-) -> str:
+    _dagent_result_context: dict | None = None,
+) -> ToolOutput:
     cwd_path = Path(cwd)
     if not cwd_path.is_dir():
         raise ShellExecutionError(f"Working directory does not exist: {cwd_path}")
-
-    platform_options: dict[str, object]
-    if os.name == "nt":
-        platform_options = {
-            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
-        }
-    else:
-        platform_options = {"start_new_session": True}
-
+    context = _dagent_result_context or {
+        "workspace": str(cwd_path.resolve()), "runtime_directory": ".dagent",
+        "max_bytes": 64 * 1024 * 1024,
+    }
+    platform_options = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                        if os.name == "nt" else {"start_new_session": True})
     process = subprocess.Popen(
-        command,
-        cwd=cwd_path,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-        **platform_options,
+        command, cwd=cwd_path, shell=True, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, bufsize=0, **platform_options,
     )
-    try:
-        stdout, stderr = _communicate(
-            process,
-            timeout_seconds=timeout_seconds,
-            cancellation_event=_dagent_cancel_event,
-        )
-    except _ShellCancelled:
-        stdout, stderr = _stop_timed_out_process_group(process)
-        output = _format_output(stdout, stderr)
-        message = "cancelled by caller"
-        if output:
-            message = f"{message}\n{_tail_truncate(output)}"
-        raise ShellExecutionError(message) from None
-    except subprocess.TimeoutExpired:
-        stdout, stderr = _stop_timed_out_process_group(process)
-        output = _format_output(stdout, stderr)
-        message = f"timed out after {timeout_seconds} seconds"
-        if output:
-            message = f"{message}\n{_tail_truncate(output)}"
-        raise ShellExecutionError(message) from None
 
-    output = _format_output(stdout, stderr)
-    output = _tail_truncate(output)
-    formatted = (
-        f"exit_code={process.returncode}\n{output}"
-        if output
-        else f"exit_code={process.returncode}"
-    )
-    if process.returncode != 0:
-        raise ShellExecutionError(formatted)
-    return formatted
-
-
-class _ShellCancelled(Exception):
-    pass
-
-
-def _communicate(
-    process: subprocess.Popen[str],
-    *,
-    timeout_seconds: int,
-    cancellation_event: threading.Event | None,
-) -> tuple[str, str]:
-    if cancellation_event is None:
-        return process.communicate(timeout=timeout_seconds)
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        if cancellation_event.is_set():
-            raise _ShellCancelled
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise subprocess.TimeoutExpired(process.args, timeout_seconds)
-        try:
-            return process.communicate(timeout=min(0.1, remaining))
-        except subprocess.TimeoutExpired:
-            continue
-
-
-def _stop_timed_out_process_group(
-    process: subprocess.Popen[str],
-) -> tuple[str, str]:
-    """Stop a timed-out shell and every child that still owns its pipes."""
-    if os.name == "nt":
-        _kill_windows_process_tree(process)
-    else:
-        _signal_posix_process_group(process, signal.SIGTERM)
-        try:
-            return process.communicate(timeout=SHELL_TERMINATION_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            _signal_posix_process_group(process, signal.SIGKILL)
-
-    try:
-        return process.communicate(timeout=SHELL_TERMINATION_GRACE_SECONDS)
-    except subprocess.TimeoutExpired as exc:
-        # A command can deliberately escape its process group while retaining an
-        # inherited pipe. Close our pipe readers so such a process cannot keep
-        # the SDK call alive beyond the bounded cleanup period.
-        stdout = _timeout_output(exc.stdout)
-        stderr = _timeout_output(exc.stderr)
-        _close_process_pipes(process)
-        if process.poll() is None:
-            process.kill()
+    def stop() -> None:
+        if os.name == "nt":
+            _kill_windows_process_tree(process)
+        else:
+            _signal_posix_process_group(process, signal.SIGTERM)
             try:
                 process.wait(timeout=SHELL_TERMINATION_GRACE_SECONDS)
             except subprocess.TimeoutExpired:
                 pass
-        return stdout, stderr
+            _signal_posix_process_group(process, signal.SIGKILL)
+        try:
+            process.wait(timeout=SHELL_TERMINATION_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+
+    try:
+        output, reason = collect_output(
+            process, workspace=Path(context["workspace"]),
+            runtime_directory=context["runtime_directory"], max_bytes=context["max_bytes"],
+            timeout=timeout_seconds, cancel=_dagent_cancel_event, stop=stop,
+        )
+    except BaseException:
+        stop()
+        raise
+    content = _tail_truncate(output.content)
+    reference = output.content_reference
+    if reference is not None:
+        reference = {**reference, "preview": content}
+    output = ToolOutput(content, retention=output.retention, content_reference=reference)
+    if process.returncode != 0 or reason:
+        raise ShellExecutionError(content, output=output)
+    return output
 
 
 def _signal_posix_process_group(
@@ -172,27 +111,6 @@ def _kill_windows_process_tree(process: subprocess.Popen[str]) -> None:
             process.kill()
 
 
-def _close_process_pipes(process: subprocess.Popen[str]) -> None:
-    for pipe in (process.stdout, process.stderr):
-        if pipe is not None:
-            pipe.close()
-
-
-def _timeout_output(output: str | bytes | None) -> str:
-    if output is None:
-        return ""
-    if isinstance(output, bytes):
-        return output.decode("utf-8", errors="replace")
-    return output
-
-
-def _format_output(stdout: str, stderr: str) -> str:
-    output = "\n".join(
-        part
-        for part in [stdout.strip(), stderr.strip()]
-        if part
-    )
-    return output
 
 
 def _tail_truncate(output: str) -> str:

@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from dagent.schemas.context import ContextUsage, ModelCallMetadata, ModelTokenUsage
+from dagent.schemas.retention import ResultRetention
 
 
 ModelScope = Literal["conversation", "router", "planner", "validator", "subagent", "compactor"]
@@ -66,6 +67,23 @@ class ToolCallItem(BaseModel):
     capability_id: str | None = None
 
 
+class ResultObservation(BaseModel):
+    """Runtime result data embedded in a planner observation, not a tool reply."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["result_observation"] = "result_observation"
+
+    id: str
+    name: str
+    capability_id: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    status: ToolResultStatus
+    content: StoredContent = Field(default_factory=InlineContent)
+    references: tuple[ContentReference, ...] = ()
+    retention: ResultRetention | None = None
+
+
 class Attachment(BaseModel):
     """A user-supplied file materialized inside a run workspace."""
 
@@ -94,8 +112,16 @@ class UserMessage(BaseModel):
     run_id: str | None = None
     content: str
     attachments: tuple[Attachment, ...] = ()
+    result_observations: tuple[ResultObservation, ...] = ()
     scope: ModelScope = "conversation"
     visibility: ItemVisibility = "user"
+
+    @model_validator(mode="after")
+    def validate_observation_ids(self) -> "UserMessage":
+        ids = [result.id for result in self.result_observations]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Result observation ids must be unique within a message.")
+        return self
 
 
 class AssistantMessage(BaseModel):
@@ -128,6 +154,7 @@ class ToolResultMessage(BaseModel):
     name: str
     capability_id: str | None = None
     status: ToolResultStatus
+    retention: ResultRetention | None = None
     content: StoredContent = Field(default_factory=InlineContent)
     value: Any = None
     value_reference: ContentReference | None = None
@@ -148,6 +175,8 @@ class ContextSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     content: str
+    result_manifest: ContentReference | None = None
+    result_archive_incomplete: bool = False
     source_item_count: int = Field(ge=1)
     method: Literal["model", "deterministic_fallback"] = "model"
     fallback_reason: str | None = None

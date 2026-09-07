@@ -20,7 +20,7 @@ import sys
 from typing import Any
 
 from dagent.capabilities.tools.file_tools import create_file_tool_registry
-from dagent.capabilities.tools.registry import content_and_value_from_result
+from dagent.capabilities.tools.registry import content_and_value_from_result, ToolOutput
 
 
 def run_request(request: dict[str, Any]) -> dict[str, Any]:
@@ -33,9 +33,14 @@ def run_request(request: dict[str, Any]) -> dict[str, Any]:
     try:
         result = tool.handler(**args)
     except Exception as exc:  # noqa: BLE001 - surfaced to host as structured failure
-        return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
+        output = getattr(exc, "output", None)
+        return {"ok": False, "error": str(exc), "error_type": type(exc).__name__,
+                "retention": output.retention if output else None,
+                "content_reference": output.content_reference if output else None}
     content, value = content_and_value_from_result(result)
-    return {"ok": True, "content": content, "value": value}
+    return {"ok": True, "content": content, "value": value,
+            "retention": result.retention if isinstance(result, ToolOutput) else None,
+            "content_reference": result.content_reference if isinstance(result, ToolOutput) else None}
 
 
 def main(argv: list[str]) -> int:

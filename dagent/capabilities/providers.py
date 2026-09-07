@@ -42,8 +42,10 @@ from dagent.state import PromptBuilder
 from dagent.state.prompt_builder import PromptSkill
 from dagent.capabilities.tools.registry import (
     ToolRegistry,
+    ToolOutput,
     content_and_value_from_result,
 )
+from dagent.capabilities.tools.shell_tools import ShellExecutionError, shell as builtin_shell
 
 
 class ToolCapabilityProvider:
@@ -81,16 +83,28 @@ class ToolCapabilityProvider:
                 tool_name: str = name,
             ) -> CapabilityResult:
                 try:
-                    content, value = _execute_tool(
+                    output = _execute_tool(
                         self.tools,
                         current_workspace_root(catalog.workspace_root),
                         tool_name,
                         invocation,
                         context=context,
                     )
-                    return _completed(invocation, content, value=value)
+                    return CapabilityResult.completed(
+                        invocation, output.content, value=output.value,
+                        retention=output.retention, content_reference=output.content_reference,
+                        policy_decision=invocation.boundary.policy_decision(),
+                    )
+                except ShellExecutionError as exc:
+                    output = exc.output
+                    return CapabilityResult.failed(invocation, str(exc), stop_reason="ShellExecutionError",
+                        retention=output.retention if output else None,
+                        content_reference=output.content_reference if output else None)
                 except SandboxToolExecutionError as exc:
-                    return _failed(invocation, str(exc), stop_reason=exc.stop_reason)
+                    output = exc.output
+                    return CapabilityResult.failed(invocation, str(exc), stop_reason=exc.stop_reason,
+                        retention=output.retention if output else None,
+                        content_reference=output.content_reference if output else None)
                 except Exception as exc:
                     return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
 
@@ -326,6 +340,9 @@ class AgentCapabilityProvider:
                     getattr(provider, "context_window_tokens", None),
                 ),
                 max_output_tokens=getattr(provider, "max_output_tokens", None),
+                model_context_window_tokens=getattr(
+                    provider, "model_context_window_tokens", None,
+                ),
                 request_token_counter=getattr(provider, "count_tokens", None),
                 request_reasoning_field=getattr(
                     provider,
@@ -657,7 +674,7 @@ def _execute_tool(
     invocation: CapabilityInvocation,
     *,
     context: Any = None,
-) -> tuple[str, Any]:
+) -> ToolOutput:
     tool = tools.get(tool_name)
     if tool is None:
         raise RuntimeError(f"Tool '{tool_name}' is not registered.")
@@ -686,6 +703,12 @@ def _execute_tool(
                 workspace_root,
                 checked_args["cwd"],
             )
+    if tool.handler is builtin_shell:
+        checked_args["_dagent_result_context"] = {
+            "workspace": str(workspace_root),
+            "runtime_directory": getattr(context, "runtime_directory", ".dagent"),
+            "max_bytes": getattr(context, "max_shell_output_bytes", 64 * 1024 * 1024),
+        }
     if current_run_execution() == "sandbox":
         session = current_sandbox_session()
         if session is None:
@@ -705,7 +728,18 @@ def _execute_tool(
         ):
             checked_args["_dagent_cancel_event"] = cancellation_event
         result = tool.handler(**checked_args)
-    return content_and_value_from_result(result)
+    if isinstance(result, ToolOutput):
+        if result.retention and result.retention.get("continuation"):
+            cursor = dict(result.retention["continuation"])
+            try:
+                cursor["path"] = Path(cursor["path"]).resolve().relative_to(workspace_root).as_posix()
+            except ValueError:
+                # Reviewed paths outside the workspace retain their checked path.
+                pass
+            result = replace(result, retention={**result.retention, "continuation": cursor})
+        return result
+    content, value = content_and_value_from_result(result)
+    return ToolOutput(content, value)
 
 
 def _accepts_cancellation_event(handler: Callable[..., Any]) -> bool:

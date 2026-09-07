@@ -1,6 +1,7 @@
 """Bounded tool-using agent loop."""
 
 from __future__ import annotations
+from dagent.harness_runtime.context import compaction_source
 
 import asyncio
 from dataclasses import dataclass, replace
@@ -80,7 +81,8 @@ from dagent.schemas import (
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.state.prompt_builder import PromptSkill
 from dagent.harness_runtime.context import ContextAssembler
-from dagent.harness_runtime.result_storage import normalize_capability_result
+from dagent.harness_runtime.result_storage import normalize_capability_result, ResultStore, ResultStorageError
+from dagent.schemas.retention import ResultRetention
 from dagent.schemas.conversation import (
     StoredContent,
     ToolResultStatus,
@@ -154,6 +156,9 @@ class ToolAgent:
                 getattr(loop.provider, "context_window_tokens", None),
             ),
             max_output_tokens=getattr(loop.provider, "max_output_tokens", None),
+            model_context_window_tokens=getattr(
+                loop.provider, "model_context_window_tokens", None,
+            ),
             request_token_counter=getattr(loop.provider, "count_tokens", None),
             request_reasoning_field=getattr(
                 loop.provider,
@@ -306,6 +311,8 @@ class ToolAgent:
                         approved_boundary_invocation_id=(
                             invocation.invocation_id if boundary_review_approved else None
                         ),
+                        runtime_directory=self.loop.runtime_directory,
+                        max_shell_output_bytes=self.result_storage_policy.max_shell_output_bytes,
                     ),
                 )
                 normalized = normalize_capability_result(
@@ -314,6 +321,7 @@ class ToolAgent:
                     or current_workspace_root(self.loop.capability_executor.workspace_root),
                     runtime_directory=self.loop.runtime_directory,
                     policy=self.result_storage_policy,
+                    on_event=on_event,
                 )
                 result = normalized.result
                 stored_content = normalized.content
@@ -327,6 +335,9 @@ class ToolAgent:
                     run_id=state.run_id,
                     content=feed_content,
                 )
+            except ResultStorageError:
+                # Execution happened; do not continue or mislabel a storage failure.
+                raise
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
                 self.loop._emit_capability_event(
@@ -369,6 +380,7 @@ class ToolAgent:
             ),
             content=feed_content,
             stored_content=stored_content,
+            retention=None if result is None else result.retention,
             value=None if result is None else result.value,
             value_reference=value_reference,
             artifacts=attachments,
@@ -635,6 +647,8 @@ class ToolAgentLoop:
             task_id=resolved_run_id,
             skills=skills,
         )
+        execution_context = replace(execution_context, runtime_directory=self.runtime_directory,
+                                    max_shell_output_bytes=result_storage_policy.max_shell_output_bytes)
         state_scope = _state_capability_scope(
             capability_scope,
             capability_ids=capability_ids,
@@ -731,6 +745,10 @@ class ToolAgentLoop:
                     apply_steers(steering.drain(resolved_run_id))
                 previous_revision = loop_conversation.revision
                 prepared = await context_assembler.prepare(
+                    result_store=ResultStore(
+                        execution_context.workspace_path or current_workspace_root(self.capability_executor.workspace_root),
+                        self.runtime_directory, on_event, read_boundary=boundary,
+                    ),
                     system_message=system_message,
                     conversation=loop_conversation,
                     tools=tool_definitions,
@@ -748,6 +766,20 @@ class ToolAgentLoop:
                     stream=on_token is not None or on_event is not None,
                 )
                 loop_conversation = prepared.conversation
+                updated_items = {item.id: item for item in loop_conversation.items}
+                new_items[:] = [updated_items.get(item.id, item) for item in new_items]
+                result_items = {item.call_id: item for item in loop_conversation.items
+                                if isinstance(item, ToolResultMessage)}
+                for node in trace.root.children:
+                    execution = node.capability_execution
+                    if execution is None or execution.result is None:
+                        continue
+                    item = result_items.get(execution.invocation.invocation_id)
+                    if item is not None:
+                        execution.result = execution.result.model_copy(update={
+                            "retention": item.retention,
+                            "content_reference": item.content if isinstance(item.content, ContentReference) else None,
+                        })
                 context_usages.append(prepared.usage)
                 if on_event is not None and loop_conversation.revision != previous_revision:
                     on_event(
@@ -915,6 +947,7 @@ class ToolAgentLoop:
                             or current_workspace_root(self.capability_executor.workspace_root),
                             runtime_directory=self.runtime_directory,
                             policy=result_storage_policy,
+                            on_event=on_event,
                         )
                         recorded_result = normalized.result
                         stored_content = normalized.content
@@ -939,6 +972,7 @@ class ToolAgentLoop:
                         content=bounded_content,
                         capability_id=invocation.capability_id,
                         stored_content=stored_content,
+                        retention=None if recorded_result is None else recorded_result.retention,
                         value=None if recorded_result is None else recorded_result.value,
                         value_reference=(
                             None
@@ -1090,6 +1124,7 @@ class ToolAgentLoop:
                     or current_workspace_root(self.capability_executor.workspace_root),
                     runtime_directory=self.runtime_directory,
                     policy=result_storage_policy,
+                    on_event=on_event,
                 )
                 capability_result = normalized.result
                 stored_content = normalized.content
@@ -1106,6 +1141,7 @@ class ToolAgentLoop:
                     content=bounded_content,
                     capability_id=invocation.capability_id,
                     stored_content=stored_content,
+                    retention=capability_result.retention,
                     value=capability_result.value,
                     value_reference=normalized.value_reference,
                     artifacts=attachments,
@@ -1170,7 +1206,7 @@ class ToolAgentLoop:
             max_tokens
         )
         source, source_truncated = context_assembler.truncate_text(
-            _compaction_source(previous, items),
+            compaction_source(previous, items),
             max_tokens=source_limit,
         )
         system_message = {
@@ -1397,6 +1433,7 @@ def _tool_result_item(
     value: Any = None,
     value_reference: ContentReference | None = None,
     artifacts: tuple[Any, ...] = (),
+    retention: ResultRetention | None = None,
 ) -> ToolResultMessage:
     return ToolResultMessage(
         run_id=run_id,
@@ -1408,27 +1445,10 @@ def _tool_result_item(
         value=value,
         value_reference=value_reference,
         artifacts=artifacts,
+        retention=retention,
     )
 
 
-def _compaction_source(
-    previous: ContextSummary | None,
-    items: tuple[ConversationItem, ...],
-) -> str:
-    sections: list[str] = []
-    if previous is not None:
-        sections.append("Previous summary:\n" + previous.content)
-    for item in items:
-        if isinstance(item, UserMessage):
-            sections.append("User:\n" + item.content)
-        elif isinstance(item, AssistantMessage):
-            sections.append("Assistant:\n" + item.content)
-        elif isinstance(item, ToolResultMessage):
-            sections.append(
-                f"Tool {item.capability_id or item.name} ({item.status}):\n"
-                + stored_content_text(item.content)
-            )
-    return "\n\n".join(sections)
 
 
 def _replace_tool_result(
@@ -1442,6 +1462,7 @@ def _replace_tool_result(
     value: Any = None,
     value_reference: ContentReference | None = None,
     artifacts: tuple[Any, ...] = (),
+    retention: ResultRetention | None = None,
 ) -> ConversationState:
     replacement = ToolResultMessage(
         call_id=tool_call_id,
@@ -1451,6 +1472,7 @@ def _replace_tool_result(
         value=value,
         value_reference=value_reference,
         artifacts=artifacts,
+        retention=retention,
     )
     items = list(conversation.items)
     for index in range(len(items) - 1, -1, -1):

@@ -42,7 +42,11 @@ def make_mcp_tool_handler(
         except Exception as exc:
             return _failed(invocation, sanitize_error(exc), "mcp_call_error")
         if bool(getattr(result, "isError", False)):
-            return _failed(invocation, _mcp_content_text(result) or "MCP tool returned an error.", "mcp_error")
+            return CapabilityResult.failed(
+                invocation, _mcp_result_content(result) or "MCP tool returned an error.",
+                stop_reason="mcp_error", value=_mcp_result_value(result), artifacts=_mcp_artifacts(result),
+                policy_decision=invocation.boundary.policy_decision(),
+            )
         return _completed(invocation, _mcp_result_content(result), _mcp_artifacts(result), _mcp_result_value(result))
 
     return execute

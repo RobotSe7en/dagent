@@ -11,6 +11,7 @@ from pydantic.dataclasses import dataclass
 
 from dagent.review import ReviewHandle
 from dagent.steering import SteerDiscardReason
+from dagent.schemas.retention import ResultStorageWarning
 from dagent.schemas import (
     ArtifactState,
     ContextUsage,
@@ -40,6 +41,7 @@ RunStreamEventType = Literal[
     "capability.call.started",
     "capability.call.completed",
     "capability.call.failed",
+    "capability.result.storage_warning",
     "context.compaction.started",
     "context.compaction.finished",
     "dag.updated",
@@ -108,6 +110,12 @@ class RunResult:
 
         if self.plan is None:
             return None
+        nodes = [self.state.trace.root] if self.state.trace else []
+        while nodes:
+            node = nodes.pop()
+            if node.error is not None and node.error.code == "ResultStorageError":
+                return None
+            nodes.extend(node.children)
         return RunCheckpoint(
             schema_version=self.plan.schema_version,
             state=self.state,
@@ -306,6 +314,12 @@ class ContextCompactionFinishedData:
 
 
 @dataclass(frozen=True, config=_STRICT)
+class ResultStorageWarningData:
+    invocation_id: str
+    warning: ResultStorageWarning
+
+
+@dataclass(frozen=True, config=_STRICT)
 class SteerQueuedData:
     steer_id: str
     content: str
@@ -349,6 +363,7 @@ RunStreamEventData = (
     | CapabilityCallFailedData
     | ContextCompactionStartedData
     | ContextCompactionFinishedData
+    | ResultStorageWarningData
     | SteerQueuedData
     | SteerAppliedData
     | SteerDiscardedData
@@ -401,6 +416,7 @@ _EVENT_DATA_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "capability.call.failed": TypeAdapter(CapabilityCallFailedData),
     "context.compaction.started": TypeAdapter(ContextCompactionStartedData),
     "context.compaction.finished": TypeAdapter(ContextCompactionFinishedData),
+    "capability.result.storage_warning": TypeAdapter(ResultStorageWarningData),
     "steer.queued": TypeAdapter(SteerQueuedData),
     "steer.applied": TypeAdapter(SteerAppliedData),
     "steer.discarded": TypeAdapter(SteerDiscardedData),

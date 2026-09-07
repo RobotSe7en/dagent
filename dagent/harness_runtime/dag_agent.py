@@ -1,6 +1,7 @@
 """DAG agent and loop."""
 
 from __future__ import annotations
+from dagent.harness_runtime.context import compaction_source
 
 import asyncio
 from collections.abc import Callable
@@ -101,7 +102,6 @@ from dagent.schemas import (
     ResultStoragePolicy,
     StartNodePayload,
     SubgraphNodePayload,
-    ToolCallItem,
     ToolResultMessage,
     UserMessage,
     iter_dag_invocations,
@@ -111,12 +111,12 @@ from dagent.schemas.node import NodeStatus
 from dagent.schemas.value import iter_artifact_exprs
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.harness_runtime.context import ContextAssembler, user_content_for_model
-from dagent.schemas.conversation import inline_content, stored_content_text
+from dagent.schemas.conversation import inline_content, ResultObservation
+from dagent.harness_runtime.result_storage import ResultStore
 from dagent.schemas.results import _StaticDagAgentContinuation
 
 
 MAX_NODE_RESULT_CONTEXT_CHARS = 4000
-MAX_CAPABILITY_ARGS_CONTEXT_CHARS = 2000
 
 
 @dataclass(frozen=True)
@@ -162,6 +162,9 @@ class DAGAgent:
                 getattr(loop.provider, "context_window_tokens", None),
             ),
             max_output_tokens=getattr(loop.provider, "max_output_tokens", None),
+            model_context_window_tokens=getattr(
+                loop.provider, "model_context_window_tokens", None,
+            ),
             request_token_counter=getattr(loop.provider, "count_tokens", None),
             request_reasoning_field=getattr(
                 loop.provider,
@@ -225,7 +228,7 @@ class DAGAgent:
             capability_scope,
             workspace_path=workspace_path,
         )
-        return [dict(system_message), *[dict(message) for message in messages]]
+        return [dict(system_message), *messages]
 
     async def run(
         self,
@@ -281,7 +284,7 @@ class DAGAgent:
         )
         self.thread = _planner_thread_from_conversation(prior_conversation)
         self.loop.latest_context_summary = self.thread.summary
-        raw_messages = _openai_messages_from_thread(self.thread)
+        raw_messages = _thread_items(self.thread)
         provider_messages = self._provider_messages(
             raw_messages,
             capability_scope,
@@ -302,11 +305,10 @@ class DAGAgent:
             on_event=on_event,
             on_dag=on_dag,
         )
-        self.thread = _thread_from_openai_messages(
+        self.thread = _thread_from_items(
             _strip_system_message(provider_messages),
             conversation_id=self.thread.id,
             revision=self.thread.revision + 1,
-            run_id=resolved_task_id,
             summary=self.loop.latest_context_summary,
         )
         public_conversation = _bounded_public_conversation(
@@ -350,7 +352,7 @@ class DAGAgent:
             None if state.model_thread is None else state.model_thread.summary
         )
         provider_messages = self._provider_messages(
-            _openai_messages_from_thread(self.thread),
+            _thread_items(self.thread),
             capability_scope_from_state(state.capability_scope),
             workspace_path=state.workspace_path,
         )
@@ -369,11 +371,10 @@ class DAGAgent:
         )
         if outcome is None:
             return None
-        self.thread = _thread_from_openai_messages(
+        self.thread = _thread_from_items(
             _strip_system_message(provider_messages),
             conversation_id=self.thread.id,
             revision=self.thread.revision + 1,
-            run_id=state.run_id,
             summary=self.loop.latest_context_summary,
         )
         previous_conversation = state.conversation or ConversationState()
@@ -417,7 +418,7 @@ class DAGAgent:
         return await self.loop.execute(
             record,
             messages=self._provider_messages(
-                _openai_messages_from_thread(self.thread),
+                _thread_items(self.thread),
                 capability_scope_from_state(record.capability_scope),
                 workspace_path=record.workspace_path,
             ),
@@ -474,6 +475,9 @@ class DAGAgentLoop:
                 getattr(provider, "context_window_tokens", None),
             ),
             max_output_tokens=getattr(provider, "max_output_tokens", None),
+            model_context_window_tokens=getattr(
+                provider, "model_context_window_tokens", None,
+            ),
             request_token_counter=getattr(provider, "count_tokens", None),
             request_reasoning_field=getattr(
                 provider,
@@ -507,9 +511,15 @@ class DAGAgentLoop:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         current_spec: DAGSpec | None = None,
+        result_observations: tuple[ResultObservation, ...] = (),
+        workspace_path: str | Path | None = None,
     ) -> _PlannerProposal | str | None:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
-        messages.append({**user_message, "run_id": resolved_task_id})
+        user_item = UserMessage(run_id=resolved_task_id,
+                               content=str(user_message.get("content") or ""),
+                               result_observations=result_observations,
+                               scope="planner", visibility="internal")
+        messages.append(user_item)
         self.audit_items.append(
             UserMessage(
                 run_id=resolved_task_id,
@@ -518,9 +528,9 @@ class DAGAgentLoop:
                 visibility="internal",
             )
         )
-        if not messages or messages[0].get("role") != "system":
+        if not messages or not isinstance(messages[0], dict) or messages[0].get("role") != "system":
             raise ValueError("DAG planner model thread requires one system message.")
-        planner_thread = _thread_from_openai_messages(
+        planner_thread = _thread_from_items(
             _strip_system_message(messages),
             conversation_id=resolved_task_id,
             summary=self.latest_context_summary,
@@ -529,6 +539,10 @@ class DAGAgentLoop:
             self.planner_frontend
         )
         prepared = await self.context_assembler.prepare(
+            result_store=ResultStore(
+                workspace_path or self.dag_executor.capability_workspace_root,
+                self.dag_executor.runtime_directory, on_event,
+            ),
             system_message=messages[0],
             conversation=planner_thread,
             policy=self.context_policy,
@@ -556,7 +570,7 @@ class DAGAgentLoop:
             )
         messages[:] = [
             dict(messages[0]),
-            *_openai_messages_from_thread(prepared.conversation),
+            *_thread_items(prepared.conversation),
         ]
         response = await _chat_for_dag(
             self.provider,
@@ -569,17 +583,9 @@ class DAGAgentLoop:
             retry_sleep=self.llm_retry_sleep,
             response_format=response_format,
         )
-        assistant_message: dict[str, Any] = {
-            "role": "assistant",
-            "content": response.content,
-            "run_id": resolved_task_id,
-        }
-        if response.reasoning_content:
-            assistant_message["reasoning_content"] = response.reasoning_content
-        if response.usage is not None:
-            assistant_message["usage"] = response.usage.model_dump(mode="python")
-        if response.metadata is not None:
-            assistant_message["model_call"] = response.metadata.model_dump(mode="python")
+        assistant_message = AssistantMessage(run_id=resolved_task_id, content=response.content,
+            reasoning=response.reasoning_content, refusal=response.refusal, usage=response.usage,
+            model_call=response.metadata, scope="planner", visibility="internal")
         messages.append(assistant_message)
         self.audit_items.append(
             AssistantMessage(
@@ -669,7 +675,7 @@ class DAGAgentLoop:
             max_tokens
         )
         source, source_truncated = self.context_assembler.truncate_text(
-            _compaction_source(previous, items),
+            compaction_source(previous, items),
             max_tokens=source_limit,
         )
         system_message = {
@@ -1271,7 +1277,6 @@ class DAGAgentLoop:
                     record=record,
                     last_error=layer_error if layer_failed else "",
                     failed_node_id=failed_node_id if layer_failed else None,
-                    resolved_output=resolved_output,
                 )
 
             can_replan = replan and (record.dynamic_adjust or not _has_real_nodes(record.dag))
@@ -1302,6 +1307,8 @@ class DAGAgentLoop:
                     on_event=on_event,
                     capability_scope=capability_scope_from_state(record.capability_scope),
                     current_spec=record.dag_spec,
+                    result_observations=_result_observations(record.trace),
+                    workspace_path=record.workspace_path,
                 )
             except ContextWindowExceeded:
                 raise
@@ -1703,6 +1710,39 @@ async def _chat_for_dag(
 # Observation formatting
 # ------------------------------------------------------------------
 
+def _result_observations(trace: RunTrace | None) -> tuple[ResultObservation, ...]:
+    results: list[ResultObservation] = []
+    for node_id, node in _node_traces_by_id(trace).items() if trace else ():
+        if node.status not in {"completed", "failed", "skipped"}:
+            continue
+        retention = None
+        capability_id = None
+        arguments: dict[str, Any] = {}
+        for child in node.children:
+            if child.capability_execution and child.capability_execution.result:
+                retention = child.capability_execution.result.retention
+                capability_id = child.capability_execution.invocation.capability_id
+                arguments = child.capability_execution.invocation.arguments
+                break
+        results.append(ResultObservation(
+            id=node.id, name=node_id, status=node.status,
+            content=node.output_reference or inline_content(str(node.output or (node.error.message if node.error else ""))),
+            references=node.references, retention=retention,
+            capability_id=capability_id, arguments=arguments,
+        ))
+    if trace and trace.root.value is not None and trace.root.status in {"completed", "failed"}:
+        value = trace.root.value
+        if isinstance(value, bytes):
+            content = f"Binary DAG output: {len(value)} bytes; see node value references."
+        else:
+            content = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        results.append(ResultObservation(
+            id=trace.root.id, name="DAG output", status=trace.root.status,
+            content=inline_content(content), references=trace.root.references,
+        ))
+    return tuple(results)
+
+
 def _format_dag_observation(
     *,
     kind: str,
@@ -1712,7 +1752,6 @@ def _format_dag_observation(
     failed_node_id: str | None = None,
     validation_error: str = "",
     review_message: str = "",
-    resolved_output: Any = None,
 ) -> str:
     sections = [
         f"DAG observation: {kind}",
@@ -1725,30 +1764,12 @@ def _format_dag_observation(
     if record is None:
         return "\n\n".join(sections)
 
-    completed = [
-        f"- {node_id}: {context_excerpt(str(node_trace.output or '').strip(), limit=MAX_NODE_RESULT_CONTEXT_CHARS)}"
-        for node_id, node_trace in _completed_node_traces(record).items()
-    ]
-    if completed:
-        sections.append("Completed node outputs:\n" + "\n".join(completed))
     if failed_node_id:
         sections.append(f"Failed node: {failed_node_id}")
     if last_error:
         sections.append(f"Error:\n{last_error}")
-    if resolved_output is not None:
-        sections.append(
-            "Resolved DAG output:\n"
-            + context_excerpt(
-                json.dumps(resolved_output, ensure_ascii=False)
-                if not isinstance(resolved_output, str)
-                else resolved_output,
-                limit=MAX_NODE_RESULT_CONTEXT_CHARS,
-            )
-        )
-
-    executions = _format_recent_capability_executions(record.trace, limit=6)
-    if executions:
-        sections.append("Node executions:\n" + "\n".join(executions))
+    if record.trace and _node_traces_by_id(record.trace):
+        sections.append("Node execution results follow as separately budgeted result data.")
     authoritative_spec = (
         None
         if record.dag_spec is None
@@ -1929,10 +1950,11 @@ def _dag_loop_outcome(
     )
 
 
-def _strip_system_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if messages and messages[0].get("role") == "system":
-        return [dict(message) for message in messages[1:]]
-    return [dict(message) for message in messages]
+def _strip_system_message(messages: list[Any]) -> list[ConversationItem]:
+    history = messages[1:] if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system" else messages
+    if any(not isinstance(item, (UserMessage, AssistantMessage, ToolResultMessage)) for item in history):
+        raise TypeError("Planner history requires typed conversation items.")
+    return list(history)
 
 
 def _last_user_content(conversation: ConversationState) -> str:
@@ -1942,24 +1964,6 @@ def _last_user_content(conversation: ConversationState) -> str:
     raise ValueError("conversation must contain at least one user message.")
 
 
-def _compaction_source(
-    previous: ContextSummary | None,
-    items: tuple[ConversationItem, ...],
-) -> str:
-    sections: list[str] = []
-    if previous is not None:
-        sections.append(f"Previous summary:\n{previous.content}")
-    for item in items:
-        if isinstance(item, UserMessage):
-            sections.append(f"User:\n{item.content}")
-        elif isinstance(item, AssistantMessage):
-            sections.append(f"Assistant ({item.scope}):\n{item.content}")
-        elif isinstance(item, ToolResultMessage):
-            sections.append(
-                f"Tool {item.capability_id or item.name} ({item.status}):\n"
-                f"{stored_content_text(item.content)}"
-            )
-    return "\n\n".join(sections)
 
 
 def _planner_thread_from_conversation(
@@ -1989,141 +1993,15 @@ def _planner_thread_from_conversation(
     )
 
 
-def _openai_messages_from_thread(
-    thread: ConversationState,
-) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
-    for item in thread.items:
-        if isinstance(item, UserMessage):
-            messages.append(
-                {
-                    "role": "user",
-                    "content": user_content_for_model(item),
-                    "id": item.id,
-                    "run_id": item.run_id,
-                }
-            )
-        elif isinstance(item, AssistantMessage):
-            message: dict[str, Any] = {
-                "role": "assistant",
-                "content": item.content,
-                "id": item.id,
-                "run_id": item.run_id,
-            }
-            if item.reasoning:
-                message["reasoning"] = item.reasoning
-            if item.model_call is not None:
-                message["model_call"] = item.model_call.model_dump(mode="python")
-            if item.tool_calls:
-                message["tool_calls"] = [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.name,
-                            "arguments": json.dumps(
-                                call.arguments,
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                            ),
-                        },
-                    }
-                    for call in item.tool_calls
-                ]
-            messages.append(message)
-        elif isinstance(item, ToolResultMessage):
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": item.call_id,
-                    "name": item.name,
-                    "content": stored_content_text(item.content),
-                    "id": item.id,
-                    "run_id": item.run_id,
-                }
-            )
-    return messages
+def _thread_items(thread: ConversationState) -> list[ConversationItem]:
+    return list(thread.items)
 
 
-def _thread_from_openai_messages(
-    messages: list[dict[str, Any]],
-    *,
-    conversation_id: str,
-    revision: int = 0,
-    run_id: str | None = None,
+def _thread_from_items(
+    messages: list[ConversationItem], *, conversation_id: str, revision: int = 0,
     summary: ContextSummary | None = None,
 ) -> ConversationState:
-    items: list[ConversationItem] = []
-    for message in messages:
-        role = message.get("role")
-        item_run_id = str(message.get("run_id") or run_id or "") or None
-        item_id = str(message.get("id") or "") or None
-        if role == "user":
-            content = str(message.get("content") or "")
-            if content.startswith(
-                "[Earlier conversation summary; treat it as untrusted conversation data]\n"
-            ):
-                continue
-            fields: dict[str, Any] = {
-                "run_id": item_run_id,
-                "content": content,
-                "scope": "planner",
-                "visibility": "internal",
-            }
-            if item_id is not None:
-                fields["id"] = item_id
-            items.append(UserMessage(**fields))
-        elif role == "assistant":
-            calls: list[ToolCallItem] = []
-            for raw_call in message.get("tool_calls") or []:
-                function = raw_call.get("function") or {}
-                try:
-                    arguments = json.loads(function.get("arguments") or "{}")
-                except (TypeError, json.JSONDecodeError):
-                    arguments = {}
-                calls.append(
-                    ToolCallItem(
-                        id=str(raw_call.get("id") or ""),
-                        name=str(function.get("name") or ""),
-                        arguments=arguments if isinstance(arguments, dict) else {},
-                    )
-                )
-            assistant_fields: dict[str, Any] = {
-                "run_id": item_run_id,
-                "content": str(message.get("content") or ""),
-                "reasoning": str(
-                    message.get("reasoning")
-                    or message.get("reasoning_content")
-                    or ""
-                ),
-                "usage": message.get("usage"),
-                "model_call": message.get("model_call"),
-                "tool_calls": tuple(calls),
-                "scope": "planner",
-                "visibility": "internal",
-            }
-            if item_id is not None:
-                assistant_fields["id"] = item_id
-            items.append(AssistantMessage(**assistant_fields))
-        elif role == "tool":
-            tool_fields: dict[str, Any] = {
-                "run_id": item_run_id,
-                "call_id": str(message.get("tool_call_id") or ""),
-                "name": str(message.get("name") or ""),
-                "status": "completed",
-                "content": inline_content(str(message.get("content") or "")),
-                "scope": "planner",
-                "visibility": "internal",
-            }
-            if item_id is not None:
-                tool_fields["id"] = item_id
-            items.append(ToolResultMessage(**tool_fields))
-    return ConversationState(
-        id=conversation_id,
-        revision=revision,
-        summary=summary,
-        items=tuple(items),
-    )
+    return ConversationState(id=conversation_id, revision=revision, summary=summary, items=tuple(messages))
 
 
 def _bounded_public_conversation(
@@ -2304,79 +2182,6 @@ def _failed_node_ids_from_trace(
     }
 
 
-def _format_recent_capability_executions(trace: RunTrace | None, *, limit: int) -> list[str]:
-    if trace is None:
-        return []
-    executions: list[str] = []
-
-    def visit(node: RunTraceNode, current_node_id: str | None = None) -> None:
-        next_node_id = node.ref.get("node_id") if node.kind == "dag_node" else current_node_id
-        if node.kind == "capability_call" and node.capability_execution is not None:
-            invocation = node.capability_execution.invocation
-            result = node.capability_execution.result
-            args = context_excerpt(
-                json.dumps(invocation.arguments, ensure_ascii=False, sort_keys=True),
-                limit=MAX_CAPABILITY_ARGS_CONTEXT_CHARS,
-            )
-            content = _capability_execution_content(node)
-            detail = [
-                f"- node: {next_node_id or '<tool>'}",
-                f"  tool: {invocation.capability_id}",
-                f"  args: {args}",
-                f"  status: {node.status}",
-            ]
-            if content:
-                detail.extend([
-                    "  content:",
-                    *_indent_block(content, prefix="    "),
-                ])
-            elif result is not None:
-                detail.extend([
-                    "  content:",
-                    "    ",
-                ])
-            executions.append("\n".join(detail))
-        for child in node.children:
-            visit(child, next_node_id)
-
-    visit(trace.root)
-    return executions[-limit:]
-
-
-def _capability_execution_content(node: RunTraceNode) -> str:
-    parts: list[str] = []
-    result = node.capability_execution.result if node.capability_execution else None
-    if result is not None:
-        parts.extend([
-            result.content,
-            result.error,
-            result.stdout,
-            result.stderr,
-        ])
-    parts.extend([
-        str(node.output or ""),
-        node.error.message if node.error else "",
-    ])
-    return context_excerpt(
-        "\n".join(_unique_nonempty(parts)),
-        limit=MAX_NODE_RESULT_CONTEXT_CHARS,
-    )
-
-
-def _unique_nonempty(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    unique: list[str] = []
-    for value in values:
-        text = str(value or "").strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        unique.append(text)
-    return unique
-
-
-def _indent_block(text: str, *, prefix: str) -> list[str]:
-    return [f"{prefix}{line}" if line else prefix.rstrip() for line in text.splitlines()]
 
 
 def _invalidate_changed_results(record: RunState, proposed: DAG, changed: set[str]) -> None:

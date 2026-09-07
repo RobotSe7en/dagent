@@ -1408,6 +1408,8 @@ class _RejectThenApproveValidator:
         final_answer: str,
         execution_context: str = "",
         workspace_path: str | Path | None = None,
+        result_observations=(),
+        result_store=None,
     ) -> tuple[ValidationResult, None, None]:
         self.calls += 1
         if self.calls == 1:

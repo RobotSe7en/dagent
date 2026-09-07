@@ -9,6 +9,42 @@ The current package version is `0.9.8`.
 
 ## Unreleased
 
+### Recoverable tool output
+
+- The default total tool-result display budget increases from 8192 to 16384
+  tokens; the individual limit remains 2048. Set the total explicitly to retain
+  8192. Existing checkpoint policies remain explicit and unchanged.
+- Results now reserve status, excerpts and recovery notices before distributing
+  remaining tokens. Display truncation can save text below the 256 KiB inline
+  threshold. Enable `tool.read_file` and allow the result directory when needed;
+  capabilities and boundaries are never automatically expanded.
+- Shell capture uses bounded memory with a configurable shared 64 MiB limit;
+  commands continue above the capture limit with explicitly partial records.
+  `read_file` adds character windows; `grep` and `list_files` add entry pagination.
+- Result retention, content references, planner observations and summary indexes
+  add optional schema fields. New SDK versions read existing v4 checkpoints;
+  older SDKs are not guaranteed to accept new checkpoint fields. Internal built-in
+  handlers now return `ToolOutput`; public capability IDs and structured value
+  shapes are unchanged. Visible result/observation text intentionally changes.
+- Text-storage failures warn without changing execution success. Required value
+  or artifact failures block dependent execution. Saving originals can increase
+  disk use and persist sensitive output; workspace lifecycle belongs to the host.
+  See [Tool Result Recovery](tool-result-recovery.md) and its offline example.
+
+### Context window defaults and DeepSeek model recognition
+
+- When no explicit or discovered limit is available, the SDK now uses 131,072
+  tokens (128K), up from 32,768. To preserve the previous limit, set
+  `context_window_tokens=32768` explicitly. Saved checkpoint limits remain unchanged.
+- Official DeepSeek V4 Flash, Pro, and Flash Vision Exp model IDs are recognized
+  with a 1,048,576-token window from official documentation checked
+  on 2026-09-07. `/models` does not expose lengths; this is an endpoint/model lookup.
+  Third-party endpoints and unknown models do not inherit these limits.
+- Explicit limits remain authoritative but cannot exceed a known model maximum.
+  DeepSeek auto counting uses the heuristic; explicit vLLM counting fails.
+  Context usage adds optional `model_context_window_tokens` for the documented
+  model limit. Token estimation remains independent of model-limit recognition.
+
 ## 0.9.8
 
 ### Breaking: flat provider reasoning controls

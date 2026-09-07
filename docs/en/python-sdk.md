@@ -1,5 +1,8 @@
 # Python SDK Reference Map
 
+For result display budgets, typed retention metadata and file/search pagination, see
+[Tool Result Recovery](tool-result-recovery.md).
+
 This page maps the current public Python SDK surface. It is intentionally a
 reference map, not a full tutorial. Start with [Quick Start](quick-start.md) for
 a first run, then use the feature guides linked below for details.

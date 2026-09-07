@@ -19,6 +19,9 @@ async def main() -> None:
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
         api_key_env="API_KEY",
+        # None selects the official model window (1M for this DeepSeek model).
+        # Unrecognized models without a discovered limit fall back to 128K.
+        context_window_tokens=None,
     )
     profile = AgentProfile(
         name="qa",

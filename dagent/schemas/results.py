@@ -26,7 +26,12 @@ from dagent.schemas.artifact import ArtifactFileManifest
 from dagent.schemas.capability import CapabilityInvocation
 from dagent.schemas.run_trace import RunTrace
 from dagent.schemas.sandbox import RunExecution
-from dagent.schemas.context import ContextPolicy, ContextUsage, ResultStoragePolicy
+from dagent.schemas.context import (
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    ContextPolicy,
+    ContextUsage,
+    ResultStoragePolicy,
+)
 from dagent.schemas.conversation import (
     ConversationItem,
     ConversationState,
@@ -108,7 +113,7 @@ class ResolvedRunPlan(BaseModel):
     context_policy: ContextPolicy = Field(default_factory=ContextPolicy)
     result_storage_policy: ResultStoragePolicy = Field(default_factory=ResultStoragePolicy)
     runtime_directory: str
-    context_window_tokens: int = Field(default=32768, ge=1024)
+    context_window_tokens: int = Field(default=DEFAULT_CONTEXT_WINDOW_TOKENS, ge=1024)
     max_output_tokens: int | None = Field(default=None, ge=1)
     extra_system_prompt: str | None = None
     fingerprint: str = ""
