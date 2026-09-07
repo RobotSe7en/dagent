@@ -106,3 +106,47 @@ uses disk space and can persist sensitive tool output; files are not automatical
 deleted when the runner closes.
 
 Run the offline example with `uv run python -m examples.tool_result_recovery`.
+
+## Distinguish source windows from model display
+
+Since 0.9.11, file results show separate source and display coordinates:
+
+```text
+[status=completed]
+[TRUNCATED] model display shortened; received result has undisplayed text
+[File window: chars=[0,20352); source_eof=true; unit=Unicode code points, zero-based, end-exclusive]
+[Displayed: chars=[0,1900)]
+[Continue with read_file: {"path": "report.txt", "offset_chars": 1900, "limit_chars": 1024}]
+...exact source characters 0 through 1899...
+```
+
+The numbers illustrate a projection, not a fixed token-to-character conversion.
+A 59,980-byte, 20,352-character, 500-line file can be completely returned by the
+tool yet only partly displayed under a 2048-token budget. Metadata also consumes
+that budget. `source_eof=true` means the **returned window** reached EOF; it does
+not mean the model saw the whole file or that a window beginning later covered
+the file prefix. `source_eof=false` and `[SOURCE_TRUNCATED]` mean more source
+follows the returned window. `[TRUNCATED]` independently means model display was
+shortened. Ordinary source pagination alone does not set display truncation.
+
+Ranges are `[start,end)` in Unicode code points, not bytes, lines, grapheme
+clusters or tokens. An initial UTF-8 BOM is excluded; LF/CRLF terminators are
+preserved (CRLF counts as two code points). The displayed file body is always
+a continuous prefix of the returned window. The continuation uses its actual
+displayed end, including when a line window is cropped mid-line. Complete
+display at EOF has no model-facing continuation. A zero-body projection reports
+an empty displayed range and does not advance its cursor. Minimum information still
+raises the existing budget error if it cannot fit.
+
+The total tool-result budget can shorten an earlier result in later requests.
+Its displayed range and cursor are recomputed for that request;
+`ResultRetention.window_start` / `window_length` continue to describe the
+original returned source window. This is not a global reading-progress ledger
+and does not undo earlier calls. Track progress from calls and results actually
+observed, avoid identical file/interval requests within a batch, and do not
+restart or change tools solely because a display was shortened when the file
+has not changed. Reads are fresh filesystem queries, not snapshots.
+
+These are tool descriptions and default prompt guidance, not execution deduplication,
+automatic reading, retries or recovery. Global display budgets are unchanged.
+The offline recovery example now prints these model-facing ranges and cursors.

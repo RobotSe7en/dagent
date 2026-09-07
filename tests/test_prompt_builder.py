@@ -39,6 +39,11 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     assert "DAGAgent agent instructions" in messages[0]["content"]
     assert "read (tool, id: tool.read_file): Read a file. Args: path." in messages[0]["content"]
     assert "Project context." in messages[0]["content"]
+    assert "Follow returned cursors and units" in messages[0]["content"]
+    assert "actual calls/results" in messages[0]["content"]
+    assert "Avoid duplicate file intervals in one batch" in messages[0]["content"]
+    assert "do not restart or switch tools" in messages[0]["content"]
+    assert "do not undo reading progress" in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "Task t1: hello"}
 
 

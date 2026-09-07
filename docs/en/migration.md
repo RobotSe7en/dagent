@@ -9,6 +9,22 @@ The current package version is `0.9.10a0`.
 
 ## Unreleased
 
+### File windows and display budgets
+
+- File displays distinguish source EOF/window coordinates from the exact
+  displayed character interval. Continuation follows the displayed end after
+  both per-result and total-budget shortening. Existing retention coordinates
+  remain source coordinates; no checkpoint schema or global budget change.
+- Line windows now preserve their final LF/CRLF. Raw bounded line reads use
+  `[SOURCE_TRUNCATED]` and character continuation; model `[TRUNCATED]` denotes
+  display shortening. Human-readable result text intentionally changes; hosts
+  parsing it should update expectations and use typed retention for source data.
+  Existing saved results are not rewritten.
+- Tool descriptions and common prompts recommend cursor-based progress and
+  avoiding duplicate intervals. No automatic reading, retries, recovery or
+  execution deduplication is added. See [tool result recovery](tool-result-recovery.md).
+
+
 ### Final-request reasoning observability
 
 - `ModelCallMetadata.request_reasoning` is a new optional typed summary of

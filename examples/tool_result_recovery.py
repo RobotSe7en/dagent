@@ -68,7 +68,7 @@ async def main() -> None:
                             arguments={
                                 "path": reference.path,
                                 "offset_chars": 0,
-                                "limit_chars": 512,
+                                "limit_chars": 8192,
                             },
                         ),
                         ToolCall(
@@ -111,6 +111,9 @@ async def main() -> None:
             result = await runner.run(
                 dagent.ToolAgent(
                     profile="conversation",
+                    context=dagent.ContextPolicy(
+                        max_tool_result_tokens=256, max_total_tool_result_tokens=2048,
+                    ),
                     capabilities=[
                         "tool.read_file",
                         "tool.grep",
@@ -122,6 +125,11 @@ async def main() -> None:
                 workspace_path=workspace,
             )
             print(result.output_text)
+            for message in reader.requests[-1]["messages"]:
+                if message.get("role") == "tool" and message.get("tool_call_id") == "read":
+                    for line in message["content"].splitlines():
+                        if line.startswith(("[File window:", "[Displayed:", "[Continue with")):
+                            print(line)
             print(
                 "Model tool-result tokens:", result.context_usage[-1].tool_result_tokens
             )

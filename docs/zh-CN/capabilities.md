@@ -31,7 +31,7 @@ Raw `CapabilityDefinition.id` 必须以受支持的 kind 前缀开头（`tool`�
 
 | 工具 | 风险 | 行为 |
 | --- | --- | --- |
-| `tool.read_file` | low | 读取 UTF-8 文本文件。可选 `offset`（1 起始）和 `limit` 分页读取大文件；单次读取上限 2000 行 / 200 KB，超限时末尾追加标明已读范围的 `[TRUNCATED]` 行。二进制文件直接报错。未截断的完整读取按原文逐字节返回。 |
+| `tool.read_file` | low | 读取 UTF-8 文本窗口。行 `offset` 从 1 起，`offset_chars` 为从 0 起的 Unicode 码点；优先沿返回的展示游标续读，不混用单位。上限 2000 行 / 200,000 字节。`[SOURCE_TRUNCATED]` 表示源分页，模型展示中的 `[TRUNCATED]` 表示预算缩短。窗口正文保留换行、排除初始 UTF-8 BOM；二进制文件报错。 |
 | `tool.write_file` | medium | 写入 UTF-8 文本并自动创建父目录。新文件遵循进程 umask；覆盖已有文件时保留原文件权限；替换写入会让目标路径与同 inode 的其他硬链接断开。返回写入字节数。 |
 | `tool.edit_file` | medium | 将 `old_string` 的唯一一次精确匹配替换为 `new_string`。匹配必须唯一，并且在 UTF-8 解码后逐字精确匹配：零匹配或多处匹配都会失败，并提示先读文件、补充上下文。保留既有换行与 UTF-8 BOM；结果附带一段简短 unified diff。 |
 | `tool.list_files` | low | 列出路径下的文件与目录（目录以 `/` 结尾），最多 `depth` 层（默认 3）。传入 `glob`（如 `*.py`）时只列匹配的文件。输出达到 500 条后停止；结构化返回值就是已展示条目列表，DAG map 节点可直接对其扇出。 |

@@ -67,7 +67,9 @@ class GatedProvider:
 
 
 class GatedCompactionProvider(GatedProvider):
-    context_window_tokens = 2048
+    # Leave room for the default tool guidance while forcing compaction with
+    # this fixture's 20% trigger. This is not a test of the hard window limit.
+    context_window_tokens = 2560
     max_output_tokens = 256
 
     async def chat(

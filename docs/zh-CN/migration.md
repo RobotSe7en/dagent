@@ -8,6 +8,18 @@
 
 ## Unreleased
 
+### 文件窗口与展示预算
+
+- 文件展示区分源 EOF/窗口坐标与实际呈现字符区间。单条及总预算缩短后，续读游标
+  均指向实际展示末尾。既有 retention 坐标仍描述源窗口；不改变 checkpoint 版本
+  或全局预算默认值。
+- 行窗口保留末尾 LF/CRLF。原始受限行读取使用 `[SOURCE_TRUNCATED]` 与字符续读，
+  模型 `[TRUNCATED]` 表示展示缩短。可读结果文本有意变化，解析文本的宿主须更新
+  预期，源数据优先使用类型化 retention；不重写既有保存结果。
+- 工具说明及通用提示建议沿游标推进、避免重复区间，不新增自动补读、重试、恢复
+  或执行去重。详见[工具结果说明](tool-result-recovery.md)。
+
+
 ### 最终请求推理可观测性
 
 - `ModelCallMetadata.request_reasoning` 新增可选类型化摘要，统计最终 HTTP 请求的
