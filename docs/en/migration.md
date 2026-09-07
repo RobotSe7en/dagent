@@ -5,12 +5,16 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.10`.
+The current package version is `0.9.10a0`.
 
 ## Unreleased
 
+## 0.9.10a0 (0.9.10-alpha)
+
 ### Tool result-storage failure audit
 
+- Tool storage-failure snapshots preserve traces from every preceding validation
+  attempt, including failures after two or more retries.
 - `RunFailedData.result` is a new optional `RunResult` field, defaulting to `None`.
   Stream consumers with strict payload schemas must accept this additional field.
   The terminal event remains `run.failed`, with unchanged message/error type.
@@ -21,6 +25,17 @@ The current package version is `0.9.10`.
 - Failure snapshots preserve execution and retention audit, stop subsequent
   execution, and expose no checkpoint, including after review. DAG failure
   results and recoverable text-storage warnings retain their existing behavior.
+
+
+### Verification and installation
+
+- Validated with the full Python suite (including MCP), wheel/sdist builds,
+  and package metadata checks.
+- This is a prerelease. Python normalizes `0.9.10-alpha` to `0.9.10a0`,
+  which sorts before the already published stable `0.9.10`. Install explicitly:
+  `pip install 'dagent-ai==0.9.10a0'`.
+- Audit snapshots do not restore missing data or roll back tool side effects;
+  Workspace publication and audit persistence remain host responsibilities.
 
 
 ## 0.9.10

@@ -68,6 +68,7 @@ from dagent.schemas import (
     LoopOutcome,
     CapabilityDefinition,
     RunState,
+    RunTrace,
     UserMessage,
 )
 from dagent.schemas.run_id import validate_run_id
@@ -285,6 +286,7 @@ class HarnessRuntime:
         applied_steers: list[UserMessage] = []
         run_context_usages: list[ContextUsage] = []
         validation_usages: list[ContextUsage] = []
+        audit_trace: RunTrace | None = None
 
         for _attempt in range(self.max_validation_retries + 1):
             if loop_outcome is None or feedback is not None:
@@ -306,6 +308,12 @@ class HarnessRuntime:
                     audit_items.append(feedback_item)
                 if loop_outcome is not None:
                     set_run_steering_phase(loop_outcome.state.run_id, "active")
+                    if loop_outcome.state.trace is not None:
+                        audit_trace = (
+                            loop_outcome.state.trace
+                            if audit_trace is None
+                            else audit_trace.merge(loop_outcome.state.trace)
+                        )
                 try:
                     next_outcome = await run_once(feedback_item)
                 except ToolResultStorageFailure as exc:
@@ -316,12 +324,8 @@ class HarnessRuntime:
                             *failed.state.context_usage,
                         ],
                     })
-                    if (
-                        loop_outcome is not None
-                        and loop_outcome.state.trace is not None
-                        and failed_state.trace is not None
-                    ):
-                        failed_state.trace = loop_outcome.state.trace.merge(failed_state.trace)
+                    if audit_trace is not None and failed_state.trace is not None:
+                        failed_state.trace = audit_trace.merge(failed_state.trace)
                     exc.outcome = failed.model_copy(update={
                         "state": failed_state,
                         "new_items": (*audit_items, *failed.new_items),

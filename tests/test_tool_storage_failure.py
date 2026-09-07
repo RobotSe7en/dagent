@@ -185,7 +185,7 @@ def test_direct_loop_without_review_guard_keeps_failed_call(tmp_path, monkeypatc
         runner.close()
 
 
-@pytest.mark.parametrize("validation_retry", [False, True])
+@pytest.mark.parametrize("validation_retry", [0, 1, 2])
 def test_failure_preserves_orchestration_audit(tmp_path, monkeypatch, validation_retry):
     from dagent.harness_runtime.runtime import HarnessRuntime
 
@@ -198,14 +198,15 @@ def test_failure_preserves_orchestration_audit(tmp_path, monkeypatch, validation
         return "prepared"
 
     responses = [ChatResponse(content="tool")]
-    if validation_retry:
+    for attempt in range(validation_retry):
         responses.extend([
-            ChatResponse(tool_calls=[ToolCall(id="prepare", name="tool_prepare", arguments={})]),
-            ChatResponse(content="first answer"),
+            ChatResponse(tool_calls=[ToolCall(id=f"prepare_{attempt}", name="tool_prepare", arguments={})]),
+            ChatResponse(content=f"answer {attempt}"),
         ])
     responses.append(ChatResponse(tool_calls=[ToolCall(id="binary", name="tool_binary", arguments={})]))
     provider = MockProvider(responses)
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner.runtime.max_validation_retries = 2
     agent = dagent.AutoAgent(capabilities=[binary, prepare], skills=[])
     validations = []
 
@@ -231,7 +232,7 @@ def test_failure_preserves_orchestration_audit(tmp_path, monkeypatch, validation
         assert len(validations) == int(validation_retry)
         invocations = [node.capability_execution.invocation.invocation_id
                        for node in result.trace.root.children if node.capability_execution]
-        assert invocations == (["prepare", "binary"] if validation_retry else ["binary"])
+        assert invocations == [*(f"prepare_{attempt}" for attempt in range(validation_retry)), "binary"]
         assert result.checkpoint is None
     finally:
         runner.close()
