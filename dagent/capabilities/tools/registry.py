@@ -12,6 +12,8 @@ from typing import Any
 class ToolOutput:
     content: str
     value: Any = None
+    retention: dict[str, Any] | None = None
+    content_reference: dict[str, Any] | None = None
 
 
 def content_and_value_from_result(result: Any) -> tuple[str, Any]:

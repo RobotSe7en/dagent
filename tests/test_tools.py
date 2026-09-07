@@ -242,7 +242,9 @@ def test_shell_timeout_terminates_pipeline_process_group(tmp_path: Path) -> None
 
     assert time.monotonic() - started < 3
     assert result.status == "failed"
-    assert result.error == "timed out after 1 seconds\nstarted"
+    assert "timed out after 1 seconds" in result.error
+    assert "exit_code=" in result.error
+    assert "started" in result.error
     assert terminated.read_text(encoding="utf-8") == "yes"
 
 
@@ -916,7 +918,7 @@ def test_shell_keeps_tail_of_oversized_output(tmp_path: Path) -> None:
     total = SHELL_OUTPUT_MAX_LINES + 50
     command = f'"{sys.executable}" -c "[print(f\'line{{i}}\') for i in range({total})]"'
 
-    output = shell(command, cwd=tmp_path)
+    output = shell(command, cwd=tmp_path).content
 
     assert "[TRUNCATED] output exceeded limits; showing tail" in output
     assert f"line{total - 1}" in output
@@ -1046,7 +1048,7 @@ def test_list_files_caps_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         boundary=Boundary(allowed_paths=["."]),
     )
 
-    assert "[TRUNCATED] showing first 3 entries; more entries exist." in result.content
+    assert "[TRUNCATED] showing 3 entries; continue with offset=3, limit=3." in result.content
     assert len(result.value) == 3
 
 

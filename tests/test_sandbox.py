@@ -93,7 +93,8 @@ def test_worker_matches_local_tools(tmp_path: Path):
     local = create_file_tool_registry().get("read_file").handler(path=str(target))
     worker_read = _run_worker(skeleton, "read_file", {"path": str(target)})
     assert worker_read["ok"] is True
-    assert worker_read["content"] == local
+    assert worker_read["content"] == local.content
+    assert worker_read["retention"] == local.retention
 
     # list_files structured value round-trips
     listed = _run_worker(skeleton, "list_files", {"path": str(workspace)})

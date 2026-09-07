@@ -28,7 +28,7 @@ from dagent.harness_runtime.capability_executor import (
     CapabilityExecutionError,
     CapabilityExecutor,
 )
-from dagent.harness_runtime.result_storage import normalize_capability_result
+from dagent.harness_runtime.result_storage import normalize_capability_result, ResultStorageError
 from dagent.harness_runtime.static_agent_review import (
     StaticAgentExecutionControl,
     StaticAgentReviewRequired,
@@ -480,6 +480,7 @@ class DAGExecutor:
                 workspace_path=self.workspace_path or self.capability_workspace_root,
                 runtime_directory=self.runtime_directory,
                 policy=self.result_storage_policy,
+                on_event=on_event,
             )
             capability_result = normalized.result
             stored_content = normalized.content
@@ -495,7 +496,8 @@ class DAGExecutor:
             raise exc.bind(node_id=node.id, invocation=invocation)
         except Exception as exc:
             node.status = "failed"
-            failed_result = CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__)
+            failed_result = (exc.audit_result if isinstance(exc, ResultStorageError) else
+                             CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__))
             capability_node = RunTraceNode.capability_call(
                 parent_id=dag_node.id,
                 invocation=invocation,
@@ -504,6 +506,8 @@ class DAGExecutor:
             )
             dag_node.children.append(capability_node)
             dag_node.status = "failed"
+            if isinstance(exc, ResultStorageError) and capability_node.error is not None:
+                capability_node.error.code = "ResultStorageError"
             dag_node.error = _error(str(exc), type(exc).__name__)
             dag_node.ended_at = _now()
             self.partial_node_traces[node.id] = dag_node
@@ -640,8 +644,17 @@ class DAGExecutor:
                         workspace_path=self.workspace_path or self.capability_workspace_root,
                         runtime_directory=self.runtime_directory,
                         policy=self.result_storage_policy,
+                        on_event=on_event,
                     )
                     result = normalized.result
+            except ResultStorageError as exc:
+                failed_storage_node = RunTraceNode.capability_call(
+                    parent_id=dag_node.id, invocation=invocation, result=exc.audit_result,
+                    error=str(exc),
+                )
+                failed_storage_node.error.code = "ResultStorageError"
+                dag_node.children.append(failed_storage_node)
+                raise
             finally:
                 if token_stream is not None:
                     token_stream.finish()
@@ -822,6 +835,8 @@ class DAGExecutor:
                 workspace_path=self.workspace_path,
             )
         return CapabilityExecutionContext(
+            runtime_directory=self.runtime_directory,
+            max_shell_output_bytes=self.result_storage_policy.max_shell_output_bytes,
             task_id=dag.task_id,
             dag_id=dag.dag_id,
             spec_id=self.spec_id,

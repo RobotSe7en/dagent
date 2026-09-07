@@ -58,7 +58,10 @@ record or breaking `tool_call_id` pairing.
 The private-vLLM provider uses `/tokenize` for exact request counts and
 `max_model_len` when available. Automatic discovery is the default; an explicit
 context value overrides it but cannot exceed a discovered server limit. Failed
-discovery warns and falls back to a 32K context window. Output length is unset
+discovery warns and falls back to a 128K (131,072-token) context window. Official
+DeepSeek models use their documented limits; `model_context_window_tokens` in
+context usage distinguishes this lookup from server tokenization.
+Output length is unset
 by default:
 
 ```python
@@ -82,7 +85,7 @@ agent = dagent.ToolAgent(
         summary_max_tokens=8192,
         compaction_reasoning_effort="low",
         max_tool_result_tokens=2048,
-        max_total_tool_result_tokens=8192,
+        max_total_tool_result_tokens=16384,
     ),
 )
 ```
@@ -97,8 +100,8 @@ bounded summary is used and the fallback reason is recorded. If mandatory input
 still does not fit, `ContextWindowExceeded` is raised before generation.
 The compactor request has its own output limit and reasoning effort.
 `ContextSummary` records whether its source was truncated, provider usage,
-model-call metadata, and context estimate. Summary reasoning is discarded; only
-`ContextSummary.content` is projected later.
+model-call metadata, and context estimate. Summary reasoning is discarded;
+summary prose and its separately retained result-index reference are projected later.
 
 Inspect `result.context_usage` for exact/estimated counts, the discovered
 server limit, reasoning replay/omission, included/compacted item counts,
@@ -123,7 +126,8 @@ Content deltas use `response.content.delta`.
 
 ## Large tool and MCP results
 
-Tool and MCP text up to 256 KiB stays inline by default. Larger text, binary
+Tool and MCP text up to 256 KiB normally stays inline. Text shortened for model
+display is also saved even below this threshold. Larger text, binary
 values, and MCP binary payloads are written atomically under the run workspace
 and represented by checksum-bearing `ContentReference` values. The model sees a
 bounded preview plus the workspace-relative reference.
@@ -140,8 +144,10 @@ runner = dagent.Runner(
 ```
 
 The result directory is `<run-workspace>/.runtime/results` for this runner.
-`ResultStoragePolicy` controls only the inline-size threshold; the runner owns
-the location.
+`ResultStoragePolicy` controls the inline-size threshold and the per-shell
+capture limit (64 MiB by default); the runner owns the location. See
+[Tool Result Recovery](tool-result-recovery.md) for minimum-information budgets,
+reading permissions, pagination, compaction indexes and storage-failure behavior.
 
 The SDK owns only run-workspace normalization. A host is responsible for durable
 upload, retention, access control, and URL generation.

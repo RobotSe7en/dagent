@@ -82,6 +82,7 @@ from dagent.result import (
     CapabilityCallStartedData,
     ContextCompactionFinishedData,
     ContextCompactionStartedData,
+    ResultStorageWarningData,
     DagUpdatedData,
     ResponseFinishedData,
     ResponseStartedData,
@@ -1630,6 +1631,9 @@ class Runner:
         )
         checkpoint = finalized.checkpoint
         if checkpoint is None:
+            if finalized.status == "failed":
+                self._run_checkpoints.pop(state.run_id, None)
+                return finalized
             raise RuntimeError("SDK run result did not produce a checkpoint.")
         self._run_checkpoints[state.run_id] = checkpoint.model_copy(deep=True)
         return finalized
@@ -2371,6 +2375,9 @@ def _assemble_runtime(
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
             context_window_tokens=resolved_context_window,
+            model_context_window_tokens=getattr(
+                provider, "model_context_window_tokens", None,
+            ),
             max_output_tokens=resolved_max_output_tokens,
             request_token_counter=getattr(provider, "count_tokens", None),
             request_reasoning_field=getattr(
@@ -2401,6 +2408,9 @@ def _assemble_runtime(
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
             context_window_tokens=resolved_context_window,
+            model_context_window_tokens=getattr(
+                provider, "model_context_window_tokens", None,
+            ),
             max_output_tokens=resolved_max_output_tokens,
             request_token_counter=getattr(provider, "count_tokens", None),
             request_reasoning_field=getattr(
@@ -2669,6 +2679,14 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
         return RunStreamEvent(
             type="response.finished",
             data=ResponseFinishedData(**_response_event_context(data)),
+        )
+
+    if event_type == "tool_result_storage_warning":
+        return RunStreamEvent(
+            type="capability.result.storage_warning",
+            data=ResultStorageWarningData(invocation_id=str(data.get("invocation_id", "")),
+                                          warning=data["warning"]),
+            run_id=_nullable_event_string(data.get("run_id")),
         )
 
     if event_type == "context_compaction_started":

@@ -1,5 +1,7 @@
 # Runner 和配置
 
+结果展示预算、类型化保留元信息及文件/搜索分页，见[工具结果恢复](tool-result-recovery.md)。
+
 `Runner` 是执行 agents 和 DAGs 的公开 SDK 入口。它拥有 provider wiring、capability
 registration、skill store access、MCP registration、runtime state 和 review resume flow。
 
@@ -126,7 +128,9 @@ provider = dagent.Provider(
 和 tool schemas。精确计数不可用时发出 warning，并使用确定性启发式估算；`"vllm"`
 会让 tokenize 失败显式报错，`"heuristic"` 则不为 token 计数做探测。探测得到的
 `max_model_len` 是默认总 context limit；显式 `context_window_tokens` 会覆盖自动值，但
-成功探测后若显式值更大则拒绝。没有显式值且探测失败时 warning 并 fallback 到 32,768。
+成功探测后若显式值更大则拒绝。没有显式值且探测失败时 warning 并 fallback 到 131,072（128K）。
+DeepSeek 官网 V4 模型通过端点与模型 ID 识别其公布的 1M 窗口，启发式计数时同样生效；
+详见[模型上下文](model-context-and-reasoning.md#token-计数与压缩)。
 `max_output_tokens` 可选；配置后既从输入容量中扣除，也会作为真实生成上限发送。未配置时
 不发送输出限制字段。
 

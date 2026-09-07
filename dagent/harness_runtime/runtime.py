@@ -30,7 +30,10 @@ from dagent.harness_runtime.capability_scope import (
     capability_scope_from_state,
     capability_scope_to_state,
 )
-from dagent.harness_runtime.dag_agent import DAGAgent
+from dagent.harness_runtime.dag_agent import DAGAgent, _result_observations
+from dagent.harness_runtime.result_projection import result_references
+from dagent.harness_runtime.result_storage import ResultStore
+from dagent.schemas.conversation import ResultObservation, ToolResultMessage
 from dagent.harness_runtime.dag_builder import validate_dag_input
 from dagent.harness_runtime.dag_executor import DAGExecutor
 from dagent.harness_runtime.conversation_resources import ConversationResourceStore
@@ -205,11 +208,27 @@ class HarnessRuntime:
             return passed, feedback, None, None
         if on_event:
             on_event({"type": "validating", "message": "Validating result quality..."})
+        observations = _result_observations(loop_outcome.state.trace)
+        thread = loop_outcome.state.model_thread or loop_outcome.state.conversation
+        if not observations and thread:
+            observations = tuple(ResultObservation(
+                id=item.id, name=item.name, capability_id=item.capability_id,
+                status=item.status, content=item.content, references=result_references(item),
+                retention=item.retention,
+            ) for item in thread.items if isinstance(item, ToolResultMessage))
+        execution_context = loop_outcome.execution_context
+        if observations:
+            execution_context = f"Run status: {loop_outcome.state.status}. Results follow as structured data."
+            if thread and thread.summary:
+                execution_context += "\nEarlier summary:\n" + thread.summary.content
         validation, response, context_usage = await self.validator.validate_with_audit(
             user_request=user_request,
             final_answer=loop_outcome.output_text,
-            execution_context=loop_outcome.execution_context,
+            execution_context=execution_context,
             workspace_path=loop_outcome.state.workspace_path,
+            result_observations=observations,
+            result_store=(ResultStore(loop_outcome.state.workspace_path, self.runtime_directory, on_event)
+                          if loop_outcome.state.workspace_path else None),
         )
         audit_item = (
             None

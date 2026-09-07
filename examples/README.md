@@ -10,6 +10,7 @@ credentials.
 
 | Example | Demonstrates | Related docs |
 | --- | --- | --- |
+| `tool_result_recovery.py` | Recover a saved report, page through files/searches, and retain shell logs without network access. | [Tool result recovery](../docs/en/tool-result-recovery.md) |
 | `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/en/agents.md), [Capabilities](../docs/en/capabilities.md) |
 | `agent_delegation.py` | Register a leaf subagent and expose it to a top-level `ToolAgent`. | [Agents](../docs/en/agents.md) |
 | `auto_agent.py` | Let the runtime choose direct tool use or dynamic DAG execution. | [Agents](../docs/en/agents.md) |

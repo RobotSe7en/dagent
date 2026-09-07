@@ -1,5 +1,8 @@
 # Capabilities
 
+For result display budgets, typed retention metadata and file/search pagination, see
+[Tool Result Recovery](tool-result-recovery.md).
+
 Capabilities are executable actions registered with a `Runner`. Agents and DAG
 nodes do not execute functions directly; they call capability ids through the
 runtime capability catalog.

@@ -39,6 +39,7 @@ _SKELETON_MODULES = (
     "dagent.capabilities.tools.registry",
     "dagent.capabilities.tools.file_tools",
     "dagent.capabilities.tools.shell_tools",
+    "dagent.capabilities.tools.output_capture",
     "dagent.capabilities.tools.sandbox_worker",
 )
 
@@ -50,9 +51,11 @@ class SandboxExecutionError(RuntimeError):
 class SandboxToolExecutionError(SandboxExecutionError):
     """Raised when the tool inside the sandbox reports failure."""
 
-    def __init__(self, message: str, *, stop_reason: str = "SandboxToolExecutionError") -> None:
+    def __init__(self, message: str, *, stop_reason: str = "SandboxToolExecutionError",
+                 output: ToolOutput | None = None) -> None:
         super().__init__(message)
         self.stop_reason = stop_reason
+        self.output = output
 
 
 def _import_docker() -> Any:
@@ -260,8 +263,11 @@ class SandboxSession:
             raise SandboxToolExecutionError(
                 str(result.get("error") or "Sandbox tool failed."),
                 stop_reason=str(result.get("error_type") or "SandboxToolExecutionError"),
+                output=ToolOutput(str(result.get("error") or ""), retention=result.get("retention"),
+                                  content_reference=result.get("content_reference")),
             )
-        return ToolOutput(content=str(result.get("content") or ""), value=result.get("value"))
+        return ToolOutput(content=str(result.get("content") or ""), value=result.get("value"),
+                          retention=result.get("retention"), content_reference=result.get("content_reference"))
 
 
 def sandbox_status(config: SandboxConfig | None = None) -> dict[str, Any]:

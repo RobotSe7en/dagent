@@ -48,9 +48,33 @@ class _ReadWindow:
     total: int
     complete_text: str | None
     truncated_by_bytes: bool
+    source_text: str = ""
+    start_char: int = 0
 
 
-def read_file(path: str | Path, offset: int = 1, limit: int | None = None) -> str:
+def read_file(path: str | Path, offset: int = 1, limit: int | None = None,
+              offset_chars: int | None = None, limit_chars: int | None = None) -> ToolOutput:
+    if offset_chars is not None:
+        if offset != 1 or limit is not None:
+            raise ValueError("Character and line windows cannot be combined.")
+        if offset_chars < 0 or (limit_chars is not None and limit_chars < 1):
+            raise ValueError("Character offset must be nonnegative and limit positive.")
+        size = min(limit_chars or 1024, MAX_READ_BYTES)
+        with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
+            remaining = offset_chars
+            while remaining:
+                skipped = handle.read(min(8192, remaining))
+                if not skipped:
+                    raise ValueError("Character offset is beyond end of file.")
+                remaining -= len(skipped)
+            text = handle.read(size)
+            if "\0" in text:
+                raise ValueError(f"{path} is not a UTF-8 text file.")
+            bounded = _decode_utf8_prefix(text.encode("utf-8"), MAX_READ_BYTES)
+            more = bool(handle.read(1)) or len(bounded) < len(text)
+        return _file_output(path, bounded, start=offset_chars, more=more)
+    if limit_chars is not None:
+        raise ValueError("limit_chars requires offset_chars.")
     if offset is None:
         raise TypeError("offset must be an integer.")
     if offset < 1:
@@ -63,9 +87,10 @@ def read_file(path: str | Path, offset: int = 1, limit: int | None = None) -> st
     if offset > 1 and offset > total:
         raise ValueError(f"offset {offset} is beyond end of file ({total} lines).")
     if complete_text is not None:
-        return complete_text
+        return _file_output(path, complete_text, start=0, more=False)
     end_line = offset - 1 + len(shown)
-    content = "\n".join(shown)
+    content = window.source_text.rstrip("\r\n")
+    body_length = len(content)
     if end_line < total or window.truncated_by_bytes:
         reason = (
             "read byte limit reached."
@@ -73,7 +98,21 @@ def read_file(path: str | Path, offset: int = 1, limit: int | None = None) -> st
             else "use offset/limit to read more."
         )
         content += f"\n{TRUNCATED} showing lines {offset}-{end_line} of {total}; {reason}"
-    return content
+    return _file_output(path, content, start=window.start_char,
+                        more=end_line < total or window.truncated_by_bytes, body_length=body_length)
+
+
+def _file_output(path: str | Path, text: str, *, start: int, more: bool,
+                 body_length: int | None = None) -> ToolOutput:
+    length = len(text) if body_length is None else body_length
+    return ToolOutput(content=text, retention={
+        "source_completeness": "partial" if more else "complete",
+        "source_reason": "file_window" if more else None,
+        "window_start": start,
+        "window_length": length,
+        "continuation": {"tool": "read_file", "path": str(path),
+                         "offset": start + length, "limit": 1024},
+    })
 
 
 def write_file(path: str | Path, content: str) -> str:
@@ -116,64 +155,70 @@ def edit_file(path: str | Path, old_string: str, new_string: str) -> str:
 
 
 def list_files(
-    path: str | Path = ".",
-    depth: int = 3,
-    glob: str | None = None,
+    path: str | Path = ".", depth: int = 3, glob: str | None = None,
+    offset: int = 0, limit: int | None = None,
 ) -> ToolOutput:
-    """List files (and directories) under a path.
-
-    Without ``glob`` this lists directories (trailing ``/``) and files up to
-    ``depth`` levels deep. With ``glob`` it lists only files whose name matches
-    the pattern. Returns ``(content, entries)`` so DAG nodes can fan out over
-    the structured entry list.
-    """
+    """List one stable window; structured value remains a list of entries."""
     if depth is None:
         raise TypeError("depth must be an integer.")
     if depth < 1:
         raise ValueError("depth must be at least 1.")
+    if offset < 0 or (limit is not None and limit < 1):
+        raise ValueError("offset must be nonnegative and limit positive.")
+    size = min(limit or LIST_MAX_ENTRIES, LIST_MAX_ENTRIES)
     root = Path(path)
     if not root.is_dir():
         raise ValueError(f"{root} is not a directory.")
-
     entries: list[str] = []
-    truncated = False
+    seen = 0
     for current, dirnames, filenames in os.walk(root):
         level = len(Path(current).relative_to(root).parts)
         dirnames[:] = sorted(name for name in dirnames if name not in GREP_EXCLUDED_DIRS)
-        if glob is None:
-            for name in dirnames:
-                if len(entries) >= LIST_MAX_ENTRIES:
-                    truncated = True
-                    break
-                entries.append(f"{Path(current) / name}/")
-        if truncated:
-            dirnames[:] = []
-            break
-        for name in sorted(filenames):
-            if glob is None or fnmatch.fnmatch(name, glob):
-                if len(entries) >= LIST_MAX_ENTRIES:
-                    truncated = True
-                    break
-                entries.append(str(Path(current) / name))
-        if truncated:
-            dirnames[:] = []
+        names = ([f"{name}/" for name in dirnames] if glob is None else []) + [
+            name for name in sorted(filenames) if glob is None or fnmatch.fnmatch(name, glob)
+        ]
+        for name in names:
+            if seen >= offset:
+                entries.append(str(Path(current) / name.rstrip("/")) + ("/" if name.endswith("/") else ""))
+            seen += 1
+            if len(entries) > size:
+                break
+        if len(entries) > size:
             break
         if level + 1 >= depth:
             dirnames[:] = []
-
+    more = len(entries) > size
+    entries = entries[:size]
     content = "\n".join(entries)
-    if truncated:
-        content += f"\n{TRUNCATED} showing first {len(entries)} entries; more entries exist."
-    return ToolOutput(content=content, value=entries)
+    if more:
+        content += f"\n{TRUNCATED} showing {len(entries)} entries; continue with offset={offset + len(entries)}, limit={size}. Files may change between queries."
+    return ToolOutput(content=content, value=entries, retention={
+        "source_completeness": "partial" if more else "complete",
+        "source_reason": "query_window" if more else None,
+        "continuation": ({"tool": "list_files", "path": str(path), "offset": offset + len(entries),
+                          "limit": size, "glob": glob, "depth": depth} if more else None),
+    })
 
 
-def grep(path: str | Path, pattern: str, glob: str | None = None) -> str:
+def grep(path: str | Path, pattern: str, glob: str | None = None,
+         offset: int = 0, limit: int | None = None) -> ToolOutput:
+    if offset < 0 or (limit is not None and limit < 1):
+        raise ValueError("offset must be nonnegative and limit positive.")
+    size = min(limit or GREP_MAX_MATCHES, GREP_MAX_MATCHES)
     root = Path(path)
     re.compile(pattern)
     rg = _ripgrep_executable()
     if rg is not None:
-        return _grep_with_ripgrep(rg, root, pattern, glob)
-    return _grep_pure_python(root, pattern, glob)
+        content = _grep_with_ripgrep(rg, root, pattern, glob, offset=offset, limit=size)
+    else:
+        content = _grep_pure_python(root, pattern, glob, offset=offset, limit=size)
+    more = content.endswith(f"{TRUNCATED} grep stopped after {size} matches.")
+    return ToolOutput(content=content, retention={
+        "source_completeness": "partial" if more else "complete",
+        "source_reason": "query_window" if more else None,
+        "continuation": ({"tool": "grep", "path": str(path), "pattern": pattern,
+                          "glob": glob, "offset": offset + size, "limit": size} if more else None),
+    })
 
 
 def _ripgrep_executable() -> str | None:
@@ -183,7 +228,8 @@ def _ripgrep_executable() -> str | None:
     return _rg_path  # type: ignore[return-value]
 
 
-def _grep_with_ripgrep(rg: str, root: Path, pattern: str, glob: str | None) -> str:
+def _grep_with_ripgrep(rg: str, root: Path, pattern: str, glob: str | None,
+                      *, offset: int = 0, limit: int = GREP_MAX_MATCHES) -> str:
     args = [
         rg,
         "--no-heading",
@@ -222,9 +268,11 @@ def _grep_with_ripgrep(rg: str, root: Path, pattern: str, glob: str | None) -> s
     try:
         if process.stdout is None:
             raise ValueError("ripgrep stdout was not captured.")
-        for line in process.stdout:
+        for index, line in enumerate(process.stdout):
+            if index < offset:
+                continue
             lines.append(line.rstrip("\r\n"))
-            if len(lines) > GREP_MAX_MATCHES:
+            if len(lines) > limit:
                 stopped_after_cap = True
                 process.terminate()
                 break
@@ -240,42 +288,58 @@ def _grep_with_ripgrep(rg: str, root: Path, pattern: str, glob: str | None) -> s
     if timed_out:
         raise ValueError(f"ripgrep timed out after {GREP_TIMEOUT_SECONDS}s")
     if stopped_after_cap:
-        return _capped_matches(lines)
+        return _capped_matches(lines, limit)
     if returncode == 1:
         return ""
     if returncode != 0:
         detail = stderr.strip() or f"exit code {returncode}"
         raise ValueError(f"ripgrep failed: {detail}")
-    return _capped_matches(lines)
+    return _capped_matches(lines, limit)
 
 
-def _grep_pure_python(root: Path, pattern: str, glob: str | None) -> str:
+def _grep_pure_python(root: Path, pattern: str, glob: str | None,
+                      *, offset: int = 0, limit: int = GREP_MAX_MATCHES) -> str:
     matcher = re.compile(pattern)
-    files = [root] if root.is_file() else sorted(
-        p for p in root.rglob("*")
-        if p.is_file() and not any(part in GREP_EXCLUDED_DIRS for part in p.parts)
-    )
+    files = (root,) if root.is_file() else _search_files(root)
     matches: list[str] = []
+    seen = 0
     for file_path in files:
         if glob and not fnmatch.fnmatch(file_path.name, glob):
             continue
         try:
-            lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            handle = file_path.open(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for line_number, line in enumerate(lines, start=1):
-            if matcher.search(line):
-                matches.append(f"{file_path}:{line_number}:{line}")
-                if len(matches) > GREP_MAX_MATCHES:
-                    return _capped_matches(matches)
-    return _capped_matches(matches)
+        with handle:
+            for line_number, line in enumerate(handle, start=1):
+                line = line.rstrip("\r\n")
+                if matcher.search(line):
+                    seen += 1
+                    if seen <= offset:
+                        continue
+                    matches.append(f"{file_path}:{line_number}:{line}")
+                    if len(matches) > limit:
+                        return _capped_matches(matches, limit)
+    return _capped_matches(matches, limit)
 
 
-def _capped_matches(lines: list[str]) -> str:
-    if len(lines) > GREP_MAX_MATCHES:
+def _search_files(root: Path):
+    """Path-order traversal without materializing the complete recursive tree."""
+    for path in sorted(root.iterdir(), key=lambda path: path.name + ("/" if path.is_dir() else "")):
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            if path.name not in GREP_EXCLUDED_DIRS:
+                yield from _search_files(path)
+        elif path.is_file():
+            yield path
+
+
+def _capped_matches(lines: list[str], limit: int = GREP_MAX_MATCHES) -> str:
+    if len(lines) > limit:
         lines = [
-            *lines[:GREP_MAX_MATCHES],
-            f"{TRUNCATED} grep stopped after {GREP_MAX_MATCHES} matches.",
+            *lines[:limit],
+            f"{TRUNCATED} grep stopped after {limit} matches.",
         ]
     return "\n".join(lines)
 
@@ -288,6 +352,9 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> _ReadWindow
     exact_possible = offset == 1
     stopped_showing = False
     truncated_by_bytes = False
+    source_parts: list[str] = []
+    character_count = start_char = 0
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     with path.open("rb") as handle:
         prefix = handle.read(8192)
@@ -305,9 +372,11 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> _ReadWindow
                 if raw.startswith(codecs.BOM_UTF8):
                     raw = raw[len(codecs.BOM_UTF8):]
             line_was_partial = len(raw) > MAX_READ_BYTES and not raw.endswith((b"\n", b"\r"))
+            before_line = character_count
+            character_count += len(decoder.decode(raw))
             if line_was_partial:
-                _discard_line_remainder(handle)
-                truncated_by_bytes = True
+                character_count += _discard_line_remainder(handle, decoder)
+                truncated_by_bytes = truncated_by_bytes or (offset <= total + 1 < offset + max_lines)
                 exact_possible = False
             total += 1
 
@@ -319,6 +388,9 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> _ReadWindow
                 stopped_showing = True
                 continue
 
+            if not shown:
+                start_char = before_line
+
             line = _line_text(raw)
             line_bytes = len(line.encode("utf-8")) + 1
             if used_bytes + line_bytes > MAX_READ_BYTES:
@@ -326,6 +398,7 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> _ReadWindow
                     prefix_lines = _decode_utf8_prefix(raw, MAX_READ_BYTES).splitlines()
                     line = prefix_lines[0] if prefix_lines else ""
                     shown.append(line)
+                    source_parts.append(_decode_utf8_prefix(raw, MAX_READ_BYTES))
                     used_bytes = len(line.encode("utf-8"))
                 truncated_by_bytes = True
                 exact_possible = False
@@ -333,19 +406,22 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> _ReadWindow
                 continue
             used_bytes += line_bytes
             shown.append(line)
+            source_parts.append(raw.decode("utf-8", errors="replace"))
             if exact_bytes is not None and exact_possible:
                 exact_bytes.extend(raw)
 
     if exact_possible and exact_bytes is not None and len(shown) == total:
         return _ReadWindow(shown, total, exact_bytes.decode("utf-8", errors="replace"), False)
-    return _ReadWindow(shown, total, None, truncated_by_bytes)
+    return _ReadWindow(shown, total, None, truncated_by_bytes, "".join(source_parts), start_char)
 
 
-def _discard_line_remainder(handle) -> None:
+def _discard_line_remainder(handle, decoder) -> int:
+    count = 0
     while True:
         chunk = handle.readline(MAX_READ_BYTES + 1)
+        count += len(decoder.decode(chunk, final=not chunk))
         if not chunk or chunk.endswith((b"\n", b"\r")):
-            return
+            return count
 
 
 def _line_text(raw: bytes) -> str:
@@ -463,6 +539,10 @@ def register_file_tools(registry: ToolRegistry) -> None:
                     "type": "integer",
                     "description": "Maximum number of lines to read.",
                 },
+                "offset_chars": {"type": "integer", "minimum": 0,
+                    "description": "Zero-based Unicode character offset; use for long lines. Cannot combine with line windows."},
+                "limit_chars": {"type": "integer", "minimum": 1,
+                    "description": "Character window size (default 1024). Requires offset_chars."},
             },
             "required": ["path"],
         },
@@ -538,6 +618,8 @@ def register_file_tools(registry: ToolRegistry) -> None:
                     "type": "string",
                     "description": "Optional filename filter, e.g. *.py; lists matching files only.",
                 },
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {"type": "integer", "minimum": 1, "description": "Page size, at most 500."},
             },
         },
     )
@@ -559,6 +641,8 @@ def register_file_tools(registry: ToolRegistry) -> None:
                     "type": "string",
                     "description": "Optional filename filter, e.g. *.py.",
                 },
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {"type": "integer", "minimum": 1, "description": "Page size, at most 200. Queries are not snapshots."},
             },
             "required": ["path", "pattern"],
         },

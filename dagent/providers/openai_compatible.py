@@ -7,6 +7,7 @@ import json
 import warnings
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 
@@ -35,7 +36,21 @@ from dagent.providers.model_io import (
     normalize_model_response,
     responses_tools,
 )
-from dagent.schemas.context import ModelTokenUsage, ReasoningEffort
+from dagent.schemas.context import (
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    ModelTokenUsage,
+    ReasoningEffort,
+)
+
+
+# Official API model limits, checked 2026-09-07. /models does not expose limits.
+# https://api-docs.deepseek.com/quick_start/pricing/
+# Exact window: https://api-docs.deepseek.com/quick_start/agent_integrations/codex/
+_DEEPSEEK_CONTEXT_WINDOWS = {
+    "deepseek-v4-flash": 1_048_576,
+    "deepseek-v4-pro": 1_048_576,
+    "deepseek-v4-flash-vision-exp": 1_048_576,
+}
 
 
 class ProviderCapabilityWarning(RuntimeWarning):
@@ -79,7 +94,33 @@ class OpenAICompatibleProvider:
     ) -> None:
         self.config = config
         self.configured_context_window_tokens = config.context_window_tokens
-        self.context_window_tokens = self.configured_context_window_tokens or 32768
+        endpoint = urlsplit(config.base_url)
+        self._is_deepseek_official = (
+            endpoint.scheme == "https"
+            and endpoint.hostname == "api.deepseek.com"
+            and endpoint.port in (None, 443)
+            and endpoint.path.rstrip("/") in ("", "/v1", "/beta")
+        )
+        self.model_context_window_tokens = (
+            _DEEPSEEK_CONTEXT_WINDOWS.get(config.model)
+            if self._is_deepseek_official
+            else None
+        )
+        if (
+            self.configured_context_window_tokens is not None
+            and self.model_context_window_tokens is not None
+            and self.configured_context_window_tokens > self.model_context_window_tokens
+        ):
+            raise ProviderCapabilityError(
+                f"Configured context_window_tokens ({config.context_window_tokens}) "
+                f"exceeds the official model context limit "
+                f"({self.model_context_window_tokens}) for model '{config.model}'."
+            )
+        self.context_window_tokens = (
+            self.configured_context_window_tokens
+            or self.model_context_window_tokens
+            or DEFAULT_CONTEXT_WINDOW_TOKENS
+        )
         self.max_output_tokens = config.max_output_tokens
         self.client = client or AsyncOpenAI(
             api_key=config.api_key,
@@ -148,6 +189,13 @@ class OpenAICompatibleProvider:
 
         if self.config.token_counting == "heuristic":
             return None
+        if self._is_deepseek_official:
+            if self.config.token_counting == "vllm":
+                raise ProviderCapabilityError(
+                    "DeepSeek's official API does not provide vLLM /tokenize. "
+                    "Use token_counting='auto' or 'heuristic'."
+                )
+            return None
         if self.config.token_counting == "auto" and self._tokenize_unavailable:
             return None
         capabilities = await self.inspect_capabilities()
@@ -156,7 +204,7 @@ class OpenAICompatibleProvider:
             if self.config.token_counting == "vllm":
                 raise RuntimeError(message)
             suffix = (
-                " Using heuristic counting and the 32,768-token fallback context window."
+                " Using heuristic counting and the 131,072-token fallback context window."
                 if self.configured_context_window_tokens is None
                 else " Using heuristic counting and the configured context window without "
                 "server-side validation."
@@ -198,11 +246,11 @@ class OpenAICompatibleProvider:
                     self.configured_context_window_tokens or max_model_len
                 )
             elif self.configured_context_window_tokens is None:
-                self.context_window_tokens = 32768
+                self.context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
                 self._warn_once(
                     "tokenize-missing-max-model-len",
                     "vLLM /tokenize did not return max_model_len; using the "
-                    "32,768-token fallback context window.",
+                    "131,072-token fallback context window.",
                 )
             else:
                 self._warn_once(
@@ -223,7 +271,7 @@ class OpenAICompatibleProvider:
                 raise RuntimeError(message) from exc
             self._tokenize_unavailable = True
             suffix = (
-                "; using heuristic counting and the 32,768-token fallback window."
+                "; using heuristic counting and the 131,072-token fallback window."
                 if self.configured_context_window_tokens is None
                 else "; using heuristic counting and the configured context window "
                 "without server-side validation."

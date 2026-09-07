@@ -1,6 +1,8 @@
 """Generic LLM-backed agent role loaded from an editable profile."""
 
 from __future__ import annotations
+from dagent.schemas.conversation import ResultObservation
+from dagent.harness_runtime.result_storage import ResultStore
 
 import json
 import re
@@ -40,6 +42,9 @@ class ProfiledAgent:
                 getattr(provider, "context_window_tokens", None),
             ),
             max_output_tokens=getattr(provider, "max_output_tokens", None),
+            model_context_window_tokens=getattr(
+                provider, "model_context_window_tokens", None,
+            ),
             request_token_counter=getattr(provider, "count_tokens", None),
             request_reasoning_field=getattr(
                 provider,
@@ -53,6 +58,8 @@ class ProfiledAgent:
         *,
         task_content: str,
         workspace_path: str | Path | None = None,
+        result_observations: tuple[ResultObservation, ...] = (),
+        result_store: ResultStore | None = None,
         **prompt_values: Any,
     ) -> tuple[ChatResponse, ContextUsage]:
         messages = self.prompt_builder.build(
@@ -66,6 +73,7 @@ class ProfiledAgent:
         if len(messages) != 2 or messages[0].get("role") != "system":
             raise ValueError("Profiled agent prompt must contain system and user messages.")
         prepared = await self.context_assembler.prepare(
+            result_store=result_store,
             system_message=messages[0],
             conversation=ConversationState(
                 items=(
@@ -73,6 +81,7 @@ class ProfiledAgent:
                         content=str(messages[1].get("content") or ""),
                         scope="validator",
                         visibility="internal",
+                        result_observations=result_observations,
                     ),
                 )
             ),

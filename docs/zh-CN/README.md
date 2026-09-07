@@ -15,6 +15,8 @@
 
 ## 功能指南
 
+- [工具结果恢复](tool-result-recovery.md)：展示预算、原文保存、分页和存储故障。
+
 - [Runner 和配置](runner-and-configuration.md)：provider、`Runner(...)`、
   `Runner.from_config(...)`、validation、MCP 注册和运行时 capability 管理。
 - [模型上下文与推理](model-context-and-reasoning.md)：私有 vLLM 的 Chat/Responses

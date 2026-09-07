@@ -17,6 +17,8 @@ Simplified Chinese documentation is available at
 
 ## Feature Guides
 
+- [Tool Result Recovery](tool-result-recovery.md): display budgets, saved output, pagination and storage failures.
+
 - [Runner and Configuration](runner-and-configuration.md): providers,
   `Runner(...)`, `Runner.from_config(...)`, validation, MCP registration, and
   runtime capability management.

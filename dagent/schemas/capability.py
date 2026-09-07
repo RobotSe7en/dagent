@@ -9,6 +9,8 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from dagent.schemas.common import Boundary, RiskLevel
+from dagent.schemas.retention import ResultRetention
+from dagent.schemas.conversation import ContentReference
 
 
 CapabilityKind = Literal[
@@ -168,6 +170,8 @@ class CapabilityResult(BaseModel):
     kind: CapabilityKind
     status: CapabilityStatus
     content: str = ""
+    retention: ResultRetention | None = None
+    content_reference: ContentReference | None = None
     value: Any = None
     error: str | None = None
     stop_reason: str = "completed"

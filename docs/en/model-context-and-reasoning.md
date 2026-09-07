@@ -1,5 +1,8 @@
 # Model Context and Reasoning
 
+For result display budgets, typed retention metadata and file/search pagination, see
+[Tool Result Recovery](tool-result-recovery.md).
+
 dagent uses one provider-neutral conversation model for private vLLM models and
 serializes each request to either OpenAI Chat Completions or Responses. The
 runtime does not persist provider response IDs or depend on server-side state.
@@ -152,11 +155,25 @@ tools when the endpoint is advertised. `ContextUsage.estimator` is then
 `"heuristic"` to always use the local deterministic estimate.
 
 With `context_window_tokens=None`, the discovered `max_model_len` is the total
-window. Discovery failure warns and falls back to 32,768. An explicit value
+window. Discovery failure warns and falls back to 131,072 (128K). An explicit value
 overrides discovery, but a value larger than the server limit is rejected before
 generation. `max_output_tokens=None` sends no output-limit field. A configured
 value maps to Chat's discovered `max_completion_tokens` or `max_tokens`, and to
 Responses `max_output_tokens`.
+
+For the official DeepSeek API (`https://api.deepseek.com`, optionally with
+`/v1` or `/beta`), dagent recognizes `deepseek-v4-flash`, `deepseek-v4-pro`, and
+`deepseek-v4-flash-vision-exp` as having a 1M context window. It uses the
+1,048,576-token limit in DeepSeek's [official model catalog example](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/),
+checked on 2026-09-07. This is an endpoint-and-model lookup, not a live context
+length response: DeepSeek's `/models` does not publish context limits. Unknown
+models fall back to 128K; third-party endpoints do not inherit the official limits.
+Explicit limits override the lookup but cannot exceed the known model limit.
+Construction remains offline. DeepSeek `auto` counting uses the heuristic without
+calling `/tokenize`; explicit `vllm` counting raises an error. `ContextUsage`
+reports the known limit in `model_context_window_tokens`, separately from
+`server_max_model_len` and `estimator`; model recognition does not imply exact
+token counting. This also applies with `token_counting="heuristic"`.
 
 For total window `W` and output limit `O`, the input budget is `W - O`; without
 an output limit it is `W - 1`. Exact vLLM counts are not inflated. The safety

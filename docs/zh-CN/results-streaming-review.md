@@ -51,7 +51,9 @@ Review resume 会恢复 checkpoint 中冻结的值。
 
 私有 vLLM provider 在可用时通过 `/tokenize` 获取精确请求计数与 `max_model_len`。
 默认自动使用探测到的 context value；显式值会覆盖它，但不能超过已探测的 server limit。
-探测失败会 warning 并 fallback 到 32K context window。输出长度默认不设置：
+探测失败会 warning 并 fallback 到 128K（131,072 tokens）context window。
+DeepSeek 官网模型使用官方公布的上限；context usage 中的 `model_context_window_tokens`
+区分模型规则识别与服务端精确计数。输出长度默认不设置：
 
 ```python
 provider = dagent.Provider(
@@ -74,7 +76,7 @@ agent = dagent.ToolAgent(
         summary_max_tokens=8192,
         compaction_reasoning_effort="low",
         max_tool_result_tokens=2048,
-        max_total_tool_result_tokens=8192,
+        max_total_tool_result_tokens=16384,
     ),
 )
 ```
@@ -87,7 +89,7 @@ fallback 原因。如果必须保留的输入仍然放不下，会在 generation
 `ContextWindowExceeded`。
 compactor 请求本身有独立的输出限制和 reasoning effort。`ContextSummary` 会记录 source
 是否被截断、provider usage、模型调用 metadata 和上下文估算。摘要 reasoning 会被丢弃；
-后续只投影 `ContextSummary.content`。
+后续投影摘要正文及独立保留的结果索引入口。
 
 `result.context_usage` 会提供精确/估算 token 数、发现的 server limit、reasoning
 回放/省略、保留/压缩 item 数、工具结果截断数以及压缩方法。
@@ -110,7 +112,8 @@ for item in result.new_items:
 
 ## 大型工具与 MCP 结果
 
-默认情况下，256 KiB 以内的工具/MCP 文本内联保存。更大的文本、二进制 value 和 MCP
+通常情况下，256 KiB 以内的工具/MCP 文本内联保存；展示预算截断也会触发原文保存。
+更大的文本、二进制 value 和 MCP
 二进制 payload 会原子写入 run workspace，并转换为带校验和的 `ContentReference`。
 模型只看到有界预览和 workspace 相对引用。
 
@@ -126,7 +129,9 @@ runner = dagent.Runner(
 ```
 
 这个 runner 的结果目录是 `<run-workspace>/.runtime/results`。
-`ResultStoragePolicy` 只控制内联大小阈值，存储位置由 runner 统一拥有。
+`ResultStoragePolicy` 控制内联大小阈值和单次 shell 采集上限（默认 64 MiB），
+存储位置由 runner 统一拥有。低于内联阈值但被模型展示预算截断的文本也会保存。
+最低信息预算、读取权限、分页、压缩索引与故障语义见[工具结果恢复](tool-result-recovery.md)。
 
 SDK 只负责 run workspace 内的标准化；长期上传、保留策略、访问控制和 URL 生成由 host
 负责。

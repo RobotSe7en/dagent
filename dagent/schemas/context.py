@@ -7,6 +7,9 @@ from typing import Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+DEFAULT_CONTEXT_WINDOW_TOKENS = 131072
+
+
 ReasoningReplayMode: TypeAlias = Literal["none", "active_run", "all_runs"]
 ReasoningEffort: TypeAlias = Literal[
     "none",
@@ -30,7 +33,7 @@ class ContextPolicy(BaseModel):
     summary_max_tokens: int = Field(default=8192, ge=64)
     compaction_reasoning_effort: ReasoningEffort = "low"
     max_tool_result_tokens: int = Field(default=2048, ge=64)
-    max_total_tool_result_tokens: int = Field(default=8192, ge=64)
+    max_total_tool_result_tokens: int = Field(default=16384, ge=64)
     token_safety_margin: float = Field(default=0.15, ge=0, le=1)
 
     @model_validator(mode="after")
@@ -53,6 +56,7 @@ class ResultStoragePolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     max_inline_bytes: int = Field(default=256 * 1024, ge=1024)
+    max_shell_output_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
 
 
 class ContextUsage(BaseModel):
@@ -74,8 +78,13 @@ class ContextUsage(BaseModel):
     included_items: int = Field(default=0, ge=0)
     compacted_items: int = Field(default=0, ge=0)
     truncated_tool_results: int = Field(default=0, ge=0)
+    tool_result_metadata_tokens: int = Field(default=0, ge=0)
+    tool_result_body_tokens: int = Field(default=0, ge=0)
+    source_truncated_tool_results: int = Field(default=0, ge=0)
+    unrecoverable_tool_results: int = Field(default=0, ge=0)
     estimator: Literal["heuristic", "custom", "vllm"] = "heuristic"
     server_max_model_len: int | None = Field(default=None, ge=1)
+    model_context_window_tokens: int | None = Field(default=None, ge=1)
     configured_context_limit: int | None = Field(default=None, ge=1)
     reasoning_replay_mode: ReasoningReplayMode = "active_run"
     replayed_reasoning_items: int = Field(default=0, ge=0)
