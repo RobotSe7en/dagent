@@ -5,9 +5,27 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.9`.
+The current package version is `0.9.10`.
 
 ## Unreleased
+
+## 0.9.10
+
+### Fast review automatically approves boundary overrides
+
+- `fast` now means automatic approval of all reviewable operations, including
+  tool and DAG path-boundary overrides. It no longer pauses for boundary review.
+- This deliberately changes the default authorization behavior. Select `careful`
+  if tool-agent boundary overrides must require human approval. Hard-blocked
+  shell commands, capability visibility and OS/sandbox permissions are unchanged.
+
+### Verification and known limitations
+
+- Release validation covers the full Python suite and wheel/sdist metadata checks.
+- Two real MiniMax integration tests require opt-in; one Docker integration test
+  requires a running daemon. These three tests were skipped locally.
+- Automatic approval does not enable unavailable capabilities or bypass hard
+  command restrictions, operating-system permissions or sandbox isolation.
 
 ## 0.9.9
 

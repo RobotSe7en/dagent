@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 from pathlib import Path
+import pytest
 
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
@@ -339,6 +340,35 @@ def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) ->
     assert "tool_write_file" in tool_message.content.text
 
 
+@pytest.mark.parametrize("tool_name,arguments", [
+    ("tool_read_file", {"path": "blocked/secret.txt"}),
+    ("tool_write_file", {"path": "blocked/secret.txt", "content": "updated"}),
+    ("tool_shell", {"cwd": "allowed", "command": "cat ../blocked/secret.txt"}),
+])
+def test_tool_agent_fast_auto_approves_boundary(tmp_path, tool_name, arguments):
+    (tmp_path / "allowed").mkdir()
+    (tmp_path / "blocked").mkdir()
+    target = tmp_path / "blocked/secret.txt"
+    target.write_text("secret")
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name=tool_name, arguments=arguments)]),
+        ChatResponse(content="done"),
+    ])
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+    result = run(run_agent_message(
+        agent, "Use the file", boundary=Boundary(allowed_paths=["allowed"]), review_level="fast",
+    ))
+    assert result.state.status == "completed"
+    assert result.state.pending_review is None
+    tool_message = next(item for item in result.state.model_thread.items if item.type == "tool_result")
+    assert tool_message.status == "completed"
+    if tool_name == "tool_write_file":
+        assert target.read_text() == "updated"
+    else:
+        from dagent.schemas.conversation import stored_content_text
+        assert "secret" in stored_content_text(tool_message.content)
+
+
 def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tmp_path: Path) -> None:
     blocked = tmp_path / "blocked"
     blocked.mkdir()
@@ -363,7 +393,7 @@ def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tm
             agent,
             "Read the blocked file",
             boundary=Boundary(allowed_paths=["allowed"]),
-            review_level="fast",
+            review_level="careful",
         )
     )
 
@@ -406,7 +436,7 @@ def test_tool_agent_approves_boundary_review_for_one_tool_call(tmp_path: Path) -
             agent,
             "Read the blocked file",
             boundary=Boundary(allowed_paths=["allowed"]),
-            review_level="fast",
+            review_level="careful",
         )
     )
 
@@ -446,7 +476,7 @@ def test_tool_agent_rejects_boundary_review_without_executing_tool(tmp_path: Pat
             agent,
             "Write the blocked file",
             boundary=Boundary(allowed_paths=["allowed"]),
-            review_level="fast",
+            review_level="careful",
         )
     )
 
@@ -493,7 +523,7 @@ def test_tool_agent_rejects_review_with_sibling_tool_call_keeps_provider_history
             agent,
             "Write blocked and read allowed",
             boundary=Boundary(allowed_paths=["allowed"]),
-            review_level="fast",
+            review_level="careful",
         )
     )
 
@@ -532,7 +562,7 @@ def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -
             agent,
             "Write the blocked file",
             boundary=Boundary(allowed_paths=["allowed"]),
-            review_level="fast",
+            review_level="careful",
         )
     )
 
@@ -677,7 +707,7 @@ def test_tool_agent_boundary_review_approval_does_not_expand_to_different_paths(
             agent,
             "Write two files",
                 boundary=Boundary(allowed_paths=["allowed"]),
-            review_level="fast",
+            review_level="careful",
         )
     )
 
@@ -727,14 +757,17 @@ def test_tool_agent_boundary_review_approval_allows_later_call_to_same_path(tmp_
             agent,
             "Write the same file twice",
             boundary=Boundary(allowed_paths=["allowed"]),
-            review_level="fast",
+            review_level="careful",
         )
     )
 
     resumed = run(agent.resume_review(first.state, approved=True))
 
-    assert resumed.state.status == "completed"
-    assert resumed.state.pending_review is None
+    assert resumed.state.status == "awaiting_review"
+    assert resumed.state.pending_review.payload.get("reason") != "boundary_violation"
+    assert target.read_text(encoding="utf-8") == "one"
+    final = run(agent.resume_review(resumed.state, approved=True))
+    assert final.state.status == "completed"
     assert target.read_text(encoding="utf-8") == "two"
 
 
@@ -767,7 +800,7 @@ def test_tool_agent_shell_cross_boundary_path_requires_review(tmp_path: Path) ->
             agent,
             "Read through shell",
             boundary=Boundary(allowed_paths=["allowed"]),
-            review_level="fast",
+            review_level="careful",
         )
     )
 

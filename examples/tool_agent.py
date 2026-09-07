@@ -44,6 +44,9 @@ async def main() -> None:
     agent = dagent.ToolAgent(
         profile="conversation",
         capabilities=["tool.echo"],
+        # Fast automatically approves reviewable operations, including path overrides.
+        # Use "careful" to require human approval for boundary overrides.
+        review="fast",
     )
 
     result = await runner.run(

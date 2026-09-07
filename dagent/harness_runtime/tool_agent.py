@@ -546,6 +546,7 @@ class ToolAgentLoop:
         policy = _review_policy(review_level)
 
         async def guard(tool_call: ToolCall) -> ControlToolResult:
+            execution_context = context
             definition = self.tool_adapter.definition_from_tool_call(
                 tool_call,
                 enabled_toolsets=self.enabled_toolsets,
@@ -564,7 +565,12 @@ class ToolAgentLoop:
                 current_workspace_root(self.capability_executor.workspace_root),
             )
             if boundary_result is not None:
-                if _reviewable_boundary_result(boundary_result):
+                if _reviewable_boundary_result(boundary_result) and policy.level == "fast":
+                    execution_context = replace(
+                        context or CapabilityExecutionContext(task_id=invocation.invocation_id),
+                        approved_boundary_invocation_id=invocation.invocation_id,
+                    )
+                elif _reviewable_boundary_result(boundary_result):
                     return ControlToolResult(
                         content=(
                             f"[PENDING_REVIEW] Capability '{invocation.capability_id}' "
@@ -580,12 +586,15 @@ class ToolAgentLoop:
                             "boundary_paths": list(boundary_paths),
                         },
                     )
-                return ControlToolResult(content=_tool_content(boundary_result))
+                else:
+                    return ControlToolResult(
+                        content=_tool_content(boundary_result), capability_result=boundary_result,
+                    )
             if not policy.reviews_tool(risk):
                 try:
                     capability_result = await self.capability_executor.execute(
                         invocation,
-                        context=context,
+                        context=execution_context,
                         callbacks=callbacks,
                     )
                 except Exception as exc:

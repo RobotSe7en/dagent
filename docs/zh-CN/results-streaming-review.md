@@ -143,10 +143,12 @@ dataflow 和审计恢复能力。
 
 ## 恢复审核
 
+需要人工审核时请设置 `review="careful"`。默认 `fast` 对所有可审核操作（包括越界）自动批准，不暂停。
+
 run 等待审核时应持久化完整 checkpoint：
 
 ```python
-result = await runner.run(agent, input="写发布说明。")
+result = await runner.run(agent, input="写发布说明。", review="careful")
 
 if result.requires_review:
     checkpoint_json = result.checkpoint.model_dump_json()

@@ -160,10 +160,13 @@ full dataflow and audit recovery.
 
 ## Resume a review
 
+Use `review="careful"` to request human review. The default `fast` automatically
+approves reviewable actions, including boundary overrides, without pausing.
+
 Persist the full checkpoint whenever a run awaits review:
 
 ```python
-result = await runner.run(agent, input="Write the release note.")
+result = await runner.run(agent, input="Write the release note.", review="careful")
 
 if result.requires_review:
     checkpoint_json = result.checkpoint.model_dump_json()

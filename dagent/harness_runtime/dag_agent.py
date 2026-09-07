@@ -1206,8 +1206,11 @@ class DAGAgentLoop:
                         record.dag,
                         initial_trace=trace,
                         approve_node_boundaries=(
-                            record.dag_boundary_approved_version is not None
-                            and record.dag_boundary_approved_version == record.dag.version
+                            record.review_level == "fast"
+                            or (
+                                record.dag_boundary_approved_version is not None
+                                and record.dag_boundary_approved_version == record.dag.version
+                            )
                         ),
                         agent_execution_control=agent_execution_control,
                         skills=record.capability_scope.skills,

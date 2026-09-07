@@ -59,7 +59,8 @@ if result.requires_review:
 ```
 
 With `careful`, the agent's medium- and high-risk inner tools pause for review.
-At either level, an inner tool that exceeds its node boundary can pause for a
+With `fast`, reviewable operations, including boundary overrides, are automatically
+approved. With `careful`, an inner tool that exceeds its node boundary can pause for a
 path-specific boundary override. Approval also authorizes that reviewed path
 for later inner tool calls in the same run; other paths still pause. Approval
 or rejection resumes the same `ToolAgent` conversation; rejection feeds the

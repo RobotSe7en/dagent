@@ -2355,6 +2355,7 @@ def test_api_project_review_resume_uses_db_state_after_runner_restart(
         "/messages/stream",
         json={
             "input": "read outside",
+            "review_level": "careful",
             "target": "tool",
             "capability_ids": ["tool.read_file"],
             "project_id": project["id"],
@@ -2433,6 +2434,7 @@ def test_api_standalone_review_resume_uses_db_state_after_runner_restart(
         "/messages/stream",
         json={
             "input": "read outside",
+            "review_level": "careful",
             "target": "tool",
             "capability_ids": ["tool.read_file"],
             "conversation_id": conversation["id"],
@@ -2757,7 +2759,7 @@ def test_api_saved_dag_run_rejects_symlinked_run_workspace_root(
     assert list(symlink_target.iterdir()) == []
 
 
-def test_api_saved_dag_static_agent_review_resumes_without_conversation_state(
+def test_api_saved_dag_static_agent_fast_auto_approves_without_conversation_state(
     persistence_client,
 ) -> None:
     provider = MockProvider([
@@ -2800,38 +2802,16 @@ def test_api_saved_dag_static_agent_review_resumes_without_conversation_state(
         json={},
     )
     initial_result = _sse_events(initial_response.text)[-1]["data"]["result"]
-    review_id = initial_result["state"]["pending_review"]["review_id"]
     run_id = initial_result["state"]["run_id"]
     persisted_run = state.get_store().get_run(run_id)
 
     assert initial_response.status_code == 200
-    assert initial_result["state"]["status"] == "awaiting_review"
+    assert initial_result["state"]["status"] == "completed"
+    assert initial_result["state"]["pending_review"] is None
     assert persisted_run is not None
     assert persisted_run.conversation_id is None
     assert persisted_run.project_id is None
-
-    state.runner = Runner(
-        workspace=".dagent",
-        runtime_directory=".runtime",
-        provider=MockProvider([ChatResponse(content="done")]),
-    )
-    state.runner.add_agent(ToolAgent(
-        name="helper",
-        profile="conversation",
-        capabilities=["tool.write_file"],
-        skills=[],
-    ))
-
-    resume_response = persistence_client.post(
-        f"/reviews/{review_id}/resume",
-        json={"approved": True},
-    )
-    resumed_result = _sse_events(resume_response.text)[-1]["data"]["result"]
-
-    assert resume_response.status_code == 200
-    assert resumed_result["state"]["status"] == "completed"
-    assert "`assistant` (completed): done" in resumed_result["output_text"]
-    assert (Path(resumed_result["state"]["workspace_path"]) / "outside.txt").read_text() == "approved"
+    assert (Path(initial_result["state"]["workspace_path"]) / "outside.txt").read_text() == "approved"
 
 
 def test_api_saved_dag_artifact_upload_persists_across_process_state_reset(persistence_client) -> None:
@@ -3757,6 +3737,7 @@ def test_auto_capability_review_rejection_is_persisted_before_resume_stream_body
         "/messages/stream",
         json={
             "input": "read outside",
+            "review_level": "careful",
             "target": "tool",
             "capability_ids": ["tool.read_file"],
             "conversation_id": conversation["id"],

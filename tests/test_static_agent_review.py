@@ -18,6 +18,24 @@ def _agent_dag(agent: dagent.ToolAgent) -> dagent.Dag:
     return dag
 
 
+@pytest.mark.parametrize("review,expected", [("fast", "completed"), ("careful", "failed")])
+def test_static_tool_boundary_auto_approval_is_fast_only(tmp_path, review, expected):
+    dag = dagent.Dag("tool_boundary")
+    dag.add_node(dagent.Node(
+        "write", target="tool.write_file",
+        inputs={"path": "outside.txt", "content": "approved"},
+        boundary=dagent.Boundary(allowed_paths=["allowed"]),
+    ))
+    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider(), skill_roots=[])
+    try:
+        result = run(runner.run(dag, review=review))
+        assert result.status == expected
+        assert result.pending_review is None
+        assert (Path(result.workspace_path) / "outside.txt").exists() == (review == "fast")
+    finally:
+        runner.close()
+
+
 def test_careful_static_agent_approval_resumes_and_preserves_graph_input(tmp_path) -> None:
     calls: list[str] = []
 
@@ -87,7 +105,7 @@ def test_static_agent_rejection_continues_without_executing_tool(tmp_path) -> No
     assert calls == []
 
 
-def test_static_agent_fast_boundary_review_allows_reviewed_path_for_later_invocations(tmp_path) -> None:
+def test_static_agent_fast_automatically_approves_boundary_for_later_invocations(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(tool_calls=[
             ToolCall(
@@ -121,15 +139,9 @@ def test_static_agent_fast_boundary_review_allows_reviewed_path_for_later_invoca
 
     first = run(runner.run(dag, review="fast"))
 
-    assert first.status == "awaiting_review"
-    assert first.pending_review.payload["reason"] == "boundary_violation"
-    assert not (tmp_path / "other.txt").exists()
-
-    resumed = run(runner.resume(first.review.approve(), checkpoint=first.checkpoint))
-
-    assert resumed is not None
-    assert resumed.status == "completed"
-    assert (Path(resumed.workspace_path) / "other.txt").read_text() == "updated"
+    assert first.status == "completed"
+    assert first.pending_review is None
+    assert (Path(first.workspace_path) / "other.txt").read_text() == "updated"
 
 
 def test_static_agent_review_level_change_applies_to_later_tool_calls(tmp_path) -> None:
@@ -171,25 +183,18 @@ def test_static_agent_review_level_change_applies_to_later_tool_calls(tmp_path) 
     ))
     runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, skill_roots=[])
 
-    first = run(runner.run(dag, review="fast"))
+    first = run(runner.run(dag, review="careful"))
 
     assert first.pending_review is not None
     assert first.pending_review.capability_call.capability_id == "tool.write_file"
     second = run(runner.resume(
-        first.review.approve(review_level="careful"),
+        first.review.approve(review_level="fast"),
         checkpoint=first.checkpoint,
     ))
 
     assert second is not None
-    assert second.status == "awaiting_review"
-    assert second.pending_review is not None
-    assert second.pending_review.capability_call.capability_id == "tool.publish"
-    assert calls == []
-
-    final = run(runner.resume(second.review.approve(), checkpoint=second.checkpoint))
-
-    assert final is not None
-    assert final.status == "completed"
+    assert second.status == "completed"
+    assert second.pending_review is None
     assert calls == ["draft"]
 
 

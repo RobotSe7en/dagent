@@ -24,12 +24,10 @@ Raw `CapabilityDefinition.id` 必须以受支持的 kind 前缀开头（`tool`�
 
 ## 内置工具
 
-每个 `Runner` 都会注册一组默认工具。所有路径参数在 handler 执行前都会经过节点
-boundary 检查。Tool-agent run 中，如果一次 capability call 会跨越 boundary，运行会先暂停
-等待人工 review；批准只对这一次 capability call 生效。DAG review 的授权范围更大：
-批准某个 DAG 版本表示允许其中已审核的节点按展示的 boundary 执行。该授权来自 DAG
-review resume 流程；静态 DAG 和 fast no-review 的 DAG revision 仍会执行节点 boundary
-检查，并在越界时 fail closed。
+每个 `Runner` 都会注册一组默认工具。`fast` 默认批准所有可审核操作，包括路径越界，
+不会暂停等待人工审核。`careful` 保留 ToolAgent 的边界人工审核；已批准的 DAG 版本授权
+其中已审核的节点。如需越界必须由人确认，请使用 `careful`。两种模式都保留 shell 硬限制
+以及操作系统、沙箱权限限制。
 
 | 工具 | 风险 | 行为 |
 | --- | --- | --- |
@@ -198,7 +196,7 @@ policy = dagent.CapabilityPolicy(
 ```
 
 Agents 和 runs 上的 review 设置决定 medium/high-risk 工作什么时候暂停等待批准。
-Boundary review 独立于 risk review：如果 tool-agent 调用试图读写 boundary 之外的路径，
+`careful` 下 Boundary review 独立于 risk review：如果 tool-agent 调用试图读写 boundary 之外的路径，
 run 会以 `payload.reason == "boundary_violation"` 暂停。批准后会执行当前调用，并允许同一
 run 的后续工具调用继续访问 `payload.boundary_paths` 中已审核的具体路径；其它路径仍需审核，
 该授权也不会跨 run。拒绝则把 denial 消息反馈给 agent。硬性拦截的 shell 危险模式

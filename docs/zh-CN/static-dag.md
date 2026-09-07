@@ -57,8 +57,8 @@ if result.requires_review:
     result = await runner.resume(result.review.approve(), checkpoint=result.checkpoint)
 ```
 
-`careful` 会审核 Agent 内部的中、高风险工具。任意策略下，内部工具超出节点 boundary 时，
-都会暂停以请求针对具体路径的 boundary override。批准后，同一 run 内后续工具调用访问这个
+`fast` 默认批准所有可审核操作，包括越界。`careful` 会审核 Agent 内部的中、高风险工具，
+内部工具超出节点 boundary 时，也会暂停以请求针对具体路径的 boundary override。批准后，同一 run 内后续工具调用访问这个
 已审核路径时不再重复审核，其它路径仍会暂停。批准或拒绝会续跑同一个 `ToolAgent`
 conversation；拒绝不会执行工具，而会将决定反馈给模型。
 

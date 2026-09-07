@@ -911,6 +911,7 @@ def test_api_message_stream_capability_review_event_includes_call_and_payload(tm
         json=_message_request(
             "read outside the workspace",
             target="tool",
+            review_level="careful",
             capability_ids=["tool.read_file"],
         ),
     )
@@ -960,6 +961,7 @@ def test_api_resume_capability_review_forwards_reviewer_feedback(tmp_path) -> No
         json=_message_request(
             "read outside the workspace",
             target="tool",
+            review_level="careful",
             capability_ids=["tool.read_file"],
         ),
     )

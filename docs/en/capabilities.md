@@ -29,14 +29,12 @@ capability.
 
 ## Built-in Tools
 
-Every `Runner` registers a small default tool set. All path parameters are
-checked against the node boundary before the handler runs. Tool-agent runs pause
-for human review when a capability call would otherwise cross its boundary; an
-approval applies only to that single capability call. DAG review approval is
-broader: approving a DAG version authorizes its reviewed nodes to execute with
-their shown boundaries. That authorization comes from the DAG review resume
-flow; static DAGs and fast no-review DAG revisions still enforce node
-boundaries and fail closed on boundary violations.
+Every `Runner` registers a small default tool set. `fast` automatically approves
+reviewable operations, including path-boundary overrides, without pausing.
+`careful` retains human review for tool-agent boundary overrides; approved DAG
+versions authorize their reviewed nodes. Use `careful` when boundary overrides
+must require human consent. Hard shell restrictions and OS/sandbox permissions
+remain enforced at either level.
 
 | Tool | Risk | Behavior |
 | --- | --- | --- |
@@ -216,7 +214,7 @@ policy = dagent.CapabilityPolicy(
 ```
 
 Review settings on agents and runs determine when medium/high-risk work pauses
-for approval. Boundary review is independent of risk review: a tool-agent call
+for approval. In `careful`, boundary review is independent of risk review: a tool-agent call
 that tries to read or write outside its boundary pauses with
 `payload.reason == "boundary_violation"`. Approving that review executes the
 same call and authorizes the reported `payload.boundary_paths` for later tool
