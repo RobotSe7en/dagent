@@ -56,7 +56,7 @@ async def main():
         config = ProviderConfig(
             api_key=key, base_url="https://api.deepseek.com", model="deepseek-v4-flash",
             protocol="chat_completions", token_counting="heuristic",
-            reasoning_effort="low", max_output_tokens=1024,
+            reasoning_effort="high", max_output_tokens=1024,
             extra_body={"thinking": {"type": "enabled"}},
         )
         provider = OpenAICompatibleProvider(config, client=client)

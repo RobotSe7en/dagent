@@ -248,7 +248,9 @@ file reads, or that a server used reasoning carried by a request.
 A small opt-in check uses synthetic data and at most three generation requests:
 `DAGENT_RUN_DEEPSEEK_TESTS=1 uv run python -m examples.deepseek_replay`.
 Provide the test credential through `API_KEY`; the example prints counts and
-validation results, not reasoning, requests, or credentials. Each generation
+validation results, not reasoning, requests, or credentials. The check uses
+`reasoning_effort="high"`; an empty reasoning response cannot validate replay.
+Each generation
 has a 1024-token output limit and retries are disabled. Failure stops the check;
 a truncated generation is a failed check, not a reason to retry automatically.
 

@@ -220,7 +220,8 @@ reasoning input 字段，因此会省略 provider-specific reasoning 回放。�
 小额验收使用合成数据，最多三次生成请求：
 `DAGENT_RUN_DEEPSEEK_TESTS=1 uv run python -m examples.deepseek_replay`。
 通过 `API_KEY` 提供测试凭据；示例只输出计数和验证结果，不输出推理、完整请求
-或凭据。每次生成最多 1024 输出 token，禁用重试；失败即停，输出截断也视为
+或凭据。验收使用 `reasoning_effort="high"`；空推理响应无法验证推理回传。
+每次生成最多 1024 输出 token，禁用重试；失败即停，输出截断也视为
 验收失败，不自动增加预算重试。
 
 ## 观察请求实际携带的推理

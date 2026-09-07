@@ -4,9 +4,11 @@
 
 ## 当前发布线
 
-当前包版本是 `0.9.10a0`。
+当前包版本是 `0.9.11`。
 
 ## Unreleased
+
+## 0.9.11
 
 ### 文件窗口与展示预算
 
@@ -37,8 +39,25 @@
   显式配置、vLLM 与 Responses 行为保持不变，未知端点和模型仍保守省略。
 - 不改变 active_run 边界和预算删推理策略，不承诺预算压力或跨 Run 历史下的
   完整协议合规。详见[推理说明](model-context-and-reasoning.md#deepseek-chat-工具推理回传)。
-- 发布前必须完成真实 API 验收；离线请求测试不能证明服务端行为或重复调用原因。
+- 真实验收已通过：`api.deepseek.com`、`deepseek-v4-flash`、Chat Completions、
+  `high` effort，共三次生成请求；一次工具循环完整回传 1 条、95 字符推理。
+  auto 与显式 `reasoning_content` 请求消息一致，最终请求指标与请求体一致。
+  此前 `low` 验收返回空推理，无法验证回传；示例现使用 `high`。这些结果证明
+  请求携带且获得成功响应，不证明服务端使用推理或重复调用的原因。
 
+
+### 正式版迁移与验证
+
+- 使用 `pip install 'dagent-ai==0.9.11'` 安装新的不可变版本，并更新宿主依赖
+  锁文件；不要向消费者复制 SDK 源码。
+- 本正式版也包含此前 `0.9.10a0` 的 Tool 存储失败审计改进：公开
+  `RunExecutionError`、完整先前 trace 和可选 `RunFailedData.result`。迁移方式
+  见下方该版本条目。
+- 从 0.9.9 升级还包含 0.9.10 对 `fast` 边界审核行为的有意变更；需要人工
+  批准边界覆盖时，请显式选择 `careful`。
+- 验证覆盖完整 Python/MCP 测试、离线公开 SDK 示例、wheel/sdist 构建和包元数据
+  检查，1257 项通过、3 项跳过；有界 DeepSeek 验收结果见上文。MiniMax 实测
+  和 Docker 测试仍依赖环境。
 
 ## 0.9.10a0 (0.9.10-alpha)
 

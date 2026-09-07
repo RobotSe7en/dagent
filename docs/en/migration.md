@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.10a0`.
+The current package version is `0.9.11`.
 
 ## Unreleased
+
+## 0.9.11
 
 ### File windows and display budgets
 
@@ -47,9 +49,28 @@ The current package version is `0.9.10a0`.
 - The active-run boundary and existing budget-driven reasoning omission are
   unchanged. Full protocol compliance under pressure or across Runs is not
   promised. See [reasoning](model-context-and-reasoning.md#deepseek-chat-tool-replay).
-- Real API acceptance is required before release; offline request tests alone
-  do not establish server behavior or the cause of repeated tool calls.
+- Live acceptance passed on `api.deepseek.com`, `deepseek-v4-flash`, Chat
+  Completions with `high` effort: three generation requests, one tool exchange,
+  and complete replay of one 95-character reasoning item. Auto and explicit
+  `reasoning_content` request messages matched, as did final-request metrics.
+  Earlier `low` checks returned empty reasoning and could not validate replay.
+  This verifies request carriage and successful responses, not server reasoning
+  use or the cause of repeated tool calls. The example now uses `high` effort.
 
+
+### Stable-release migration and verification
+
+- Install the immutable release with `pip install 'dagent-ai==0.9.11'` and
+  update the host dependency lockfile; do not copy SDK source into consumers.
+- This stable release also includes the Tool storage-failure audit improvements
+  previously shipped in `0.9.10a0`: public `RunExecutionError`, complete preceding
+  traces, and optional `RunFailedData.result`. See that entry below for migration.
+- Upgrading from 0.9.9 also includes 0.9.10's deliberate `fast` boundary-review
+  behavior change. Select `careful` when boundary overrides need human approval.
+- Verification: full Python/MCP suite, offline public-SDK examples, wheel/sdist
+  builds and package metadata checks; 1,257 tests passed and 3 skipped. Bounded
+  DeepSeek acceptance passed as described above. The opt-in MiniMax tests and
+  Docker-dependent test remain environment-dependent.
 
 ## 0.9.10a0 (0.9.10-alpha)
 
