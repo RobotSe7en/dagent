@@ -10,7 +10,8 @@ credentials.
 
 | Example | Demonstrates | Related docs |
 | --- | --- | --- |
-| `tool_result_recovery.py` | Recover a saved report, page through files/searches, and retain shell logs without network access. | [Tool result recovery](../docs/en/tool-result-recovery.md) |
+| `deepseek_replay.py` | Opt-in, bounded official DeepSeek tool-replay acceptance using synthetic data. | [Model context and reasoning](../docs/en/model-context-and-reasoning.md#deepseek-chat-tool-replay) |
+| `tool_result_recovery.py` | Recover a saved report, distinguish received/displayed file windows and cursors, page through searches, and retain shell logs offline. | [Tool result recovery](../docs/en/tool-result-recovery.md) |
 | `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/en/agents.md), [Capabilities](../docs/en/capabilities.md) |
 | `agent_delegation.py` | Register a leaf subagent and expose it to a top-level `ToolAgent`. | [Agents](../docs/en/agents.md) |
 | `auto_agent.py` | Let the runtime choose direct tool use or dynamic DAG execution. | [Agents](../docs/en/agents.md) |

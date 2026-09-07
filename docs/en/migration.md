@@ -9,6 +9,48 @@ The current package version is `0.9.10a0`.
 
 ## Unreleased
 
+### File windows and display budgets
+
+- File displays distinguish source EOF/window coordinates from the exact
+  displayed character interval. Continuation follows the displayed end after
+  both per-result and total-budget shortening. Existing retention coordinates
+  remain source coordinates; no checkpoint schema or global budget change.
+- Line windows now preserve their final LF/CRLF. Raw bounded line reads use
+  `[SOURCE_TRUNCATED]` and character continuation; model `[TRUNCATED]` denotes
+  display shortening. Human-readable result text intentionally changes; hosts
+  parsing it should update expectations and use typed retention for source data.
+  Existing saved results are not rewritten.
+- Tool descriptions and common prompts recommend cursor-based progress and
+  avoiding duplicate intervals. No automatic reading, retries, recovery or
+  execution deduplication is added. See [tool result recovery](tool-result-recovery.md).
+
+
+### Final-request reasoning observability
+
+- `ModelCallMetadata.request_reasoning` is a new optional typed summary of
+  final HTTP request reasoning fields, item/character counts and omission reasons.
+  Existing `ContextUsage` reasoning counters keep their projection semantics.
+- Old records load with `request_reasoning=None` (unknown, not zero). This uses
+  the existing optional-field extension policy: Checkpoint V8, RunState V5 and
+  ConversationState V4 remain unchanged. No conversion or historical backfill.
+- Hosts that strictly validate persisted or streamed nested metadata must accept
+  this field or upgrade their SDK/parser before reading new records. New records
+  are not guaranteed to load in older SDKs; coordinate consumer upgrades and
+  avoid rollback readers on new data. No extra reasoning/body/credential logging.
+
+
+### DeepSeek replay mapping
+
+- Chat `auto` now sends `reasoning_content` for recognized official DeepSeek V4
+  endpoints/models. Explicit field settings, vLLM and Responses retain their
+  behavior; unknown endpoints/models remain conservative.
+- The active-run boundary and existing budget-driven reasoning omission are
+  unchanged. Full protocol compliance under pressure or across Runs is not
+  promised. See [reasoning](model-context-and-reasoning.md#deepseek-chat-tool-replay).
+- Real API acceptance is required before release; offline request tests alone
+  do not establish server behavior or the cause of repeated tool calls.
+
+
 ## 0.9.10a0 (0.9.10-alpha)
 
 ### Tool result-storage failure audit

@@ -36,6 +36,7 @@ from dagent.providers.model_io import (
     normalize_model_response,
     responses_tools,
 )
+from dagent.providers.request_observation import observe_request_reasoning
 from dagent.schemas.context import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     ModelTokenUsage,
@@ -355,7 +356,9 @@ class OpenAICompatibleProvider:
             capabilities,
             resolution_reason=resolution_reason,
         )
-        response = await self.client.chat.completions.create(**kwargs)
+        raw = await self.client.chat.completions.with_raw_response.create(**kwargs)
+        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
+        response = raw.parse()
         choice = response.choices[0]
         if getattr(choice, "finish_reason", None) == "length":
             raise ProviderResponseError(
@@ -395,7 +398,9 @@ class OpenAICompatibleProvider:
             resolution_reason=resolution_reason,
             stream=True,
         )
-        response_stream = await self.client.chat.completions.create(**kwargs)
+        raw = await self.client.chat.completions.with_raw_response.create(**kwargs)
+        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
+        response_stream = raw.parse()
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         refusal_parts: list[str] = []
@@ -494,7 +499,9 @@ class OpenAICompatibleProvider:
             capabilities,
             resolution_reason=resolution_reason,
         )
-        response = await self.client.responses.create(**kwargs)
+        raw = await self.client.responses.with_raw_response.create(**kwargs)
+        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
+        response = raw.parse()
         result = _model_response_from_responses(
             response,
             metadata=metadata,
@@ -515,7 +522,9 @@ class OpenAICompatibleProvider:
             resolution_reason=resolution_reason,
             stream=True,
         )
-        response_stream = await self.client.responses.create(**kwargs)
+        raw = await self.client.responses.with_raw_response.create(**kwargs)
+        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
+        response_stream = raw.parse()
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         refusal_parts: list[str] = []
@@ -623,6 +632,17 @@ class OpenAICompatibleProvider:
             )
         _require_completed_response(result, completed_response)
         yield ModelStreamEvent(type="done", response=result)
+
+    def _observe_reasoning(
+        self, body: bytes, request: ModelRequest, metadata: ModelCallMetadata,
+        capabilities: ProviderCapabilities,
+    ) -> ModelCallMetadata:
+        return observe_request_reasoning(
+            body, request, metadata,
+            resolved_field=("reasoning" if metadata.protocol == "responses"
+                            else self._resolved_chat_reasoning_field(capabilities)),
+            explicit_omit=self.config.chat_reasoning_field == "omit",
+        )
 
     def _chat_kwargs(
         self,
@@ -785,6 +805,10 @@ class OpenAICompatibleProvider:
         configured = self.config.chat_reasoning_field
         if configured != "auto":
             return cast(Literal["reasoning", "reasoning_content", "omit"], configured)
+        # The official V4 Chat tool protocol replays assistant reasoning_content.
+        # An open-weight model name on a proxy does not establish its wire format.
+        if self._is_deepseek_official and self.config.model in _DEEPSEEK_CONTEXT_WINDOWS:
+            return "reasoning_content"
         if capabilities.server_kind == "vllm":
             return "reasoning"
         return "omit"

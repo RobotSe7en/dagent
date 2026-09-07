@@ -8,6 +8,38 @@
 
 ## Unreleased
 
+### 文件窗口与展示预算
+
+- 文件展示区分源 EOF/窗口坐标与实际呈现字符区间。单条及总预算缩短后，续读游标
+  均指向实际展示末尾。既有 retention 坐标仍描述源窗口；不改变 checkpoint 版本
+  或全局预算默认值。
+- 行窗口保留末尾 LF/CRLF。原始受限行读取使用 `[SOURCE_TRUNCATED]` 与字符续读，
+  模型 `[TRUNCATED]` 表示展示缩短。可读结果文本有意变化，解析文本的宿主须更新
+  预期，源数据优先使用类型化 retention；不重写既有保存结果。
+- 工具说明及通用提示建议沿游标推进、避免重复区间，不新增自动补读、重试、恢复
+  或执行去重。详见[工具结果说明](tool-result-recovery.md)。
+
+
+### 最终请求推理可观测性
+
+- `ModelCallMetadata.request_reasoning` 新增可选类型化摘要，统计最终 HTTP 请求的
+  推理字段、条数、字符数及省略原因。原 `ContextUsage` 推理计数保持内部投影语义。
+- 旧数据加载时 `request_reasoning=None`，表示未知而非零。沿用可选字段扩展契约：
+  Checkpoint V8、RunState V5、ConversationState V4 不变，不转换或回填历史数据。
+- 严格校验持久化或流式嵌套元数据的宿主，读取新数据前须接受新增字段或升级 SDK
+  与解析器；不保证旧 SDK 能读取新记录。应协调消费者升级，避免回滚后用旧解析器
+  读取新数据。不新增推理正文、完整请求或凭据日志。
+
+
+### DeepSeek 推理字段映射
+
+- Chat `auto` 对已确认的官方 DeepSeek V4 端点和模型发送 `reasoning_content`。
+  显式配置、vLLM 与 Responses 行为保持不变，未知端点和模型仍保守省略。
+- 不改变 active_run 边界和预算删推理策略，不承诺预算压力或跨 Run 历史下的
+  完整协议合规。详见[推理说明](model-context-and-reasoning.md#deepseek-chat-工具推理回传)。
+- 发布前必须完成真实 API 验收；离线请求测试不能证明服务端行为或重复调用原因。
+
+
 ## 0.9.10a0 (0.9.10-alpha)
 
 ### Tool 结果存储失败审计

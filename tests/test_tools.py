@@ -365,7 +365,7 @@ def test_read_file_offset_and_limit_slice_with_truncation_footer(tmp_path: Path)
 
     assert result.status == "completed"
     assert result.content.startswith("line3\nline4")
-    assert "[TRUNCATED] showing lines 3-4 of 10" in result.content
+    assert "[SOURCE_TRUNCATED] showing lines 3-4 of 10" in result.content
 
 
 def test_read_file_full_read_preserves_exact_content(tmp_path: Path) -> None:
@@ -486,7 +486,7 @@ def test_read_file_marks_oversized_single_line_as_truncated(tmp_path: Path) -> N
 
     assert result.status == "completed"
     assert result.content.startswith("a" * 100)
-    assert "[TRUNCATED]" in result.content
+    assert "[SOURCE_TRUNCATED]" in result.content
     assert "showing lines 1-1 of 1" in result.content
 
 

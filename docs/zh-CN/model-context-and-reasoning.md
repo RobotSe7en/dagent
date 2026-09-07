@@ -57,7 +57,8 @@ Completions 对已识别的 vLLM 发送：
 ```
 
 `chat_reasoning_field="reasoning_content"` 只会改变 assistant 回放字段名；`"omit"` 会
-移除它；`"auto"` 对 vLLM 选择 `reasoning`，对未知 server 选择 `omit`。
+移除它；`"auto"` 对已识别的官方 DeepSeek V4 端点与模型选择 `reasoning_content`，
+对 vLLM 选择 `reasoning`，其他情况选择 `omit`。
 
 等价的无状态 Responses input 是：
 
@@ -196,3 +197,65 @@ context = dagent.ContextPolicy(
 内部 adapter 使用。它们会收到普通 Chat messages/tools shape；但 SDK 无法推断其接受的
 reasoning input 字段，因此会省略 provider-specific reasoning 回放。需要双协议能力时，
 请使用面向私有 vLLM 的内置 `Provider`。
+
+## DeepSeek Chat 工具推理回传
+
+从 0.9.11 起，`auto` 识别 HTTPS `api.deepseek.com`（默认或 443 端口，根路径、
+`/v1` 或 `/beta`）上的 `deepseek-v4-flash`、`deepseek-v4-pro`、
+`deepseek-v4-flash-vision-exp`。显式字段配置始终优先；未知模型及第三方端点
+不会仅凭模型名获得该协议映射。
+
+[官方思考指南](https://api-docs.deepseek.com/guides/thinking_mode/)要求携带 `tools`
+的后续请求完整回传 `reasoning_content`，包括没有调用工具的 assistant 轮次；
+不携带工具时服务端可能忽略推理。协议核对日期：2026-09-07；另见
+[模型列表](https://api-docs.deepseek.com/)、
+[/v1 示例](https://api-docs.deepseek.com/quick_start/agent_integrations/workbuddy/)、
+[beta 工具协议](https://api-docs.deepseek.com/guides/tool_calls/)。
+
+本项仅修复字段映射。`active_run` 仍排除其他 Run 的推理，预算压力仍可能在保留
+消息时单独省略较早推理，因此这些请求可能不满足官方完整回传要求。`none` 和
+显式 `omit` 仍生效，即使服务端可能拒绝这样的工具请求。不能由此断言推理省略
+导致了重复读取，也不能从请求携带推理推断服务端实际使用了推理。
+
+小额验收使用合成数据，最多三次生成请求：
+`DAGENT_RUN_DEEPSEEK_TESTS=1 uv run python -m examples.deepseek_replay`。
+通过 `API_KEY` 提供测试凭据；示例只输出计数和验证结果，不输出推理、完整请求
+或凭据。每次生成最多 1024 输出 token，禁用重试；失败即停，输出截断也视为
+验收失败，不自动增加预算重试。
+
+## 观察请求实际携带的推理
+
+`ContextUsage.replayed_reasoning_items` / `replayed_reasoning_tokens` 保留既有
+语义：内部上下文投影中保留的推理。`omitted_reasoning_*` 统计投影省略；这些计数
+都不能证明最终 Chat 字段已序列化，也不重新定义历史统计。
+
+从 0.9.11 起，`AssistantMessage.model_call.request_reasoning`（压缩调用的
+model-call 元数据中也可用）在 `extra_request_args`、`extra_body` 全部覆盖后，
+从最终 HTTP 请求体统计推理文本：
+
+| 字段 | 含义 |
+| --- | --- |
+| `resolved_field` | Provider 映射结果：`reasoning`、`reasoning_content` 或 `omit`。 |
+| `serialized_fields` | 实际非空文本字段；没有时为 `("omit",)`。透传覆盖若携带两种 Chat 字段，则同时列出。 |
+| `serialized_items` | 非空 assistant 推理字段数，或含文本的 Responses reasoning 输入项数。 |
+| `serialized_characters` | JSON 解码后的 Unicode 码点数之和；不含转义和包装，不是 token 数。 |
+| `omission_reasons` | 上下文或序列化省略原因，可同时出现多项。 |
+
+原因枚举为 `policy_none`、`outside_active_run`、`context_budget`、
+`explicit_omit`、`auto_unsupported`、`request_override`、`no_reasoning_available`。
+上下文原因描述交给 Provider 的投影；透传覆盖之后仍可能注入不同内容。Responses
+统计 reasoning 项的 `content` 和 `summary` 文本，每项计一条；不统计
+`reasoning.effort`、加密数据或本次响应生成的推理。空推理字符串计零。
+
+```python
+for item in result.conversation.items:
+    if isinstance(item, dagent.AssistantMessage) and item.model_call:
+        observation = item.model_call.request_reasoning
+        if observation is not None:
+            print(observation.model_dump(mode="json"))
+```
+
+`RequestReasoning` 位于 `dagent.schemas.context`，不在包根重新导出。旧记录及
+未实现请求观测的 Provider 缺少摘要时表示**未知**，不是实际发送零条。摘要随正常
+响应元数据返回，包括流式完成结果；不另建失败请求或传输尝试日志。不额外记录
+推理正文、完整请求和凭据，只证明请求携带，不证明服务端使用。

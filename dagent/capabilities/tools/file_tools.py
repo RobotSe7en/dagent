@@ -89,15 +89,20 @@ def read_file(path: str | Path, offset: int = 1, limit: int | None = None,
     if complete_text is not None:
         return _file_output(path, complete_text, start=0, more=False)
     end_line = offset - 1 + len(shown)
-    content = window.source_text.rstrip("\r\n")
+    # The window is an exact source prefix, including its line terminators.
+    # Stripping them can report EOF while silently losing the final newline.
+    content = window.source_text
     body_length = len(content)
     if end_line < total or window.truncated_by_bytes:
         reason = (
             "read byte limit reached."
             if window.truncated_by_bytes
-            else "use offset/limit to read more."
+            else "file window limit reached."
         )
-        content += f"\n{TRUNCATED} showing lines {offset}-{end_line} of {total}; {reason}"
+        content += (
+            f"\n[SOURCE_TRUNCATED] showing lines {offset}-{end_line} of {total}; {reason} "
+            f"Continue with offset_chars={window.start_char + body_length}, limit_chars=1024."
+        )
     return _file_output(path, content, start=window.start_char,
                         more=end_line < total or window.truncated_by_bytes, body_length=body_length)
 
@@ -367,11 +372,13 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> _ReadWindow
             raw = handle.readline(MAX_READ_BYTES + 1)
             if not raw:
                 break
+            # readline is bounded in bytes, before BOM removal. A chunk ending
+            # at CR may still be only the first half of a CRLF terminator.
+            line_was_partial = len(raw) > MAX_READ_BYTES and not raw.endswith(b"\n")
             if first_line:
                 first_line = False
                 if raw.startswith(codecs.BOM_UTF8):
                     raw = raw[len(codecs.BOM_UTF8):]
-            line_was_partial = len(raw) > MAX_READ_BYTES and not raw.endswith((b"\n", b"\r"))
             before_line = character_count
             character_count += len(decoder.decode(raw))
             if line_was_partial:
@@ -392,7 +399,7 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> _ReadWindow
                 start_char = before_line
 
             line = _line_text(raw)
-            line_bytes = len(line.encode("utf-8")) + 1
+            line_bytes = len(raw)
             if used_bytes + line_bytes > MAX_READ_BYTES:
                 if not shown:
                     prefix_lines = _decode_utf8_prefix(raw, MAX_READ_BYTES).splitlines()
@@ -406,7 +413,13 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> _ReadWindow
                 continue
             used_bytes += line_bytes
             shown.append(line)
-            source_parts.append(raw.decode("utf-8", errors="replace"))
+            source_parts.append(
+                _decode_utf8_prefix(raw, len(raw))
+                if line_was_partial else raw.decode("utf-8", errors="replace")
+            )
+            if line_was_partial:
+                # Never append the next line after discarding this one's tail.
+                stopped_showing = True
             if exact_bytes is not None and exact_possible:
                 exact_bytes.extend(raw)
 
@@ -523,8 +536,11 @@ def register_file_tools(registry: ToolRegistry) -> None:
         action="read",
         path_args=("path",),
         description=(
-            "Read a UTF-8 text file. Returns at most "
-            f"{MAX_READ_LINES} lines; use offset/limit to page through larger files."
+            f"Read exact UTF-8 text (max {MAX_READ_LINES} lines/{MAX_READ_BYTES} bytes). "
+            "Line offset/limit is one-based; offset_chars/limit_chars uses zero-based Unicode "
+            "code points (not bytes/tokens), excluding BOM. Prefer the returned cursor: "
+            "budgets may hide part of a complete result. Do not mix units or restart solely "
+            "due to display truncation."
         ),
         parameters={
             "type": "object",
@@ -532,7 +548,7 @@ def register_file_tools(registry: ToolRegistry) -> None:
                 "path": {"type": "string", "description": "File path to read."},
                 "offset": {
                     "type": "integer",
-                    "description": "Line number to start reading from (1-indexed).",
+                    "description": "Line number to start reading from (1-indexed). Prefer the returned cursor for continuation.",
                     "default": 1,
                 },
                 "limit": {
@@ -540,7 +556,7 @@ def register_file_tools(registry: ToolRegistry) -> None:
                     "description": "Maximum number of lines to read.",
                 },
                 "offset_chars": {"type": "integer", "minimum": 0,
-                    "description": "Zero-based Unicode character offset; use for long lines. Cannot combine with line windows."},
+                    "description": "Zero-based Unicode code point offset, excluding BOM. Prefer the returned cursor; not a byte or line offset. Cannot combine with line windows."},
                 "limit_chars": {"type": "integer", "minimum": 1,
                     "description": "Character window size (default 1024). Requires offset_chars."},
             },

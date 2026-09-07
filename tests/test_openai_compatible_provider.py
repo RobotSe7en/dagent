@@ -1,12 +1,13 @@
 from types import SimpleNamespace
 
 import pytest
+from tests.provider_fakes import RawResponseEndpoint
 
 from dagent.config import ProviderConfig
 from dagent.providers import OpenAICompatibleProvider, StructuredOutputFormat
 
 
-class FakeCompletions:
+class FakeCompletions(RawResponseEndpoint):
     def __init__(
         self,
         *,

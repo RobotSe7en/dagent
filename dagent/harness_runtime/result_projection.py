@@ -112,6 +112,7 @@ def project_result(
     cursor_text = ""
     file_window = bool(
         retention and retention.window_start is not None and retention.continuation
+        and retention.continuation.tool == "read_file"
     )
     if retention and retention.continuation:
         cursor = retention.continuation
@@ -138,7 +139,18 @@ def project_result(
         )
         metadata = [status]
         if truncated:
-            metadata.append("[TRUNCATED]")
+            metadata.append("[TRUNCATED] model display shortened; received result has undisplayed text")
+        if file_window and retention:
+            start = retention.window_start
+            end = start + (retention.window_length if retention.window_length is not None else len(text))
+            source_eof = {"complete": "true", "partial": "false", "unknown": "unknown"}[
+                retention.source_completeness
+            ]
+            metadata.append(
+                f"[File window: chars=[{start},{end}); source_eof={source_eof}; "
+                "unit=Unicode code points, zero-based, end-exclusive]"
+            )
+            metadata.append(f"[Displayed: chars=[{start},{start + chars})]")
         if unavailable:
             metadata.append(
                 "[RECOVERY_UNAVAILABLE: "

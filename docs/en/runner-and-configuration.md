@@ -146,9 +146,10 @@ Token-based reasoning budgets are not supported. The old nested `reasoning`
 object is rejected.
 
 `chat_reasoning_field` controls only replay serialization for Chat. `auto`
-uses `reasoning` for a detected vLLM server and omits replay on an unknown
-server. Set `reasoning_content` explicitly only for a compatible server that
-documents that input field. Response parsing accepts both common output field
+uses `reasoning_content` for recognized official DeepSeek V4 endpoints/models,
+`reasoning` for a detected vLLM server, and omits replay otherwise. Explicit
+`reasoning_content`, `reasoning`, and `omit` take precedence. Model names alone
+do not identify a proxy protocol; configure its documented field explicitly. Response parsing accepts both common output field
 names and normalizes them into `AssistantMessage.reasoning`.
 
 `token_counting="auto"` uses vLLM `/tokenize` when advertised, including

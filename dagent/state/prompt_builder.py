@@ -71,7 +71,13 @@ class PromptBuilder:
 
 
 def _tools_section(tools: list[CapabilityDefinition]) -> str:
-    lines = ["## Available Tools"]
+    lines = [
+        "## Available Tools",
+        "- Follow returned cursors and units; continue from the actual displayed end.",
+        "- Track actual calls/results; shorter historical displays do not undo reading progress.",
+        "- Avoid duplicate file intervals in one batch. If unchanged, do not restart or switch tools solely because display was truncated.",
+        "- Source pagination differs from display truncation: a complete result may be partly shown.",
+    ]
     for tool in tools:
         args = _parameter_names(tool.parameters)
         args_text = f" Args: {', '.join(args)}." if args else ""

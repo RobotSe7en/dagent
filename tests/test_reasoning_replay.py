@@ -181,6 +181,7 @@ async def test_pressure_drops_oldest_reasoning_but_keeps_latest_step() -> None:
 
     assert _reasoning(prepared.request) == ["", latest_reasoning]
     assert prepared.usage.omitted_reasoning_items == 1
+    assert prepared.request.reasoning_omission_reasons == ("context_budget",)
     assert prepared.usage.replayed_reasoning_items == 1
     original = next(
         item

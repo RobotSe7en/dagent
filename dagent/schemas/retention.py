@@ -16,7 +16,9 @@ class ResultStorageWarning(BaseModel):
 
 
 class ResultCursor(BaseModel):
-    """A checked tool invocation that continues a file or query window."""
+    """A checked continuation: read_file offsets are Unicode code points,
+    grep/list_files offsets are entries; all offsets are zero-based.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -38,6 +40,8 @@ class ResultRetention(BaseModel):
     retained_bytes: int | None = Field(default=None, ge=0)
     exit_code: int | None = None
     continuation: ResultCursor | None = None
+    # File source coordinates: Unicode code points, excluding an initial BOM.
+    # These describe the received window, never a later budgeted projection.
     window_start: int | None = Field(default=None, ge=0)
     window_length: int | None = Field(default=None, ge=0)
     storage_warnings: tuple[ResultStorageWarning, ...] = ()

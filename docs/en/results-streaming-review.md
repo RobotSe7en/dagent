@@ -315,3 +315,6 @@ Both `result.checkpoint` and `runner.run_checkpoint(result.run_id)` are `None`.
 The SDK does not retry the tool or invoke validation after this failure. Host
 applications own audit persistence and Workspace publication; completed tool
 side effects are not rolled back. See `examples/streaming.py` for stream handling.
+
+For projection counters versus final HTTP reasoning statistics, see
+[request reasoning observability](model-context-and-reasoning.md#observe-reasoning-carried-by-a-request).

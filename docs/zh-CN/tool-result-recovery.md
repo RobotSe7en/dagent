@@ -85,3 +85,37 @@ SDK 不会自动下载远端资源。
 更积极的原文保存会增加磁盘占用，也可能保存敏感工具输出；关闭 Runner 不会自动删除这些文件。
 
 离线示例：`uv run python -m examples.tool_result_recovery`。
+
+## 区分源窗口与模型展示
+
+从 0.9.11 起，文件结果分别显示源范围和展示范围：
+
+```text
+[status=completed]
+[TRUNCATED] model display shortened; received result has undisplayed text
+[File window: chars=[0,20352); source_eof=true; unit=Unicode code points, zero-based, end-exclusive]
+[Displayed: chars=[0,1900)]
+[Continue with read_file: {"path": "report.txt", "offset_chars": 1900, "limit_chars": 1024}]
+...原文第 0 到 1899 个字符...
+```
+
+这些数值仅示意，不是固定 token/字符换算。59,980 字节、20,352 字符、500 行文件
+可以已由工具完整返回，但在 2048 token 预算下仅展示一部分，状态和游标也消耗预算。
+`source_eof=true` 表示**返回窗口**到达 EOF，不代表模型看到了全部文件，也不代表
+从中部开始的窗口覆盖了文件前缀。`source_eof=false` 与 `[SOURCE_TRUNCATED]` 表示
+返回窗口后仍有源内容；`[TRUNCATED]` 独立表示模型展示缩短。仅源分页不算展示截断。
+
+范围采用 Unicode 码点的 `[start,end)`，不是字节、行、字素簇或 token。初始 UTF-8
+BOM 不计入，保留 LF/CRLF，CRLF 算两个码点。展示正文始终是返回窗口的连续前缀，
+续读游标等于实际展示末尾，包括行窗口在行中间被裁剪的情况。EOF 且完整展示时没有
+面向模型的续读提示；零正文时报告空展示区间，游标不前进。最低必要信息
+无法装下时仍使用既有预算超限错误。
+
+总工具结果预算可能使后续请求中的历史结果缩短，展示范围和游标随请求重算。
+`ResultRetention.window_start` / `window_length` 仍表示原始返回窗口，不是全局
+阅读进度记录，也不撤销此前调用。应依据实际调用和已观察到的结果维护进度，同批
+避免相同文件同区间请求；文件未变化时，不要仅因展示截断从头读取或换工具重读。
+每次读取都重新访问文件系统，不是快照。
+
+上述行为是工具说明和默认提示，不添加执行去重、自动补读、重试或恢复，全局预算
+默认值不变。离线工具结果示例现在也打印这些面向模型的区间和游标。
