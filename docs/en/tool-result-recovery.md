@@ -1,6 +1,6 @@
 # Recover large tool results
 
-Unreleased: tool results use a minimum-information-first display budget. This
+Since 0.9.9, tool results use a minimum-information-first display budget. This
 applies to ToolAgent replies and structured DAG planner observations.
 
 ## Configure display and storage separately

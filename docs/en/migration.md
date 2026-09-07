@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.8`.
+The current package version is `0.9.9`.
 
 ## Unreleased
+
+## 0.9.9
 
 ### Recoverable tool output
 
@@ -46,6 +48,15 @@ The current package version is `0.9.8`.
   DeepSeek auto counting uses the heuristic; explicit vLLM counting fails.
   Context usage adds optional `model_context_window_tokens` for the documented
   model limit. Token estimation remains independent of model-limit recognition.
+
+### Verification and known limitations
+
+- Release validation covers the full Python suite and wheel/sdist metadata.
+- Real MiniMax integration tests require explicit opt-in; Docker integration
+  requires a running daemon. These three tests were skipped locally.
+- Recovery requires the saved workspace and permitted file tools. Remote MCP
+  data discarded before reaching the SDK cannot be recovered. Hosts own disk
+  quotas, retention and cleanup; the shell limit is per invocation.
 
 ## 0.9.8
 
