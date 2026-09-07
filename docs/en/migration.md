@@ -11,6 +11,8 @@ The current package version is `0.9.8`.
 
 ### Recoverable tool output
 
+- Fix aggregate file-read observations inheriting a child's window metadata and
+  complete file results being rejected when shortening adds recovery notices.
 - The default total tool-result display budget increases from 8192 to 16384
   tokens; the individual limit remains 2048. Set the total explicitly to retain
   8192. Existing checkpoint policies remain explicit and unchanged.

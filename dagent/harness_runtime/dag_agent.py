@@ -1720,7 +1720,13 @@ def _result_observations(trace: RunTrace | None) -> tuple[ResultObservation, ...
         arguments: dict[str, Any] = {}
         for child in node.children:
             if child.capability_execution and child.capability_execution.result:
-                retention = child.capability_execution.result.retention
+                child_result = child.capability_execution.result
+                # Window offsets describe the child's content, not a map aggregate.
+                if node.output == child_result.content or (
+                    node.output_reference is not None
+                    and node.output_reference == child_result.content_reference
+                ):
+                    retention = child_result.retention
                 capability_id = child.capability_execution.invocation.capability_id
                 arguments = child.capability_execution.invocation.arguments
                 break

@@ -66,6 +66,7 @@ def project_result(
     counter: TextCounter,
     *,
     read_available: bool,
+    reserve_excerpt: bool = False,
 ) -> ResultProjection:
     text = stored_content_text(item.content)
     refs = result_references(item)
@@ -176,6 +177,15 @@ def project_result(
         return "\n".join(part for part in (meta, body) if part), meta, body, unavailable
 
     full, meta, body, unavailable = render(len(text))
+    if reserve_excerpt:
+        # Shortening can introduce recovery notices absent from the full result.
+        minimum_metadata = render(0)[1]
+        budget = min(
+            budget,
+            max(counter.count_text(meta), counter.count_text(minimum_metadata))
+            + 64
+            + 4,
+        )
     if counter.count_text(full) <= budget:
         metadata_tokens = counter.count_text(meta)
         return ResultProjection(
@@ -219,12 +229,12 @@ def project_results(
     # A short excerpt is reserved in addition to the indivisible metadata.
     for item in items:
         readable = read_available(item) if callable(read_available) else read_available
-        minimal = project_result(
-            item, policy.max_tool_result_tokens, counter, read_available=readable
-        )
-        floor = min(policy.max_tool_result_tokens, minimal.metadata_tokens + 64 + 4)
         projections[item.id] = project_result(
-            item, floor, counter, read_available=readable
+            item,
+            policy.max_tool_result_tokens,
+            counter,
+            read_available=readable,
+            reserve_excerpt=True,
         )
     remaining = policy.max_total_tool_result_tokens - sum(
         counter.count_text(projections[item.id].text) for item in items

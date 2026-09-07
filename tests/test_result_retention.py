@@ -20,6 +20,93 @@ from dagent.schemas import (
 from dagent.schemas.conversation import ContentReference, InlineContent
 
 
+@pytest.mark.parametrize("aggregate", [False, True])
+def test_file_observation_retention_matches_its_content(tmp_path, aggregate):
+    from dagent.harness_runtime.dag_agent import _result_observations
+    from dagent.harness_runtime.result_projection import project_results
+    from dagent.schemas import (
+        CapabilityInvocation,
+        CapabilityResult,
+        RunTrace,
+        RunTraceNode,
+    )
+    from dagent.schemas.retention import ResultRetention
+
+    path = tmp_path / "first.txt"
+    path.write_text("hello")
+    output = read_file(path)
+    invocation = CapabilityInvocation(
+        capability_id="tool.read_file", kind="tool", arguments={"path": str(path)}
+    )
+    result = CapabilityResult.completed(
+        invocation,
+        output.content,
+        retention=ResultRetention.model_validate(output.retention),
+    )
+    root = RunTraceNode.run(run_id="test")
+    node = RunTraceNode.dag_node(parent_id=root.id, node_id="read", status="completed")
+    node.output = ["hello", "world"] if aggregate else output.content
+    node.children.append(
+        RunTraceNode.capability_call(
+            parent_id=node.id, invocation=invocation, result=result
+        )
+    )
+    root.children.append(node)
+    observations = _result_observations(RunTrace(run_id="test", root=root))
+    assert observations[0].retention == (None if aggregate else result.retention)
+    projection = project_results(
+        observations,
+        ContextPolicy(),
+        ContextAssembler().token_counter,
+        read_available=True,
+    )[node.id]
+    assert str(node.output) in projection.text
+    assert not projection.truncated
+
+
+@pytest.mark.parametrize("read_available", [False, True])
+def test_complete_file_with_long_path_fits_reservation(tmp_path, read_available):
+    from dagent.harness_runtime.result_projection import project_results
+    from dagent.schemas.retention import ResultRetention
+
+    path = tmp_path / ("long-path-" * 20 + ".txt")
+    source = "hello world " * 100
+    path.write_text(source)
+    output = read_file(path)
+    item = ToolResultMessage(
+        call_id="read",
+        name="tool_read_file",
+        status="completed",
+        content=InlineContent(text=output.content),
+        retention=ResultRetention.model_validate(output.retention),
+    )
+    projection = project_results(
+        [item],
+        ContextPolicy(),
+        ContextAssembler().token_counter,
+        read_available=read_available,
+    )[item.id]
+    assert source in projection.text
+    assert not projection.truncated
+    prepared = asyncio.run(
+        ContextAssembler().prepare(
+            system_message={"content": "test"},
+            conversation=ConversationState(
+                items=(
+                    AssistantMessage(
+                        tool_calls=(ToolCallItem(id="read", name="tool_read_file"),)
+                    ),
+                    item,
+                )
+            ),
+            policy=ContextPolicy(),
+        )
+    )
+    assert source in next(
+        message["content"] for message in prepared.messages if message["role"] == "tool"
+    )
+
+
 @pytest.mark.parametrize("count,budget", [(5, 8192), (9, 16384)])
 def test_every_large_result_has_a_recoverable_floor(tmp_path, count, budget):
     calls = tuple(ToolCallItem(id=str(i), name="tool_large") for i in range(count))
