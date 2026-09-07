@@ -9,6 +9,18 @@ The current package version is `0.9.10a0`.
 
 ## Unreleased
 
+### DeepSeek replay mapping
+
+- Chat `auto` now sends `reasoning_content` for recognized official DeepSeek V4
+  endpoints/models. Explicit field settings, vLLM and Responses retain their
+  behavior; unknown endpoints/models remain conservative.
+- The active-run boundary and existing budget-driven reasoning omission are
+  unchanged. Full protocol compliance under pressure or across Runs is not
+  promised. See [reasoning](model-context-and-reasoning.md#deepseek-chat-tool-replay).
+- Real API acceptance is required before release; offline request tests alone
+  do not establish server behavior or the cause of repeated tool calls.
+
+
 ## 0.9.10a0 (0.9.10-alpha)
 
 ### Tool result-storage failure audit

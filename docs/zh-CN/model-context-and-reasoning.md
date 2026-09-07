@@ -57,7 +57,8 @@ Completions 对已识别的 vLLM 发送：
 ```
 
 `chat_reasoning_field="reasoning_content"` 只会改变 assistant 回放字段名；`"omit"` 会
-移除它；`"auto"` 对 vLLM 选择 `reasoning`，对未知 server 选择 `omit`。
+移除它；`"auto"` 对已识别的官方 DeepSeek V4 端点与模型选择 `reasoning_content`，
+对 vLLM 选择 `reasoning`，其他情况选择 `omit`。
 
 等价的无状态 Responses input 是：
 
@@ -196,3 +197,28 @@ context = dagent.ContextPolicy(
 内部 adapter 使用。它们会收到普通 Chat messages/tools shape；但 SDK 无法推断其接受的
 reasoning input 字段，因此会省略 provider-specific reasoning 回放。需要双协议能力时，
 请使用面向私有 vLLM 的内置 `Provider`。
+
+## DeepSeek Chat 工具推理回传
+
+从 0.9.11 起，`auto` 识别 HTTPS `api.deepseek.com`（默认或 443 端口，根路径、
+`/v1` 或 `/beta`）上的 `deepseek-v4-flash`、`deepseek-v4-pro`、
+`deepseek-v4-flash-vision-exp`。显式字段配置始终优先；未知模型及第三方端点
+不会仅凭模型名获得该协议映射。
+
+[官方思考指南](https://api-docs.deepseek.com/guides/thinking_mode/)要求携带 `tools`
+的后续请求完整回传 `reasoning_content`，包括没有调用工具的 assistant 轮次；
+不携带工具时服务端可能忽略推理。协议核对日期：2026-09-07；另见
+[模型列表](https://api-docs.deepseek.com/)、
+[/v1 示例](https://api-docs.deepseek.com/quick_start/agent_integrations/workbuddy/)、
+[beta 工具协议](https://api-docs.deepseek.com/guides/tool_calls/)。
+
+本项仅修复字段映射。`active_run` 仍排除其他 Run 的推理，预算压力仍可能在保留
+消息时单独省略较早推理，因此这些请求可能不满足官方完整回传要求。`none` 和
+显式 `omit` 仍生效，即使服务端可能拒绝这样的工具请求。不能由此断言推理省略
+导致了重复读取，也不能从请求携带推理推断服务端实际使用了推理。
+
+小额验收使用合成数据，最多三次生成请求：
+`DAGENT_RUN_DEEPSEEK_TESTS=1 uv run python -m examples.deepseek_replay`。
+通过 `API_KEY` 提供测试凭据；示例只输出计数和验证结果，不输出推理、完整请求
+或凭据。每次生成最多 1024 输出 token，禁用重试；失败即停，输出截断也视为
+验收失败，不自动增加预算重试。

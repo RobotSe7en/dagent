@@ -8,6 +8,15 @@
 
 ## Unreleased
 
+### DeepSeek 推理字段映射
+
+- Chat `auto` 对已确认的官方 DeepSeek V4 端点和模型发送 `reasoning_content`。
+  显式配置、vLLM 与 Responses 行为保持不变，未知端点和模型仍保守省略。
+- 不改变 active_run 边界和预算删推理策略，不承诺预算压力或跨 Run 历史下的
+  完整协议合规。详见[推理说明](model-context-and-reasoning.md#deepseek-chat-工具推理回传)。
+- 发布前必须完成真实 API 验收；离线请求测试不能证明服务端行为或重复调用原因。
+
+
 ## 0.9.10a0 (0.9.10-alpha)
 
 ### Tool 结果存储失败审计

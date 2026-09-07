@@ -785,6 +785,10 @@ class OpenAICompatibleProvider:
         configured = self.config.chat_reasoning_field
         if configured != "auto":
             return cast(Literal["reasoning", "reasoning_content", "omit"], configured)
+        # The official V4 Chat tool protocol replays assistant reasoning_content.
+        # An open-weight model name on a proxy does not establish its wire format.
+        if self._is_deepseek_official and self.config.model in _DEEPSEEK_CONTEXT_WINDOWS:
+            return "reasoning_content"
         if capabilities.server_kind == "vllm":
             return "reasoning"
         return "omit"

@@ -119,9 +119,10 @@ provider = dagent.Provider(
 `reasoning.effort`。SDK 不支持 token 数形式的 reasoning budget；旧的嵌套
 `reasoning` 对象会被拒绝。
 
-`chat_reasoning_field` 只控制 Chat 的 reasoning 回放序列化。`auto` 对已识别的 vLLM
-使用 `reasoning`，对未知 server 则省略。只有目标兼容 server 明确支持时才显式选择
-`reasoning_content`。响应解析会接受常见的两种输出字段名，并统一保存到
+`chat_reasoning_field` 只控制 Chat 的 reasoning 回放序列化。`auto` 对已识别的 DeepSeek
+官方 V4 端点与模型使用 `reasoning_content`，对 vLLM 使用 `reasoning`，其他情况省略。
+显式 `reasoning_content`、`reasoning`、`omit` 优先。仅凭模型名不能确认代理端点的协议，
+请按其文档显式配置字段。响应解析会接受常见的两种输出字段名，并统一保存到
 `AssistantMessage.reasoning`。
 
 `token_counting="auto"` 会在 vLLM 声明能力时使用 `/tokenize`，请求包含 messages

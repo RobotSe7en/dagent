@@ -60,8 +60,8 @@ tool call, then a tool result. In Chat Completions, a detected vLLM server sees:
 ```
 
 `chat_reasoning_field="reasoning_content"` changes only the assistant replay
-key. `"omit"` removes it. `"auto"` chooses `reasoning` for vLLM and `omit` for
-an unknown server.
+key. `"omit"` removes it. `"auto"` chooses `reasoning_content` for recognized
+official DeepSeek V4 endpoints/models, `reasoning` for vLLM and `omit` otherwise.
 
 The equivalent stateless Responses input is:
 
@@ -223,3 +223,31 @@ receive the normal Chat message/tool shape, but provider-specific reasoning
 replay is omitted because the SDK cannot infer their accepted input field.
 Implementations that need dual-protocol behavior should use the built-in
 private-vLLM `Provider`.
+
+## DeepSeek Chat tool replay
+
+Since 0.9.11, `auto` recognizes HTTPS `api.deepseek.com` (default/443 port;
+root, `/v1`, or `/beta` base path) with `deepseek-v4-flash`, `deepseek-v4-pro`,
+or `deepseek-v4-flash-vision-exp`. Explicit field choices always win. Unknown
+models and third-party endpoints do not inherit this protocol from a model name.
+
+The [official thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/)
+requires full `reasoning_content` replay when requests carry `tools`, including
+assistant turns without tool calls. Without tools, the service can ignore it.
+Sources checked 2026-09-07: [models](https://api-docs.deepseek.com/),
+[/v1 example](https://api-docs.deepseek.com/quick_start/agent_integrations/workbuddy/),
+[beta tools](https://api-docs.deepseek.com/guides/tool_calls/).
+
+This fixes field mapping only. `active_run` still excludes other Runs' reasoning,
+and context pressure can still omit older reasoning independently of messages.
+Those requests may not satisfy DeepSeek's full-replay requirement. `none` and
+explicit `omit` are honored even when the endpoint may reject the resulting
+tool request. This change does not prove that replay omissions caused repeated
+file reads, or that a server used reasoning carried by a request.
+
+A small opt-in check uses synthetic data and at most three generation requests:
+`DAGENT_RUN_DEEPSEEK_TESTS=1 uv run python -m examples.deepseek_replay`.
+Provide the test credential through `API_KEY`; the example prints counts and
+validation results, not reasoning, requests, or credentials. Each generation
+has a 1024-token output limit and retries are disabled. Failure stops the check;
+a truncated generation is a failed check, not a reason to retry automatically.
