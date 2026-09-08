@@ -5,9 +5,9 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.12`.
+The current package version is `0.9.13`.
 
-## Unreleased
+## 0.9.13
 
 ### Mutable uploaded files
 
@@ -33,6 +33,15 @@ The current package version is `0.9.12`.
   streaming, review restart, shared-workspace continuation, and result integrity.
   See [workspace guidance](runner-and-configuration.md#editing-uploaded-files)
   and the [runnable example](../../examples/editable_uploads.py).
+
+### Release verification and upgrade
+
+- Install with `pip install --upgrade dagent-ai==0.9.13`. Hosts continuing file
+  editing must reuse `workspace_path` or migrate working files explicitly.
+- Verification: 1,300 Python/MCP tests passed, wheel and source distributions
+  built successfully, package metadata checks and `git diff --check` passed.
+- Three environment-dependent tests were skipped: two opt-in live MiniMax
+  tests and one test requiring a running Docker daemon.
 
 ## 0.9.12
 

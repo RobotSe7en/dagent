@@ -103,7 +103,7 @@ from dagent.schemas import (
     UserMessage,
 )
 
-__version__ = "0.9.12"
+__version__ = "0.9.13"
 
 __all__ = [
     "__version__",
