@@ -2321,6 +2321,76 @@ def test_api_project_message_stream_continues_from_persisted_conversation(
     ] == ["system", "user", "assistant", "user"]
 
 
+@pytest.mark.parametrize("operation", ["overwrite", "delete"])
+def test_api_uploaded_work_file_survives_review_and_conversation_continuation(
+    persistence_client, tmp_path, operation,
+):
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(
+            id="write", name="tool_write_file",
+            arguments={"path": "uploads/note.txt", "content": "after review"},
+        )]),
+        ChatResponse(content="updated"),
+        ChatResponse(tool_calls=[ToolCall(
+            id="read", name="tool_read_file", arguments={"path": "uploads/note.txt"},
+        )]),
+        ChatResponse(content="read current file"),
+    ])
+    state.runner = Runner(workspace=tmp_path, provider=provider, skill_roots=[])
+    project = persistence_client.post(
+        "/projects", json={"name": "Uploads", "slug": "uploads"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations", json={"title": "Edit upload"},
+    ).json()["conversation"]
+    payload = {
+        "input": "edit the upload", "review_level": "careful", "target": "tool",
+        "capability_ids": ["tool.write_file", "tool.read_file"],
+        "project_id": project["id"], "conversation_id": conversation["id"],
+    }
+    response = persistence_client.post(
+        "/messages/stream", data={"payload": json.dumps(payload)},
+        files=[("files", ("note.txt", b"hello", "text/plain"))],
+    )
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert not any(event["type"] == "run.failed" for event in events)
+    pending = events[-1]["data"]["result"]
+    assert pending["state"]["status"] == "awaiting_review"
+    workspace = Path(pending["state"]["workspace_path"])
+    target = workspace / "uploads/note.txt"
+    if operation == "delete":
+        target.unlink()
+    else:
+        target.write_bytes(b"edited while awaiting review")
+    state.close_runner()
+    state.runner = Runner(workspace=tmp_path, provider=provider, skill_roots=[])
+    review_id = pending["state"]["pending_review"]["review_id"]
+    response = persistence_client.post(
+        f"/projects/{project['id']}/reviews/{review_id}/resume", json={"approved": True},
+    )
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert not any(event["type"] == "run.failed" for event in events)
+    assert events[-1]["data"]["result"]["state"]["status"] == "completed"
+    assert target.read_text() == "after review"
+    target.write_text("current workspace content")
+    response = persistence_client.post(
+        "/messages/stream", json={**payload, "input": "read the current file"},
+    )
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert not any(event["type"] == "run.failed" for event in events)
+    final = events[-1]["data"]["result"]
+    assert final["state"]["status"] == "completed"
+    assert Path(final["state"]["workspace_path"]) == workspace
+    assert "current workspace content" in str(provider.requests[-1]["messages"])
+    saved = state.get_store().get_conversation_state(conversation["id"])
+    attachment = saved.items[0].attachments[0]
+    assert attachment.path == "uploads/note.txt"
+    assert attachment.byte_length == 5
+
+
 def test_api_project_review_resume_uses_db_state_after_runner_restart(
     persistence_client,
     tmp_path: Path,

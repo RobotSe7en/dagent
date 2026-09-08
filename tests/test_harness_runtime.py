@@ -72,7 +72,7 @@ def test_workbench_upload_manifest_uses_typed_attachments(tmp_path: Path) -> Non
     assert len(user_item.attachments) == 1
     assert user_item.attachments[0].path == "uploads/source.txt"
     model_content = provider.requests[0]["messages"][1]["content"]
-    assert "Uploaded files are available in this run workspace:" in model_content
+    assert "Uploaded files (upload-time metadata; paths relative to the current workspace):" in model_content
     assert "- uploads/source.txt (text/plain, 6 bytes, sha256=" in model_content
 
 

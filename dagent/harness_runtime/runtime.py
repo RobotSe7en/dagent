@@ -450,7 +450,7 @@ class HarnessRuntime:
             run_id=resolved_run_id,
             content=user_request,
             attachments=_workbench_attachments(
-                resolved_workspace_path,
+                input_uploads or [],
                 materialized_uploads,
             ),
         )
@@ -1078,13 +1078,12 @@ def _append_conversation_item(
 
 
 def _workbench_attachments(
-    workspace_path: Path,
+    uploads: list[ArtifactUpload],
     upload_paths: list[str],
 ) -> tuple[Attachment, ...]:
     attachments: list[Attachment] = []
-    for relative_path in upload_paths:
-        path = workspace_path / relative_path
-        data = path.read_bytes()
+    for upload, relative_path in zip(uploads, upload_paths, strict=True):
+        data = upload.content
         media_type = mimetypes.guess_type(relative_path)[0] or "application/octet-stream"
         attachments.append(
             Attachment(

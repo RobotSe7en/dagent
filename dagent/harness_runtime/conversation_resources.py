@@ -10,21 +10,19 @@ from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
 
 from dagent.schemas import (
-    Attachment,
     ContentReference,
     ConversationState,
     ToolResultMessage,
-    UserMessage,
 )
 from dagent.schemas.common import validate_runtime_directory
 
 
 class ConversationResourceError(RuntimeError):
-    """Raised before model execution when retained conversation data is unavailable."""
+    """Raised when retained conversation result data is unavailable or invalid."""
 
 
 class ConversationResourceStore:
-    """Content-addressed local store for attachments and externalized results."""
+    """Content-addressed store for externalized results, not mutable uploads."""
 
     def __init__(
         self,
@@ -46,7 +44,7 @@ class ConversationResourceStore:
         *,
         workspace_path: str | Path,
     ) -> None:
-        """Copy every typed conversation resource into the stable object store."""
+        """Copy retained result references into the stable object store."""
 
         workspace = Path(workspace_path).expanduser().resolve()
         for path, byte_length, sha256 in _conversation_resource_records(conversation):
@@ -118,22 +116,7 @@ class ConversationResourceStore:
         items = []
         changed = False
         for item in conversation.items:
-            if isinstance(item, UserMessage):
-                attachments = tuple(
-                    attachment.model_copy(
-                        update={
-                            "path": rebase(
-                                path=attachment.path,
-                                media_type=attachment.media_type,
-                                byte_length=attachment.byte_length,
-                                sha256=attachment.sha256,
-                            )
-                        }
-                    )
-                    for attachment in item.attachments
-                )
-                updated = item.model_copy(update={"attachments": attachments})
-            elif isinstance(item, ToolResultMessage):
+            if isinstance(item, ToolResultMessage):
                 content = item.content
                 if isinstance(content, ContentReference):
                     content = _rebase_reference(content, rebase)
@@ -219,9 +202,7 @@ def _conversation_resource_records(
 ) -> Iterator[tuple[str, int, str]]:
     seen: set[tuple[str, str]] = set()
     for item in conversation.items:
-        if isinstance(item, UserMessage):
-            resources: tuple[Attachment | ContentReference, ...] = item.attachments
-        elif isinstance(item, ToolResultMessage):
+        if isinstance(item, ToolResultMessage):
             content = (
                 (item.content,)
                 if isinstance(item.content, ContentReference)

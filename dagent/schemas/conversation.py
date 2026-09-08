@@ -85,7 +85,11 @@ class ResultObservation(BaseModel):
 
 
 class Attachment(BaseModel):
-    """A user-supplied file materialized inside a run workspace."""
+    """Upload-time metadata for a mutable, workspace-relative user file.
+
+    Size and digest describe the received bytes, not the current file. Hosts
+    own file continuation and original snapshots; historical paths may be absent.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

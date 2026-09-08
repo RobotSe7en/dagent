@@ -136,6 +136,10 @@ runner = dagent.Runner(
 SDK 只负责 run workspace 内的标准化；长期上传、保留策略、访问控制和 URL 生成由 host
 负责。
 
+上传的工作文件可以修改或删除，包括等待审核期间；生成运行结果或恢复审核时不重新
+校验上传时的附件元数据。这与上文受完整性校验保护的 `ContentReference` 结果数据
+不同。工作区续聊与原始快照归属见[编辑上传文件](runner-and-configuration.md#编辑上传文件)。
+
 静态 DAG trace 会保留外置 value 以及 `stdout`/`stderr`/error 字段的类型化引用。
 Map node 的父级 value 保持有界；只有获准的下游 value expression 读取时，executor
 才会解析对应的索引引用。这样既保证 checkpoint 可安全序列化为 JSON，也保留完整

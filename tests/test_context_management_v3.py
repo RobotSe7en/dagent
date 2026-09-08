@@ -708,70 +708,25 @@ def test_input_uploads_are_typed_attachments_and_projected_as_data(
     runner.close()
 
 
-def test_conversation_attachments_are_materialized_into_each_new_run(
-    tmp_path: Path,
-) -> None:
-    content = b"hello from the previous run"
-    sha256 = hashlib.sha256(content).hexdigest()
-    carried_path = f".runtime/history/{sha256}.txt"
-    first_provider = MockProvider(
-        [ChatResponse(content="I will remember the upload.")]
-    )
-    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=first_provider)
-    agent = dagent.ToolAgent(
-        profile="conversation",
-        capabilities=["tool.read_file"],
-    )
-
-    first = run(
-        runner.run(
-            agent,
-            input="Remember this file.",
-            input_uploads=[
-                dagent.ArtifactUpload(filename="notes.txt", content=content)
-            ],
-        )
-    )
-    runner.close()
-    assert (tmp_path / ".runtime" / "conversations").is_dir()
-    assert not (tmp_path / ".dagent").exists()
-
-    second_provider = MockProvider(
-        [
-            ChatResponse(
-                tool_calls=[
-                    ToolCall(
-                        id="call_read_carried",
-                        name="tool_read_file",
-                        arguments={"path": carried_path},
-                    )
-                ]
-            ),
-            ChatResponse(content="The carried file is readable."),
-        ]
-    )
-    runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=second_provider)
-    second = run(
-        runner.run(
-            agent,
-            input="Read the previous file.",
-            conversation=first.conversation,
-        )
-    )
-
-    assert first.run_id != second.run_id
-    assert first.workspace_path != second.workspace_path
-    assert (
-        Path(second.workspace_path) / carried_path
-    ).read_bytes() == content
-    assert second_provider.requests[0]["messages"][1]["content"].find(carried_path) >= 0
-    carried_result = next(
-        item
-        for item in second.new_items
-        if isinstance(item, ToolResultMessage)
-    )
-    assert "hello from the previous run" in carried_result.content.text
-    runner.close()
+def test_conversation_attachments_are_not_copied_into_new_runs(tmp_path: Path) -> None:
+    provider = MockProvider([ChatResponse(content="first"), ChatResponse(content="second")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, skill_roots=[])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[])
+    try:
+        first = run(runner.run(
+            agent, input="Remember this file.",
+            input_uploads=[dagent.ArtifactUpload(filename="notes.txt", content=b"hello")],
+        ))
+        second = run(runner.run(agent, input="Continue.", conversation=first.conversation))
+        assert first.run_id != second.run_id
+        assert first.workspace_path != second.workspace_path
+        assert second.conversation.items[0].attachments == first.conversation.items[0].attachments
+        assert not (Path(second.workspace_path) / "uploads" / "notes.txt").exists()
+        assert not (Path(second.workspace_path) / ".runtime" / "history").exists()
+        assert not (tmp_path / ".runtime" / "conversations").exists()
+        assert "uploads/notes.txt" in str(provider.requests[1]["messages"])
+    finally:
+        runner.close()
 
 
 def test_reviewed_capability_failure_is_recorded_as_failed(
