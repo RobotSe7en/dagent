@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
@@ -19,7 +20,7 @@ class ArtifactPathError(ValueError):
 
 @dataclass(frozen=True)
 class ArtifactUpload:
-    """Uploaded file content associated with a DAGSpec artifact."""
+    """Received file bytes for a message attachment or DAG input artifact."""
 
     filename: str
     content: bytes
@@ -113,7 +114,8 @@ def materialize_artifact_uploads(
     """Write uploads and return their immutable, deterministic file manifests.
 
     The returned paths are always workspace-relative. They are derived only from
-    this call's uploads, never from a workspace scan.
+    this call's uploads, never from a workspace scan. File contents are verified
+    at ingestion and may subsequently be edited; manifests record upload time.
     """
 
     workspace = Path(workspace_path).resolve()
@@ -190,8 +192,7 @@ def materialize_artifact_uploads(
 
     _validate_no_overlapping_upload_targets(planned)
     for item in sorted(planned, key=lambda item: item.file.path):
-        item.destination.parent.mkdir(parents=True, exist_ok=True)
-        item.destination.write_bytes(item.upload.content)
+        _write_upload(item.destination, item.upload.content)
 
     manifests: list[ArtifactFileManifest] = []
     for artifact_id in sorted({item.artifact_id for item in planned}):
@@ -212,7 +213,7 @@ def materialize_workbench_uploads(
     workspace_path: str | Path,
     upload_root: str = WORKBENCH_UPLOAD_ROOT,
 ) -> list[str]:
-    """Write smart workbench input uploads into a run workspace."""
+    """Write and verify input uploads as mutable files in a run workspace."""
 
     if not uploads:
         return []
@@ -226,10 +227,22 @@ def materialize_workbench_uploads(
         relative_path = _safe_upload_filename(upload.filename)
         destination = (target_root / relative_path).resolve()
         _ensure_within_workspace(destination, workspace)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(upload.content)
+        _write_upload(destination, upload.content)
         materialized.append(str(Path(upload_root) / relative_path))
     return materialized
+
+
+def _write_upload(destination: Path, content: bytes) -> None:
+    """Verify received bytes at ingestion; the working file may then change."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    written = destination.write_bytes(content)
+    if written != len(content):
+        raise OSError(f"Uploaded file write size mismatch: {destination}.")
+    stored = destination.read_bytes()
+    if len(stored) != len(content):
+        raise OSError(f"Uploaded file size mismatch: {destination}.")
+    if hashlib.sha256(stored).digest() != hashlib.sha256(content).digest():
+        raise OSError(f"Uploaded file SHA-256 mismatch: {destination}.")
 
 
 def validate_upload_filename(filename: str) -> None:

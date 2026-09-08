@@ -7,6 +7,33 @@ that may require action when upgrading.
 
 The current package version is `0.9.12`.
 
+## Unreleased
+
+### Mutable uploaded files
+
+- Message and static DAG uploads verify the written size and SHA-256 against
+  received bytes immediately. Upload write/verification failures raise `OSError`.
+  No client checksum fields or HTTP upload request changes are introduced.
+- Historical `Attachment` size and digest are upload-time records. Editing,
+  overwriting, or deleting working files no longer fails review or run completion
+  through attachment integrity checks.
+- **Behavior change:** conversation continuation no longer copies historical
+  uploads into a new workspace or rebases their paths. Pass the same
+  `workspace_path` for continued editing, or migrate working files explicitly.
+  If an existing attachment already points under `.runtime/history`, preserve
+  that relative path when migrating its working file. Missing attachments are
+  handled by tools when accessed, not restored automatically.
+- Original snapshots belong to the host. Existing backing-store objects and
+  historical records are not rewritten or deleted. `ContentReference` result
+  integrity checks and restoration remain unchanged.
+- Public signatures, attachment fields, and conversation/checkpoint schema
+  versions are unchanged; no stored-record conversion is required. Hosts matching
+  exact model prompt text must update the upload description expectations.
+- Regression coverage includes upload corruption, editable/deleted files,
+  streaming, review restart, shared-workspace continuation, and result integrity.
+  See [workspace guidance](runner-and-configuration.md#editing-uploaded-files)
+  and the [runnable example](../../examples/editable_uploads.py).
+
 ## 0.9.12
 
 ### Batch tool review and editing

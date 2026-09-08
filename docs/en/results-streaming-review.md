@@ -152,6 +152,12 @@ reading permissions, pagination, compaction indexes and storage-failure behavior
 The SDK owns only run-workspace normalization. A host is responsible for durable
 upload, retention, access control, and URL generation.
 
+Uploaded working files may be edited or deleted, including while review is
+pending. Their upload-time metadata is not revalidated when producing a result
+or resuming review. This differs from the saved `ContentReference` result data
+described above. See [editing uploaded files](runner-and-configuration.md#editing-uploaded-files)
+for workspace continuation and original-snapshot ownership.
+
 Static DAG traces retain typed references for externalized values and
 `stdout`/`stderr`/error fields. Map-node parent values remain bounded; the
 executor resolves their indexed references only when an authorized downstream

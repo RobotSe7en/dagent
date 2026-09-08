@@ -44,11 +44,12 @@ runner = dagent.Runner(
 DagAgent message run 中，内置 file 和 shell tool 的相对路径从当前 run workspace
 解析。SDK 私有数据隔离在调用方选择的相对目录中：
 
-- `<workspace>/<runtime_directory>/conversations` 保存后续会话轮次需要的内容寻址资源；
+- `<workspace>/<runtime_directory>/conversations` 保存后续会话轮次需要的内容寻址外置结果；
 - `<run-workspace>/<runtime_directory>/results` 保存外置的 tool/MCP 输出；
-- `<run-workspace>/<runtime_directory>/history` 保存恢复到新 run workspace 的资源。
+- `<run-workspace>/<runtime_directory>/history` 保存恢复到新 run workspace 的结果资源。
 
 这些目录按需创建。只构造 runner、执行纯文本轮次或保持小结果内联都不会创建它们。
+仅上传附件也不会创建 conversation backing store 或 history 目录。
 
 如果应用已经拥有执行目录，可以给 `Runner.run(...)` 或 `Runner.stream(...)` 传入
 `workspace_path=...`。达智会直接使用这个目录运行，不再创建 `<run_id>` 子目录。
@@ -64,9 +65,9 @@ validator。Profile Markdown 本身保持不变；runtime path 不会写入 prof
 对 profile 做模板替换。`FeedbackLearnerAgent` 等底层 profile-backed helper 在调用时
 收到 `workspace_path` 后，也会使用相同的动态段。
 
-模型会在该 system 段中收到解析后的 run workspace。上传附件和外置结果会以 workspace
-相对路径、媒体类型、字节数和摘要出现在 conversation input 中，因此文件工具可以打开
-它们，同时不会暴露绝对路径或 runner-level conversation backing store。
+模型会在该 system 段中收到解析后的 run workspace。附件记录和外置结果使用 workspace
+相对路径，不暴露 runner-level conversation backing store。附件的字节数和摘要描述
+上传时的内容；结果引用的元数据描述受完整性校验保护的已保存结果。
 
 `extra_system_prompt` 用一个普通字符串统一追加宿主指令，不会替换 Agent Profile 或
 `Runtime Context`。SDK 的组装顺序是：Profile、Runtime Context、Extra System Prompt，
@@ -81,6 +82,26 @@ boundary、绕过 review 或改变 workspace 权限。
 
 每个 run 会把初始值冻结在 `ResolvedRunPlan` 中。因此 review 续跑始终使用 checkpoint
 里的值，即使另一个 runner 或原 runner 后续配置了不同的 `extra_system_prompt`。
+
+### 编辑上传文件
+
+向 message run 传入
+`input_uploads=[dagent.ArtifactUpload(filename="note.txt", content=b"draft")]`，
+即可在工作区写入 `uploads/note.txt`。会话上传和静态 DAG artifact 上传都会在写入后
+立即回读，与收到的 bytes 核对大小和 SHA-256。写入或校验失败会在 agent 执行前抛出
+`OSError`。这只校验 SDK 落盘完整性，不校验 HTTP 传输中的客户端声明摘要。
+
+上传成功后，工具可以修改、覆盖或删除工作文件。SDK 在等待审核、完成运行或续聊时
+不再核对历史附件的大小和摘要。`Attachment` 保留上传时元数据，不保证文件仍存在或
+仍具有原始内容。工具读取已删除文件时，按正常文件访问错误处理。
+
+继续编辑时，向下一轮传入相同的 `workspace_path` 和上一轮的 `conversation`。
+如选择其他工作区，由调用方复制需要的工作文件；SDK 不自动复制历史上传文件、恢复
+已删除附件或改写附件路径。需要原始版本时，由宿主使用独立快照保存。
+已保存的 tool/MCP 结果引用仍保留完整性校验和跨工作区恢复能力。
+
+可离线运行[上传文件编辑示例](../../examples/editable_uploads.py)，查看在同一显式工作区
+内上传、编辑和续聊的完整流程。
 
 ## Provider 选项
 

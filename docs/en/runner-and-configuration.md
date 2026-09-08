@@ -52,14 +52,15 @@ resolve from the current run workspace. SDK-private data is isolated under the
 chosen relative directory:
 
 - `<workspace>/<runtime_directory>/conversations` stores content-addressed
-  resources needed by later conversation turns.
+  externalized results needed by later conversation turns.
 - `<run-workspace>/<runtime_directory>/results` stores externalized tool and MCP
   output.
-- `<run-workspace>/<runtime_directory>/history` holds resources restored into a
+- `<run-workspace>/<runtime_directory>/history` holds result resources restored into a
   new run workspace.
 
 These directories are lazy. Constructing a runner, running text-only turns, and
-keeping small results inline do not create them.
+keeping small results inline do not create them. Uploaded attachments alone do
+not create a conversation backing store or history directory.
 
 When an application already owns the execution directory, pass
 `workspace_path=...` to `Runner.run(...)` or `Runner.stream(...)`. This uses that
@@ -79,11 +80,11 @@ substituted into profile content. Lower-level profile-backed helpers such as
 `FeedbackLearnerAgent` use the same section when their call receives
 `workspace_path`.
 
-The model receives the resolved run workspace in that system section. Uploaded
-attachments and externalized results are represented in conversation input by
-workspace-relative paths, media type, byte count, and digest, so file tools can
-open them without exposing absolute paths or the runner-level conversation
-backing store.
+The model receives the resolved run workspace in that system section. Attachment
+records and externalized results use workspace-relative paths without exposing
+the runner-level conversation backing store. An attachment's byte count and
+digest describe its upload-time contents; a result reference describes the saved
+result that its integrity checks protect.
 
 `extra_system_prompt` adds one literal, runner-wide instruction string without
 replacing the agent profile or `Runtime Context`. The SDK assembles profile,
@@ -103,6 +104,31 @@ boundaries, bypass review, or change workspace permissions.
 Each run freezes its initial value in `ResolvedRunPlan`. Review continuation
 therefore uses the checkpointed value even if another runner, or the original
 runner's later configuration, has a different `extra_system_prompt`.
+
+### Editing uploaded files
+
+Pass `input_uploads=[dagent.ArtifactUpload(filename="note.txt", content=b"draft")]`
+to a message run to write `uploads/note.txt` inside its workspace. Both message
+uploads and static DAG artifact uploads are read back immediately after writing
+and checked against the received bytes' size and SHA-256. A write or verification
+failure raises `OSError` before agent execution. This checks SDK ingestion; it
+does not verify a client-declared digest across HTTP transport.
+
+After upload, tools may modify, overwrite, or delete the working file. The SDK
+does not recheck historical attachment size/digest during review, completion, or
+conversation continuation. `Attachment` retains upload-time metadata; it does
+not assert that the file still exists or has those contents. A tool reading a
+deleted file reports its normal file-access error.
+
+For continued editing, pass the same `workspace_path` and the preceding
+`conversation` to the next run. If you select another workspace, the caller must
+copy the desired working files there: the SDK does not copy historical uploads,
+restore deleted attachments, or rebase their paths. Keep original versions in
+independent host-managed snapshots when needed. Saved tool/MCP result references
+retain their existing integrity checks and cross-workspace restoration.
+
+Run [the editable uploads example](../../examples/editable_uploads.py) for an
+offline upload, edit, and continuation using one explicit workspace.
 
 ## Provider Options
 
