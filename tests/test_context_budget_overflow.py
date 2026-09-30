@@ -216,22 +216,48 @@ async def test_result_storage_alone_does_not_emit_compaction_finished(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_dynamic_shortening_preserves_storage_warning(tmp_path, monkeypatch):
-    def fail(*args, **kwargs):
+@pytest.mark.parametrize("reference_count", [0, 5])
+@pytest.mark.parametrize("observations", [False, True])
+async def test_dynamic_shortening_preserves_storage_warning(tmp_path, monkeypatch, reference_count, observations):
+    attempts = []
+
+    def fail(*args, field="content", **kwargs):
+        attempts.append(field)
+        assert len(attempts) == 1, "Failed storage must not be retried during refitting"
         raise OSError("disk unavailable")
 
     store = ResultStore(tmp_path, ".runtime")
+    references = tuple(store.save_text(f"artifact-{i}", str(i)) for i in range(reference_count))
     monkeypatch.setattr(store, "save_text", fail)
     original = "数据" * 3000
-    with pytest.warns(RuntimeWarning, match="disk unavailable"):
+    conversation = tool_history(count=1, text=original, old_steps=False)
+    if observations:
+        conversation = ConversationState(items=(UserMessage(
+            run_id="run", content="Inspect", result_observations=(ResultObservation(
+                id="result", name="query", status="completed",
+                content=inline_content(original), references=references,
+            ),),
+        ),))
+    else:
+        result = conversation.items[-1].model_copy(update={"artifacts": references})
+        conversation = conversation.model_copy(update={"items": (*conversation.items[:-1], result)})
+    with pytest.warns(RuntimeWarning, match="disk unavailable") as warnings:
         prepared = await ContextAssembler(context_window_tokens=2048).prepare(
             system_message={"content": "Inspect"},
-            conversation=tool_history(count=1, text=original, old_steps=False),
+            conversation=conversation,
             policy=ContextPolicy(max_tool_result_tokens=32768, max_total_tool_result_tokens=131072),
             result_store=store,
         )
-    assert prepared.conversation.items[-1].content.text == original
-    assert prepared.conversation.items[-1].retention.storage_warnings
+    result = (prepared.conversation.items[0].result_observations[0] if observations
+              else prepared.conversation.items[-1])
+    assert result.content.text == original
+    assert (result.references if observations else result.artifacts) == references
+    assert result.status == "completed"
+    assert len(result.retention.storage_warnings) == 1
+    assert len(warnings) == 1
+    assert str(prepared.messages).count("storage warning:") == 1
+    assert store.ensure(result) == result
+    assert attempts == ["references" if reference_count else "content"]
     assert prepared.usage.unrecoverable_tool_results == 1
     assert prepared.usage.estimated_input_tokens <= prepared.usage.compaction_trigger_tokens
 

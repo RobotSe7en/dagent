@@ -36,6 +36,8 @@ Newly shortened text is saved through the existing storage policy, and the
 complete request is recounted with the resulting recovery references. If the
 minimum display fits only above the soft trigger, the request may still run.
 If it exceeds the hard budget, generation fails explicitly.
+If a result's reference manifest cannot be saved, its warning is retained and
+refitting does not retry the failed write or append duplicate warnings.
 
 The inline threshold is independent: a smaller result can also be written before
 its model display is truncated. Projection does not replace a structured tool
