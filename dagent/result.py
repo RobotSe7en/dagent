@@ -11,6 +11,7 @@ from pydantic.dataclasses import dataclass
 
 from dagent.review import ReviewHandle
 from dagent.steering import SteerDiscardReason
+from dagent.schemas.run_trace import RunTraceError
 from dagent.schemas.retention import ResultStorageWarning
 from dagent.schemas import (
     ArtifactState,
@@ -144,6 +145,12 @@ class RunResult:
     @property
     def trace(self) -> RunTrace | None:
         return self.state.trace
+
+    @property
+    def error(self) -> RunTraceError | None:
+        """Typed terminal failure, when the runtime recorded one."""
+
+        return self.trace.root.error if self.trace is not None else None
 
     @property
     def spec_id(self) -> str | None:

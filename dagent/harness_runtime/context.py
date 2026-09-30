@@ -128,6 +128,7 @@ class ContextAssembler:
         *,
         context_window_tokens: int | None = None,
         model_context_window_tokens: int | None = None,
+        server_max_model_len: int | None = None,
         max_output_tokens: int | None = None,
         token_counter: TokenCounter | None = None,
         request_token_counter: RequestTokenCounter | None = None,
@@ -147,9 +148,10 @@ class ContextAssembler:
             )
         self.configured_context_window_tokens = context_window_tokens
         self.model_context_window_tokens = model_context_window_tokens
+        self.server_max_model_len = server_max_model_len
         self.context_window_tokens = _effective_context_window(
             configured=context_window_tokens,
-            discovered=model_context_window_tokens,
+            discovered=server_max_model_len or model_context_window_tokens,
         )
         self.max_output_tokens = max_output_tokens
         self.token_counter = token_counter or HeuristicTokenCounter()
@@ -250,11 +252,11 @@ class ContextAssembler:
             policy,
             stream=stream,
         )
+        if exact_count is not None and exact_count.max_model_len is not None:
+            self.server_max_model_len = exact_count.max_model_len
         context_window_tokens = _effective_context_window(
             configured=self.configured_context_window_tokens,
-            discovered=(
-                exact_count.max_model_len if exact_count is not None else None
-            ) or self.model_context_window_tokens,
+            discovered=self.server_max_model_len or self.model_context_window_tokens,
         )
         self.context_window_tokens = context_window_tokens
         if (
@@ -470,11 +472,14 @@ class ContextAssembler:
             estimator=(
                 exact_count.estimator if exact_count is not None else self.estimator
             ),  # type: ignore[arg-type]
-            server_max_model_len=(
-                exact_count.max_model_len if exact_count is not None else None
-            ),
+            server_max_model_len=self.server_max_model_len,
             configured_context_limit=self.configured_context_window_tokens,
             model_context_window_tokens=self.model_context_window_tokens,
+            context_window_source=(
+                "configured" if self.configured_context_window_tokens is not None else
+                "server" if self.server_max_model_len is not None else
+                "model" if self.model_context_window_tokens is not None else "fallback"
+            ),
             reasoning_replay_mode=policy.reasoning_replay,
             replayed_reasoning_items=projection.replayed_reasoning_items,
             replayed_reasoning_tokens=projection.replayed_reasoning_tokens,

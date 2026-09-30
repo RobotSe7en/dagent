@@ -33,6 +33,7 @@ class ChatResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: ModelTokenUsage | None = None
     metadata: ModelCallMetadata | None = None
+    status: str = "completed"
 
 
 @dataclass(frozen=True)

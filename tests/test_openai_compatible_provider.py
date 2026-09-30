@@ -4,7 +4,7 @@ import pytest
 from tests.provider_fakes import RawResponseEndpoint
 
 from dagent.config import ProviderConfig
-from dagent.providers import OpenAICompatibleProvider, StructuredOutputFormat
+from dagent.providers import OpenAICompatibleProvider, ProviderResponseError, StructuredOutputFormat
 
 
 class FakeCompletions(RawResponseEndpoint):
@@ -22,7 +22,9 @@ class FakeCompletions(RawResponseEndpoint):
         self.kwargs = kwargs
         if kwargs.get("stream"):
             if self.stream_chunks is not None:
-                return FakeStream(self.stream_chunks)
+                return FakeStream([*self.stream_chunks, SimpleNamespace(choices=[SimpleNamespace(
+                    finish_reason="stop", delta=SimpleNamespace(content=None, tool_calls=[]),
+                )])])
             return FakeStream(
                 [
                     SimpleNamespace(
@@ -35,6 +37,7 @@ class FakeCompletions(RawResponseEndpoint):
                     SimpleNamespace(
                         choices=[
                             SimpleNamespace(
+                                finish_reason="stop",
                                 delta=SimpleNamespace(content="done", tool_calls=[])
                             )
                         ]
@@ -42,10 +45,11 @@ class FakeCompletions(RawResponseEndpoint):
                 ]
             )
         if self.message is not None:
-            return SimpleNamespace(choices=[SimpleNamespace(message=self.message)])
+            return SimpleNamespace(choices=[SimpleNamespace(message=self.message, finish_reason="stop")])
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
+                    finish_reason="tool_calls",
                     message=SimpleNamespace(
                         content="<think>hidden</think>\n\ndone",
                         tool_calls=[
@@ -265,8 +269,9 @@ async def test_openai_compatible_provider_rejects_invalid_tool_arguments() -> No
         client=client,
     )
 
-    with pytest.raises(ValueError, match="not valid JSON"):
+    with pytest.raises(ProviderResponseError, match="not valid JSON") as error:
         await provider.chat([{"role": "user", "content": "hello"}])
+    assert error.value.reason == "invalid_tool_call"
 
 
 @pytest.mark.asyncio

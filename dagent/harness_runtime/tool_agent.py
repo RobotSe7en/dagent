@@ -49,8 +49,10 @@ from dagent.review import CapabilityReviewDecision, ReviewDecision, ReviewLevel,
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.providers.base import normalize_chat_response
+from dagent.providers.openai_compatible import ProviderRequestError, ProviderResponseError
 from dagent.providers.model_io import (
     ModelRequest,
+    ModelResponse,
     chat_response_from_model,
     complete_model,
     stream_model,
@@ -805,13 +807,29 @@ class ToolAgentLoop:
                 if not late_steers:
                     break
                 apply_steers(late_steers)
-            response = await self._chat(
-                prepared.request,
-                run_id=resolved_run_id,
-                step=step,
-                on_token=on_token,
-                on_event=on_event,
-            )
+            model_error: RunTraceError | None = None
+            provider_details: Any = None
+            try:
+                response = await self._chat(
+                    prepared.request, run_id=resolved_run_id, step=step,
+                    on_token=on_token, on_event=on_event,
+                )
+            except ProviderResponseError as exc:
+                response = (chat_response_from_model(exc.response) if exc.response is not None
+                            else ChatResponse(status=exc.status))
+                model_error = RunTraceError(code=exc.reason, message=str(exc))
+                provider_details = exc.details
+            except ProviderRequestError as exc:
+                response = (chat_response_from_model(exc.response) if exc.response is not None
+                            else ChatResponse(status="failed", metadata=exc.metadata))
+                model_error = RunTraceError(code="provider_request_failed", message=str(exc))
+
+            if model_error is None:
+                if response.status != "completed":
+                    model_error = RunTraceError(code="model_response_failed", message=f"Model response status: {response.status}.")
+                elif not response.tool_calls and not response.content.strip() and not response.refusal.strip():
+                    reason = "reasoning_only_response" if response.reasoning_content.strip() else "empty_response"
+                    model_error = RunTraceError(code=reason, message="Model response has no final content, tool calls, or refusal.")
 
             assistant_message = self._assistant_message(response)
             assistant_message = assistant_message.model_copy(
@@ -823,7 +841,8 @@ class ToolAgentLoop:
                 RunTraceNode(
                     parent_id=trace.root.id,
                     kind="model_call",
-                    status="completed",
+                    status="failed" if model_error is not None else "completed",
+                    error=model_error,
                     label=f"model_step_{step}",
                     ref={"step": str(step)},
                     input={"context_usage": prepared.usage.model_dump(mode="json")},
@@ -831,9 +850,18 @@ class ToolAgentLoop:
                         "content": response.content,
                         "reasoning": response.reasoning_content,
                         "refusal": response.refusal,
+                        "tool_calls": [call.model_dump(mode="json") for call in assistant_message.tool_calls],
+                        "usage": response.usage.model_dump(mode="json") if response.usage is not None else None,
+                        "model_call": response.metadata.model_dump(mode="json") if response.metadata is not None else None,
+                        "status": response.status,
+                        "provider_details": provider_details,
                     },
                 )
             )
+
+            if model_error is not None:
+                trace.root.error = model_error
+                return failed_outcome()
 
             if not response.tool_calls:
                 pending_steers = (
@@ -864,7 +892,7 @@ class ToolAgentLoop:
                         ),
                     ),
                     execution_context=_format_capability_execution_context(loop_conversation),
-                    output_text=response.content.strip(),
+                    output_text=response.content.strip() or response.refusal.strip(),
                     new_items=tuple(new_items),
                 )
 
@@ -947,9 +975,9 @@ class ToolAgentLoop:
             reasoning_effort=context_policy.compaction_reasoning_effort,
             purpose="compaction",
         )
-        record_model_turn()
-        response = normalize_chat_response(
-            chat_response_from_model(await complete_model(self.provider, prepared.request))
+
+        response = await self._chat(
+            prepared.request, run_id=run_id, step=0, on_token=None, on_event=None,
         )
         raw_content = response.content.strip()
         if not raw_content:
@@ -1023,14 +1051,18 @@ class ToolAgentLoop:
         async def attempt() -> ChatResponse:
             nonlocal emitted_tokens, response
             response = None
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
             record_model_turn()
             if hasattr(self.provider, "stream") or hasattr(self.provider, "stream_chat"):
                 async for event in stream_model(self.provider, request):
                     if event.type == "token" and event.content:
                         emitted_tokens = True
                         if getattr(event, "channel", "content") == "reasoning":
+                            reasoning_parts.append(event.content)
                             stream.emit_channel("reasoning", event.content)
                         else:
+                            content_parts.append(event.content)
                             stream(event.content)
                     elif event.type == "done":
                         response = (
@@ -1042,7 +1074,14 @@ class ToolAgentLoop:
                 response = chat_response_from_model(
                     await complete_model(self.provider, request)
                 )
-            return response or ChatResponse()
+            if response is None:
+                raise ProviderResponseError(
+                    "incomplete", reason="missing_terminal_response",
+                    response=ModelResponse(
+                        content="".join(content_parts), reasoning="".join(reasoning_parts), status="unknown",
+                    ),
+                )
+            return response
 
         try:
             stream.start()

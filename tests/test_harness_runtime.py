@@ -228,6 +228,55 @@ def test_harness_runtime_tool_message_does_not_create_dag() -> None:
     assert record.trace.root.output is None
 
 
+def test_harness_runtime_retries_routing_before_selecting_mode() -> None:
+    sleeps: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class FailOnceProvider(MockProvider):
+        async def chat(self, messages, tools=None, *, response_format=None):
+            if not self.requests:
+                self.requests.append({"messages": list(messages), "tools": tools or [], "response_format": response_format})
+                raise TimeoutError("routing temporarily unavailable")
+            return await super().chat(messages, tools, response_format=response_format)
+
+    provider = FailOnceProvider([
+        ChatResponse(content="dag"),
+        ChatResponse(content=_dag_agent_dsl()),
+    ])
+    runtime = _runtime(provider)
+    runtime.tool_agent.loop.llm_retry_sleep = record_sleep
+
+    result = run(run_message(runtime, "Plan a pipeline", mode="auto", review_level="careful"))
+
+    assert result.status == "awaiting_review"
+    assert result.pending_review.kind == "initial_dag"
+    assert len(provider.requests) == 3
+    assert provider.requests[0] == provider.requests[1]
+    assert sleeps == [1.0]
+
+
+def test_harness_runtime_validates_and_recovers_after_tool_step_limit() -> None:
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="echo_1", name="tool_echo", arguments={"text": "ok"})]),
+        ChatResponse(content="echo:ok"),
+    ])
+    runtime = _runtime(provider)
+    runtime.tool_agent.max_steps = 1
+    runtime.validator = _RejectThenApproveValidator()
+    runtime.enable_validation = True
+
+    result = run(run_message(runtime, "Echo ok", mode="tool"))
+
+    assert result.status == "completed"
+    assert result.output_text == "echo:ok"
+    assert runtime.validator.calls == 2
+    assert len(provider.requests) == 2
+    assert "Please address these issues." in provider.requests[1]["messages"][-1]["content"]
+    assert len([item for item in result.new_items if item.type == "tool_result"]) == 1
+
+
 def test_harness_runtime_tool_followup_uses_tool_agent_thread() -> None:
     provider = MockProvider([
         ChatResponse(content="The project color is blue."),  # ToolAgentLoop

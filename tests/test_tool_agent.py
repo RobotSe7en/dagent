@@ -130,7 +130,9 @@ def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
     assert result.state.model_thread is not None
     assert result.state.model_thread.items[-1].type == "assistant"
     assert result.state.model_thread.items[-1].content == "Done."
-    assert result.state.model_thread.items[-1].model_call == metadata
+    recorded = result.state.model_thread.items[-1].model_call
+    assert recorded.model_dump(exclude={"attempts"}) == metadata.model_dump(exclude={"attempts"})
+    assert len(recorded.attempts) == 1
 
 
 def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:

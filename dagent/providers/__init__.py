@@ -15,6 +15,8 @@ from dagent.providers.openai_compatible import (
     ProviderCapabilityError,
     ProviderCapabilityWarning,
     ProviderResponseError,
+    ProviderRequestError,
+    ProviderTokenCountError,
 )
 
 __all__ = [
@@ -28,6 +30,8 @@ __all__ = [
     "ProviderCapabilities",
     "ProviderCapabilityWarning",
     "ProviderResponseError",
+    "ProviderRequestError",
+    "ProviderTokenCountError",
     "ProtocolCapabilities",
     "StructuredOutputFormat",
     "ToolCall",

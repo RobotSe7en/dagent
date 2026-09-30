@@ -22,6 +22,12 @@ second = await runner.run(
 print(second.output_text)
 ```
 
+模型失败时，在展示 `output_text` 前检查 `result.status == "failed"` 和
+`result.error.code`。仅有推理或空响应分别返回 `reasoning_only_response` 和
+`empty_response`。最终文本保持为空；此前工具输出保留在 conversation 与 trace，
+不会被拼成替代答案。最后一条 `AssistantMessage.model_call` 保存终止信息及重试次数。
+详见[模型失败与 Token 计数](model-context-and-reasoning.md)。
+
 `ConversationState` 与 provider 无关，包含有类型的用户消息、助手消息、工具结果、可选
 摘要和 revision。它不包含 system prompt 或 provider 请求参数。
 

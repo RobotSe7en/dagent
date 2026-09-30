@@ -126,14 +126,33 @@ streaming、structured output 与 reasoning 控制；否则在 Chat 满足请求
 `protocol="chat_completions"` 或 `"responses"` 是严格选择：endpoint 失败直接返回给调用者，
 不会把可能具有副作用的请求换协议重放。
 
-Responses generation 只有终态为 `completed` 才会被接受；`failed`、`incomplete` 和
-`cancelled` 会抛出 `ProviderResponseError`。Chat Completions 返回
-`finish_reason="length"`、表示输出上限耗尽时也会抛出该异常。流式输出的部分内容不会被
-转换成成功 run。
+Responses generation 只有终态为 `completed` 才会被接受，流还必须包含
+`response.completed`。Chat Completions 必须提供有效的 `finish_reason`（`stop`、
+`tool_calls`，或带显式 refusal 的 `content_filter`）。缺少终止信息、输出耗尽（`length`），
+以及 Responses 的 failed、incomplete、cancelled 都抛出
+`dagent.providers.ProviderResponseError`。直接调用 Provider 时可读取其 `reason`、
+`status` 和部分 `response`。工具参数 JSON 无效时同样返回 typed error，原因为
+`invalid_tool_call`；推理文本绝不会转换成可执行调用。
+
+ToolAgent 中，这些错误返回 `RunResult.status="failed"`，提供类型化 `result.error`，
+`output_text` 为空，工具结果、最后 assistant 响应、用量和 trace 都会保留。
+已完整生成但仅有推理或完全为空的响应也失败，原因分别为 `reasoning_only_response`
+和 `empty_response`。普通工具错误仍交给模型进入下一轮；新的合法调用继续执行。
+非空最终正文或显式拒绝正常结束循环。此契约校验模型回合是否有效，不能证明正文已达成
+用户任务。协议失败不会重跑任务或此前工具，配置任务 validator 时也一样。
 
 每个已记录的 `AssistantMessage.model_call` 都会暴露实际选择的协议、请求用途、请求值与
 生效的 effort/输出限制、实际 wire 字段以及自动选择原因。这些审计元数据会随 conversation
 持久化，但绝不会投影回模型输入。
+
+相同元数据记录服务端实际返回的 `finish_reason` 和 `response_status`；缺失值为
+`None`。`ModelTokenUsage` 缺失字段也为 `None`，服务端明确返回的零仍为零。
+`ModelCallMetadata.attempts` 保存公开的 `ModelCallAttempt`：从 1 开始的次数、耗时秒数、
+异常类型、HTTP 状态和重试前等待秒数。无法取得 HTTP 状态或不再重试时相应字段为
+`None`。Runner 保持既有瞬态请求重试策略，流已输出 token 后不再重试。
+OpenAI client 的自动重试被关闭，确保每次尝试均可观察。直接 Provider 调用只尝试一次；
+传输或 HTTP 失败抛出 `dagent.providers.ProviderRequestError`，保留 `metadata`、
+`cause` 和可能存在的部分 `response`。
 
 ## Token 计数与压缩
 
@@ -141,6 +160,17 @@ Responses generation 只有终态为 `completed` 才会被接受；`failed`、`i
 messages 与 tools。此时 `ContextUsage.estimator` 为 `"vllm"`，
 `server_max_model_len` 记录发现的上限。设置 `token_counting="vllm"` 会在无法精确计数时
 报错；设置 `"heuristic"` 则始终使用本地确定性估算。
+
+`/tokenize` 必须返回非负整数 `count` 或整数 token ID 列表。非空 messages/tools
+不能接受零计数。无效结构和无效 `max_model_len` 在 `auto` 下发出 warning，改用明确
+标注的 heuristic 计数；显式 `vllm` 则抛出
+`dagent.providers.ProviderTokenCountError`。缺失字段不会被解释成精确的零。
+
+`ContextUsage.context_window_source` 区分 `configured`、`server`、`model` 和
+`fallback`，旧记录未观察到来源时为 `None`。兜底 131,072 只是本地预算，不是已经验证的
+服务端能力。`server_max_model_len` 在有效探测返回上限之前保持 `None`；后续探测失败
+或缺少上限字段时保留此前验证的值，计数器则可转为 heuristic。Provider 也公开
+`context_window_source` 和 `server_max_model_len`。
 
 `context_window_tokens=None` 时使用探测到的 `max_model_len`；探测失败会 warning 并
 fallback 到 131,072（128K）。显式值覆盖自动值，但大于 server limit 时会在 generation 前被拒绝。

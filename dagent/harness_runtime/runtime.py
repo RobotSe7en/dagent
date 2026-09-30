@@ -41,6 +41,7 @@ from dagent.harness_runtime.dag_builder import validate_dag_input
 from dagent.harness_runtime.dag_executor import DAGExecutor
 from dagent.harness_runtime.conversation_resources import ConversationResourceStore
 from dagent.harness_runtime.execution_usage import record_model_turn
+from dagent.harness_runtime.llm_retry import run_with_llm_retries
 from dagent.harness_runtime.artifacts import (
     ArtifactUpload,
     create_run_workspace,
@@ -55,7 +56,7 @@ from dagent.harness_runtime.steering import (
     set_run_steering_phase,
 )
 from dagent.review import ReviewLevel
-from dagent.providers import ChatProvider
+from dagent.providers import ChatProvider, ChatResponse
 from dagent.providers.base import normalize_chat_response
 from dagent.providers.model_io import chat_response_from_model, complete_model
 from dagent.result import RunResult
@@ -346,13 +347,20 @@ class HarnessRuntime:
                 )
                 run_context_usages.extend(loop_outcome.state.context_usage)
 
-            if loop_outcome.state.status == "awaiting_review":
+            if loop_outcome.state.status == "awaiting_review" or (
+                loop_outcome.state.kind == "tool" and loop_outcome.state.status == "failed"
+                and loop_outcome.state.trace is not None
+                and loop_outcome.state.trace.root.error is not None
+            ):
                 set_run_steering_phase(
                     loop_outcome.state.run_id,
-                    "awaiting_review",
+                    "awaiting_review" if loop_outcome.state.status == "awaiting_review" else "finishing",
                 )
                 return loop_outcome.model_copy(
-                    update={"new_items": tuple(audit_items)}
+                    update={
+                        "new_items": tuple(audit_items),
+                        "state": loop_outcome.state.model_copy(update={"context_usage": [*run_context_usages, *validation_usages]}),
+                    }
                 )
 
             set_run_steering_phase(loop_outcome.state.run_id, "validation")
@@ -740,11 +748,17 @@ class HarnessRuntime:
             ),
             policy=self.tool_agent.context_policy,
         )
-        try:
+
+        async def chat_attempt() -> ChatResponse:
             record_model_turn()
+            return chat_response_from_model(await complete_model(self.provider, prepared.request))
+
+        try:
             response = normalize_chat_response(
-                chat_response_from_model(
-                    await complete_model(self.provider, prepared.request)
+                await run_with_llm_retries(
+                    chat_attempt,
+                    policy=self.tool_agent.loop.llm_retry_policy,
+                    sleep=self.tool_agent.loop.llm_retry_sleep,
                 )
             )
             decision = response.content.strip().lower()
@@ -887,6 +901,8 @@ class HarnessRuntime:
         final_answer = (
             ""
             if outcome.state.status == "awaiting_review"
+            or (mode == "tool" and outcome.state.status == "failed" and outcome.state.trace is not None
+                and outcome.state.trace.root.error is not None)
             else outcome.output_text.strip() or _fallback_output_text(outcome)
         )
         conversation = outcome.state.conversation

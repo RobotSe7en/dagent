@@ -135,16 +135,41 @@ Setting `protocol="chat_completions"` or `"responses"` is strict: endpoint
 failure is returned to the caller and never triggers cross-protocol replay of a
 possibly side-effecting request.
 
-A Responses generation is accepted only with terminal status `completed`.
-`failed`, `incomplete`, and `cancelled` terminal states raise
-`ProviderResponseError`. Chat Completions also raises this error when
-`finish_reason="length"` reports output-limit exhaustion. Partial streaming
-output is never converted into a successful run.
+A Responses generation is accepted only with terminal status `completed`; a
+stream must include `response.completed`. Chat Completions must supply a valid
+`finish_reason` (`stop`, `tool_calls`, or `content_filter` with an explicit
+refusal). Missing termination, output exhaustion (`length`), and failed,
+incomplete, or cancelled Responses raise `dagent.providers.ProviderResponseError`.
+Its `reason`, `status`, and partial `response` are available to direct provider
+callers. Invalid tool-call JSON raises the same typed error with reason
+`invalid_tool_call`; reasoning text is never parsed into executable calls.
+
+In a tool-agent run these errors return `RunResult.status="failed"` with a typed
+`result.error` and empty `output_text`. Tool results, the last assistant response,
+usage, and trace remain available. A completed generation containing only
+reasoning or no content also fails (`reasoning_only_response` or `empty_response`).
+Ordinary tool errors are still passed to the model for the next turn. A new valid
+call executes normally. A nonempty final answer or explicit refusal ends the
+loop. This contract validates a model turn, not whether the answer achieves the
+user's task. Protocol failures do not rerun the task or previous tools, including
+when a task validator is configured.
 
 Each recorded `AssistantMessage.model_call` exposes the selected protocol,
 request purpose, requested and effective effort/output limit, actual wire field,
 and the auto-selection reason. This audit metadata is persisted with the
 conversation but never projected back into model input.
+
+The same metadata records the server's actual `finish_reason` and
+`response_status`; absent values are `None`. Missing fields in `ModelTokenUsage`
+are also `None`, while reported zero remains zero. `ModelCallMetadata.attempts`
+contains public `ModelCallAttempt` records: attempt number (starting at one),
+elapsed seconds, exception type, HTTP status, and delay before a retry. `None`
+means an HTTP status was unavailable or no retry followed. Runner retries
+transient model request failures using its existing policy; it stops retrying a
+stream after tokens have been emitted. OpenAI client retries are disabled to
+make every attempt observable. Direct provider calls make one attempt and raise
+`dagent.providers.ProviderRequestError` on transport/HTTP failure, exposing
+`metadata`, `cause`, and any partial `response`.
 
 ## Token accounting and compaction
 
@@ -153,6 +178,19 @@ tools when the endpoint is advertised. `ContextUsage.estimator` is then
 `"vllm"`, and `server_max_model_len` records the discovered maximum. Set
 `token_counting="vllm"` to fail when exact counting is unavailable, or
 `"heuristic"` to always use the local deterministic estimate.
+
+`/tokenize` must return a nonnegative integer `count` or a list of integer token
+IDs. Zero is rejected for nonempty messages/tools. Invalid structures and invalid
+`max_model_len` values trigger a warning and explicitly labelled heuristic
+counting in `auto`; explicit `vllm` raises `dagent.providers.ProviderTokenCountError`.
+No missing count is silently interpreted as an exact zero.
+
+`ContextUsage.context_window_source` identifies `configured`, `server`, `model`,
+or `fallback` (old unobserved records use `None`). The fallback 131,072 is a local
+budget, not a verified server capability. `server_max_model_len` stays `None`
+until a valid probe supplies it. A later failed/missing probe retains a previously
+verified limit while the estimator switches to heuristic counting. The provider
+also exposes `context_window_source` and `server_max_model_len`.
 
 With `context_window_tokens=None`, the discovered `max_model_len` is the total
 window. Discovery failure warns and falls back to 131,072 (128K). An explicit value

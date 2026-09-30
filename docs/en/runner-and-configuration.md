@@ -208,11 +208,12 @@ maps the full schema to Chat `response_format.type="json_schema"` or Responses
 See [Model Context and Reasoning](model-context-and-reasoning.md) for replay
 modes, wire examples, compaction order, and capability details.
 
-`timeout_seconds` controls the provider request timeout. Tool-agent and dynamic
-DAG planning/replanning calls retry failed or timed-out LLM requests up to five
-times, waiting `1`, `2`, `5`, `10`, then `30` seconds before retrying. If a
-streaming response has already emitted tokens, dagent does not retry that
-request because doing so would duplicate partial output. MCP server
+`timeout_seconds` controls the provider request timeout. Tool-agent, dynamic DAG
+planning/replanning, routing, result validation, and context compaction retry
+transient LLM request failures up to five times, waiting `1`, `2`, `5`, `10`, then
+`30` seconds before retrying. If a streaming response has already emitted tokens,
+dagent does not retry that request because doing so would duplicate partial
+output. MCP server
 `tool_timeout` is separate and only controls MCP tool calls.
 
 ## Configuration Files
@@ -587,6 +588,8 @@ runner.enable_validation = True
 ```
 
 Result validation runs for tool and DAG outcomes that include execution context.
+Tool runs that exhaust their step limit can still receive validation feedback and
+retry to supply a final answer. Terminal model failures bypass validation.
 Plain chat-only responses are not validated.
 
 ## Profiles

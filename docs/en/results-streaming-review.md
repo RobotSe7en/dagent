@@ -33,6 +33,13 @@ the conversation. A review resume restores the value frozen in the checkpoint.
 Do not append `result.new_items` yourself. They are the audit delta for the run;
 `result.conversation` is already the complete bounded state to pass next time.
 
+For a model failure, check `result.status == "failed"` and `result.error.code`
+before displaying `output_text`. Reasoning-only and empty responses fail with
+`reasoning_only_response` and `empty_response`. The final text stays empty;
+previous tool output is retained in the conversation and trace, not used as a
+replacement answer. Inspect the last `AssistantMessage.model_call` for terminal
+metadata and retry attempts. See [model failures and token accounting](model-context-and-reasoning.md).
+
 ## What reaches the model
 
 Before every model call, one context assembler creates the OpenAI-compatible

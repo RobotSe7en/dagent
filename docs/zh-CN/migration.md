@@ -6,6 +6,35 @@
 
 当前包版本是 `0.9.13`。
 
+## 未发布
+
+### 模型完成判定与 Token 诊断
+
+- ToolAgent 仅有推理或空的最终回合现在明确失败。`RunResult.error` 提供类型化 trace
+  错误及稳定 code，`output_text` 保持为空。此前工具结果和最后模型响应保留在
+  conversation/trace。普通工具错误仍允许模型发出新的合法调用，不自动重跑工具或 Run。
+- 内置 Provider 的流式和非流式响应都要求有效终止信息。Chat 缺少 `finish_reason`、
+  Responses 缺少完成事件/状态、输出耗尽和明确失败均抛出 `ProviderResponseError`，
+  保留部分 `response` 和 `reason`。工具 JSON 无效现在使用该 typed error，替代
+  `ValueError`。ToolAgent 将其转成 failed 结果，并跳过任务验证重跑。
+- 公开 `ModelCallAttempt` 记录和实际终止字段写入 `ModelCallMetadata`。
+  传输/HTTP 失败现在抛出 `dagent.providers.ProviderRequestError`，保留 `cause`、
+  `metadata` 和可能存在的部分响应。Runner 沿用瞬态请求重试策略；OpenAI client
+  自动重试被关闭，注入的 client 也如此。
+- 路由、结果验证和上下文压缩同样由运行时重试瞬态请求失败。步数耗尽仍允许通过验证
+  恢复，仅终止模型错误跳过验证。这些修复无需迁移。
+- 无效 `/tokenize` 在 `auto` 下转为明确标注的 heuristic 计数，显式 `vllm` 则抛出
+  `ProviderTokenCountError`。窗口来源区分配置值、服务端值、模型值和兜底值；
+  131,072-token 兜底预算不是已验证的服务端能力。
+- **迁移：**展示输出前检查 `result.status` 和 `result.error`；自定义 HTTP endpoint
+  和测试替身应提供有效终止字段。捕获 typed provider error，而非原始 OpenAI 异常
+  或工具 JSON 的 `ValueError`。`ModelTokenUsage` 字段现在允许 `None`，表示未知；
+  明确返回的零保持为零，缺失 total 不再推算。新增审计字段是可选增量，旧记录无需
+  schema 转换；严格解析序列化元数据的宿主需允许新增字段和可空 usage。
+- 回归验证涵盖工具错误后的恢复、不可执行的推理调用文本、拒绝、流截断/缺终止信息、
+  重试诊断和无效计数。参见[模型契约](model-context-and-reasoning.md)与
+  [离线失败示例](../../examples/model_failure.py)。本次不修改包版本。
+
 ## 0.9.13
 
 ### 上传文件可编辑

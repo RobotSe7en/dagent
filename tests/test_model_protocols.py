@@ -95,6 +95,7 @@ class _Completions(RawResponseEndpoint):
                         usage=None,
                         choices=[
                             SimpleNamespace(
+                                finish_reason="stop",
                                 delta=SimpleNamespace(
                                     content="chat stream",
                                     reasoning=None,
@@ -109,6 +110,7 @@ class _Completions(RawResponseEndpoint):
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
+                    finish_reason="stop",
                     message=SimpleNamespace(
                         content="chat answer",
                         reasoning="chat reasoning",
@@ -156,6 +158,7 @@ class _Responses(RawResponseEndpoint):
                         item_id="fc_stream",
                         delta='{"query":"stream"}',
                     ),
+                    SimpleNamespace(type="response.completed", response=None),
                 ]
             )
         return SimpleNamespace(
@@ -699,8 +702,9 @@ async def test_responses_non_success_status_raises(status: str) -> None:
         client=client,  # type: ignore[arg-type]
     )
 
-    with pytest.raises(ProviderResponseError, match=status):
+    with pytest.raises(ProviderResponseError, match=status) as caught:
         await provider.complete(_simple_request())
+    assert caught.value.details["message"] == "generation stopped"
 
     assert not client.completions.calls
 

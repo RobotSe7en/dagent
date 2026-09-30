@@ -705,9 +705,11 @@ class DAGAgentLoop:
             reasoning_effort=self.context_policy.compaction_reasoning_effort,
             purpose="compaction",
         )
-        record_model_turn()
-        response = normalize_chat_response(
-            chat_response_from_model(await complete_model(self.provider, prepared.request))
+
+        response = await _chat_for_dag(
+            self.provider, prepared.request,
+            retry_policy=self.llm_retry_policy,
+            retry_sleep=self.llm_retry_sleep,
         )
         raw_content = response.content.strip()
         if not raw_content:

@@ -15,6 +15,7 @@ from dagent.providers.base import normalize_chat_response
 from dagent.providers.model_io import chat_response_from_model, complete_model
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.execution_usage import record_model_turn
+from dagent.harness_runtime.llm_retry import run_with_llm_retries
 from dagent.schemas import ContextPolicy, ContextUsage, ConversationState, UserMessage
 from dagent.state import PromptBuilder, PromptRequest
 
@@ -87,9 +88,13 @@ class ProfiledAgent:
             ),
             policy=self.context_policy,
         )
-        record_model_turn()
+
+        async def chat_attempt() -> ChatResponse:
+            record_model_turn()
+            return chat_response_from_model(await complete_model(self.provider, prepared.request))
+
         response = normalize_chat_response(
-            chat_response_from_model(await complete_model(self.provider, prepared.request))
+            await run_with_llm_retries(chat_attempt)
         )
         return response, prepared.usage
 
