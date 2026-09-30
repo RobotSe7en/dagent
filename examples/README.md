@@ -13,7 +13,7 @@ credentials.
 | `editable_uploads.py` | Upload, edit, and read current file contents across runs using the same workspace. | [Runner and Configuration](../docs/en/runner-and-configuration.md#editing-uploaded-files) |
 | `batch_tool_review.py` | Exact replace-all editing, mixed batch review, saved-queue resume and shell execution | [Capabilities](../docs/en/capabilities.md), [Review](../docs/en/results-streaming-review.md) |
 | `deepseek_replay.py` | Opt-in, bounded official DeepSeek tool-replay acceptance using synthetic data. | [Model context and reasoning](../docs/en/model-context-and-reasoning.md#deepseek-chat-tool-replay) |
-| `tool_result_recovery.py` | Recover a saved report, distinguish received/displayed file windows and cursors, page through searches, and retain shell logs offline. | [Tool result recovery](../docs/en/tool-result-recovery.md) |
+| `tool_result_recovery.py` | Fit large tool results into a small model window, recover the saved report, inspect display cursors, page through searches, and retain shell logs offline. | [Tool result recovery](../docs/en/tool-result-recovery.md) |
 | `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/en/agents.md), [Capabilities](../docs/en/capabilities.md) |
 | `model_failure.py` | Inspect retained tool errors and an inert reasoning-only final response. | [Model contracts](../docs/en/model-context-and-reasoning.md), [Results](../docs/en/results-streaming-review.md) |
 | `agent_delegation.py` | Register a leaf subagent and expose it to a top-level `ToolAgent`. | [Agents](../docs/en/agents.md) |

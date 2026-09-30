@@ -103,8 +103,11 @@ completed middle steps of an oversized active run. This is token-driven; there
 is no minimum retained-turn count. The current user input, open tool chain, and
 latest atomic step remain. The normal compaction path uses the configured model
 and consumes one model turn from telemetry. If that call fails, a deterministic
-bounded summary is used and the fallback reason is recorded. If mandatory input
-still does not fit, `ContextWindowExceeded` is raised before generation.
+bounded summary is used and the fallback reason is recorded. If input still
+exceeds the hard budget, tool-result displays are further reduced toward the
+soft trigger while retaining status, recovery information and short excerpts.
+If mandatory input still does not fit, `ContextWindowExceeded` is raised before
+generation. See [tool result recovery](tool-result-recovery.md).
 The compactor request has its own output limit and reasoning effort.
 `ContextSummary` records whether its source was truncated, provider usage,
 model-call metadata, and context estimate. Summary reasoning is discarded;
@@ -113,6 +116,8 @@ summary prose and its separately retained result-index reference are projected l
 Inspect `result.context_usage` for exact/estimated counts, the discovered
 server limit, reasoning replay/omission, included/compacted item counts,
 tool-result truncation, and the compaction method.
+`context.compaction.finished` requires actual summarization; result storage or
+display shortening alone does not emit it.
 
 ## Reasoning and provider usage
 

@@ -224,6 +224,17 @@ turns. At the configured trigger, dagent applies reductions in this order:
 2. omit the oldest replayed reasoning from the active request projection;
 3. summarize completed middle steps of an oversized active run.
 
+If the request still exceeds the hard input budget, dagent additionally reduces
+tool-result displays, including the latest tool step and planner observations.
+The configured per-result and total display budgets are ceilings. This final
+reduction targets the compaction trigger (80% by default), keeping each result's
+status, recovery information and existing short-excerpt reservation, then
+allocating remaining tokens newest-first. Each candidate is counted as a complete
+request, including system instructions, tools, summary and replayed reasoning.
+If the minimum display exceeds the soft target but fits the hard budget, the
+request can proceed. Crossing only the soft target does not activate this extra
+display reduction. See [result recovery](tool-result-recovery.md).
+
 The current run's initiating user input, an open assistant/tool-result chain,
 and the latest atomic step are retained. Tool-call/result pairs are not split.
 The 16% retention target is soft: when fixed input would otherwise cause a hard
@@ -252,6 +263,14 @@ fallback without failing the agent run.
 `ContextUsage` reports the replay mode, replayed and omitted reasoning counts
 and token estimates, active-run compaction, exact/heuristic estimator, effective
 window, and configured cap.
+
+`context.compaction.finished` reports actual history summarization, including a
+deterministic fallback summary. Saving a tool result or shortening its display
+alone does not emit that event; inspect the tool-result counters in `ContextUsage`.
+SDK-created subagents and auxiliary roles inherit the provider's last verified
+server window, including when exact counting later becomes unavailable. `auto`
+still permits heuristic counting; a completely unknown window still uses the
+warned 128K fallback. Explicit `vllm` counting remains strict.
 
 ## Custom provider compatibility
 

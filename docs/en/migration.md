@@ -7,6 +7,26 @@ that may require action when upgrading.
 
 The current package version is `0.9.14`.
 
+## Unreleased
+
+- After history/reasoning reductions, hard context overflow now reduces tool-result
+  displays further, targeting the configured compaction trigger. Per-result and
+  total budgets remain ceilings; minimum status, recovery information and short
+  excerpts remain. Current input, latest reasoning and tool-call/result pairing
+  remain protected. Necessary input that cannot fit still fails before generation.
+- Newly shortened originals use existing result storage and warning semantics.
+  Structured values, audit records and saved context policies keep their meanings.
+- SDK-created subagents and auxiliary model roles inherit cached server context
+  limits when exact counting becomes unavailable. Unknown-window `auto` fallback
+  and strict `vllm` counting retain their existing behavior.
+- `context.compaction.finished` now requires actual summarization (model or
+  deterministic fallback). Result storage and display shortening alone no longer
+  emit a misleading compaction event. Consumers should inspect `ContextUsage`
+  tool-result counters for display changes.
+- No public signatures, configuration fields or persisted schema versions change;
+  no stored-record migration is needed. Update tests that assume display ceilings
+  are guaranteed allocations or that result storage emits a compaction event.
+
 ## 0.9.14
 
 ### Model completion and token diagnostics
