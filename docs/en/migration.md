@@ -5,9 +5,9 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.13`.
+The current package version is `0.9.14`.
 
-## Unreleased
+## 0.9.14
 
 ### Model completion and token diagnostics
 
@@ -45,7 +45,16 @@ The current package version is `0.9.13`.
 - Regression coverage includes tool-error recovery, inert reasoning call text,
   refusals, partial/unterminated streams, retry diagnostics, and invalid counts.
   See [model contracts](model-context-and-reasoning.md) and the offline
-  [failure example](../../examples/model_failure.py). No package version is bumped.
+  [failure example](../../examples/model_failure.py).
+
+### Release verification and upgrade
+
+- Install with `pip install --upgrade dagent-ai==0.9.14`. Apply the model-response,
+  exception-handling, and nullable token-usage guidance above when upgrading.
+- Verification: 1,367 Python/MCP tests passed, wheel and source distributions
+  built successfully, package metadata checks and `git diff --check` passed.
+- Three environment-dependent tests were skipped: two opt-in live MiniMax
+  tests and one test requiring a running Docker daemon.
 
 ## 0.9.13
 

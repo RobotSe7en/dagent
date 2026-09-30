@@ -4,9 +4,9 @@
 
 ## 当前发布线
 
-当前包版本是 `0.9.13`。
+当前包版本是 `0.9.14`。
 
-## 未发布
+## 0.9.14
 
 ### 模型完成判定与 Token 诊断
 
@@ -33,7 +33,16 @@
   schema 转换；严格解析序列化元数据的宿主需允许新增字段和可空 usage。
 - 回归验证涵盖工具错误后的恢复、不可执行的推理调用文本、拒绝、流截断/缺终止信息、
   重试诊断和无效计数。参见[模型契约](model-context-and-reasoning.md)与
-  [离线失败示例](../../examples/model_failure.py)。本次不修改包版本。
+  [离线失败示例](../../examples/model_failure.py)。
+
+### 发布验证与升级
+
+- 使用 `pip install --upgrade dagent-ai==0.9.14` 安装。升级时按上述说明处理模型响应、
+  typed provider error 和可空 token usage。
+- 验证：1,367 项 Python/MCP 测试通过；wheel 和源码发行包构建、包元数据检查及
+  `git diff --check` 通过。
+- 跳过 3 项依赖环境的测试：2 项需显式启用的真实 MiniMax 测试，以及 1 项需要
+  正在运行的 Docker daemon 的测试。
 
 ## 0.9.13
 
