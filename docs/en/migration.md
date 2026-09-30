@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.14`.
+The current package version is `0.9.15`.
 
-## Unreleased
+## 0.9.15
+
+### Context budgets and result recovery
 
 - After history/reasoning reductions, hard context overflow now reduces tool-result
   displays further, targeting the configured compaction trigger. Per-result and
@@ -16,6 +18,9 @@ The current package version is `0.9.14`.
   remain protected. Necessary input that cannot fit still fails before generation.
 - Newly shortened originals use existing result storage and warning semantics.
   Structured values, audit records and saved context policies keep their meanings.
+- Failed reference-manifest writes retain one storage warning without repeated
+  writes during refitting. A recoverable storage failure no longer exhausts the
+  context budget by accumulating duplicate warnings.
 - SDK-created subagents and auxiliary model roles inherit cached server context
   limits when exact counting becomes unavailable. Unknown-window `auto` fallback
   and strict `vllm` counting retain their existing behavior.
@@ -26,6 +31,17 @@ The current package version is `0.9.14`.
 - No public signatures, configuration fields or persisted schema versions change;
   no stored-record migration is needed. Update tests that assume display ceilings
   are guaranteed allocations or that result storage emits a compaction event.
+
+### Release verification and upgrade
+
+- Install with `pip install --upgrade dagent-ai==0.9.15`. Hosts should use
+  `ContextUsage` to observe result display changes; no API or data migration is
+  required when upgrading from 0.9.14.
+- Verification: 1,390 Python/MCP tests passed, the offline result-recovery example
+  succeeded, wheel and source distributions built successfully, and package
+  metadata checks and `git diff --check` passed.
+- Three environment-dependent tests were skipped: two opt-in live MiniMax
+  tests and one test requiring a running Docker daemon.
 
 ## 0.9.14
 
