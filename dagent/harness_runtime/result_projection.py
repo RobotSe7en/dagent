@@ -236,6 +236,8 @@ def project_results(
     counter: TextCounter,
     *,
     read_available: bool | Callable[[ResultItem], bool],
+    total_budget_tokens: int | None = None,
+    minimum_only: bool = False,
 ) -> dict[str, ResultProjection]:
     projections: dict[str, ResultProjection] = {}
     # A short excerpt is reserved in addition to the indivisible metadata.
@@ -248,13 +250,18 @@ def project_results(
             read_available=readable,
             reserve_excerpt=True,
         )
-    remaining = policy.max_total_tool_result_tokens - sum(
+    total_budget = policy.max_total_tool_result_tokens
+    if total_budget_tokens is not None:
+        total_budget = min(total_budget, total_budget_tokens)
+    remaining = total_budget - sum(
         counter.count_text(projections[item.id].text) for item in items
     )
     if remaining < 0:
         raise ResultBudgetExceeded(
             "Minimum tool result information exceeds the total tool result budget."
         )
+    if minimum_only:
+        return projections
     for item in reversed(items):
         readable = read_available(item) if callable(read_available) else read_available
         previous = counter.count_text(projections[item.id].text)

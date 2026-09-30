@@ -91,14 +91,16 @@ agent = dagent.ToolAgent(
 reasoning；然后总结过大 active run 中已完成的中间步骤。该过程完全由 token 驱动，
 不存在最低保留轮数。当前用户输入、未闭合工具链和最新原子步骤会保留。正常压缩路径调用
 当前模型并计入一次 model turn telemetry；摘要调用失败时使用确定性有界摘要并记录
-fallback 原因。如果必须保留的输入仍然放不下，会在 generation 前抛出
-`ContextWindowExceeded`。
+fallback 原因。输入仍超过硬预算时，会进一步缩短工具结果展示，以软阈值为目标，
+保留状态、恢复信息和短摘录。必须保留的输入仍放不下时，在 generation 前抛出
+`ContextWindowExceeded`。详见[工具结果恢复](tool-result-recovery.md)。
 compactor 请求本身有独立的输出限制和 reasoning effort。`ContextSummary` 会记录 source
 是否被截断、provider usage、模型调用 metadata 和上下文估算。摘要 reasoning 会被丢弃；
 后续投影摘要正文及独立保留的结果索引入口。
 
 `result.context_usage` 会提供精确/估算 token 数、发现的 server limit、reasoning
 回放/省略、保留/压缩 item 数、工具结果截断数以及压缩方法。
+`context.compaction.finished` 要求实际发生摘要压缩；单纯结果存储或展示缩短不会发送该事件。
 
 ## 推理内容与 provider usage
 

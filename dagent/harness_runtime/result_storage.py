@@ -128,7 +128,10 @@ class ResultStore:
         self, item: ToolResultMessage | ResultObservation
     ) -> ToolResultMessage | ResultObservation:
         refs = result_references(item)
-        if len(refs) > 4:
+        reference_storage_failed = item.retention and any(
+            warning.field == "references" for warning in item.retention.storage_warnings
+        )
+        if len(refs) > 4 and not reference_storage_failed:
             try:
                 manifest = self.save_text(
                     item.id,

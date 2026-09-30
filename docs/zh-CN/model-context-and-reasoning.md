@@ -197,6 +197,13 @@ vLLM 精确计数不增加安全系数，安全系数只应用于 heuristic/cust
 2. 仅从 active request 投影移除最旧的已回放 reasoning；
 3. 汇总过大 active run 中已经完成的中间步骤。
 
+如果请求仍超过硬输入预算，dagent 会进一步缩短工具结果展示，包括最新工具步骤和
+planner observations。配置中的单项和总展示预算是上限。这一步以压缩触发阈值
+（默认 80%）为目标，保留每条结果的状态、恢复信息和现有短摘录预算，剩余空间再从新到旧
+分配。每个候选都对包含系统提示、工具定义、摘要及回放推理的完整请求重新计数。
+最低展示高于软阈值但仍在硬预算内时，允许继续请求；仅超过软阈值不会启动这一步额外缩减。
+原文保存及续读方式见[工具结果恢复](tool-result-recovery.md)。
+
 当前 run 的起始用户输入、未闭合的 assistant/tool-result chain 和最新原子步骤会保留，
 tool-call/result pair 不会拆开。16% 保留目标是软目标：如果固定输入仍会造成硬超限，dagent
 会先继续汇总最旧的跨 run 历史。如果缩减后必要输入仍超过有效窗口，会在 generation 前
@@ -220,6 +227,12 @@ context = dagent.ContextPolicy(
 
 `ContextUsage` 会报告回放模式、回放与省略的 reasoning 数量及 token 估算、active-run
 压缩、精确/启发式 estimator、有效窗口和显式配置上限。
+
+`context.compaction.finished` 仅报告实际的历史摘要压缩，包括确定性 fallback 摘要。
+单纯保存工具结果或缩短展示不会发送此事件；请查看 `ContextUsage` 中的工具结果计数。
+SDK 创建的子 agent 和辅助角色会继承 Provider 最后验证的服务端窗口，后续精确计数不可用时
+也会保留该上限。`auto` 仍允许启发式计数；窗口完全未知时仍警告并使用 128K 兜底。
+显式 `vllm` 计数继续采用严格模式。
 
 ## Custom provider 兼容
 

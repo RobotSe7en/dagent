@@ -31,6 +31,10 @@ async def main() -> None:
                 ),
             ]
         )
+        # Display ceilings can exceed the window: runtime fitting supplies a
+        # smaller request-local budget without changing this policy.
+        provider.context_window_tokens = 8192
+        provider.max_output_tokens = 1024
         runner = dagent.Runner(
             workspace=workspace,
             runtime_directory=".runtime",
@@ -39,7 +43,13 @@ async def main() -> None:
         )
         try:
             result = await runner.run(
-                dagent.ToolAgent(profile="conversation", capabilities=["tool.rows"]),
+                dagent.ToolAgent(
+                    profile="conversation", capabilities=["tool.rows"],
+                    context=dagent.ContextPolicy(
+                        max_tool_result_tokens=32768,
+                        max_total_tool_result_tokens=131072,
+                    ),
+                ),
                 input="Produce the report.",
                 workspace_path=workspace,
             )
@@ -55,6 +65,11 @@ async def main() -> None:
             )
             print(result.output_text)
             print("Saved bytes:", reference.byte_length)
+            usage = result.context_usage[-1]
+            assert usage.estimated_input_tokens <= usage.compaction_trigger_tokens
+            assert usage.truncated_tool_results == 1
+            assert usage.compaction_method == "none"
+            print("Fitted input tokens:", usage.estimated_input_tokens, "/", usage.input_budget_tokens)
         finally:
             runner.close()
 

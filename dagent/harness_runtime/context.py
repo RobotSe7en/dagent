@@ -8,7 +8,12 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from dagent.harness_runtime.result_storage import ResultStore
-from dagent.harness_runtime.result_projection import project_results, ResultBudgetExceeded, result_references
+from dagent.harness_runtime.result_projection import (
+    ResultBudgetExceeded,
+    ResultProjection,
+    project_results,
+    result_references,
+)
 
 from dagent.providers.base import StructuredOutputFormat, ToolCall
 from dagent.providers.model_io import (
@@ -107,6 +112,31 @@ def _context_results(items: Sequence[ConversationItem]) -> list[ToolResultMessag
     return results
 
 
+def _store_results(
+    conversation: ConversationState,
+    result_ids: set[str],
+    store: ResultStore,
+) -> ConversationState:
+    """Preserve newly shortened originals using the existing storage policy."""
+
+    saved: list[ConversationItem] = []
+    for item in conversation.items:
+        if isinstance(item, ToolResultMessage) and item.id in result_ids:
+            item = store.ensure(item)
+        elif isinstance(item, UserMessage) and item.result_observations:
+            item = item.model_copy(update={"result_observations": tuple(
+                store.ensure(result) if f"{item.id}/{result.id}" in result_ids else result
+                for result in item.result_observations
+            )})
+        saved.append(item)
+    saved_items = tuple(saved)
+    if saved_items == conversation.items:
+        return conversation
+    return conversation.model_copy(update={
+        "items": saved_items, "revision": conversation.revision + 1,
+    })
+
+
 @dataclass(frozen=True)
 class PreparedModelContext:
     request: ModelRequest
@@ -199,18 +229,7 @@ class ContextAssembler:
                 to_save = {item.id for item in results if projected[item.id].truncated}
             except ResultBudgetExceeded:
                 to_save = {item.id for item in results}
-            saved: list[ConversationItem] = []
-            for item in working.items:
-                if isinstance(item, ToolResultMessage) and item.id in to_save:
-                    item = result_store.ensure(item)
-                elif isinstance(item, UserMessage) and item.result_observations:
-                    item = item.model_copy(update={"result_observations": tuple(
-                        result_store.ensure(result) if f"{item.id}/{result.id}" in to_save else result
-                        for result in item.result_observations)})
-                saved.append(item)
-            saved_items = tuple(saved)
-            if saved_items != working.items:
-                working = working.model_copy(update={"items": saved_items, "revision": working.revision + 1})
+            working = _store_results(working, to_save, result_store)
         readable_result_ids = frozenset(item.id for item in _context_results(working.items) if can_read_result(item))
         def read_available(item: ToolResultMessage | ResultObservation) -> bool:
             return item.id in readable_result_ids
@@ -234,24 +253,28 @@ class ContextAssembler:
                 compacted_items += end - start
                 compaction_method, compaction_reason = method, reason or "tool_result_budget"
 
-        request, projection = self._project(
-            system_message=system_message,
-            conversation=working,
-            tools=tools,
-            policy=policy,
-            active_run_id=active_run_id,
-            omitted_reasoning_ids=omitted_reasoning_ids,
-            response_format=response_format,
-            max_output_tokens=request_max_output_tokens,
-            reasoning_effort=reasoning_effort,
-            purpose=purpose,
-            readable_result_ids=readable_result_ids,
-        )
-        estimate, exact_count = await self._safe_estimate(
-            request,
-            policy,
-            stream=stream,
-        )
+        async def project(
+            *, tool_result_budget: int | None = None, minimum_tool_results: bool = False,
+        ) -> tuple[ModelRequest, _ProjectionUsage, int, ModelTokenCount | None]:
+            request, projection = self._project(
+                system_message=system_message,
+                conversation=working,
+                tools=tools,
+                policy=policy,
+                active_run_id=active_run_id,
+                omitted_reasoning_ids=omitted_reasoning_ids,
+                response_format=response_format,
+                max_output_tokens=request_max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                purpose=purpose,
+                readable_result_ids=readable_result_ids,
+                tool_result_budget=tool_result_budget,
+                minimum_tool_results=minimum_tool_results,
+            )
+            estimate, exact_count = await self._safe_estimate(request, policy, stream=stream)
+            return request, projection, estimate, exact_count
+
+        request, projection, estimate, exact_count = await project()
         if exact_count is not None and exact_count.max_model_len is not None:
             self.server_max_model_len = exact_count.max_model_len
         context_window_tokens = _effective_context_window(
@@ -292,24 +315,7 @@ class ContextAssembler:
             compacted_items += len(compactable)
             compaction_method = method
             compaction_reason = reason
-            request, projection = self._project(
-                system_message=system_message,
-                conversation=working,
-                tools=tools,
-                policy=policy,
-                active_run_id=active_run_id,
-                omitted_reasoning_ids=omitted_reasoning_ids,
-                response_format=response_format,
-                max_output_tokens=request_max_output_tokens,
-                reasoning_effort=reasoning_effort,
-                purpose=purpose,
-                readable_result_ids=readable_result_ids,
-            )
-            estimate, exact_count = await self._safe_estimate(
-                request,
-                policy,
-                stream=stream,
-            )
+            request, projection, estimate, exact_count = await project()
 
         # Reasoning remains in durable conversation state. Under token pressure,
         # only the request projection sheds the oldest replayable traces.
@@ -338,24 +344,7 @@ class ContextAssembler:
                 candidate_index += 1
                 omitted_reasoning_ids.add(item.id)
                 dropped_estimate += self.token_counter.count_text(item.reasoning)
-            request, projection = self._project(
-                system_message=system_message,
-                conversation=working,
-                tools=tools,
-                policy=policy,
-                active_run_id=active_run_id,
-                omitted_reasoning_ids=omitted_reasoning_ids,
-                response_format=response_format,
-                max_output_tokens=request_max_output_tokens,
-                reasoning_effort=reasoning_effort,
-                purpose=purpose,
-                readable_result_ids=readable_result_ids,
-            )
-            estimate, exact_count = await self._safe_estimate(
-                request,
-                policy,
-                stream=stream,
-            )
+            request, projection, estimate, exact_count = await project()
 
         # Retention is a soft target. If fixed input such as system instructions
         # and tool schemas still causes a hard overflow, compact the oldest
@@ -388,24 +377,7 @@ class ContextAssembler:
             if method == "deterministic_fallback" or compaction_method == "none":
                 compaction_method = method
             compaction_reason = reason or compaction_reason
-            request, projection = self._project(
-                system_message=system_message,
-                conversation=working,
-                tools=tools,
-                policy=policy,
-                active_run_id=active_run_id,
-                omitted_reasoning_ids=omitted_reasoning_ids,
-                response_format=response_format,
-                max_output_tokens=request_max_output_tokens,
-                reasoning_effort=reasoning_effort,
-                purpose=purpose,
-                readable_result_ids=readable_result_ids,
-            )
-            estimate, exact_count = await self._safe_estimate(
-                request,
-                policy,
-                stream=stream,
-            )
+            request, projection, estimate, exact_count = await project()
 
         # If one run itself is too large, compact only completed middle steps.
         # Keep that run's initiating user input and its latest atomic tool step.
@@ -429,24 +401,46 @@ class ContextAssembler:
             if method == "deterministic_fallback" or compaction_method == "none":
                 compaction_method = method
             compaction_reason = reason or compaction_reason
-            request, projection = self._project(
-                system_message=system_message,
-                conversation=working,
-                tools=tools,
-                policy=policy,
-                active_run_id=active_run_id,
-                omitted_reasoning_ids=omitted_reasoning_ids,
-                response_format=response_format,
-                max_output_tokens=request_max_output_tokens,
-                reasoning_effort=reasoning_effort,
-                purpose=purpose,
-                readable_result_ids=readable_result_ids,
-            )
-            estimate, exact_count = await self._safe_estimate(
-                request,
-                policy,
-                stream=stream,
-            )
+            request, projection, estimate, exact_count = await project()
+
+        # Display limits are ceilings, not reservations. Only after the existing
+        # reductions fail the hard budget do we shorten the protected results.
+        result_budget_error: ResultBudgetExceeded | None = None
+        if estimate > input_budget and _context_results(working.items):
+            while True:
+                try:
+                    minimum = await project(minimum_tool_results=True)
+                except ResultBudgetExceeded as exc:
+                    result_budget_error = exc
+                    break
+                best = minimum
+                if minimum[2] <= trigger:
+                    low = minimum[1].tool_result_tokens
+                    high = min(policy.max_total_tool_result_tokens, projection.tool_result_tokens)
+                    while low < high:
+                        budget = (low + high + 1) // 2
+                        candidate = await project(tool_result_budget=budget)
+                        if candidate[2] <= trigger:
+                            low = budget
+                            best = candidate
+                        else:
+                            high = budget - 1
+                request, projection, estimate, exact_count = best
+                if result_store is None:
+                    break
+                saved = _store_results(
+                    working,
+                    {identity for identity, result in projection.tool_projections.items() if result.truncated},
+                    result_store,
+                )
+                if saved == working:
+                    break
+                working = saved
+                readable_result_ids = frozenset(
+                    item.id for item in _context_results(working.items) if can_read_result(item)
+                )
+                # New paths/warnings change the mandatory overhead. Refit and
+                # recount before using this request; stored originals are reused.
 
         usage = ContextUsage(
             context_window_tokens=context_window_tokens,
@@ -489,6 +483,8 @@ class ContextAssembler:
             compaction_method=compaction_method,  # type: ignore[arg-type]
             compaction_reason=compaction_reason,
         )
+        if result_budget_error is not None:
+            raise ContextWindowExceeded(str(result_budget_error), usage=usage) from result_budget_error
         if estimate > input_budget:
             raise ContextWindowExceeded(
                 (
@@ -620,6 +616,8 @@ class ContextAssembler:
         reasoning_effort: ReasoningEffort | None,
         purpose: Literal["generation", "compaction"],
         readable_result_ids: frozenset[str] = frozenset(),
+        tool_result_budget: int | None = None,
+        minimum_tool_results: bool = False,
     ) -> tuple[ModelRequest, "_ProjectionUsage"]:
         items: list[ModelUserInput | ModelAssistantTurn | ModelToolResultInput] = []
         summary_tokens = 0
@@ -647,6 +645,8 @@ class ContextAssembler:
             _context_results(conversation.items),
             policy, self.token_counter,
             read_available=lambda item: item.id in readable_result_ids,
+            total_budget_tokens=tool_result_budget,
+            minimum_only=minimum_tool_results,
         )
 
         for item in conversation.items:
@@ -735,6 +735,7 @@ class ContextAssembler:
             reasoning_omission_reasons=tuple(sorted(reasoning_omission_reasons)),
         )
         return request, _ProjectionUsage(
+            tool_projections=tool_projections,
             summary_tokens=summary_tokens,
             history_tokens=history_tokens,
             tool_result_tokens=tool_result_tokens,
@@ -753,6 +754,7 @@ class ContextAssembler:
 
 @dataclass(frozen=True)
 class _ProjectionUsage:
+    tool_projections: dict[str, ResultProjection]
     summary_tokens: int
     history_tokens: int
     tool_result_tokens: int

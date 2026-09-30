@@ -26,6 +26,19 @@ If minimum information cannot fit, completed atomic exchanges are compacted. If
 the protected latest exchange still cannot fit, generation raises
 `ContextWindowExceeded`; results are never silently replaced with empty strings.
 
+Display budgets are upper bounds. After history and reasoning reductions, a
+request that still exceeds its hard input budget gets a smaller request-local
+tool-result budget. This targets the configured compaction trigger while
+preserving the same minimum-information and newest-first allocation rules.
+The current user input, latest reasoning and tool-call/result pairing remain.
+Only the final display changes; configured policy and structured values do not.
+Newly shortened text is saved through the existing storage policy, and the
+complete request is recounted with the resulting recovery references. If the
+minimum display fits only above the soft trigger, the request may still run.
+If it exceeds the hard budget, generation fails explicitly.
+If a result's reference manifest cannot be saved, its warning is retained and
+refitting does not retry the failed write or append duplicate warnings.
+
 The inline threshold is independent: a smaller result can also be written before
 its model display is truncated. Projection does not replace a structured tool
 value with its excerpt. Static DAG value expressions retain their full-data
@@ -106,6 +119,8 @@ uses disk space and can persist sensitive tool output; files are not automatical
 deleted when the runner closes.
 
 Run the offline example with `uv run python -m examples.tool_result_recovery`.
+Its first run uses display ceilings larger than the model window and verifies
+that automatic shortening preserves the report for later reading.
 
 ## Distinguish source windows from model display
 

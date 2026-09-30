@@ -172,6 +172,7 @@ class ToolAgent:
                 getattr(loop.provider, "context_window_tokens", None),
             ),
             max_output_tokens=getattr(loop.provider, "max_output_tokens", None),
+            server_max_model_len=getattr(loop.provider, "server_max_model_len", None),
             model_context_window_tokens=getattr(
                 loop.provider, "model_context_window_tokens", None,
             ),
@@ -754,7 +755,6 @@ class ToolAgentLoop:
             while True:
                 if steering is not None:
                     apply_steers(steering.drain(resolved_run_id))
-                previous_revision = loop_conversation.revision
                 prepared = await context_assembler.prepare(
                     result_store=ResultStore(
                         execution_context.workspace_path or current_workspace_root(self.capability_executor.workspace_root),
@@ -792,7 +792,7 @@ class ToolAgentLoop:
                             "content_reference": item.content if isinstance(item.content, ContentReference) else None,
                         })
                 context_usages.append(prepared.usage)
-                if on_event is not None and loop_conversation.revision != previous_revision:
+                if on_event is not None and prepared.usage.compaction_method != "none":
                     on_event(
                         {
                             "type": "context_compacted",

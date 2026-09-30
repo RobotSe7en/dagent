@@ -340,6 +340,7 @@ class AgentCapabilityProvider:
                     getattr(provider, "context_window_tokens", None),
                 ),
                 max_output_tokens=getattr(provider, "max_output_tokens", None),
+                server_max_model_len=getattr(provider, "server_max_model_len", None),
                 model_context_window_tokens=getattr(
                     provider, "model_context_window_tokens", None,
                 ),
