@@ -21,6 +21,8 @@
   传输/HTTP 失败现在抛出 `dagent.providers.ProviderRequestError`，保留 `cause`、
   `metadata` 和可能存在的部分响应。Runner 沿用瞬态请求重试策略；OpenAI client
   自动重试被关闭，注入的 client 也如此。
+- 路由、结果验证和上下文压缩同样由运行时重试瞬态请求失败。步数耗尽仍允许通过验证
+  恢复，仅终止模型错误跳过验证。这些修复无需迁移。
 - 无效 `/tokenize` 在 `auto` 下转为明确标注的 heuristic 计数，显式 `vllm` 则抛出
   `ProviderTokenCountError`。窗口来源区分配置值、服务端值、模型值和兜底值；
   131,072-token 兜底预算不是已验证的服务端能力。

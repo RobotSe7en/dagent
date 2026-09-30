@@ -629,6 +629,66 @@ def test_compaction_effort_failure_uses_deterministic_fallback(tmp_path: Path) -
     runner.close()
 
 
+@pytest.mark.parametrize("mode", ["tool", "dag"])
+def test_compaction_retries_transient_requests(tmp_path: Path, monkeypatch, mode) -> None:
+    from dagent.harness_runtime import dag_agent, tool_agent
+    from dagent.harness_runtime.llm_retry import LLMRetryPolicy
+
+    sleeps = []
+
+    class FailOnceProvider:
+        context_window_tokens = 8192
+        max_output_tokens = 1024
+
+        def __init__(self):
+            self.requests = []
+            self.compaction_failed = False
+            self.responses = iter([
+                ModelResponse(content=final_answer_response("first") if mode == "dag" else "first"),
+                ModelResponse(content="bounded summary"),
+                ModelResponse(content=final_answer_response("second") if mode == "dag" else "second"),
+            ])
+
+        async def complete(self, request):
+            self.requests.append(request)
+            if request.purpose == "compaction" and not self.compaction_failed:
+                self.compaction_failed = True
+                raise TimeoutError("compactor temporarily unavailable")
+            return next(self.responses)
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    runtime_module = dag_agent if mode == "dag" else tool_agent
+    original_retries = runtime_module.run_with_llm_retries
+
+    async def bounded_retries(operation, **kwargs):
+        return await original_retries(operation, **{**kwargs, "policy": LLMRetryPolicy(max_retries=1), "sleep": record_sleep})
+
+    monkeypatch.setattr(runtime_module, "run_with_llm_retries", bounded_retries)
+    provider = FailOnceProvider()
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    context = ContextPolicy(compaction_trigger_ratio=0.2, summary_max_tokens=64)
+    agent = (
+        dagent.DagAgent(capabilities=[], context=context)
+        if mode == "dag"
+        else dagent.ToolAgent(profile="conversation", capabilities=[], context=context)
+    )
+    try:
+        first = run(runner.run(agent, input="x" * 6000))
+        second = run(runner.run(agent, input="y" * 600, conversation=first.conversation))
+    finally:
+        runner.close()
+
+    assert second.status == "completed"
+    assert second.output_text == "second"
+    assert second.conversation.summary.method == "model"
+    assert second.conversation.summary.content == "bounded summary"
+    assert [request.purpose for request in provider.requests] == ["generation", "compaction", "compaction", "generation"]
+    assert provider.requests[1] == provider.requests[2]
+    assert sleeps == [1.0]
+
+
 def test_dag_audit_delta_survives_planner_context_compaction(
     tmp_path: Path,
 ) -> None:

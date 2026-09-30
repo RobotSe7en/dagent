@@ -170,8 +170,9 @@ capture 只控制响应解析，不会在请求中启用 reasoning。
 reasoning 回放模式、直观 wire 示例、压缩顺序和能力探测细节见
 [模型上下文与推理](model-context-and-reasoning.md)。
 
-`timeout_seconds` 控制 provider request timeout。Tool-agent 和动态 DAG 的 planning/replanning
-LLM 调用会在请求失败或超时时最多重试 5 次，重试前分别等待 `1`、`2`、`5`、`10`、`30` 秒。
+`timeout_seconds` 控制 provider request timeout。Tool-agent、动态 DAG 的 planning/replanning、
+路由、结果验证和上下文压缩的 LLM 调用在遇到瞬态请求失败时最多重试 5 次，重试前分别等待
+`1`、`2`、`5`、`10`、`30` 秒。
 如果 streaming response 已经输出 token，达智不会重试这次请求，以避免重复输出部分内容。
 MCP server 的 `tool_timeout` 是单独配置，只控制 MCP 工具调用。
 
@@ -514,8 +515,9 @@ provider。`inherit_local_tools=True` 会复制通过 `CapabilityBinding` 注册
 runner.enable_validation = True
 ```
 
-Result validation 运行在包含 execution context 的 tool 和 DAG outcomes 上。纯 chat-only
-responses 不会被 validation。
+Result validation 运行在包含 execution context 的 tool 和 DAG outcomes 上。
+Tool run 耗尽步数后仍可接收验证反馈，通过重试补全最终答案；终止模型错误会跳过验证。
+纯 chat-only responses 不会被 validation。
 
 ## Profiles
 

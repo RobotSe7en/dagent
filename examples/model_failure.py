@@ -26,11 +26,15 @@ async def main() -> None:
             '<tool_call>{"name":"tool_lookup","arguments":{"key":"another"}}</tool_call>'
         )),
     ])
-    runner = dagent.Runner(workspace="agent-workspace", provider=provider, capabilities=[lookup])
+    runner = dagent.Runner(
+        workspace="agent-workspace", provider=provider, capabilities=[lookup],
+        validator="validator_agent",
+    )
     try:
         result = await runner.run(dagent.ToolAgent(profile="conversation"), input="Find a record.")
         assert result.status == "failed"
         assert result.output_text == ""
+        assert len(provider.requests) == 2
         print(result.status, result.error.code)
         for item in result.new_items:
             if isinstance(item, dagent.ToolResultMessage):

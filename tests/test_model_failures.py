@@ -10,8 +10,9 @@ from openai import AsyncOpenAI
 
 import dagent
 from dagent.config import ProviderConfig
-from dagent.harness_runtime.llm_retry import LLMRetryPolicy
+from dagent.harness_runtime.llm_retry import LLMRetryPolicy, run_with_llm_retries
 from dagent.harness_runtime import tool_agent as tool_runtime
+from dagent.harness_runtime import profiled_agent as profiled_runtime
 from dagent.providers import (
     ChatResponse, ChatStreamEvent, MockProvider, OpenAICompatibleProvider,
     ProviderResponseError, ProviderTokenCountError, ToolCall,
@@ -90,11 +91,87 @@ async def test_tool_failure_then_model_response_retains_evidence(tmp_path, strea
 
 @pytest.mark.asyncio
 async def test_failed_model_response_is_not_reexecuted_by_validator(tmp_path):
-    provider = MockProvider([ChatResponse(reasoning_content="Need more work.")])
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, validator="validator_agent")) as runner:
+    executed = []
+
+    @dagent.tool
+    def lookup(key: str) -> str:
+        """Look up a record."""
+        executed.append(key)
+        return "record found"
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="lookup_1", name="tool_lookup", arguments={"key": "good"})]),
+        ChatResponse(reasoning_content="Need more work."),
+    ])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, capabilities=[lookup], validator="validator_agent")) as runner:
         result = await runner.run(dagent.ToolAgent(profile="conversation"), input="Finish this")
     assert result.status == "failed"
-    assert len(provider.requests) == 1
+    assert len(provider.requests) == 2
+    assert executed == ["good"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["rate_limit", "timeout"])
+async def test_validator_retries_transient_requests_without_replaying_tools(tmp_path, failure, monkeypatch):
+    posts = []
+    sleeps = []
+    executed = []
+
+    @dagent.tool
+    def lookup(key: str) -> str:
+        """Look up a record."""
+        executed.append(key)
+        return "record found"
+
+    async def handler(request):
+        if request.method == "GET":
+            return httpx.Response(404)
+        posts.append(json.loads(request.content))
+        if len(posts) == 3:
+            if failure == "timeout":
+                raise httpx.ReadTimeout("timed out", request=request)
+            return httpx.Response(429, json={"error": {"message": "slow down", "type": "rate_limit"}})
+        message = {"role": "assistant", "content": "record found"}
+        finish_reason = "stop"
+        if len(posts) == 1:
+            message.update(content=None, tool_calls=[{
+                "id": "lookup_1", "type": "function",
+                "function": {"name": "tool_lookup", "arguments": '{"key":"good"}'},
+            }])
+            finish_reason = "tool_calls"
+        elif len(posts) == 4:
+            message["content"] = '{"passed":true,"issues":[],"summary":"ok"}'
+        return httpx.Response(200, json={
+            "id": "r", "model": "test", "object": "chat.completion", "created": 1,
+            "choices": [{"index": 0, "finish_reason": finish_reason, "message": message}],
+        })
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    async def bounded_retries(operation, **kwargs):
+        return await run_with_llm_retries(operation, **{**kwargs, "policy": LLMRetryPolicy(max_retries=1), "sleep": record_sleep})
+
+    monkeypatch.setattr(profiled_runtime, "run_with_llm_retries", bounded_retries)
+    async with AsyncOpenAI(base_url="http://local/v1", api_key="test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))) as client:
+        provider = OpenAICompatibleProvider(ProviderConfig(
+            base_url="http://local/v1", model="test", protocol="chat_completions",
+            token_counting="heuristic", context_window_tokens=131072,
+        ), client=client)
+        with closing(dagent.Runner(provider=provider, workspace=tmp_path, capabilities=[lookup], validator="validator_agent")) as runner:
+            with pytest.warns(RuntimeWarning, match="discovery failed"):
+                result = await runner.run(dagent.ToolAgent(profile="conversation"), input="Find a record")
+
+    assert result.status == "completed"
+    assert result.output_text == "record found"
+    assert executed == ["good"]
+    assert len(posts) == 4
+    assert posts[2] == posts[3]
+    assert sleeps == [1.0]
+    audit = next(item for item in result.new_items if item.type == "assistant" and item.scope == "validator")
+    assert [attempt.attempt for attempt in audit.model_call.attempts] == [1, 2]
+    assert audit.model_call.attempts[0].exception_type == ("RateLimitError" if failure == "rate_limit" else "APITimeoutError")
+    assert audit.model_call.attempts[-1].http_status == 200
 
 
 @pytest.mark.asyncio

@@ -975,9 +975,9 @@ class ToolAgentLoop:
             reasoning_effort=context_policy.compaction_reasoning_effort,
             purpose="compaction",
         )
-        record_model_turn()
-        response = normalize_chat_response(
-            chat_response_from_model(await complete_model(self.provider, prepared.request))
+
+        response = await self._chat(
+            prepared.request, run_id=run_id, step=0, on_token=None, on_event=None,
         )
         raw_content = response.content.strip()
         if not raw_content:

@@ -27,6 +27,9 @@ The current package version is `0.9.13`.
   `dagent.providers.ProviderRequestError` with `cause`, `metadata`, and any
   partial response. Runner retries transient requests using its existing policy;
   OpenAI client automatic retries are disabled, including for injected clients.
+- Routing, result validation, and context compaction use runtime request retries
+  too. Step-limit exhaustion still allows validation recovery; only terminal
+  model failures bypass validation. No migration is needed for these fixes.
 - Invalid `/tokenize` data uses labelled heuristic counting in `auto` and raises
   `ProviderTokenCountError` in explicit `vllm`. Context-window provenance
   distinguishes configured, server, model, and fallback values. A fallback
