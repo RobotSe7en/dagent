@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import warnings
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from dataclasses import replace
+from time import monotonic
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
+from httpx import TransportError
 
 from dagent.config import ProviderConfig, ReasoningCapture
 from dagent.providers.base import (
@@ -39,6 +42,7 @@ from dagent.providers.model_io import (
 from dagent.providers.request_observation import observe_request_reasoning
 from dagent.schemas.context import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
+    ModelCallAttempt,
     ModelTokenUsage,
     ReasoningEffort,
 )
@@ -62,17 +66,42 @@ class ProviderCapabilityError(RuntimeError):
     """The selected private endpoint cannot satisfy a model request."""
 
 
+class ProviderTokenCountError(ProviderCapabilityError):
+    """Exact token counting was unavailable or returned invalid data."""
+
+
+class ProviderRequestError(RuntimeError):
+    """A transport failure with public model-call attempt diagnostics."""
+
+    def __init__(
+        self, cause: Exception, *, metadata: ModelCallMetadata,
+        response: ModelResponse | None = None,
+    ) -> None:
+        self.cause = cause
+        self.metadata = metadata
+        self.response = response
+        self.status_code = getattr(cause, "status_code", None)
+        super().__init__(f"{type(cause).__name__}: {cause}")
+
+
 class ProviderResponseError(RuntimeError):
     """A model generation ended without a successful terminal state."""
 
-    def __init__(self, status: str, details: Any = None) -> None:
+    def __init__(
+        self, status: str, details: Any = None, *,
+        response: ModelResponse | None = None,
+        reason: str | None = None,
+    ) -> None:
         self.status = status
         self.details = details
+        self.response = response
+        self.reason = reason or status
         suffix = f": {details}" if details not in (None, "") else ""
         source = (
             "Chat Completions"
-            if isinstance(details, Mapping)
-            and details.get("protocol") == "chat_completions"
+            if (isinstance(details, Mapping) and details.get("protocol") == "chat_completions")
+            or (response is not None and response.metadata is not None
+                and response.metadata.protocol == "chat_completions")
             else "Responses"
         )
         super().__init__(f"{source} generation ended with status '{status}'{suffix}")
@@ -127,11 +156,64 @@ class OpenAICompatibleProvider:
             api_key=config.api_key,
             base_url=config.base_url,
             timeout=config.timeout_seconds,
+            max_retries=0,
         )
+        # Runtime retries are observable and never replay previously run tools.
+        self.client = self.client.with_options(max_retries=0)
         self._capabilities: ProviderCapabilities | None = None
         self._capability_lock = asyncio.Lock()
         self._warning_keys: set[str] = set()
         self._tokenize_unavailable = False
+        self.server_max_model_len: int | None = None
+
+    @property
+    def context_window_source(self) -> Literal["configured", "server", "model", "fallback"]:
+        if self.configured_context_window_tokens is not None:
+            return "configured"
+        if self.server_max_model_len is not None:
+            return "server"
+        return "model" if self.model_context_window_tokens is not None else "fallback"
+
+    async def _create_model_response(
+        self, endpoint: Any, kwargs: dict[str, Any], metadata: ModelCallMetadata,
+    ) -> tuple[Any, ModelCallMetadata]:
+        started = monotonic()
+        try:
+            raw = await endpoint.with_raw_response.create(**kwargs)
+        except (APIConnectionError, APIStatusError, OSError, TransportError) as exc:
+            attempt = ModelCallAttempt(
+                attempt=1, elapsed_seconds=monotonic() - started,
+                exception_type=type(exc).__name__,
+                http_status=getattr(exc, "status_code", None),
+            )
+            raise ProviderRequestError(
+                exc, metadata=metadata.model_copy(update={"attempts": (attempt,)}),
+            ) from exc
+        attempt = ModelCallAttempt(
+            attempt=1, elapsed_seconds=monotonic() - started,
+            http_status=getattr(raw, "status_code", None),
+        )
+        return raw, metadata.model_copy(update={"attempts": (attempt,)})
+
+    async def _read_model_stream(
+        self, source: Any, partial: Callable[[], ModelResponse],
+    ) -> AsyncIterator[Any]:
+        try:
+            async for item in source:
+                yield item
+        except (APIConnectionError, APIStatusError, OSError, TransportError) as exc:
+            response = normalize_model_response(
+                partial(), capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
+            )
+            assert response.metadata is not None
+            attempt = response.metadata.attempts[-1].model_copy(update={
+                "exception_type": type(exc).__name__,
+                "http_status": getattr(exc, "status_code", None) or response.metadata.attempts[-1].http_status,
+            })
+            metadata = response.metadata.model_copy(update={"attempts": (attempt,)})
+            raise ProviderRequestError(
+                exc, metadata=metadata, response=replace(response, metadata=metadata, status="failed"),
+            ) from exc
 
     async def inspect_capabilities(self) -> ProviderCapabilities:
         """Probe and cache the endpoint's read-only OpenAPI/version metadata."""
@@ -192,7 +274,7 @@ class OpenAICompatibleProvider:
             return None
         if self._is_deepseek_official:
             if self.config.token_counting == "vllm":
-                raise ProviderCapabilityError(
+                raise ProviderTokenCountError(
                     "DeepSeek's official API does not provide vLLM /tokenize. "
                     "Use token_counting='auto' or 'heuristic'."
                 )
@@ -203,7 +285,7 @@ class OpenAICompatibleProvider:
         if capabilities.tokenize == "unsupported":
             message = "The server OpenAPI schema does not expose vLLM /tokenize."
             if self.config.token_counting == "vllm":
-                raise RuntimeError(message)
+                raise ProviderTokenCountError(message)
             suffix = (
                 " Using heuristic counting and the 131,072-token fallback context window."
                 if self.configured_context_window_tokens is None
@@ -225,13 +307,22 @@ class OpenAICompatibleProvider:
             body["tools"] = list(request.tools)
         try:
             result = await self._post_root_json("/tokenize", body)
-            count = int(result.get("count") or len(result.get("tokens") or []))
+            if not isinstance(result, Mapping):
+                raise ValueError("/tokenize must return an object.")
+            count = result.get("count")
+            if count is None:
+                tokens = result.get("tokens")
+                if not isinstance(tokens, list) or any(type(token) is not int or token < 0 for token in tokens):
+                    raise ValueError("/tokenize must return an integer count or token ids.")
+                count = len(tokens)
+            if type(count) is not int or count < 0:
+                raise ValueError("/tokenize count must be a nonnegative integer.")
+            if count == 0 and (body["messages"] or body.get("tools")):
+                raise ValueError("/tokenize returned zero for nonempty model input.")
             max_model_len_value = result.get("max_model_len")
-            max_model_len = (
-                int(max_model_len_value)
-                if max_model_len_value is not None
-                else None
-            )
+            if max_model_len_value is not None and (type(max_model_len_value) is not int or max_model_len_value <= 0):
+                raise ValueError("/tokenize max_model_len must be a positive integer.")
+            max_model_len = max_model_len_value
             if max_model_len is not None:
                 if (
                     self.configured_context_window_tokens is not None
@@ -243,17 +334,18 @@ class OpenAICompatibleProvider:
                         f"max_model_len ({max_model_len}) for model "
                         f"'{self.config.model}'."
                     )
+                self.server_max_model_len = max_model_len
                 self.context_window_tokens = (
                     self.configured_context_window_tokens or max_model_len
                 )
-            elif self.configured_context_window_tokens is None:
+            elif self.configured_context_window_tokens is None and self.server_max_model_len is None:
                 self.context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
                 self._warn_once(
                     "tokenize-missing-max-model-len",
                     "vLLM /tokenize did not return max_model_len; using the "
                     "131,072-token fallback context window.",
                 )
-            else:
+            elif self.server_max_model_len is None:
                 self._warn_once(
                     "tokenize-cannot-validate-context-window",
                     "vLLM /tokenize did not return max_model_len; using the "
@@ -269,9 +361,11 @@ class OpenAICompatibleProvider:
         except (APIConnectionError, APIStatusError, OSError, TypeError, ValueError) as exc:
             message = f"vLLM /tokenize failed: {type(exc).__name__}: {exc}"
             if self.config.token_counting == "vllm":
-                raise RuntimeError(message) from exc
+                raise ProviderTokenCountError(message) from exc
             self._tokenize_unavailable = True
             suffix = (
+                "; using heuristic counting and the last verified server context window."
+                if self.context_window_source == "server" else
                 "; using heuristic counting and the 131,072-token fallback window."
                 if self.configured_context_window_tokens is None
                 else "; using heuristic counting and the configured context window "
@@ -356,35 +450,30 @@ class OpenAICompatibleProvider:
             capabilities,
             resolution_reason=resolution_reason,
         )
-        raw = await self.client.chat.completions.with_raw_response.create(**kwargs)
+        raw, metadata = await self._create_model_response(self.client.chat.completions, kwargs, metadata)
         metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
         response = raw.parse()
-        choice = response.choices[0]
-        if getattr(choice, "finish_reason", None) == "length":
-            raise ProviderResponseError(
-                "incomplete",
-                {
-                    "protocol": "chat_completions",
-                    "finish_reason": "length",
-                    "reason": "max_output_tokens",
-                },
-            )
-        message = choice.message
+        choices = getattr(response, "choices", None) or []
+        choice = choices[0] if choices else None
+        message = getattr(choice, "message", None)
+        metadata = metadata.model_copy(update={
+            "finish_reason": getattr(choice, "finish_reason", None),
+            "response_status": getattr(response, "status", None),
+        })
         result = ModelResponse(
             content=str(getattr(message, "content", None) or ""),
             reasoning=_reasoning_content(message),
             refusal=str(getattr(message, "refusal", None) or ""),
-            tool_calls=tuple(
-                _convert_tool_call(tool_call)
-                for tool_call in (getattr(message, "tool_calls", None) or [])
-            ),
             usage=_model_token_usage(getattr(response, "usage", None)),
             metadata=metadata,
         )
-        return normalize_model_response(
+        result = normalize_model_response(
             result,
             capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
         )
+        raw_calls = getattr(message, "tool_calls", None) or []
+        _require_chat_completion(result, raw_calls)
+        return _with_tool_calls(result, raw_calls)
 
     async def _chat_stream(
         self,
@@ -392,13 +481,14 @@ class OpenAICompatibleProvider:
         capabilities: ProviderCapabilities,
         resolution_reason: str,
     ) -> AsyncIterator[ModelStreamEvent]:
+        started = monotonic()
         kwargs, metadata = self._chat_kwargs(
             request,
             capabilities,
             resolution_reason=resolution_reason,
             stream=True,
         )
-        raw = await self.client.chat.completions.with_raw_response.create(**kwargs)
+        raw, metadata = await self._create_model_response(self.client.chat.completions, kwargs, metadata)
         metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
         response_stream = raw.parse()
         content_parts: list[str] = []
@@ -409,7 +499,19 @@ class OpenAICompatibleProvider:
         finish_reason: str | None = None
         capture_tag_reasoning = self.config.reasoning_capture == "field_and_tags"
         thinking_parser = _ThinkingStreamParser(enabled=True)
-        async for chunk in response_stream:
+
+        def partial() -> ModelResponse:
+            attempt = metadata.attempts[-1].model_copy(update={"elapsed_seconds": monotonic() - started})
+            pending_content = thinking_parser.buffer if not thinking_parser.in_reasoning else ""
+            pending_reasoning = thinking_parser.buffer if thinking_parser.in_reasoning and capture_tag_reasoning else ""
+            return ModelResponse(
+                content="".join(content_parts) + pending_content,
+                reasoning="".join(reasoning_parts) + pending_reasoning,
+                refusal="".join(refusal_parts), usage=token_usage,
+                metadata=metadata.model_copy(update={"finish_reason": finish_reason, "attempts": (attempt,)}),
+            )
+
+        async for chunk in self._read_model_stream(response_stream, partial):
             chunk_usage = _model_token_usage(getattr(chunk, "usage", None))
             if chunk_usage is not None:
                 token_usage = chunk_usage
@@ -463,30 +565,11 @@ class OpenAICompatibleProvider:
                     channel=cast(Literal["reasoning", "content"], channel),
                     content=part,
                 )
-        if finish_reason == "length":
-            raise ProviderResponseError(
-                "incomplete",
-                {
-                    "protocol": "chat_completions",
-                    "finish_reason": "length",
-                    "reason": "max_output_tokens",
-                },
-            )
-        yield ModelStreamEvent(
-            type="done",
-            response=ModelResponse(
-                content="".join(content_parts),
-                reasoning="".join(reasoning_parts),
-                refusal="".join(refusal_parts),
-                tool_calls=tuple(
-                    _convert_streamed_tool_call(part)
-                    for _, part in sorted(tool_call_parts.items())
-                    if part["name"]
-                ),
-                usage=token_usage,
-                metadata=metadata,
-            ),
-        )
+        result = partial()
+        raw_calls = [part for _, part in sorted(tool_call_parts.items())]
+        _require_chat_completion(result, raw_calls)
+        result = _with_tool_calls(result, raw_calls)
+        yield ModelStreamEvent(type="done", response=result)
 
     async def _responses_complete(
         self,
@@ -499,7 +582,7 @@ class OpenAICompatibleProvider:
             capabilities,
             resolution_reason=resolution_reason,
         )
-        raw = await self.client.responses.with_raw_response.create(**kwargs)
+        raw, metadata = await self._create_model_response(self.client.responses, kwargs, metadata)
         metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
         response = raw.parse()
         result = _model_response_from_responses(
@@ -507,7 +590,6 @@ class OpenAICompatibleProvider:
             metadata=metadata,
             capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
         )
-        _require_completed_response(result, response)
         return result
 
     async def _responses_stream(
@@ -516,13 +598,14 @@ class OpenAICompatibleProvider:
         capabilities: ProviderCapabilities,
         resolution_reason: str,
     ) -> AsyncIterator[ModelStreamEvent]:
+        started = monotonic()
         kwargs, metadata = self._responses_kwargs(
             request,
             capabilities,
             resolution_reason=resolution_reason,
             stream=True,
         )
-        raw = await self.client.responses.with_raw_response.create(**kwargs)
+        raw, metadata = await self._create_model_response(self.client.responses, kwargs, metadata)
         metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
         response_stream = raw.parse()
         content_parts: list[str] = []
@@ -532,7 +615,16 @@ class OpenAICompatibleProvider:
         completed_response: Any = None
         terminal_event: Any = None
         terminal_status: str | None = None
-        async for event in response_stream:
+
+        def partial() -> ModelResponse:
+            attempt = metadata.attempts[-1].model_copy(update={"elapsed_seconds": monotonic() - started})
+            return ModelResponse(
+                content="".join(content_parts), reasoning="".join(reasoning_parts),
+                refusal="".join(refusal_parts), status=terminal_status or "unknown",
+                metadata=metadata.model_copy(update={"attempts": (attempt,)}),
+            )
+
+        async for event in self._read_model_stream(response_stream, partial):
             event_type = str(getattr(event, "type", ""))
             delta = str(getattr(event, "delta", None) or "")
             if "reasoning" in event_type and event_type.endswith(".delta"):
@@ -601,36 +693,42 @@ class OpenAICompatibleProvider:
                 terminal_event = event
                 terminal_status = event_type.removeprefix("response.")
                 completed_response = getattr(event, "response", None)
-                if completed_response is None and event_type != "response.completed":
-                    raise ProviderResponseError(
-                        terminal_status,
-                        _response_details(event),
-                    )
+            elif event_type == "error":
+                terminal_event = event
+                terminal_status = "failed"
 
         if completed_response is not None:
-            result = _model_response_from_responses(
-                completed_response,
-                metadata=metadata,
-                capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
-            )
+            try:
+                result = _model_response_from_responses(
+                    completed_response,
+                    metadata=partial().metadata,
+                    capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
+                )
+            except ProviderResponseError as exc:
+                if exc.response is not None:
+                    received = normalize_model_response(
+                        partial(), capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
+                    )
+                    exc.response = replace(
+                        exc.response,
+                        content=exc.response.content or received.content,
+                        reasoning=exc.response.reasoning or received.reasoning,
+                        refusal=exc.response.refusal or received.refusal,
+                    )
+                raise
         else:
-            result = ModelResponse(
-                content="".join(content_parts),
-                reasoning="".join(reasoning_parts),
-                refusal="".join(refusal_parts),
-                tool_calls=tuple(
-                    _convert_streamed_tool_call(part)
-                    for part in tool_call_parts.values()
-                    if part["name"]
-                ),
-                metadata=metadata,
+            result = normalize_model_response(
+                partial(), capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
             )
-        if terminal_status not in (None, "completed") and result.status == "completed":
+        if terminal_status != "completed":
             raise ProviderResponseError(
-                terminal_status,
+                terminal_status or "incomplete",
                 _response_details(completed_response or terminal_event),
+                response=replace(result, status=terminal_status or "unknown"),
+                reason="missing_terminal_response" if terminal_status is None else terminal_status,
             )
-        _require_completed_response(result, completed_response)
+        if completed_response is None:
+            result = _with_tool_calls(result, list(tool_call_parts.values()))
         yield ModelStreamEvent(type="done", response=result)
 
     def _observe_reasoning(
@@ -1240,7 +1338,7 @@ def _model_response_from_responses(
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     refusal_parts: list[str] = []
-    tool_calls: list[ToolCall] = []
+    raw_tool_calls: list[dict[str, str]] = []
     for item in getattr(response, "output", None) or []:
         item_type = str(getattr(item, "type", ""))
         if item_type == "reasoning":
@@ -1259,46 +1357,112 @@ def _model_response_from_responses(
                 elif part_type == "refusal":
                     refusal_parts.append(str(getattr(part, "refusal", None) or ""))
         elif item_type == "function_call":
-            tool_calls.append(
-                ToolCall(
-                    id=str(getattr(item, "call_id", None) or getattr(item, "id", "")),
-                    name=str(getattr(item, "name", "")),
-                    arguments=_parse_tool_arguments(getattr(item, "arguments", None)),
-                )
-            )
+            raw_tool_calls.append({
+                "id": str(getattr(item, "call_id", None) or getattr(item, "id", "")),
+                "name": str(getattr(item, "name", "")),
+                "arguments": getattr(item, "arguments", None) or "{}",
+            })
+    status = getattr(response, "status", None)
     result = ModelResponse(
         content="".join(content_parts),
         reasoning="".join(reasoning_parts),
         refusal="".join(refusal_parts),
-        tool_calls=tuple(tool_calls),
         usage=_model_token_usage(getattr(response, "usage", None)),
-        status=str(getattr(response, "status", None) or "completed"),
-        metadata=metadata,
+        status=str(status or "unknown"),
+        metadata=metadata.model_copy(update={"response_status": status}),
     )
-    return normalize_model_response(
+    result = normalize_model_response(
         result,
         capture_tag_reasoning=capture_tag_reasoning,
     )
+    _require_completed_response(result, response, raw_tool_calls)
+    return _with_tool_calls(result, raw_tool_calls)
 
 
-def _require_completed_response(response: ModelResponse, raw_response: Any) -> None:
+def _require_completed_response(
+    response: ModelResponse, raw_response: Any, raw_calls: Sequence[Any] = (),
+) -> None:
     if response.status == "completed":
         return
+    details = _response_details(raw_response)
+    reason = details.get("reason") if isinstance(details, Mapping) else None
+    error_details = dict(details) if isinstance(details, Mapping) else {}
+    if details is not None and not isinstance(details, Mapping):
+        error_details["server_details"] = details
+    error_details.update(protocol="responses", tool_calls=_raw_tool_call_parts(raw_calls))
     raise ProviderResponseError(
-        response.status,
-        _response_details(raw_response),
+        "incomplete" if response.status == "unknown" else response.status,
+        error_details,
+        response=response,
+        reason="missing_terminal_response" if response.status == "unknown" else reason or response.status,
     )
+
+
+def _require_chat_completion(response: ModelResponse, raw_calls: Sequence[Any]) -> None:
+    finish = response.metadata.finish_reason if response.metadata else None
+    if response.metadata is not None and response.metadata.response_status in {"failed", "incomplete", "cancelled"}:
+        status = response.metadata.response_status
+        raise ProviderResponseError(status, response=response, reason=status)
+    if finish in {"stop", "tool_calls"} or (finish == "content_filter" and response.refusal.strip()):
+        return
+    reason = (
+        "max_output_tokens" if finish == "length" else
+        "missing_finish_reason" if finish is None else
+        "content_filter" if finish == "content_filter" else "invalid_finish_reason"
+    )
+    status = "incomplete" if finish in (None, "length") else "failed"
+    raise ProviderResponseError(
+        status, {
+            "protocol": "chat_completions", "finish_reason": finish, "reason": reason,
+            "tool_calls": _raw_tool_call_parts(raw_calls),
+        },
+        response=replace(response, status=status), reason=reason,
+    )
+
+
+def _raw_tool_call_parts(raw_calls: Sequence[Any]) -> list[dict[str, Any]]:
+    return [
+        call if isinstance(call, dict) else {
+            "id": getattr(call, "id", None) or "",
+            "name": getattr(getattr(call, "function", None), "name", None) or "",
+            "arguments": getattr(getattr(call, "function", None), "arguments", None) or "{}",
+        }
+        for call in raw_calls
+    ]
+
+
+def _with_tool_calls(response: ModelResponse, raw_calls: Sequence[Any]) -> ModelResponse:
+    parts = _raw_tool_call_parts(raw_calls)
+    try:
+        calls = tuple(_convert_streamed_tool_call(part) for part in parts)
+        ids = [call.id for call in calls]
+        if any(not call.id.strip() or not call.name.strip() for call in calls) or len(ids) != len(set(ids)):
+            raise ValueError("Model tool calls require nonempty names and unique ids.")
+    except (TypeError, ValueError) as exc:
+        raise ProviderResponseError(
+            "failed", {
+                "protocol": response.metadata.protocol if response.metadata else None,
+                "reason": "invalid_tool_call", "message": str(exc), "tool_calls": parts,
+            },
+            response=replace(response, status="failed"), reason="invalid_tool_call",
+        ) from exc
+    return replace(response, tool_calls=calls)
 
 
 def _response_details(value: Any) -> Any:
     if value is None:
         return None
+    if getattr(value, "type", None) == "error":
+        model_dump = getattr(value, "model_dump", None)
+        return model_dump(mode="json") if callable(model_dump) else vars(value)
     for name in ("error", "incomplete_details"):
         details = getattr(value, name, None)
         if details is None:
             continue
         model_dump = getattr(details, "model_dump", None)
-        return model_dump(mode="json") if callable(model_dump) else details
+        if callable(model_dump):
+            return model_dump(mode="json")
+        return vars(details) if hasattr(details, "__dict__") else details
     return None
 
 
@@ -1312,15 +1476,9 @@ def _parse_tool_arguments(raw_arguments: str | None) -> dict[str, Any]:
     return arguments
 
 
-def _convert_tool_call(tool_call: Any) -> ToolCall:
-    return ToolCall(
-        id=str(tool_call.id),
-        name=str(tool_call.function.name),
-        arguments=_parse_tool_arguments(tool_call.function.arguments),
-    )
-
-
 def _convert_streamed_tool_call(tool_call: dict[str, str]) -> ToolCall:
+    if not isinstance(tool_call["id"], str) or not isinstance(tool_call["name"], str):
+        raise ValueError("Model tool-call ids and names must be strings.")
     return ToolCall(
         id=tool_call["id"],
         name=tool_call["name"],
@@ -1367,25 +1525,18 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
 def _model_token_usage(value: Any) -> ModelTokenUsage | None:
     if value is None:
         return None
-    input_tokens = int(
-        getattr(value, "prompt_tokens", None)
-        or getattr(value, "input_tokens", None)
-        or 0
-    )
-    output_tokens = int(
-        getattr(value, "completion_tokens", None)
-        or getattr(value, "output_tokens", None)
-        or 0
-    )
+    input_tokens = getattr(value, "prompt_tokens", None)
+    if input_tokens is None:
+        input_tokens = getattr(value, "input_tokens", None)
+    output_tokens = getattr(value, "completion_tokens", None)
+    if output_tokens is None:
+        output_tokens = getattr(value, "output_tokens", None)
     details = (
         getattr(value, "completion_tokens_details", None)
         or getattr(value, "output_tokens_details", None)
     )
-    reasoning_tokens = int(getattr(details, "reasoning_tokens", None) or 0)
-    total_tokens = int(
-        getattr(value, "total_tokens", None)
-        or input_tokens + output_tokens
-    )
+    reasoning_tokens = getattr(details, "reasoning_tokens", None)
+    total_tokens = getattr(value, "total_tokens", None)
     return ModelTokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -1459,4 +1610,8 @@ __all__ = [
     "OpenAICompatibleProvider",
     "Provider",
     "ProviderCapabilityWarning",
+    "ProviderCapabilityError",
+    "ProviderResponseError",
+    "ProviderRequestError",
+    "ProviderTokenCountError",
 ]

@@ -117,6 +117,7 @@ def model_response_from_chat(response: ChatResponse) -> ModelResponse:
         tool_calls=tuple(response.tool_calls),
         usage=response.usage,
         metadata=response.metadata,
+        status=response.status,
     )
 
 
@@ -128,6 +129,7 @@ def chat_response_from_model(response: ModelResponse) -> ChatResponse:
         tool_calls=list(response.tool_calls),
         usage=response.usage,
         metadata=response.metadata,
+        status=response.status,
     )
 
 

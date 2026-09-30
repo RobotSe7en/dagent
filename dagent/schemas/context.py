@@ -86,6 +86,7 @@ class ContextUsage(BaseModel):
     server_max_model_len: int | None = Field(default=None, ge=1)
     model_context_window_tokens: int | None = Field(default=None, ge=1)
     configured_context_limit: int | None = Field(default=None, ge=1)
+    context_window_source: Literal["configured", "server", "model", "fallback"] | None = None
     reasoning_replay_mode: ReasoningReplayMode = "active_run"
     # These are context-projection statistics, not final HTTP serialization counts.
     replayed_reasoning_items: int = Field(default=0, ge=0)
@@ -102,15 +103,15 @@ class ModelTokenUsage(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
-    reasoning_tokens: int = Field(default=0, ge=0)
-    total_tokens: int = Field(default=0, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def validate_total(self) -> "ModelTokenUsage":
-        minimum = self.input_tokens + self.output_tokens
-        if self.total_tokens < minimum:
+        minimum = (self.input_tokens or 0) + (self.output_tokens or 0)
+        if self.total_tokens is not None and self.total_tokens < minimum:
             raise ValueError("total_tokens cannot be less than input_tokens + output_tokens.")
         return self
 
@@ -133,6 +134,18 @@ class RequestReasoning(BaseModel):
     omission_reasons: tuple[ReasoningOmissionReason, ...] = ()
 
 
+class ModelCallAttempt(BaseModel):
+    """One model request attempt, including failures before a response exists."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    attempt: int = Field(ge=1)
+    elapsed_seconds: float = Field(ge=0)
+    exception_type: str | None = None
+    http_status: int | None = None
+    retry_delay_seconds: float | None = Field(default=None, ge=0)
+
+
 class ModelCallMetadata(BaseModel):
     """Resolved protocol and reasoning controls for one provider call."""
 
@@ -153,6 +166,10 @@ class ModelCallMetadata(BaseModel):
     fallback_reason: str | None = None
     # None means unobserved (including old persisted records), never zero sent.
     request_reasoning: RequestReasoning | None = None
+    # Actual server values. None means unknown, never inferred success.
+    finish_reason: str | None = None
+    response_status: str | None = None
+    attempts: tuple[ModelCallAttempt, ...] = ()
 
 
 class ContextWindowExceeded(RuntimeError):
@@ -168,6 +185,7 @@ __all__ = [
     "ContextUsage",
     "ContextWindowExceeded",
     "ModelCallMetadata",
+    "ModelCallAttempt",
     "ModelTokenUsage",
     "ReasoningEffort",
     "ReasoningReplayMode",

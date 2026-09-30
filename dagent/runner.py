@@ -2431,6 +2431,7 @@ def _assemble_runtime(
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
             context_window_tokens=resolved_context_window,
+            server_max_model_len=getattr(provider, "server_max_model_len", None),
             model_context_window_tokens=getattr(
                 provider, "model_context_window_tokens", None,
             ),
@@ -2464,6 +2465,7 @@ def _assemble_runtime(
         result_storage_policy=resolved_result_storage_policy,
         context_assembler=ContextAssembler(
             context_window_tokens=resolved_context_window,
+            server_max_model_len=getattr(provider, "server_max_model_len", None),
             model_context_window_tokens=getattr(
                 provider, "model_context_window_tokens", None,
             ),

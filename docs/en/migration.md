@@ -7,6 +7,43 @@ that may require action when upgrading.
 
 The current package version is `0.9.13`.
 
+## Unreleased
+
+### Model completion and token diagnostics
+
+- Tool-agent runs now fail explicitly on reasoning-only or empty final model
+  turns. `RunResult.error` exposes the typed trace error and stable code;
+  `output_text` stays empty. Existing tool results and the last model response
+  remain in conversation/trace. Ordinary tool errors still allow the model to
+  issue a new valid call. Failure does not automatically rerun tools or the run.
+- Built-in providers require terminal protocol information for both streaming
+  and non-streaming responses. Missing Chat `finish_reason`, missing Responses
+  completion/status, output exhaustion, and explicit failures raise
+  `ProviderResponseError` with a partial `response` and `reason`. Invalid tool
+  JSON now uses that typed error instead of `ValueError`. ToolAgent converts
+  these into failed results and bypasses task validation retries.
+- Public `ModelCallAttempt` records and actual termination fields are included
+  in `ModelCallMetadata`. Transport/HTTP failures now raise
+  `dagent.providers.ProviderRequestError` with `cause`, `metadata`, and any
+  partial response. Runner retries transient requests using its existing policy;
+  OpenAI client automatic retries are disabled, including for injected clients.
+- Invalid `/tokenize` data uses labelled heuristic counting in `auto` and raises
+  `ProviderTokenCountError` in explicit `vllm`. Context-window provenance
+  distinguishes configured, server, model, and fallback values. A fallback
+  131,072-token budget is not evidence of server capacity.
+- **Migration:** check `result.status` and `result.error` before showing output;
+  return valid termination fields from custom HTTP endpoints/test doubles.
+  Catch the typed provider errors rather than raw OpenAI exceptions or invalid
+  tool JSON `ValueError`. `ModelTokenUsage` fields are now nullable: handle `None`
+  as unknown instead of assuming missing usage is zero. Actual zero stays zero;
+  absent totals are no longer inferred. New audit fields are additive; existing
+  records remain readable without schema conversion. Strict hosts accepting
+  serialized metadata must allow the new fields and nullable usage.
+- Regression coverage includes tool-error recovery, inert reasoning call text,
+  refusals, partial/unterminated streams, retry diagnostics, and invalid counts.
+  See [model contracts](model-context-and-reasoning.md) and the offline
+  [failure example](../../examples/model_failure.py). No package version is bumped.
+
 ## 0.9.13
 
 ### Mutable uploaded files

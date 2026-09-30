@@ -15,6 +15,7 @@ credentials.
 | `deepseek_replay.py` | Opt-in, bounded official DeepSeek tool-replay acceptance using synthetic data. | [Model context and reasoning](../docs/en/model-context-and-reasoning.md#deepseek-chat-tool-replay) |
 | `tool_result_recovery.py` | Recover a saved report, distinguish received/displayed file windows and cursors, page through searches, and retain shell logs offline. | [Tool result recovery](../docs/en/tool-result-recovery.md) |
 | `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/en/agents.md), [Capabilities](../docs/en/capabilities.md) |
+| `model_failure.py` | Inspect retained tool errors and an inert reasoning-only final response. | [Model contracts](../docs/en/model-context-and-reasoning.md), [Results](../docs/en/results-streaming-review.md) |
 | `agent_delegation.py` | Register a leaf subagent and expose it to a top-level `ToolAgent`. | [Agents](../docs/en/agents.md) |
 | `auto_agent.py` | Let the runtime choose direct tool use or dynamic DAG execution. | [Agents](../docs/en/agents.md) |
 | `dynamic_dag_agent.py` | Run a `DagAgent` that plans, executes a tool node, and returns a final answer. | [Agents](../docs/en/agents.md), [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
@@ -34,6 +35,7 @@ credentials.
 
 ```bash
 uv run python -m examples.tool_agent
+uv run python -m examples.model_failure
 uv run python -m examples.editable_uploads
 uv run python -m examples.agent_delegation
 uv run python -m examples.auto_agent

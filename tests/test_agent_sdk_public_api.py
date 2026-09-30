@@ -419,6 +419,11 @@ def test_runner_stream_content_deltas_match_output_text(tmp_path) -> None:
         "content": "hello world",
         "reasoning": "checking",
         "refusal": "",
+        "tool_calls": [],
+        "usage": None,
+        "model_call": None,
+        "status": "completed",
+        "provider_details": None,
     }
 
 
