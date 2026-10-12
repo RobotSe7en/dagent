@@ -86,6 +86,23 @@ store = dagent.SkillStore(
 )
 ```
 
+ZIP packages are installed through the same API:
+
+```python
+from pathlib import Path
+
+installed = store.install(Path("terse.zip").read_bytes(), filename="terse.zip")
+```
+
+`SKILL.md` may be at the archive root or inside a chain of enclosing directories,
+such as `export/terse/SKILL.md`. Each enclosing level must contain only the next
+directory; sibling files or multiple skill directories are rejected rather than
+silently discarded or selected. Installation removes these wrappers and preserves
+all files relative to the skill's `SKILL.md`. Package metadata comes from its
+frontmatter; name, description, and category overrides apply only to Markdown
+installs. Unsafe paths, symlinks, duplicate paths, and package size/file limits
+remain checked before extraction.
+
 ## Skill Files
 
 Skills can link files under checked relative paths such as:

@@ -592,16 +592,16 @@ def _skill_package_members(archive: ZipFile) -> list[tuple[Any, Path]]:
         raw_paths.append((member, path))
     if not raw_paths:
         raise SkillStoreError("Skill package is empty.")
-    if any(path.as_posix() == "SKILL.md" for _member, path in raw_paths):
-        members = raw_paths
-    else:
-        roots = {path.parts[0] for _member, path in raw_paths}
-        if len(roots) != 1:
-            raise SkillStoreError("Skill package must contain SKILL.md at the root or inside one top-level directory.")
+    members = raw_paths
+    while not any(path.as_posix() == "SKILL.md" for _member, path in members):
+        roots = {path.parts[0] for _member, path in members}
+        if len(roots) != 1 or any(len(path.parts) < 2 for _member, path in members):
+            raise SkillStoreError(
+                "Skill package must contain SKILL.md at the root or inside nested single-directory wrappers."
+            )
         members = [
             (member, Path(*path.parts[1:]))
-            for member, path in raw_paths
-            if len(path.parts) > 1
+            for member, path in members
         ]
     seen: set[str] = set()
     normalized: list[tuple[Any, Path]] = []

@@ -187,22 +187,50 @@ def test_skill_store_installs_markdown_skill(tmp_path) -> None:
     assert store.view("writing/draft").content.startswith("# Draft Skill")
 
 
-def test_skill_store_installs_zip_package_with_linked_files(tmp_path) -> None:
+@pytest.mark.parametrize("prefix", ["", "bundle/", "outer/bundle/", "outer/middle/bundle/"])
+def test_skill_store_installs_zip_package_with_linked_files(tmp_path, prefix) -> None:
     managed_root = tmp_path / "managed"
     store = SkillStore([managed_root], managed_root=managed_root)
     buffer = io.BytesIO()
     with ZipFile(buffer, "w") as archive:
         archive.writestr(
-            "bundle/SKILL.md",
+            f"{prefix}SKILL.md",
             "---\nname: summarize\ndescription: Summarize with helper.\ncategory: writing\n---\nUse helper.",
         )
-        archive.writestr("bundle/scripts/run.py", "print('ok')\n")
+        archive.writestr(f"{prefix}scripts/run.py", "print('ok')\n")
 
     view = store.install(buffer.getvalue(), filename="bundle.zip")
     script = store.view("writing/summarize", file_path="scripts/run.py")
 
     assert view.linked_files == {"scripts": ["scripts/run.py"]}
     assert script.content == "print('ok')\n"
+    assert sorted(path.relative_to(view.skill_dir).as_posix() for path in view.skill_dir.rglob("*") if path.is_file()) == ["SKILL.md", "scripts/run.py"]
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        {"outer/bundle/SKILL.md": "Body.", "other/SKILL.md": "Other skill."},
+        {"outer/bundle/SKILL.md": "Body.", "outer/README.md": "Outside the skill."},
+        {"outer/bundle/README.md": "Missing SKILL.md."},
+        {"outer/bundle/SKILL.md": "Body.", "outer/bundle/../../escape.txt": "Unsafe."},
+        {"outer/bundle/SKILL.md": "Body.", "outer/bundle/scripts/run.py": "one", "outer/bundle/scripts/./run.py": "two"},
+    ],
+)
+def test_skill_store_rejects_unsafe_or_ambiguous_nested_packages_without_installing(tmp_path, members) -> None:
+    managed_root = tmp_path / "managed"
+    store = SkillStore([managed_root], managed_root=managed_root)
+    buffer = io.BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        for path, content in members.items():
+            archive.writestr(path, content)
+
+    with pytest.raises(SkillStoreError):
+        store.install(buffer.getvalue(), filename="bundle.zip")
+
+    assert store.list() == []
+    assert not (tmp_path / "escape.txt").exists()
+    assert not managed_root.exists() or list(managed_root.iterdir()) == []
 
 
 def test_skill_store_deletes_only_managed_skills(tmp_path) -> None:
