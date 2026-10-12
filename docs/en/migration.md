@@ -5,19 +5,45 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.15`.
+The current package version is `0.9.16`.
 
-## Unreleased
+## 0.9.16
+
+### ZIP skill package wrappers
+
+- `SkillStore.install()` accepts `SKILL.md` at the archive root or inside a chain
+  of enclosing directories, such as `export/terse/SKILL.md`. Installation removes
+  these wrappers and preserves all files relative to the skill's `SKILL.md`,
+  including linked references, templates, assets, and scripts.
+- Each enclosing level must contain only the next directory. Sibling files
+  outside the skill, multiple skill directories, and packages missing `SKILL.md`
+  are rejected. Unsafe paths, symlinks, duplicate paths, and existing package
+  size/file limits remain checked before extraction.
+- Wrapper normalization computes the shared directory prefix once and trims each
+  path once, removing quadratic work for deeply nested archive paths.
 
 ### Skill package directory depth
 
-ZIP skill installs now reject archive paths containing more than 10 directories,
-counted before wrapper removal. The limit includes both enclosing wrappers and
+**Behavior change:** ZIP skill installs now reject archive paths containing more
+than 10 directories, counted before wrapper removal. The limit includes both enclosing wrappers and
 the skill's internal directories, and applies to explicit directory entries too.
 Packages exceeding the limit previously had no explicit depth restriction.
 Remove unnecessary wrappers or flatten internal directories, update linked paths
 in `SKILL.md`, and repackage before installing. Existing installed skills remain
 readable. See [Skills](skills.md) for package limits and examples.
+
+### Release verification and upgrade
+
+Install with `pip install --upgrade dagent-ai==0.9.16`. No public signatures,
+request shapes, capability ids, configuration fields, or persisted schema versions
+change; no stored-record migration is needed. Apply the archive repackaging
+guidance above when an install exceeds the new depth limit.
+
+- Verification: 1,407 Python/MCP tests passed, the offline runtime registration
+  and skills example succeeded, wheel and source distributions built
+  successfully, and package metadata checks and `git diff --check` passed.
+- Three environment-dependent tests were skipped: two opt-in live MiniMax
+  tests and one test requiring a running Docker daemon.
 
 ## 0.9.15
 
