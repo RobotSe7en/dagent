@@ -8,8 +8,10 @@ Run from the repository root:
 from __future__ import annotations
 
 import asyncio
+import io
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zipfile import ZipFile
 
 import dagent
 from dagent.providers import ChatResponse, MockProvider, ToolCall
@@ -80,10 +82,20 @@ async def main() -> None:
             description="Draft with direct language.",
             category="writing",
         )
+        package = io.BytesIO()
+        # Count wrappers and internal directories together: at most 10 levels.
+        with ZipFile(package, "w") as archive:
+            archive.writestr(
+                "export/reference-guide/SKILL.md",
+                "---\nname: reference-guide\ndescription: Consult the style guide.\n---\nRead references/style.md.",
+            )
+            archive.writestr("export/reference-guide/references/style.md", "Use direct language.")
+        installed_package = store.install(package.getvalue(), filename="reference-guide.zip")
 
         print(result.output_text)
         print(runner.skill_store.view("terse").name)
         print(installed.skill.qualified_name)
+        print(installed_package.linked_files)
         runner.close()
 
 

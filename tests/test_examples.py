@@ -34,7 +34,12 @@ def test_runtime_registration_example_uses_derived_tool_function_name(capsys) ->
 
     lines = capsys.readouterr().out.strip().splitlines()
 
-    assert lines == ["One sentence", "terse", "writing/drafting"]
+    assert lines == [
+        "One sentence",
+        "terse",
+        "writing/drafting",
+        "{'references': ['references/style.md']}",
+    ]
 
 
 def test_dynamic_dag_builder_example_runs_restricted_frontend(capsys) -> None:

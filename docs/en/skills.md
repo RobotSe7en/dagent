@@ -103,6 +103,14 @@ frontmatter; name, description, and category overrides apply only to Markdown
 installs. Unsafe paths, symlinks, duplicate paths, and package size/file limits
 remain checked before extraction.
 
+ZIP uploads are limited to 10 MiB, 256 files, and 1 MiB per file. Every archive
+path may contain at most 10 directories, including enclosing wrappers and
+directories inside the skill. The filename does not count as a directory;
+`export/terse/scripts/run.py` has a depth of 3. Explicit directory entries obey
+the same depth limit. Depth is checked before removing wrappers or extracting
+files; deeper packages raise `SkillStoreError` (HTTP 400 through the local API).
+Repackage deeper archives with fewer wrappers or a flatter internal layout.
+
 ## Skill Files
 
 Skills can link files under checked relative paths such as:

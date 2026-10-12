@@ -208,6 +208,54 @@ def test_skill_store_installs_zip_package_with_linked_files(tmp_path, prefix) ->
 
 
 @pytest.mark.parametrize(
+    "prefix, file_path",
+    [
+        ("d/" * 10, "guide.md"),
+        ("", "references/" + "d/" * 9 + "guide.md"),
+        ("d/" * 4, "references/" + "d/" * 5 + "guide.md"),
+    ],
+)
+def test_skill_store_installs_zip_paths_at_directory_depth_limit(tmp_path, prefix, file_path) -> None:
+    managed_root = tmp_path / "managed"
+    store = SkillStore([managed_root], managed_root=managed_root)
+    buffer = io.BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr(f"{prefix}SKILL.md", "---\nname: depth-limit\n---\nBody.")
+        archive.writestr(f"{prefix}{file_path}", "Guide.")
+        archive.writestr("d/" * 10, "")
+
+    view = store.install(buffer.getvalue(), filename="bundle.zip")
+
+    assert store.view("depth-limit", file_path=file_path).content == "Guide."
+    assert sorted(path.relative_to(view.skill_dir).as_posix() for path in view.skill_dir.rglob("*") if path.is_file()) == ["SKILL.md", file_path]
+
+
+@pytest.mark.parametrize(
+    "deep_path",
+    [
+        "d/" * 11 + "SKILL.md",
+        "d/" * 10 + "scripts/run.py",
+        "references/" + "d/" * 10 + "guide.md",
+        "d\\" * 11 + "guide.md",
+        "d/" * 11,
+    ],
+)
+def test_skill_store_rejects_zip_paths_above_directory_depth_limit(tmp_path, deep_path) -> None:
+    managed_root = tmp_path / "managed"
+    store = SkillStore([managed_root], managed_root=managed_root)
+    buffer = io.BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr("SKILL.md", "---\nname: too-deep\n---\nBody.")
+        archive.writestr(deep_path, "Too deep.")
+
+    with pytest.raises(SkillStoreError, match="at most 10 directories"):
+        store.install(buffer.getvalue(), filename="bundle.zip")
+
+    assert store.list() == []
+    assert not managed_root.exists()
+
+
+@pytest.mark.parametrize(
     "members",
     [
         {"outer/bundle/SKILL.md": "Body.", "other/SKILL.md": "Other skill."},
