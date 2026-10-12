@@ -77,6 +77,27 @@ store = dagent.SkillStore(
 )
 ```
 
+ZIP 技能包使用同一个 API 安装：
+
+```python
+from pathlib import Path
+
+installed = store.install(Path("terse.zip").read_bytes(), filename="terse.zip")
+```
+
+`SKILL.md` 可以位于压缩包根目录，也可以被连续的外层文件夹包裹，例如
+`export/terse/SKILL.md`。每层外包目录只能包含下一层文件夹；如果出现额外同级文件
+或多个技能目录，会明确拒绝，不会静默丢弃文件或猜选技能。安装时移除外包目录，
+保留相对于技能 `SKILL.md` 的全部文件。包内元数据来自 frontmatter；名称、描述和
+分类覆盖仅用于 Markdown 安装。解压前仍会校验危险路径、符号链接、重复路径，
+以及包大小和文件数限制。
+
+ZIP 上传限制为 10 MiB、256 个文件，单文件最大 1 MiB。压缩包中的每条路径最多包含
+10 层目录，外包目录和技能内部目录一起计数，文件名不计入目录层数；例如
+`export/terse/scripts/run.py` 的深度为 3。显式目录条目同样遵守深度限制。
+移除外包目录和解压文件前检查深度，超过限制抛出 `SkillStoreError`，本地 API 返回
+HTTP 400。对于过深的压缩包，请减少外包目录或调整内部目录结构后重新打包。
+
 ## Skill Files
 
 Skills 可以链接 checked relative paths 下的文件，例如：

@@ -20,6 +20,7 @@ from dagent.schemas import CapabilityDefinition, CapabilityInvocation, Capabilit
 MAX_SKILL_PACKAGE_BYTES = 10 * 1024 * 1024
 MAX_SKILL_PACKAGE_FILES = 256
 MAX_SKILL_PACKAGE_FILE_BYTES = 1024 * 1024
+MAX_SKILL_PACKAGE_DIRECTORY_DEPTH = 10
 
 
 class SkillStoreError(ValueError):
@@ -580,34 +581,41 @@ def _skill_package_members(archive: ZipFile) -> list[tuple[Any, Path]]:
     if len(files) > MAX_SKILL_PACKAGE_FILES:
         raise SkillStoreError("Skill package contains too many files.")
     raw_paths: list[tuple[Any, Path]] = []
-    for member in files:
+    for member in archive.infolist():
+        text_path = member.filename.replace("\\", "/")
+        path = Path(text_path)
+        directory_depth = len(path.parts) if member.is_dir() else len(path.parts) - 1
+        if directory_depth > MAX_SKILL_PACKAGE_DIRECTORY_DEPTH:
+            raise SkillStoreError(
+                f"Skill package paths may contain at most {MAX_SKILL_PACKAGE_DIRECTORY_DEPTH} directories: {member.filename}"
+            )
+        if member.is_dir():
+            continue
         if member.file_size > MAX_SKILL_PACKAGE_FILE_BYTES:
             raise SkillStoreError(f"Skill package file is too large: {member.filename}")
         if (member.external_attr >> 16) & 0o170000 == 0o120000:
             raise SkillStoreError(f"Skill package contains a symlink: {member.filename}")
-        text_path = member.filename.replace("\\", "/")
-        path = Path(text_path)
         if path.is_absolute() or not path.parts or ".." in path.parts:
             raise SkillStoreError(f"Skill package contains an unsafe path: {member.filename}")
         raw_paths.append((member, path))
     if not raw_paths:
         raise SkillStoreError("Skill package is empty.")
-    if any(path.as_posix() == "SKILL.md" for _member, path in raw_paths):
-        members = raw_paths
-    else:
-        roots = {path.parts[0] for _member, path in raw_paths}
-        if len(roots) != 1:
-            raise SkillStoreError("Skill package must contain SKILL.md at the root or inside one top-level directory.")
-        members = [
-            (member, Path(*path.parts[1:]))
-            for member, path in raw_paths
-            if len(path.parts) > 1
-        ]
+    wrapper_depth = 0
+    for directories in zip(*(path.parts[:-1] for _member, path in raw_paths)):
+        if len(set(directories)) != 1:
+            break
+        wrapper_depth += 1
+    members = [
+        (member, Path(*path.parts[wrapper_depth:]))
+        for member, path in raw_paths
+    ]
+    if not any(path.as_posix() == "SKILL.md" for _member, path in members):
+        raise SkillStoreError(
+            "Skill package must contain SKILL.md at the root or inside nested single-directory wrappers."
+        )
     seen: set[str] = set()
     normalized: list[tuple[Any, Path]] = []
     for member, path in members:
-        if path.is_absolute() or not path.parts or ".." in path.parts:
-            raise SkillStoreError(f"Skill package contains an unsafe path: {member.filename}")
         key = path.as_posix()
         if key in seen:
             raise SkillStoreError(f"Skill package contains duplicate path: {key}")

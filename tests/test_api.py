@@ -294,6 +294,29 @@ def test_api_installs_zip_skill_package(monkeypatch, tmp_path) -> None:
     assert script.json()["content"] == "print('ok')\n"
 
 
+def test_api_rejects_skill_packages_above_directory_depth_limit(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    managed_root = tmp_path / "managed-skills"
+    monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
+    buffer = io.BytesIO()
+    prefix = "d/" * 11
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr(f"{prefix}SKILL.md", "---\nname: too-deep\n---\nBody.")
+        for filename in ("references/style.md", "scripts/run.py", "assets/data.txt"):
+            archive.writestr(f"{prefix}{filename}", "Helper.")
+    client = TestClient(app)
+
+    response = client.post(
+        "/skills/install",
+        files={"file": ("bundle.zip", buffer.getvalue(), "application/zip")},
+    )
+
+    assert response.status_code == 400
+    assert "at most 10 directories" in response.json()["detail"]
+    assert not managed_root.exists()
+
+
 def test_api_memory_mcp_server_reload_updates_runtime_catalog(monkeypatch) -> None:
     class FakeMCPProvider:
         def __init__(self, servers, *, manager=None):

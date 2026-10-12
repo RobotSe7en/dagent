@@ -7,6 +7,18 @@ that may require action when upgrading.
 
 The current package version is `0.9.15`.
 
+## Unreleased
+
+### Skill package directory depth
+
+ZIP skill installs now reject archive paths containing more than 10 directories,
+counted before wrapper removal. The limit includes both enclosing wrappers and
+the skill's internal directories, and applies to explicit directory entries too.
+Packages exceeding the limit previously had no explicit depth restriction.
+Remove unnecessary wrappers or flatten internal directories, update linked paths
+in `SKILL.md`, and repackage before installing. Existing installed skills remain
+readable. See [Skills](skills.md) for package limits and examples.
+
 ## 0.9.15
 
 ### Context budgets and result recovery
