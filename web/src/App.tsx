@@ -11843,7 +11843,7 @@ function AgentNodeScopeEditor({
 }) {
   const isCustom = isCustomAgentScope(config);
   const availableCapabilities = capabilities
-    .filter((capability) => capability.enabled && capability.kind !== 'agent' && capability.kind !== 'skill');
+    .filter((capability) => capability.enabled && capability.kind !== 'agent');
   const availableCapabilityIds = availableCapabilities.map((capability) => capability.id);
   const availableSkillNames = skills.map(skillLookupName);
   const selectedCapabilityIds = config?.capabilities ?? [];
@@ -14842,7 +14842,7 @@ function AgentPresetManagementPane({
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const editableCapabilities = capabilities.filter(
-    (capability) => capability.enabled && capability.kind !== 'agent' && capability.kind !== 'skill',
+    (capability) => capability.enabled && capability.kind !== 'agent',
   );
   const capabilityGroups = capabilityOptionGroups(editableCapabilities);
   const selectedCapabilities = new Set(draft.capabilities ?? []);

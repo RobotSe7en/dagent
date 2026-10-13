@@ -36,6 +36,10 @@ Preset JSON 使用 `ToolAgent` 字段名：`name`、`profile`、`capabilities`�
 因此 `agents` 必须为空，`review` 必须是 `"fast"`。本地 API 会先校验 preset，再写入
 workspace；`capability_ids` 这类旧字段会被拒绝，不会自动转换。
 
+对于 preset 和 inline DAG agent 范围，需要技能访问工具时，应在 `capabilities` 中显式加入，
+例如 `["skill.list", "skill.view"]`。Web UI 会将它们与其他能力一起列出；在 `skills` 中选择
+技能名称不会自动启用这些工具。
+
 ## ToolAgent
 
 ```python
@@ -58,7 +62,7 @@ async def main():
     )
     agent = dagent.ToolAgent(
         profile="conversation",
-        capabilities=["tool.echo"],
+        capabilities=["tool.echo", "skill.list", "skill.view"],
         skills=["writing/terse"],
         max_steps=8,
         review="fast",
@@ -99,7 +103,7 @@ dynamic DAG planning。tool 分支使用 `profile`（默认 `conversation`），
 agent = dagent.AutoAgent(
     profile="conversation",
     planner_profile="dag_agent",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["research/briefing"],
     max_steps=8,
     review="fast",
@@ -144,7 +148,7 @@ artifact、reference、output、condition node、branch edge 和条件边 gate�
 ```python
 agent = dagent.DagAgent(
     planner_profile="dag_agent",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["research/briefing"],
     max_steps=6,
     review="careful",
@@ -187,7 +191,7 @@ MCP capabilities 和 skills，但不能再调用另一个子 agent。已注册�
 helper = dagent.ToolAgent(
     profile="conversation",
     name="helper",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["research/briefing"],
     max_steps=4,
     description="Research helper.",

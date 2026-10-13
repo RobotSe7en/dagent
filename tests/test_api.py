@@ -848,7 +848,7 @@ def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path
         json=_message_request(
             "hello",
             target="tool",
-            capability_ids=["tool.echo"],
+            capability_ids=["tool.echo", "skill.list", "skill.view"],
             skills=["brief"],
         ),
     )
@@ -1807,7 +1807,8 @@ def test_api_dag_design_profile_is_not_an_agent_capability() -> None:
         app_module._resolve_agent_profile("dag_design")
 
 
-def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("capability_scope", [[], ["skill.list", "skill.view"]])
+def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path, capability_scope: list[str]) -> None:
     state.close_runner()
     agent_root = tmp_path / "agents"
     monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
@@ -1820,7 +1821,7 @@ def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path)
             "name": "helper",
             "profile": "conversation",
             "description": "Summarizes text.",
-            "capabilities": [],
+            "capabilities": capability_scope,
             "skills": [],
             "agents": [],
             "review": "fast",
@@ -1834,9 +1835,10 @@ def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path)
     assert created.json()["agent"]["id"] == "agent.helper"
     assert created.json()["agent"]["profile"] == "conversation"
     assert created.json()["agent"]["max_steps"] == 888
-    assert created.json()["agent"]["capabilities"] == []
+    assert created.json()["agent"]["capabilities"] == capability_scope
     assert listed.status_code == 200
     assert [agent["id"] for agent in listed.json()["agents"]] == ["agent.helper"]
+    assert listed.json()["agents"][0]["capabilities"] == capability_scope
     capability_ids = {capability["id"] for capability in capabilities.json()["capabilities"]}
     assert "agent.helper" in capability_ids
     assert deleted.status_code == 200
@@ -2279,10 +2281,7 @@ def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, t
     result = _stream_result(events[-1])
     assert result["output_text"] == "done"
     assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"agent_helper"}
-    assert {tool["function"]["name"] for tool in provider.requests[1]["tools"]} == {
-        "skill_list",
-        "skill_view",
-    }
+    assert provider.requests[1]["tools"] == []
     preset_system_message = provider.requests[1]["messages"][0]["content"]
     assert (
         '["writing/brief","Prefer concise answers."]'
@@ -2742,7 +2741,11 @@ def test_static_dag_runs_managed_profile_agent_node(monkeypatch, tmp_path) -> No
     assert "Read carefully." in state.runner.runtime.provider.requests[0]["messages"][0]["content"]
 
 
-def test_static_dag_agent_node_uses_public_tool_agent_capability_scope(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("capabilities", [
+    ["tool.echo"],
+    ["tool.echo", "skill.list", "skill.view"],
+])
+def test_static_dag_agent_node_uses_public_tool_agent_capability_scope(monkeypatch, tmp_path, capabilities: list[str]) -> None:
     state.close_runner()
     managed_dir = tmp_path / "managed-profiles"
     managed_dir.mkdir()
@@ -2760,7 +2763,7 @@ def test_static_dag_agent_node_uses_public_tool_agent_capability_scope(monkeypat
                 "target": "agent.analyst",
                 "inputs": {"prompt": "Use the allowed tools."},
                 "agent": {
-                    "capabilities": ["tool.echo"],
+                    "capabilities": capabilities,
                     "skills": [],
                 },
             }
@@ -2768,15 +2771,18 @@ def test_static_dag_agent_node_uses_public_tool_agent_capability_scope(monkeypat
         "edges": [],
     }
 
+    validate_response = client.post("/dags/validate", json=spec)
     create_response = client.post("/dags", json=spec)
     run_response = client.post("/dags/scoped_agent_dag/run")
 
+    assert validate_response.status_code == 200
+    assert validate_response.json()["valid"] is True
     assert create_response.status_code == 200
     assert run_response.status_code == 200
     assert [
         tool["function"]["name"]
         for tool in provider.requests[0]["tools"]
-    ] == ["tool_echo"]
+    ] == [capability.replace(".", "_") for capability in capabilities]
 
 
 def test_static_dag_runs_registered_agent_capability_without_profile(tmp_path) -> None:
@@ -2854,9 +2860,10 @@ def test_static_dag_agent_node_rejects_invalid_agent_scope(monkeypatch, tmp_path
     (managed_dir / "analyst.md").write_text("# Analyst\n\nRead carefully.", encoding="utf-8")
     monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    state.runner.add_agent(ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
     client = TestClient(app)
 
-    skill_scope_response = client.post(
+    agent_scope_response = client.post(
         "/dags/validate",
         json={
             "id": "bad_agent_scope",
@@ -2865,7 +2872,7 @@ def test_static_dag_agent_node_rejects_invalid_agent_scope(monkeypatch, tmp_path
                 {
                     "id": "ask",
                     "target": "agent.analyst",
-                    "agent": {"capabilities": ["skill.list"]},
+                    "agent": {"capabilities": ["agent.helper"]},
                 }
             ],
             "edges": [],
@@ -2887,9 +2894,9 @@ def test_static_dag_agent_node_rejects_invalid_agent_scope(monkeypatch, tmp_path
         },
     )
 
-    assert skill_scope_response.status_code == 200
-    assert skill_scope_response.json()["valid"] is False
-    assert "cannot be used in an agent node capability scope" in skill_scope_response.json()["issues"][0]["message"]
+    assert agent_scope_response.status_code == 200
+    assert agent_scope_response.json()["valid"] is False
+    assert "cannot be used in an agent node capability scope" in agent_scope_response.json()["issues"][0]["message"]
     assert non_agent_response.status_code == 400
     assert "does not target an agent capability" in non_agent_response.json()["detail"]
 

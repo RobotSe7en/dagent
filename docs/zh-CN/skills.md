@@ -24,13 +24,19 @@ Agents 可以限制哪些具体 skills 可见：
 ```python
 agent = dagent.ToolAgent(
     profile="conversation",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["writing/terse"],
 )
 ```
 
-使用 `skills=None` 允许所有已配置 skills，`skills=[]` 隐藏 skill tools，
-`skills=[...]` 只暴露指定 skills。
+使用 `skills=None` 允许所有已配置技能，`skills=[]` 不允许访问任何技能，
+`skills=[...]` 只暴露指定技能。这个字段只限制技能目录和可读取内容，不决定工具选择。
+
+`skill.list` 和 `skill.view` 与其他内置工具一样，由 capability 选择和启用状态控制。
+`capabilities=None` 包含全部已启用的内置工具，即使技能目录为空；显式的
+`capabilities=[...]` 只包含列出的工具，需要技能访问工具时应逐个加入。
+`capabilities=[]` 不暴露任何工具。在 `skills=[]` 时，已选择的 `skill.list`
+返回空目录，`skill.view` 拒绝访问任何技能。
 
 ## Prompt 发现与加载
 

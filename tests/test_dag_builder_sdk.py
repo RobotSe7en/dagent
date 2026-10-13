@@ -706,12 +706,12 @@ def test_agent_node_uses_its_own_skill_scope(tmp_path: Path) -> None:
     ])
     researcher = dagent.ToolAgent(
         profile=_profile_root(tmp_path, "researcher"),
-        capabilities=[],
+        capabilities=["skill.list", "skill.view"],
         skills=["research/market"],
     )
     writer = dagent.ToolAgent(
         profile=_profile_root(tmp_path, "writer"),
-        capabilities=[],
+        capabilities=["skill.list", "skill.view"],
         skills=["writing/style"],
     )
     dag = dagent.Dag("agent_skill_flow")

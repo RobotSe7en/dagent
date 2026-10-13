@@ -150,7 +150,6 @@ from dagent.schemas.common import (
 from dagent.state.prompt_builder import PromptSkill
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
-SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
 _DEFAULT_RUNNER_WORKSPACE = Path.home() / ".dagent"
 _DEFAULT_RUNTIME_DIRECTORY = ".runtime"
 _UNSET_MODEL_LIMIT = object()
@@ -2130,7 +2129,6 @@ class Runner:
         skill_ids = self._resolve_skill_ids(requested_skills)
         capability_ids = self._resolve_agent_capability_refs(
             agent.capabilities,
-            skill_ids,
             agents=agent.agents,
         )
         enabled_ids = tuple(
@@ -2147,14 +2145,13 @@ class Runner:
     def _resolve_agent_capability_refs(
         self,
         refs: Iterable[CapabilityRef] | None,
-        skills: Iterable[str] | None,
         *,
         agents: Iterable[ToolAgent | str] | str | None = None,
         register_bindings: bool = True,
     ) -> tuple[str, ...]:
         capability_ids = self._resolve_capability_refs(refs, register_bindings=register_bindings)
         agent_ids = self._resolve_agent_refs(agents)
-        return _apply_skill_capabilities(tuple(dict.fromkeys((*capability_ids, *agent_ids))), skills)
+        return tuple(dict.fromkeys((*capability_ids, *agent_ids)))
 
     def _resolve_capability_refs(
         self,
@@ -2226,7 +2223,6 @@ class Runner:
             return
         capability_ids = self._resolve_agent_capability_refs(
             agent.capabilities,
-            agent.skills,
             register_bindings=False,
         )
         self._ensure_no_agent_capabilities(
@@ -2293,7 +2289,6 @@ class Runner:
             raise ValueError(f"Registered subagent 'agent.{name}' cannot expose subagents.")
         capability_ids = self._resolve_agent_capability_refs(
             agent.capabilities,
-            agent.skills,
             register_bindings=register_bindings,
         )
         self._ensure_no_agent_capabilities(
@@ -2691,17 +2686,6 @@ def _agent_capability_id(ref: str) -> str:
         raise ValueError("agent ids must use the 'agent.<name>' capability id form.")
     name = validate_agent_name(ref.removeprefix("agent."))
     return f"agent.{name}"
-
-
-def _apply_skill_capabilities(
-    capability_ids: tuple[str, ...],
-    skills: Iterable[str] | None,
-) -> tuple[str, ...]:
-    ids = [capability_id for capability_id in capability_ids if capability_id not in SKILL_ACCESSOR_CAPABILITY_IDS]
-    skill_scope = None if skills is None else tuple(skills)
-    if skill_scope is None or skill_scope:
-        ids.extend(SKILL_ACCESSOR_CAPABILITY_IDS)
-    return tuple(dict.fromkeys(ids))
 
 
 def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:

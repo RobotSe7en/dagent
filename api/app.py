@@ -2367,7 +2367,7 @@ def _validated_agent_node_capabilities(capability_ids: list[str]) -> list[str]:
             raise ValueError(f"Capability '{capability_id}' was not found.")
         if not definition.enabled:
             raise ValueError(f"Capability '{capability_id}' is disabled.")
-        if definition.kind in {"agent", "skill"}:
+        if definition.kind == "agent":
             raise ValueError(
                 f"Capability '{capability_id}' cannot be used in an agent node capability scope."
             )
