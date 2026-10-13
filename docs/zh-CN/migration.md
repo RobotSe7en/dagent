@@ -6,6 +6,22 @@
 
 当前包版本是 `0.9.16`。
 
+## 下一版本：独立选择技能访问工具
+
+**行为变更：**`skill.list` 和 `skill.view` 由 agent 的 capability 范围和目录的
+启用状态控制，与 `skills` 独立。省略 capability 范围时包含全部已启用的内置工具，
+即使没有已配置技能；显式范围只包含列出的工具，空范围不暴露任何工具。
+选择技能不再隐式加入这两个工具。
+
+`skills=None`、`skills=[]` 和 `skills=[...]` 只限制可读取内容。空技能范围仍保留
+已选择的访问工具：列表返回空目录，查看拒绝访问。ID、函数名、capability kind 和
+SDK 持久化 schema 均保持不变。
+
+迁移时，请为需要技能访问工具的显式 capability 列表按需加入 `skill.list` 和/或
+`skill.view`，包括注册和内联子 agent。隐藏工具时，从 capability 列表排除它们，
+或调用 `Runner.set_capability_enabled(...)` 关闭；不要再把 `skills=[]` 用作工具开关。
+此变更必须随新的不可变 SDK 版本发布，现有发布标签保持不变。
+
 ## 0.9.16
 
 ### ZIP 技能包外层目录

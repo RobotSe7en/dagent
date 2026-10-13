@@ -117,8 +117,9 @@ runner.add_skill_root("team-skills")
 agent = dagent.ToolAgent(profile="conversation", skills=["writing/terse"])
 ```
 
-使用 `skills=None` 允许所有已配置 skills，`skills=[]` 隐藏 skill tools，
-`skills=[...]` 只暴露指定 skills。
+使用 `skills=None` 允许所有已配置技能，`skills=[]` 不允许任何技能，
+`skills=[...]` 只暴露指定技能。工具选择独立控制：显式指定 `capabilities` 时，
+应按需加入 `skill.list` 和/或 `skill.view`，并检查它们在 Runner 目录中是否已启用。
 
 ## 静态 DAG Validation 失败
 

@@ -7,6 +7,26 @@ that may require action when upgrading.
 
 The current package version is `0.9.16`.
 
+## Next release: independent skill accessor selection
+
+**Breaking behavior change:** `skill.list` and `skill.view` follow the agent's
+capability scope and the catalog's enabled state, independently of `skills`.
+An omitted capability scope includes all enabled built-ins, even if no Skills
+are configured. An explicit scope includes only its listed tools; an empty scope
+exposes none. Selecting a Skill no longer implicitly adds either accessor.
+
+`skills=None`, `skills=[]`, and `skills=[...]` now restrict readable content only.
+An empty skill scope keeps selected accessors callable: listing returns no
+Skills and viewing rejects access. IDs, function names, capability kinds and
+durable SDK schemas remain unchanged.
+
+Migration: add `skill.list` and/or `skill.view` to explicit agent capability
+lists that need them, including registered and inline subagents. To hide these
+tools, exclude them from the capability list or disable them with
+`Runner.set_capability_enabled(...)`; do not use `skills=[]` as a tool switch.
+This change must ship as a new immutable SDK version; existing release tags
+remain unchanged.
+
 ## 0.9.16
 
 ### ZIP skill package wrappers

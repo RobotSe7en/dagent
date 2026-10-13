@@ -58,7 +58,7 @@ async def main():
     )
     agent = dagent.ToolAgent(
         profile="conversation",
-        capabilities=["tool.echo"],
+        capabilities=["tool.echo", "skill.list", "skill.view"],
         skills=["writing/terse"],
         max_steps=8,
         review="fast",
@@ -99,7 +99,7 @@ dynamic DAG planning。tool 分支使用 `profile`（默认 `conversation`），
 agent = dagent.AutoAgent(
     profile="conversation",
     planner_profile="dag_agent",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["research/briefing"],
     max_steps=8,
     review="fast",
@@ -144,7 +144,7 @@ artifact、reference、output、condition node、branch edge 和条件边 gate�
 ```python
 agent = dagent.DagAgent(
     planner_profile="dag_agent",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["research/briefing"],
     max_steps=6,
     review="careful",
@@ -187,7 +187,7 @@ MCP capabilities 和 skills，但不能再调用另一个子 agent。已注册�
 helper = dagent.ToolAgent(
     profile="conversation",
     name="helper",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["research/briefing"],
     max_steps=4,
     description="Research helper.",

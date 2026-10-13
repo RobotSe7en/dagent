@@ -848,7 +848,7 @@ def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path
         json=_message_request(
             "hello",
             target="tool",
-            capability_ids=["tool.echo"],
+            capability_ids=["tool.echo", "skill.list", "skill.view"],
             skills=["brief"],
         ),
     )
@@ -2279,10 +2279,7 @@ def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, t
     result = _stream_result(events[-1])
     assert result["output_text"] == "done"
     assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"agent_helper"}
-    assert {tool["function"]["name"] for tool in provider.requests[1]["tools"]} == {
-        "skill_list",
-        "skill_view",
-    }
+    assert provider.requests[1]["tools"] == []
     preset_system_message = provider.requests[1]["messages"][0]["content"]
     assert (
         '["writing/brief","Prefer concise answers."]'

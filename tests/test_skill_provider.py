@@ -115,6 +115,31 @@ def test_skills_provider_filters_list_and_view_by_execution_context(tmp_path) ->
     assert "not visible" in (blocked_view.error or "")
 
 
+def test_empty_skill_scope_keeps_accessors_callable_but_denies_content(tmp_path) -> None:
+    skill_dir = tmp_path / "skills" / "brief"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: brief\ndescription: Concise answers.\n---\nPrivate instructions.",
+        encoding="utf-8",
+    )
+    catalog = CapabilityCatalog()
+    executor = CapabilityExecutor(catalog)
+    SkillsCapabilityProvider([tmp_path / "skills"]).register_into(catalog)
+    context = CapabilityExecutionContext(task_id="task_1", skills=())
+    listed = run(executor.execute(
+        CapabilityInvocation(capability_id="skill.list", kind="skill"), context=context,
+    ))
+    viewed = run(executor.execute(
+        CapabilityInvocation(capability_id="skill.view", kind="skill", arguments={"name": "brief"}),
+        context=context,
+    ))
+    assert listed.status == "completed"
+    assert json.loads(listed.content)["skills"] == []
+    assert viewed.status == "failed"
+    assert "not visible" in viewed.error
+    assert "Private instructions." not in viewed.content
+
+
 def test_skill_view_rejects_ambiguous_names_and_path_traversal(tmp_path) -> None:
     for category in ("a", "b"):
         skill_dir = tmp_path / "skills" / category / "summarize"

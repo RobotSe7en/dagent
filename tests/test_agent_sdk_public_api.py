@@ -1353,7 +1353,11 @@ def test_runner_agent_skills_inject_scoped_routing_metadata_without_skill_body(t
         ChatResponse(tool_calls=[ToolCall(id="call_1", name="skill_list", arguments={})]),
         ChatResponse(content="done"),
     ])
-    agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=["writing/brief"])
+    agent = dagent.ToolAgent(
+        profile="conversation",
+        capabilities=["skill.list", "skill.view"],
+        skills=["writing/brief"],
+    )
     runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider, skill_roots=[skill_root])
 
     result = run(runner.run(agent, input="list skills"))
@@ -1372,7 +1376,7 @@ def test_runner_agent_skills_inject_scoped_routing_metadata_without_skill_body(t
     assert "market" not in tool_content
 
 
-def test_runner_agent_empty_skills_disables_skill_tools(tmp_path) -> None:
+def test_runner_agent_empty_capabilities_disables_all_tools(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="done")])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=[])
     runner = dagent.Runner(runtime_directory=".runtime", workspace=tmp_path, provider=provider)
@@ -1381,6 +1385,57 @@ def test_runner_agent_empty_skills_disables_skill_tools(tmp_path) -> None:
 
     assert provider.requests[0]["tools"] == []
     assert "## Available Skills" not in provider.requests[0]["messages"][0]["content"]
+
+
+@pytest.mark.parametrize("skills", [None, [], ["brief"]])
+@pytest.mark.parametrize(
+    "capabilities, expected",
+    [
+        (None, {"skill_list", "skill_view"}),
+        ([], set()),
+        (["skill.list"], {"skill_list"}),
+        (["skill.view"], {"skill_view"}),
+        (["skill.list", "skill.view"], {"skill_list", "skill_view"}),
+    ],
+)
+def test_skill_tools_follow_capabilities_independently_of_skills(
+    tmp_path, skills, capabilities, expected,
+) -> None:
+    skill_root = tmp_path / "skills"
+    brief = skill_root / "brief"
+    brief.mkdir(parents=True)
+    (brief / "SKILL.md").write_text(
+        "---\nname: brief\ndescription: Concise answers.\n---\nKeep it short.",
+        encoding="utf-8",
+    )
+    provider = MockProvider([ChatResponse(content="done")])
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        runtime_directory=".runtime",
+        provider=provider,
+        skill_roots=[skill_root],
+    )
+    try:
+        run(runner.run(dagent.ToolAgent(profile="conversation", capabilities=capabilities, skills=skills), input="hello"))
+        names = _tool_names(provider.requests[0])
+        assert names & {"skill_list", "skill_view"} == expected
+        if capabilities is not None:
+            assert names == expected
+    finally:
+        runner.close()
+
+
+def test_disabled_skill_accessor_is_not_reenabled_by_skill_selection(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="done")])
+    runner = dagent.Runner(workspace=tmp_path, runtime_directory=".runtime", provider=provider)
+    try:
+        runner.set_capability_enabled("skill.view", False)
+        run(runner.run(dagent.ToolAgent(profile="conversation", skills=[]), input="hello"))
+        names = _tool_names(provider.requests[0])
+        assert "skill_list" in names
+        assert "skill_view" not in names
+    finally:
+        runner.close()
 
 
 def test_runner_default_skill_scope_injects_all_visible_skill_metadata(tmp_path) -> None:

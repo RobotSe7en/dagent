@@ -66,7 +66,7 @@ async def main():
     )
     agent = dagent.ToolAgent(
         profile="conversation",
-        capabilities=["tool.echo"],
+        capabilities=["tool.echo", "skill.list", "skill.view"],
         skills=["writing/terse"],
         max_steps=8,
         review="fast",
@@ -110,7 +110,7 @@ direct tool use or dynamic DAG planning. The tool branch uses `profile`
 agent = dagent.AutoAgent(
     profile="conversation",
     planner_profile="dag_agent",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["research/briefing"],
     max_steps=8,
     review="fast",
@@ -159,7 +159,7 @@ the review and persistence object.
 ```python
 agent = dagent.DagAgent(
     planner_profile="dag_agent",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["research/briefing"],
     max_steps=6,
     review="careful",
@@ -204,7 +204,7 @@ the top-level agent owns review behavior for the delegated call.
 helper = dagent.ToolAgent(
     profile="conversation",
     name="helper",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["research/briefing"],
     max_steps=4,
     description="Research helper.",

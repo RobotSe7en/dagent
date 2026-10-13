@@ -25,13 +25,21 @@ Agents can restrict which concrete skills are visible:
 ```python
 agent = dagent.ToolAgent(
     profile="conversation",
-    capabilities=["tool.search"],
+    capabilities=["tool.search", "skill.list", "skill.view"],
     skills=["writing/terse"],
 )
 ```
 
-Use `skills=None` to allow all configured skills, `skills=[]` to hide skill
-tools, and `skills=[...]` to expose only named skills.
+Use `skills=None` to allow all configured skills, `skills=[]` to allow no
+skills, and `skills=[...]` to expose only named skills. This restricts the
+skill catalog and readable content; it does not select tools.
+
+`skill.list` and `skill.view` follow the same capability selection and enabled
+state as other built-in tools. `capabilities=None` includes all enabled built-ins,
+even with an empty skill catalog. An explicit `capabilities=[...]` includes only
+those tools, so include each skill accessor you need. `capabilities=[]` exposes
+no tools. With `skills=[]`, a selected `skill.list` returns an empty catalog and
+`skill.view` rejects access to every skill.
 
 ## Prompt Discovery And Loading
 

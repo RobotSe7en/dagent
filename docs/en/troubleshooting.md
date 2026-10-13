@@ -122,8 +122,10 @@ runner.add_skill_root("team-skills")
 agent = dagent.ToolAgent(profile="conversation", skills=["writing/terse"])
 ```
 
-Use `skills=None` to allow all configured skills, `skills=[]` to hide skill
-tools, and `skills=[...]` to expose only named skills.
+Use `skills=None` to allow all configured skills, `skills=[]` to allow none,
+and `skills=[...]` to expose only named skills. Tool selection is independent:
+when `capabilities` is explicit, include `skill.list` and/or `skill.view` as
+needed, and check that each accessor is enabled in the Runner catalog.
 
 ## Static DAG Validation Fails
 
