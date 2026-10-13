@@ -44,6 +44,11 @@ must be `"fast"`. The local API validates the preset before writing it to the
 workspace; old fields such as `capability_ids` are rejected rather than
 converted.
 
+For presets and inline DAG agent scopes, explicitly include skill accessors in
+`capabilities`, for example `["skill.list", "skill.view"]`, when needed. The Web UI
+lists them alongside other capabilities; selecting skill names in `skills` does
+not enable these tools automatically.
+
 ## ToolAgent
 
 ```python

@@ -1610,7 +1610,7 @@ assert.match(appSource, /const confirmCapabilityReview = async[\s\S]*if \(static
   assert.match(orchestrationSource, /function AgentNodeScopeEditor/);
   assert.match(orchestrationSource, /config=\{selectedUserNode\?\.type === 'condition' \? undefined : selectedUserNode\?\.agent\}/);
   assert.match(orchestrationSource, /node\.id === selectedNode\.id[\s\S]*normalizeUserDagNode\(\{ \.\.\.node, agent \}\)/);
-  assert.match(orchestrationSource, /capability\.enabled && capability\.kind !== 'agent' && capability\.kind !== 'skill'/);
+  assert.match(orchestrationSource, /capability\.enabled && capability\.kind !== 'agent'/);
   assert.match(typesSource, /export interface UserDagAgentConfig/);
   assert.match(appSource, /const \[orchestrationMode, setOrchestrationMode\] = useState<OrchestrationMode>\('dynamic'\)/);
   assert.match(appSource, /activeWorkspace === 'orchestration' && orchestrationMode === 'dynamic' \? \([\s\S]*<DynamicOrchestrationWorkspace/);
