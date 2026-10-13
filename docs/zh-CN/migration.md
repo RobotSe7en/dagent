@@ -4,11 +4,13 @@
 
 ## 当前发布线
 
-当前包版本是 `0.9.16`。
+当前包版本是 `0.9.17`。
 
-## 下一版本：独立选择技能访问工具
+## 0.9.17
 
-**行为变更：**`skill.list` 和 `skill.view` 由 agent 的 capability 范围和目录的
+### 独立选择技能访问工具
+
+**不兼容行为变更：**`skill.list` 和 `skill.view` 由 agent 的 capability 范围和目录的
 启用状态控制，与 `skills` 独立。省略 capability 范围时包含全部已启用的内置工具，
 即使没有已配置技能；显式范围只包含列出的工具，空范围不暴露任何工具。
 选择技能不再隐式加入这两个工具。
@@ -20,7 +22,28 @@ SDK 持久化 schema 均保持不变。
 迁移时，请为需要技能访问工具的显式 capability 列表按需加入 `skill.list` 和/或
 `skill.view`，包括注册和内联子 agent。隐藏工具时，从 capability 列表排除它们，
 或调用 `Runner.set_capability_enabled(...)` 关闭；不要再把 `skills=[]` 用作工具开关。
-此变更必须随新的不可变 SDK 版本发布，现有发布标签保持不变。
+
+### 本地 API 和 Web UI 的 Agent 范围
+
+Agent preset 和 inline DAG agent 范围现在接受已启用的技能访问 capabilities。
+两个 Web UI 编辑器均将 `skill.list` 和 `skill.view` 与其他能力一起列出，并与技能名称
+选择保持独立。嵌套 agent capabilities、未知 capabilities 和已禁用 capabilities 仍会被拒绝。
+
+### 发布验证与升级
+
+使用 `pip install --upgrade dagent-ai==0.9.17` 安装。从 0.9.16 升级时，按上述说明显式
+选择所需技能访问工具。请求形状、公共签名、capability id 和持久化 schema 版本保持不变，
+无需迁移存储记录。
+
+已知限制：未选择访问工具时，技能路由提示词仍可能要求调用 `skill_view`。需要读取技能
+指令的 agent 应在显式能力范围中包含 `skill.view`。
+
+- 验证：1,426 项 Python/MCP 测试通过，离线运行时注册与技能示例运行成功；wheel
+  和源码发行包构建、包元数据检查及 `git diff --check` 通过。
+- Web 验证：128 项前端测试、生产构建，以及两个 agent 编辑器选择和保存访问工具的
+  浏览器检查均通过。
+- 跳过 3 项依赖环境的测试：2 项需显式启用的真实 MiniMax 测试，以及 1 项需要
+  正在运行的 Docker daemon 的测试。
 
 ## 0.9.16
 

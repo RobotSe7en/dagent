@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.16`.
+The current package version is `0.9.17`.
 
-## Next release: independent skill accessor selection
+## 0.9.17
+
+### Independent skill accessor selection
 
 **Breaking behavior change:** `skill.list` and `skill.view` follow the agent's
 capability scope and the catalog's enabled state, independently of `skills`.
@@ -24,8 +26,32 @@ Migration: add `skill.list` and/or `skill.view` to explicit agent capability
 lists that need them, including registered and inline subagents. To hide these
 tools, exclude them from the capability list or disable them with
 `Runner.set_capability_enabled(...)`; do not use `skills=[]` as a tool switch.
-This change must ship as a new immutable SDK version; existing release tags
-remain unchanged.
+
+### Scoped agents in the local API and Web UI
+
+Agent presets and inline DAG agent scopes now accept enabled skill accessor
+capabilities. Both Web UI editors expose `skill.list` and `skill.view` alongside
+other capabilities, independently of selected skill names. Nested agent
+capabilities, unknown capabilities, and disabled capabilities remain rejected.
+
+### Release verification and upgrade
+
+Install with `pip install --upgrade dagent-ai==0.9.17`. Apply the explicit accessor
+selection guidance above when upgrading from 0.9.16. No request shapes, public
+signatures, capability ids, or persisted schema versions change; no stored-record
+migration is needed.
+
+Known limitation: skill-routing prompts can still request `skill_view` when that
+accessor is omitted. Include `skill.view` in explicit scopes for agents expected
+to read skill instructions.
+
+- Verification: 1,426 Python/MCP tests passed, the offline runtime registration
+  and skills example succeeded, wheel and source distributions built
+  successfully, and package metadata checks and `git diff --check` passed.
+- Web verification: 128 frontend tests, the production build, and browser checks
+  for selecting and saving accessors in both agent editors passed.
+- Three environment-dependent tests were skipped: two opt-in live MiniMax
+  tests and one test requiring a running Docker daemon.
 
 ## 0.9.16
 
