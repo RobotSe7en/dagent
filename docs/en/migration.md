@@ -5,9 +5,9 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The development package version is `0.9.18` (unreleased).
+The current package version is `0.9.18`.
 
-## 0.9.18 (unreleased)
+## 0.9.18
 
 ### Stable tool-result displays for prefix caching
 
@@ -32,6 +32,23 @@ upgrade to this policy; subsequent appends preserve retained result text while
 the result, policy, counter and recovery availability remain unchanged. Summaries
 and reasoning omissions still change the corresponding prompt prefix. Storage,
 structured values and permission boundaries retain their existing behavior.
+
+### Release verification and upgrade
+
+Install with `pip install --upgrade dagent-ai==0.9.18`. Apply the per-result budget
+guidance above when upgrading from 0.9.17. Public signatures, request shapes,
+capability ids, default configuration values and persisted schema versions remain
+unchanged; no stored-record migration is needed.
+
+Known limitation: large parallel result batches can now exceed the model window
+instead of being automatically shortened. Prefix-cache reuse also depends on
+other prompt content; history summaries and reasoning omissions can change it.
+
+- Verification: 1,434 Python/MCP tests passed, the offline tool-result recovery
+  example succeeded, wheel and source distributions built successfully, and
+  package metadata checks and `git diff --check` passed.
+- Three environment-dependent tests were skipped: two opt-in live MiniMax tests
+  and one test requiring a running Docker daemon.
 
 ## 0.9.17
 
