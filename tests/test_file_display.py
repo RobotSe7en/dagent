@@ -150,7 +150,7 @@ def test_bounded_first_line_does_not_change_later_line_offsets(tmp_path, bom, fi
 
 
 @pytest.mark.parametrize("observation", [False, True])
-def test_total_budget_reprojects_history_cursor_without_mutating_source(tmp_path, observation):
+def test_new_results_preserve_history_display_and_cursor(tmp_path, observation):
     source = "中文🙂abcdef\n" * 1500
     path = tmp_path / "history.txt"
     path.write_bytes(source.encode())
@@ -161,12 +161,13 @@ def test_total_budget_reprojects_history_cursor_without_mutating_source(tmp_path
     two = project_results([first, second], policy, COUNTER, read_available=True)
     earlier_end = displayed(one[first.id].text, source)[1]
     current_end = displayed(two[first.id].text, source)[1]
-    assert 0 < current_end < earlier_end
+    assert 0 < current_end == earlier_end < len(source)
+    assert two[first.id] == one[first.id]
     assert first.retention.window_start == 0
     assert first.retention.window_length == len(source)
     for projection in two.values():
         displayed(projection.text, source)
-    assert sum(COUNTER.count_text(p.text) for p in two.values()) <= 1024
+    assert sum(COUNTER.count_text(p.text) for p in two.values()) <= 2048
 
 
 def test_source_pagination_does_not_claim_budget_truncation(tmp_path):

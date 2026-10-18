@@ -1,4 +1,4 @@
-"""Pure, minimum-information-first rendering of runtime results."""
+"""Pure rendering of runtime results with independent per-result limits."""
 
 from __future__ import annotations
 
@@ -66,7 +66,6 @@ def project_result(
     counter: TextCounter,
     *,
     read_available: bool,
-    reserve_excerpt: bool = False,
 ) -> ResultProjection:
     text = stored_content_text(item.content)
     refs = result_references(item)
@@ -189,15 +188,6 @@ def project_result(
         return "\n".join(part for part in (meta, body) if part), meta, body, unavailable
 
     full, meta, body, unavailable = render(len(text))
-    if reserve_excerpt:
-        # Shortening can introduce recovery notices absent from the full result.
-        minimum_metadata = render(0)[1]
-        budget = min(
-            budget,
-            max(counter.count_text(meta), counter.count_text(minimum_metadata))
-            + 64
-            + 4,
-        )
     if counter.count_text(full) <= budget:
         metadata_tokens = counter.count_text(meta)
         return ResultProjection(
@@ -236,11 +226,10 @@ def project_results(
     counter: TextCounter,
     *,
     read_available: bool | Callable[[ResultItem], bool],
-    total_budget_tokens: int | None = None,
-    minimum_only: bool = False,
 ) -> dict[str, ResultProjection]:
+    """Render independently without redistributing a shared result budget."""
+
     projections: dict[str, ResultProjection] = {}
-    # A short excerpt is reserved in addition to the indivisible metadata.
     for item in items:
         readable = read_available(item) if callable(read_available) else read_available
         projections[item.id] = project_result(
@@ -248,25 +237,5 @@ def project_results(
             policy.max_tool_result_tokens,
             counter,
             read_available=readable,
-            reserve_excerpt=True,
         )
-    total_budget = policy.max_total_tool_result_tokens
-    if total_budget_tokens is not None:
-        total_budget = min(total_budget, total_budget_tokens)
-    remaining = total_budget - sum(
-        counter.count_text(projections[item.id].text) for item in items
-    )
-    if remaining < 0:
-        raise ResultBudgetExceeded(
-            "Minimum tool result information exceeds the total tool result budget."
-        )
-    if minimum_only:
-        return projections
-    for item in reversed(items):
-        readable = read_available(item) if callable(read_available) else read_available
-        previous = counter.count_text(projections[item.id].text)
-        budget = min(policy.max_tool_result_tokens, previous + remaining)
-        projection = project_result(item, budget, counter, read_available=readable)
-        remaining -= counter.count_text(projection.text) - previous
-        projections[item.id] = projection
     return projections

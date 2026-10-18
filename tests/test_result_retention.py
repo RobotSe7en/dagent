@@ -108,7 +108,7 @@ def test_complete_file_with_long_path_fits_reservation(tmp_path, read_available)
 
 
 @pytest.mark.parametrize("count,budget", [(5, 8192), (9, 16384)])
-def test_every_large_result_has_a_recoverable_floor(tmp_path, count, budget):
+def test_every_large_result_has_an_independent_recoverable_limit(tmp_path, count, budget):
     calls = tuple(ToolCallItem(id=str(i), name="tool_large") for i in range(count))
     originals = [f"result {i}\n" + "数据" * 12000 for i in range(count)]
     conversation = ConversationState(
@@ -150,7 +150,7 @@ def test_every_large_result_has_a_recoverable_floor(tmp_path, count, budget):
             assert "[TRUNCATED]" in message["content"]
             assert "path=" in message["content"]
             assert assembler.token_counter.count_text(message["content"]) <= 2048
-    assert prepared.usage.tool_result_tokens <= budget
+    assert prepared.usage.tool_result_tokens == count * 2048 > budget
     files = list((tmp_path / ".runtime/results").iterdir())
     asyncio.run(
         assembler.prepare(
@@ -257,20 +257,22 @@ def test_line_window_projection_continues_at_exact_source_character(tmp_path):
     )
 
 
-def test_repeated_compaction_keeps_original_result_index(tmp_path):
+def test_context_compaction_keeps_original_result_index(tmp_path):
     store = ResultStore(tmp_path, ".runtime")
-    assembler = ContextAssembler(context_window_tokens=8192)
-    policy = ContextPolicy(max_tool_result_tokens=128, max_total_tool_result_tokens=128)
+    assembler = ContextAssembler(context_window_tokens=1024)
+    policy = ContextPolicy(max_tool_result_tokens=128, compaction_trigger_ratio=0.3)
     items = []
     for i in range(4):
         items.extend(
             (
                 AssistantMessage(
+                    run_id="run",
                     tool_calls=(
                         ToolCallItem(id=str(i), name="tool_a", arguments={"index": i}),
                     )
                 ),
                 ToolResultMessage(
+                    run_id="run",
                     call_id=str(i),
                     name="tool_a",
                     status="completed",

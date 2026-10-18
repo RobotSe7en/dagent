@@ -1,7 +1,8 @@
 # Recover large tool results
 
-Since 0.9.9, tool results use a minimum-information-first display budget. This
-applies to ToolAgent replies and structured DAG planner observations.
+Since 0.9.18, tool results use independent per-result display limits so appending
+new results does not shorten earlier displays. This applies to ToolAgent replies
+and structured DAG planner observations.
 
 ## Configure display and storage separately
 
@@ -10,7 +11,6 @@ import dagent
 
 context = dagent.ContextPolicy(
     max_tool_result_tokens=2048,
-    max_total_tool_result_tokens=16384,
 )
 storage = dagent.ResultStoragePolicy(
     max_inline_bytes=256 * 1024,
@@ -19,25 +19,26 @@ storage = dagent.ResultStoragePolicy(
 ```
 
 Pass `context` to your agent and `result_storage_policy=storage` to `Runner`.
-The display limits include status, excerpt, truncation notices and recovery
-references. Each result receives a short deterministic excerpt before remaining
-tokens are assigned newest-first. No extra model call generates these excerpts.
-If minimum information cannot fit, completed atomic exchanges are compacted. If
-the protected latest exchange still cannot fit, generation raises
-`ContextWindowExceeded`; results are never silently replaced with empty strings.
+Each result is rendered with `max_tool_result_tokens`, including status, excerpt,
+truncation notices and recovery references. This deterministic limit does not
+depend on the number of other results or the remaining context window. With the
+same result, policy, token counter and recovery availability, later requests
+produce identical text, preserving that part of the prompt cache prefix. No
+extra model call generates these excerpts.
 
-Display budgets are upper bounds. After history and reasoning reductions, a
-request that still exceeds its hard input budget gets a smaller request-local
-tool-result budget. This targets the configured compaction trigger while
-preserving the same minimum-information and newest-first allocation rules.
-The current user input, latest reasoning and tool-call/result pairing remain.
-Only the final display changes; configured policy and structured values do not.
-Newly shortened text is saved through the existing storage policy, and the
-complete request is recounted with the resulting recovery references. If the
-minimum display fits only above the soft trigger, the request may still run.
-If it exceeds the hard budget, generation fails explicitly.
-If a result's reference manifest cannot be saved, its warning is retained and
-refitting does not retry the failed write or append duplicate warnings.
+`max_total_tool_result_tokens` is deprecated and ignored since 0.9.18. It remains
+accepted and serialized so saved policies can be loaded without rewriting them.
+There is no separate total tool-result budget: only overall context pressure
+triggers history summaries. A large model window is no longer forced to summarize
+because tool-result displays exceed the old 16,384-token default.
+
+Context-window pressure uses the normal history-summary and reasoning-omission
+steps. It does not shrink result displays again. If required input still exceeds
+the hard input budget, generation fails explicitly. Configure the per-result
+limit to fit the model window, accounting for parallel results, system
+instructions, tool schemas, user input and output capacity. Saving a truncated
+original retains the existing storage behavior. A failed reference-manifest write
+keeps its warning and is not retried by later projections.
 
 The inline threshold is independent: a smaller result can also be written before
 its model display is truncated. Projection does not replace a structured tool
@@ -153,14 +154,14 @@ display at EOF has no model-facing continuation. A zero-body projection reports
 an empty displayed range and does not advance its cursor. Minimum information still
 raises the existing budget error if it cannot fit.
 
-The total tool-result budget can shorten an earlier result in later requests.
-Its displayed range and cursor are recomputed for that request;
-`ResultRetention.window_start` / `window_length` continue to describe the
-original returned source window. This is not a global reading-progress ledger
-and does not undo earlier calls. Track progress from calls and results actually
-observed, avoid identical file/interval requests within a batch, and do not
-restart or change tools solely because a display was shortened when the file
-has not changed. Reads are fresh filesystem queries, not snapshots.
+Appending results does not change an earlier result's displayed range or cursor.
+Overall context pressure can cause old complete exchanges to be summarized.
+`ResultRetention.window_start` / `window_length` describe the original returned
+source window. This is not a global reading-progress ledger and does not undo
+earlier calls. Track progress from calls and results actually observed, avoid
+identical file/interval requests within a batch, and do not restart or change
+tools solely because a display was shortened when the file has not changed.
+Reads are fresh filesystem queries, not snapshots.
 
 These are tool descriptions and default prompt guidance, not execution deduplication,
 automatic reading, retries or recovery. Global display budgets are unchanged.

@@ -92,7 +92,6 @@ agent = dagent.ToolAgent(
         summary_max_tokens=8192,
         compaction_reasoning_effort="low",
         max_tool_result_tokens=2048,
-        max_total_tool_result_tokens=16384,
     ),
 )
 ```
@@ -158,7 +157,7 @@ runner = dagent.Runner(
 The result directory is `<run-workspace>/.runtime/results` for this runner.
 `ResultStoragePolicy` controls the inline-size threshold and the per-shell
 capture limit (64 MiB by default); the runner owns the location. See
-[Tool Result Recovery](tool-result-recovery.md) for minimum-information budgets,
+[Tool Result Recovery](tool-result-recovery.md) for independent result limits,
 reading permissions, pagination, compaction indexes and storage-failure behavior.
 
 The SDK owns only run-workspace normalization. A host is responsible for durable

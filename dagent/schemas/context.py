@@ -33,19 +33,23 @@ class ContextPolicy(BaseModel):
     summary_max_tokens: int = Field(default=8192, ge=64)
     compaction_reasoning_effort: ReasoningEffort = "low"
     max_tool_result_tokens: int = Field(default=2048, ge=64)
-    max_total_tool_result_tokens: int = Field(default=16384, ge=64)
+    max_total_tool_result_tokens: int = Field(
+        default=16384,
+        ge=64,
+        description=(
+            "Deprecated since 0.9.18; retained for saved policies and ignored. "
+            "Overall context pressure determines when history is summarized."
+        ),
+        json_schema_extra={"deprecated": True},
+    )
     token_safety_margin: float = Field(default=0.15, ge=0, le=1)
 
     @model_validator(mode="after")
-    def validate_tool_budgets(self) -> "ContextPolicy":
+    def validate_compaction_ratios(self) -> "ContextPolicy":
         if self.compaction_retain_ratio >= self.compaction_trigger_ratio:
             raise ValueError(
                 "compaction_retain_ratio must be smaller than "
                 "compaction_trigger_ratio."
-            )
-        if self.max_tool_result_tokens > self.max_total_tool_result_tokens:
-            raise ValueError(
-                "max_tool_result_tokens cannot exceed max_total_tool_result_tokens."
             )
         return self
 
