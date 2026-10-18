@@ -67,7 +67,7 @@ async def test_large_latest_results_fit_after_history_compaction(window, count, 
             max_model_len=window,
         )
 
-    policy = ContextPolicy(max_tool_result_tokens=32768, max_total_tool_result_tokens=131072)
+    policy = ContextPolicy(max_tool_result_tokens=16384, max_total_tool_result_tokens=131072)
     conversation = tool_history(count=count, text="数据" * 30000)
     assembler = ContextAssembler(
         context_window_tokens=window, max_output_tokens=1024,
@@ -102,9 +102,9 @@ async def test_large_latest_results_fit_after_history_compaction(window, count, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("observations", [False, True])
-async def test_newly_shortened_results_are_saved_and_reused(tmp_path, observations):
+async def test_fixed_limit_results_are_saved_and_reused(tmp_path, observations):
     original = "原始数据 abc " * 2500
-    policy = ContextPolicy(max_tool_result_tokens=32768, max_total_tool_result_tokens=131072)
+    policy = ContextPolicy(max_tool_result_tokens=1024, max_total_tool_result_tokens=131072)
     conversation = (
         ConversationState(items=(UserMessage(
             run_id="run", content="Inspect observations", result_observations=(ResultObservation(
@@ -155,11 +155,11 @@ async def test_soft_pressure_alone_does_not_shorten_latest_result(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_minimum_result_above_soft_target_still_fits_hard_budget():
+async def test_fixed_result_above_soft_target_still_fits_hard_budget():
     prepared = await ContextAssembler(context_window_tokens=1024, max_output_tokens=128).prepare(
         system_message={"content": "x" * 2100},
         conversation=tool_history(count=1, text="数据" * 3000, old_steps=False),
-        policy=ContextPolicy(compaction_trigger_ratio=0.5),
+        policy=ContextPolicy(compaction_trigger_ratio=0.5, max_tool_result_tokens=128),
     )
     assert prepared.usage.compaction_trigger_tokens < prepared.usage.estimated_input_tokens
     assert prepared.usage.estimated_input_tokens <= prepared.usage.input_budget_tokens
@@ -198,7 +198,7 @@ async def test_latest_reasoning_is_preserved_when_results_cannot_fit():
     assert caught.value.usage.replayed_reasoning_items == 1
     assert caught.value.usage.omitted_reasoning_items == 0
     assert caught.value.usage.tool_result_body_tokens > 0
-    assert caught.value.usage.tool_result_tokens < 2048
+    assert caught.value.usage.tool_result_tokens == 2048
 
 
 @pytest.mark.asyncio
@@ -218,12 +218,12 @@ async def test_result_storage_alone_does_not_emit_compaction_finished(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reference_count", [0, 5])
 @pytest.mark.parametrize("observations", [False, True])
-async def test_dynamic_shortening_preserves_storage_warning(tmp_path, monkeypatch, reference_count, observations):
+async def test_fixed_shortening_preserves_storage_warning(tmp_path, monkeypatch, reference_count, observations):
     attempts = []
 
     def fail(*args, field="content", **kwargs):
         attempts.append(field)
-        assert len(attempts) == 1, "Failed storage must not be retried during refitting"
+        assert len(attempts) == 1, "Failed storage must not be retried during projection"
         raise OSError("disk unavailable")
 
     store = ResultStore(tmp_path, ".runtime")
@@ -245,7 +245,7 @@ async def test_dynamic_shortening_preserves_storage_warning(tmp_path, monkeypatc
         prepared = await ContextAssembler(context_window_tokens=2048).prepare(
             system_message={"content": "Inspect"},
             conversation=conversation,
-            policy=ContextPolicy(max_tool_result_tokens=32768, max_total_tool_result_tokens=131072),
+            policy=ContextPolicy(max_tool_result_tokens=1024, max_total_tool_result_tokens=131072),
             result_store=store,
         )
     result = (prepared.conversation.items[0].result_observations[0] if observations
@@ -263,7 +263,7 @@ async def test_dynamic_shortening_preserves_storage_warning(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_dynamic_file_excerpt_keeps_correct_continuation(tmp_path):
+async def test_fixed_file_excerpt_keeps_correct_continuation(tmp_path):
     from dagent.capabilities.tools.file_tools import read_file
     from dagent.schemas.retention import ResultRetention
 
@@ -278,7 +278,7 @@ async def test_dynamic_file_excerpt_keeps_correct_continuation(tmp_path):
     store = ResultStore(tmp_path, ".runtime")
     prepared = await ContextAssembler(context_window_tokens=2048).prepare(
         system_message={"content": "Inspect"}, conversation=conversation,
-        policy=ContextPolicy(max_tool_result_tokens=32768, max_total_tool_result_tokens=131072),
+        policy=ContextPolicy(max_tool_result_tokens=1024, max_total_tool_result_tokens=131072),
         tools=[READ_TOOL], result_store=store,
     )
     content = prepared.messages[-1]["content"]
@@ -308,7 +308,7 @@ async def test_review_resume_uses_frozen_policy_and_preserves_large_result(tmp_p
     ])
     provider.context_window_tokens = 8192
     provider.max_output_tokens = 1024
-    policy = ContextPolicy(max_tool_result_tokens=32768, max_total_tool_result_tokens=131072)
+    policy = ContextPolicy(max_tool_result_tokens=1024, max_total_tool_result_tokens=131072)
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
         pending = await runner.run(dagent.ToolAgent(
             profile="conversation", capabilities=[report], context=policy, review="careful",

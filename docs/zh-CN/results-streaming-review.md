@@ -82,7 +82,6 @@ agent = dagent.ToolAgent(
         summary_max_tokens=8192,
         compaction_reasoning_effort="low",
         max_tool_result_tokens=2048,
-        max_total_tool_result_tokens=16384,
     ),
 )
 ```
@@ -139,7 +138,7 @@ runner = dagent.Runner(
 这个 runner 的结果目录是 `<run-workspace>/.runtime/results`。
 `ResultStoragePolicy` 控制内联大小阈值和单次 shell 采集上限（默认 64 MiB），
 存储位置由 runner 统一拥有。低于内联阈值但被模型展示预算截断的文本也会保存。
-最低信息预算、读取权限、分页、压缩索引与故障语义见[工具结果恢复](tool-result-recovery.md)。
+独立结果上限、读取权限、分页、压缩索引与故障语义见[工具结果恢复](tool-result-recovery.md)。
 
 SDK 只负责 run workspace 内的标准化；长期上传、保留策略、访问控制和 URL 生成由 host
 负责。

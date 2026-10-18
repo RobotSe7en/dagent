@@ -5,7 +5,33 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.17`.
+The development package version is `0.9.18` (unreleased).
+
+## 0.9.18 (unreleased)
+
+### Stable tool-result displays for prefix caching
+
+**Breaking behavior change:** tool results and planner observations each use the
+fixed `max_tool_result_tokens` limit. Appending new results no longer redistributes
+the total budget or progressively shortens earlier results. Context-window
+pressure no longer causes an additional request-local display reduction.
+
+`max_total_tool_result_tokens` is deprecated and ignored. The field remains
+accepted and serialized for saved policies, but no longer imposes a separate
+aggregate cap or constrains the per-result limit. Only overall context pressure
+triggers summaries of old complete exchanges. The latest atomic exchange stays
+protected. If required input still exceeds the model window after normal history
+and reasoning reductions, `ContextWindowExceeded` is raised before generation.
+
+Migration: choose a per-result limit that fits the model window together with the
+expected parallel tool batch, system instructions, tools, user input and reserved
+output. A large per-result limit is no longer automatically reduced to fit. The
+default values and public signatures remain unchanged; no durable schema or
+stored-record migration is required. Historical displays can change once on
+upgrade to this policy; subsequent appends preserve retained result text while
+the result, policy, counter and recovery availability remain unchanged. Summaries
+and reasoning omissions still change the corresponding prompt prefix. Storage,
+structured values and permission boundaries retain their existing behavior.
 
 ## 0.9.17
 

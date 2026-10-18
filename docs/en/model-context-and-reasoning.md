@@ -224,16 +224,14 @@ turns. At the configured trigger, dagent applies reductions in this order:
 2. omit the oldest replayed reasoning from the active request projection;
 3. summarize completed middle steps of an oversized active run.
 
-If the request still exceeds the hard input budget, dagent additionally reduces
-tool-result displays, including the latest tool step and planner observations.
-The configured per-result and total display budgets are ceilings. This final
-reduction targets the compaction trigger (80% by default), keeping each result's
-status, recovery information and existing short-excerpt reservation, then
-allocating remaining tokens newest-first. Each candidate is counted as a complete
-request, including system instructions, tools, summary and replayed reasoning.
-If the minimum display exceeds the soft target but fits the hard budget, the
-request can proceed. Crossing only the soft target does not activate this extra
-display reduction. See [result recovery](tool-result-recovery.md).
+Tool results and planner observations use the fixed per-result display limit.
+Their budget is not redistributed when new results arrive or when context space
+runs low. The separate total tool-result budget is deprecated and ignored;
+overall context pressure triggers summaries of old complete exchanges. This
+keeps retained displays stable for prefix caching. If protected results or other
+required input still cannot fit, generation raises `ContextWindowExceeded`.
+Configure the per-result limit to fit the model window and parallel tool batch size. See
+[result recovery](tool-result-recovery.md).
 
 The current run's initiating user input, an open assistant/tool-result chain,
 and the latest atomic step are retained. Tool-call/result pairs are not split.

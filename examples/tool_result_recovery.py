@@ -31,8 +31,8 @@ async def main() -> None:
                 ),
             ]
         )
-        # Display ceilings can exceed the window: runtime fitting supplies a
-        # smaller request-local budget without changing this policy.
+        # Keep each display within a fixed limit that fits this model window.
+        # Later results never take tokens from an earlier result's excerpt.
         provider.context_window_tokens = 8192
         provider.max_output_tokens = 1024
         runner = dagent.Runner(
@@ -46,8 +46,7 @@ async def main() -> None:
                 dagent.ToolAgent(
                     profile="conversation", capabilities=["tool.rows"],
                     context=dagent.ContextPolicy(
-                        max_tool_result_tokens=32768,
-                        max_total_tool_result_tokens=131072,
+                        max_tool_result_tokens=2048,
                     ),
                 ),
                 input="Produce the report.",
@@ -69,7 +68,7 @@ async def main() -> None:
             assert usage.estimated_input_tokens <= usage.compaction_trigger_tokens
             assert usage.truncated_tool_results == 1
             assert usage.compaction_method == "none"
-            print("Fitted input tokens:", usage.estimated_input_tokens, "/", usage.input_budget_tokens)
+            print("Input tokens:", usage.estimated_input_tokens, "/", usage.input_budget_tokens)
         finally:
             runner.close()
 
@@ -127,7 +126,7 @@ async def main() -> None:
                 dagent.ToolAgent(
                     profile="conversation",
                     context=dagent.ContextPolicy(
-                        max_tool_result_tokens=256, max_total_tool_result_tokens=2048,
+                        max_tool_result_tokens=256,
                     ),
                     capabilities=[
                         "tool.read_file",
