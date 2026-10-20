@@ -1,6 +1,7 @@
 """Read reasoning statistics from the serialized request, without retaining text."""
 
 from collections import Counter
+from collections.abc import Mapping
 import json
 from typing import Literal
 
@@ -15,6 +16,7 @@ def observe_request_reasoning(
     *,
     resolved_field: Literal["reasoning", "reasoning_content", "omit"],
     explicit_omit: bool,
+    effort_field: str | None = None,
 ) -> ModelCallMetadata:
     """Count Unicode text values after all client-side request overrides."""
 
@@ -58,4 +60,20 @@ def observe_request_reasoning(
         serialized_characters=sum(map(len, values)),
         omission_reasons=tuple(sorted(reasons)),
     )
-    return metadata.model_copy(update={"request_reasoning": observation})
+    metadata = metadata.model_copy(update={"request_reasoning": observation})
+    if effort_field is not None:
+        metadata = metadata.model_copy(update={
+            "effective_reasoning_effort": reasoning_effort_at_path(payload, effort_field),
+        })
+    return metadata
+
+
+def reasoning_effort_at_path(payload: Mapping[str, object], field: str) -> str | None:
+    """Read an actual string effort value, including explicit request overrides."""
+
+    value: object = payload
+    for part in field.split("."):
+        if not isinstance(value, Mapping):
+            return None
+        value = value.get(part)
+    return value if isinstance(value, str) else None

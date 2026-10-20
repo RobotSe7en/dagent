@@ -7,6 +7,29 @@ that may require action when upgrading.
 
 The current package version is `0.9.18`.
 
+## Unreleased
+
+### Optional reasoning field and effort-name mappings
+
+`Provider(...)` and `ProviderConfig` accept `reasoning_mapping`, with independent
+Chat and Responses field paths and string effort-name overrides. Unlisted values
+pass through; protocols without a mapping retain their built-in behavior. The
+same mapping applies to generation, streaming, Chat entrypoints, and compaction.
+Compaction retains its independent `low` default.
+
+Mappings are opt-in. Existing applications need no source or config changes;
+the package version, existing request defaults, extra-parameter precedence, and
+result/event schemas are unchanged. A mapped protocol trusts the explicit effort
+configuration instead of the built-in effort capability checks and stops adding
+automatic reasoning control fields. Other capability checks remain enforced.
+
+To adopt, configure your endpoint's field path and any differing effort names as
+described in [reasoning controls](model-context-and-reasoning.md#custom-reasoning-fields-and-effort-names).
+Target values are strings only; this adds no token-budget API, automatic
+downgrade, or omission retry. An unconfigured protocol can still be selected by
+`auto` and uses its normal built-in controls. No persisted-record migration is
+required; existing model-call metadata carries mapping diagnostics.
+
 ## 0.9.18
 
 ### Stable tool-result displays for prefix caching

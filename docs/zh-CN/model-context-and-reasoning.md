@@ -98,7 +98,7 @@ provider = dagent.Provider(
 ```
 
 `reasoning_effort` 接受 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或
-`max`。SDK 对 Chat 发送 `reasoning_effort`，对 Responses 发送
+`max`。SDK 默认对 Chat 发送 `reasoning_effort`，对 Responses 发送
 `reasoning.effort`。具体级别是否生效仍由 vLLM 中实际部署的模型决定。
 
 SDK 不提供 token 数形式的推理预算，只配置 effort。
@@ -106,6 +106,80 @@ SDK 不提供 token 数形式的推理预算，只配置 effort。
 `reasoning_capture="field_and_tags"` 合并专用 reasoning response 字段与 `<think>`
 内容；`reasoning_capture="field"` 只信任专用字段。两种情况下 thinking tag 都不会残留
 在可见正文中。capture 只控制响应解析，不会改变请求。
+
+### 自定义思考字段与强度名称
+
+尚未发布的新功能：当端点需要其他请求字段或强度名称时，设置 `reasoning_mapping`。
+两种协议各有一份可选映射：
+
+```python
+from dagent.config import ReasoningMapping
+
+provider = dagent.Provider(
+    base_url="http://localhost:8000/v1",
+    model="private-model",
+    reasoning_effort="high",
+    reasoning_mapping={
+        "chat_completions": ReasoningMapping(
+            field="custom_reasoning.level",
+            values={"high": "deep"},
+        ),
+        "responses": ReasoningMapping(
+            field="reasoning.effort",
+            values={"high": "xhigh"},
+        ),
+    },
+)
+```
+
+示例字段和值须按实际端点契约配置。Chat 发送
+`{"custom_reasoning": {"level": "deep"}}`，Responses 发送
+`{"reasoning": {"effort": "xhigh"}}`。Python 中也接受普通字典；对应的配置文件为：
+
+```yaml
+provider:
+  base_url: http://localhost:8000/v1
+  model: private-model
+  reasoning_effort: high
+  reasoning_mapping:
+    chat_completions:
+      field: custom_reasoning.level
+      values: {high: deep}
+    responses:
+      field: reasoning.effort
+      values: {high: xhigh}
+```
+
+`field` 必填，使用非空的点分隔 JSON 对象路径，不支持数组，也不能指向 SDK 管理的
+模型、输入、工具、输出限制或 Responses 状态等字段。`values` 默认为空字典，键使用
+已有的强度档位，目标值只允许字符串。未列出的档位原样发送。最终强度未设置时不发送
+映射参数；字符串 `"none"` 仍是一个会发送的值。
+
+映射覆盖普通生成、流式调用、Chat 入口和上下文压缩。压缩仍独立选择强度，默认 `low`，
+所以上例的压缩请求继续发送 `low`；需要转换时在 `values` 中增加 `low` 项。
+压缩策略和 `/tokenize` 的请求内容保持不变。
+
+对已配置映射的协议，SDK 信任显式字段和值，不要求 OpenAPI 声明内置 effort 控制能力；
+也不自动生成原来的 effort 字段或 `include_reasoning`，需要的开关通过额外参数显式提供。
+端点、工具、流式、结构化输出、输出限制和历史 reasoning 回传检查继续执行。
+能力查询报告仍如实反映服务端声明。
+
+`auto` 保留现有协议优先级。没有配置映射的协议继续使用内置行为，即使另一种协议配置了
+映射也是如此。需要只使用某种协议的映射时，请显式指定协议。不配置 `reasoning_mapping`、
+设为 `None` 或空字典，都保留现有行为。
+
+额外参数保留已有优先级：`extra_request_args` 可替换映射的整个顶层对象；`extra_body`
+覆盖自动生成的 body 值，并在最终 JSON 中覆盖 SDK 参数。显式设置
+`extra_request_args["extra_body"]` 会整体替换自动生成及配置的 body，其中未重复提供的
+映射字段也会被移除。OpenAI 客户端不接受的自定义字段请放在 `extra_body` 中。
+
+映射调用的元数据保留原始 `requested_reasoning_effort`，并从最终序列化请求的映射字段读取
+`effective_reasoning_effort`；字段缺失或不是字符串时记为 `None`。`fallback_reason`
+包含配置的字段路径。这只记录发送内容，不能证明模型实际采用了该强度。映射被拒绝时
+不会自动降档、删去参数或换协议重发。
+
+使用 `uv run python -m examples.reasoning_mapping` 运行
+[离线映射示例](../../examples/reasoning_mapping.py)。
 
 ## 能力探测与协议选择
 

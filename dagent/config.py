@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from dagent.schemas.capability import validate_capability_id_segment
 from dagent.schemas.context import ReasoningEffort
@@ -40,6 +40,30 @@ ChatReasoningField: TypeAlias = Literal[
 ReasoningCapture: TypeAlias = Literal["field", "field_and_tags"]
 
 
+class ReasoningMapping(BaseModel):
+    """An explicit request field and optional effort-name overrides."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    field: str
+    values: dict[ReasoningEffort, str] = Field(default_factory=dict)
+
+    @field_validator("field")
+    @classmethod
+    def validate_field(cls, value: str) -> str:
+        parts = value.split(".")
+        if any(not part or any(char.isspace() or char in "[]" for char in part) for part in parts):
+            raise ValueError("Reasoning mapping field must be a nonempty dotted object path, without array indices.")
+        if parts[0] in {
+            "model", "messages", "input", "instructions", "tools", "stream",
+            "stream_options", "response_format", "text", "include", "store",
+            "previous_response_id", "max_tokens", "max_completion_tokens",
+            "max_output_tokens", "thinking_token_budget",
+        }:
+            raise ValueError(f"Reasoning mapping cannot target provider-managed field '{parts[0]}'.")
+        return value
+
+
 class ProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -52,6 +76,7 @@ class ProviderConfig(BaseModel):
     token_counting: TokenCountingMode = "auto"
     chat_reasoning_field: ChatReasoningField = "auto"
     reasoning_effort: ReasoningEffort | None = None
+    reasoning_mapping: dict[Literal["chat_completions", "responses"], ReasoningMapping] | None = None
     reasoning_capture: ReasoningCapture = "field_and_tags"
     stream_include_usage: bool = False
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
