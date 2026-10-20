@@ -9,14 +9,67 @@ import pytest
 
 import dagent
 from dagent.harness_runtime.context import ContextAssembler
-from dagent.harness_runtime.compaction import CompactionError
+from dagent.harness_runtime.compaction import CompactionError, HistoryCompactor
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers import ToolCall
 from dagent.providers import ProviderCapabilityError
 from dagent.providers.model_io import ModelTokenCount
+from dagent.providers.openai_compatible import ProviderTokenCountError
 from dagent.schemas.conversation import stored_content_text
 from tests.test_cache_usage import _completion, _usage
 from tests.test_reasoning_mapping import _endpoint
+from tests.test_compaction_strategy import summary_response
+
+
+@pytest.mark.asyncio
+async def test_failed_preparation_reuses_a_chain_of_paid_summaries_in_order(tmp_path):
+    fail = True
+    paid = 0
+
+    async def count(request, _field):
+        if request.purpose == "compaction":
+            tokens = 100
+        else:
+            remaining = len({item.source_id for item in request.items} & {"A", "B"})
+            if remaining == 0 and fail:
+                raise ProviderTokenCountError("Counting failed after the second paid summary.")
+            tokens = {2: 11000, 1: 9000, 0: 100}[remaining]
+        return ModelTokenCount(count=tokens, max_model_len=8192, exact=True, source="render")
+
+    async def summarize(request):
+        nonlocal paid
+        paid += 1
+        return summary_response(request)
+
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="first_task", run_id="run", content="First task."),
+        dagent.AssistantMessage(id="A", run_id="run", content="First evidence."),
+        dagent.UserMessage(id="steer", run_id="run", content="Keep this correction."),
+        dagent.AssistantMessage(id="B", run_id="run", content="Second evidence."),
+        dagent.AssistantMessage(id="tail", run_id="run", content="Latest protected step."),
+    ))
+    policy = dagent.ContextPolicy(compaction_strategy="chunked", compaction_retain_ratio=.0001)
+    assembler = ContextAssembler(context_window_tokens=8192, max_output_tokens=512, request_token_counter=count)
+    store = ResultStore(tmp_path, ".runtime")
+
+    async def prepare(source):
+        return await assembler.prepare(
+            system_message={"content": "Task"}, conversation=source, policy=policy,
+            result_store=store, enable_new_strategy=True,
+            history_compactor=HistoryCompactor(policy=policy, assembler=assembler,
+                result_store=store, system_message={"content": "Task"}, chat=summarize),
+        )
+
+    with pytest.raises(ProviderTokenCountError) as failed:
+        await prepare(conversation)
+    saved = failed.value._conversation
+    assert paid == 2
+    assert len(saved.compaction_state.failed_records) == 2
+    fail = False
+    restored = await prepare(saved)
+    assert paid == 2
+    assert restored.usage.estimated_input_tokens == 100
+    assert [item.id for item in restored.conversation.items] == ["first_task", "steer", "tail"]
 
 
 def _history(text="old evidence " * 2000):
@@ -231,6 +284,89 @@ async def test_server_shrink_discovered_by_summary_keeps_original_tools_and_paid
             assert [item.call_id for item in result.conversation.items if isinstance(item, dagent.ToolResultMessage)] == ["call_1", "call_2"]
             assert result.conversation.compaction_state.failed_records
             assert len(posts) == 3  # Two generations and one paid summary; no oversized generation.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_phase", ["prepare", "count"])
+async def test_paid_summary_survives_later_provider_failure_and_is_reused_on_new_run(tmp_path, failure_phase):
+    from dagent.harness_runtime.compaction import CompactionRecordV1
+    from dagent.providers.model_io import ModelToolResultInput
+    from dagent.providers.openai_compatible import ProviderTokenCountError
+
+    steps = summaries = 0
+    fail = True
+
+    @dagent.tool
+    def evidence(index: int) -> str:
+        """Return verified evidence."""
+        return f"verified evidence {index}"
+
+    def respond(request):
+        nonlocal steps, summaries
+        body = json.loads(request.content)
+        raw = "\n".join(message.get("content", "") for message in body["messages"])
+        match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
+        if match:
+            summaries += 1
+            ids = json.loads(match.group(1))
+            content = json.dumps({"completed_work": [{"text": "Evidence verified.", "source_ids": [ids[-1]]}]})
+            return _completion("chat_completions", True, usage=_usage("chat_completions"), content=content)
+        steps += 1
+        calls = (ToolCall(id=f"call_{steps}", name="tool_evidence", arguments={"index": steps}),) if steps <= 2 else ()
+        return _completion("chat_completions", False, usage=_usage("chat_completions"),
+                           content="" if calls else "done", calls=calls)
+
+    def has_summary(request):
+        return any(item.source_id == "context_summary" for item in request.items)
+
+    async with _endpoint(protocol="chat_completions", token_counting="heuristic",
+                         context_window_tokens=131072, max_output_tokens=8192, responder=respond) as (provider, posts):
+        original_prepare = provider.prepare_call
+
+        async def prepare(request, *, stream):
+            if fail and failure_phase == "prepare" and request.purpose != "compaction" and has_summary(request):
+                raise ProviderCapabilityError("post-summary preparation failed")
+            return await original_prepare(request, stream=stream)
+
+        async def count(call):
+            if call.request.purpose == "compaction":
+                return ModelTokenCount(count=100, max_model_len=131072, exact=True, source="render")
+            if has_summary(call.request):
+                if fail and failure_phase == "count":
+                    raise ProviderTokenCountError("post-summary count failed")
+                return ModelTokenCount(count=100, max_model_len=131072, exact=True, source="render")
+            results = sum(isinstance(item, ModelToolResultInput) for item in call.request.items)
+            return ModelTokenCount(count=110000 if results >= 2 else 100, max_model_len=131072,
+                                   exact=True, source="render")
+
+        provider.prepare_call = prepare
+        provider.count_prepared = count
+        with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+            agent = dagent.ToolAgent(profile="conversation", capabilities=[evidence],
+                context=dagent.ContextPolicy(compaction_strategy="cache_aware", compaction_retain_ratio=.0001))
+            with pytest.raises(ProviderCapabilityError) as caught:
+                await runner.run(agent, input="Inspect.", workspace_path=tmp_path / "run")
+            failed = caught.value.result
+            assert failed.checkpoint is not None
+            assert [item.call_id for item in failed.conversation.items if isinstance(item, dagent.ToolResultMessage)] == ["call_1", "call_2"]
+            records = failed.conversation.compaction_state.failed_records
+            assert len(records) == 1
+            record = CompactionRecordV1.model_validate_json((tmp_path / "run" / records[0].record.path).read_text())
+            assert record.status == "complete"
+            assert record.calls
+            assert summaries == 1
+            with pytest.raises(ProviderCapabilityError) as repeated:
+                await runner.run(agent, input="Continue.", conversation=failed.conversation,
+                                 workspace_path=tmp_path / "run")
+            assert summaries == 1
+            assert repeated.value.result.conversation.compaction_state.failed_records[0].record == records[0].record
+            fail = False
+            continued = await runner.run(agent, input="Continue.", conversation=repeated.value.result.conversation,
+                                         workspace_path=tmp_path / "run")
+            assert continued.output_text == "done"
+            assert summaries == 1
+            assert continued.conversation.summary.compaction_record == records[0].record
+            assert continued.state.context_usage[-1].estimated_input_tokens <= continued.state.context_usage[-1].input_budget_tokens
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from dagent.harness_runtime.context import (
@@ -19,12 +19,13 @@ from dagent.harness_runtime.context import (
 from dagent.harness_runtime.compaction import CompactionError
 from dagent.harness_runtime.frozen_results import (
     RecoveryAccess, freeze_result_displays, reference_frozen_result_displays,
+    validate_frozen_result_recovery,
 )
 from dagent.harness_runtime.result_projection import ResultBudgetExceeded
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import StructuredOutputFormat
 from dagent.providers.model_io import ModelRequest, ModelTokenCount, PreparedModelCall, model_request_to_chat
-from dagent.providers.openai_compatible import ProviderCapabilityError
+from dagent.providers.openai_compatible import ProviderCapabilityError, ProviderContextWindowError
 from dagent.schemas.context import ContextPolicy, ContextUsage, ContextWindowExceeded, ReasoningEffort
 from dagent.schemas.conversation import (
     AssistantMessage, CompactionState, ConversationState, FailedCompaction, UserMessage,
@@ -42,6 +43,30 @@ class _Candidate:
     window: int
     input_budget: int
     output: int
+
+
+@dataclass
+class _CompactionProgress:
+    conversation: ConversationState
+    failed: set[str] = field(init=False)
+    failed_records: list[FailedCompaction] = field(init=False)
+    staged_records: list[FailedCompaction] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        state = self.conversation.compaction_state
+        self.failed = set(state.failed_sources if state else ())
+        self.failed_records = list(state.failed_records if state else ())
+
+    def snapshot(self) -> ConversationState:
+        if not (self.failed or self.failed_records or self.staged_records):
+            return self.conversation
+        keys = self.failed | {key for record in self.staged_records for key in record.source_keys}
+        records = tuple({record.record.sha256: record for record in
+                         [*self.failed_records, *self.staged_records]}.values())
+        state = CompactionState(failed_sources=tuple(sorted(keys)), failed_records=records)
+        return self.conversation.model_copy(update={
+            "compaction_state": state, "revision": self.conversation.revision + 1,
+        })
 
 
 def _source_key(item: Any, policy: ContextPolicy, namespace: str = "") -> str:
@@ -105,6 +130,41 @@ async def prepare_context(
     result_store: ResultStore | None,
     compactor: Any,
 ) -> PreparedModelContext:
+    progress = _CompactionProgress(conversation)
+    try:
+        return await _prepare_context(
+            assembler, system_message=system_message, conversation=conversation,
+            tools=tools, policy=policy, active_run_id=active_run_id,
+            response_format=response_format, stream=stream,
+            max_output_tokens=max_output_tokens, reasoning_effort=reasoning_effort,
+            purpose=purpose, result_store=result_store, compactor=compactor,
+            compaction_progress=progress,
+        )
+    except (ContextWindowExceeded, ProviderCapabilityError, ResultBudgetExceeded, OSError) as exc:
+        # The original items remain authoritative until the final gate passes.
+        # Keep every paid replacement and failed span even when a later render,
+        # prepare, or storage operation fails. Cancellation bypasses this path.
+        exc._conversation = progress.snapshot()
+        raise
+
+
+async def _prepare_context(
+    assembler: ContextAssembler,
+    *,
+    system_message: dict[str, Any],
+    conversation: ConversationState,
+    tools: Sequence[dict[str, Any]],
+    policy: ContextPolicy,
+    active_run_id: str | None,
+    response_format: StructuredOutputFormat | None,
+    stream: bool,
+    max_output_tokens: int | None,
+    reasoning_effort: ReasoningEffort | None,
+    purpose: str,
+    result_store: ResultStore | None,
+    compactor: Any,
+    compaction_progress: _CompactionProgress,
+) -> PreparedModelContext:
     working = conversation
     active_run_id = active_run_id or _latest_run_id(working.items)
     omitted: set[str] = set()
@@ -112,17 +172,10 @@ async def prepare_context(
     method = "none"
     reason: str | None = None
     prefix_break: str | None = None
-    failed = set(working.compaction_state.failed_sources if working.compaction_state else ())
-    failed_records = list(working.compaction_state.failed_records if working.compaction_state else ())
-    staged_records: list[FailedCompaction] = []
-
-    def failure_snapshot() -> ConversationState:
-        if not (failed or failed_records or staged_records):
-            return conversation
-        keys = failed | {key for record in staged_records for key in record.source_keys}
-        records = tuple({record.record.sha256: record for record in [*failed_records, *staged_records]}.values())
-        snapshot_state = CompactionState(failed_sources=tuple(sorted(keys)), failed_records=records)
-        return conversation.model_copy(update={"compaction_state": snapshot_state, "revision": conversation.revision + 1})
+    failed = compaction_progress.failed
+    failed_records = compaction_progress.failed_records
+    staged_records = compaction_progress.staged_records
+    failure_snapshot = compaction_progress.snapshot
     source_keys: dict[int, tuple[Any, str]] = {}
     source_namespace = ""
 
@@ -132,6 +185,7 @@ async def prepare_context(
             source_keys[identity] = (item, _source_key(item, policy, source_namespace))
         return source_keys[identity][1]
     access = RecoveryAccess.from_tools(result_store, tools) if result_store else None
+    validate_frozen_result_recovery(working, access)
     requested_output = max_output_tokens if max_output_tokens is not None else assembler.max_output_tokens
     automatic_output = requested_output is None
     if requested_output is None:
@@ -178,7 +232,20 @@ async def prepare_context(
             # planning candidate must be compacted before asking the renderer;
             # every sendable candidate still passes the final count below.
             if (force_count or math.ceil(rough * (1 + policy.token_safety_margin)) <= known_window - output) and assembler.prepared_token_counter is not None:
-                count = await assembler.prepared_token_counter(prepared)
+                try:
+                    count = await assembler.prepared_token_counter(prepared)
+                except ProviderContextWindowError as exc:
+                    assembler.server_max_model_len = exc.max_model_len
+                    window = min(value for value in (
+                        assembler.configured_context_window_tokens,
+                        assembler.server_max_model_len,
+                        assembler.model_context_window_tokens,
+                    ) if value is not None)
+                    inferred_output = min(8192, max(1, window // 8))
+                    if automatic_output and requested_output != inferred_output:
+                        requested_output = inferred_output
+                        return await project(force_count=force_count)
+                    raise
         else:
             # Useful for standalone assembly/custom model-aware counters. The
             # ToolAgent boundary separately requires prepared-call support.
@@ -278,6 +345,7 @@ async def prepare_context(
     # One episode shares the compactor's eight-call budget. Selection always
     # moves forward, and failed identical sources are not retried on every turn.
     attempts = 0
+    considered_records: set[tuple[str, str | None]] = set()
     while compactor is not None and state.estimate > math.floor(state.input_budget * policy.compaction_trigger_ratio) and attempts < 8:
         hard = state.estimate > state.input_budget
         ranges = _eligible_slices(working, active_run_id, request=state.request, assembler=assembler,
@@ -286,7 +354,33 @@ async def prepare_context(
             break
         selected = None
         fallback_only = False
-        for start, end in ranges:
+        cached_summary = None
+        reuse = getattr(compactor, "reuse_compaction", None)
+        if callable(reuse):
+            positions = {source_key(item): index for index, item in enumerate(working.items)}
+            boundaries = set(_atomic_groups(working.items, start=0, end=len(working.items)))
+            starts = {start for start, _ in boundaries}
+            ends = {end for _, end in boundaries}
+            for record in reversed(failed_records):
+                # A later paid record can depend on an earlier replacement.
+                # Retry its exact match after restoring that earlier root.
+                reuse_key = (record.record.sha256, summary_key())
+                if reuse_key in considered_records:
+                    continue
+                indices = sorted(positions[key] for key in record.source_keys if key in positions)
+                if (not indices or len(indices) != len(record.source_keys)
+                        or indices != list(range(indices[0], indices[-1] + 1))):
+                    continue
+                start, end = indices[0], indices[-1] + 1
+                if start not in starts or end not in ends or not any(left <= start and end <= right for left, right in ranges):
+                    continue
+                considered_records.add(reuse_key)
+                cached_summary = await reuse(working.summary, working.items[start:end],
+                    policy.summary_max_tokens, record_reference=record.record)
+                if cached_summary is not None:
+                    selected = (start, end)
+                    break
+        for start, end in ranges if selected is None else ():
             # Split only between complete atomic exchanges. New work can be
             # summarized without repeatedly sending a failed unchanged span.
             for group_start, group_end in _atomic_groups(working.items, start=start, end=end):
@@ -319,7 +413,9 @@ async def prepare_context(
         compactor.source_request = state.request
         attempts += 1
         try:
-            if fallback_only:
+            if cached_summary is not None:
+                summary = cached_summary
+            elif fallback_only:
                 keys = {source_key(item) for item in source_items}
                 prior_record = next((record.record for record in reversed(failed_records) if set(record.source_keys) == keys), None)
                 summary = await compactor.reference_fallback(working.summary, source_items, summary_goal,
@@ -363,6 +459,23 @@ async def prepare_context(
     # wrappers or the final rendered token count made its first goal too large.
     tighten = getattr(compactor, "tighten", None)
     root_key = summary_key()
+    if working.summary is not None and root_key in failed and state.estimate > state.input_budget:
+        reuse = getattr(compactor, "reuse_compaction", None)
+        record = next((record.record for record in reversed(failed_records)
+                       if record.source_keys == (root_key,)), None)
+        if callable(reuse) and record is not None:
+            summary = await reuse(working.summary, (), policy.summary_max_tokens,
+                                  record_reference=record)
+            if summary is not None:
+                before, before_state = working, state
+                working = working.model_copy(update={"summary": summary, "revision": working.revision + 1})
+                staged_records.append(FailedCompaction(source_keys=(root_key,), record=summary.compaction_record))
+                state = await project()
+                if state.estimate < before_state.estimate:
+                    method, reason, prefix_break = summary.method, summary.fallback_reason, "compaction"
+                    root_key = summary_key()
+                else:
+                    working, state = before, before_state
     if callable(tighten) and working.summary is not None and root_key not in failed and state.estimate > state.input_budget:
         current_tokens = assembler.token_counter.count_text(working.summary.content)
         goal = current_tokens - math.ceil((state.estimate - state.input_budget) / (1 + policy.token_safety_margin)) - 64

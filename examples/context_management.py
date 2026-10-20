@@ -88,6 +88,8 @@ async def main() -> None:
             )
             with closing(dagent.Runner(provider=provider, workspace=temporary, skill_roots=[])) as runner:
                 agent = dagent.ToolAgent(
+                    # A real text reader is required for recoverable shortening;
+                    # unreadable bodies (including NUL text) must fit intact.
                     profile="conversation", capabilities=[evidence, "tool.read_file"], max_steps=32,
                     context=dagent.ContextPolicy(
                         compaction_strategy="cache_aware", summary_max_tokens=512,

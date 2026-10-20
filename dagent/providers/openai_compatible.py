@@ -80,6 +80,17 @@ class ProviderTokenCountError(ProviderCapabilityError):
     """Exact token counting was unavailable or returned invalid data."""
 
 
+class ProviderContextWindowError(ProviderCapabilityError):
+    """A discovered server window invalidates the frozen output reservation."""
+
+    def __init__(self, *, max_model_len: int, output_limit: int) -> None:
+        self.max_model_len = max_model_len
+        super().__init__(
+            f"The effective output limit ({output_limit}) must be smaller than "
+            f"the server context window ({max_model_len})."
+        )
+
+
 class ProviderRequestError(RuntimeError):
     """A transport failure with public model-call attempt diagnostics."""
 
@@ -176,6 +187,7 @@ class OpenAICompatibleProvider:
         self._tokenize_unavailable = False
         self._openapi_document: Mapping[str, Any] | None = None
         self._render_unavailable: set[str] = set()
+        self._window_probe_results: dict[tuple[str, str], int] = {}
         self.server_max_model_len: int | None = None
 
     @property
@@ -295,7 +307,8 @@ class OpenAICompatibleProvider:
             output_field, output_limit = _strict_output_limit(payload, protocol, capabilities)
             if bool(payload.get("stream", False)) != stream:
                 raise ProviderCapabilityError("A strict context budget cannot override the request's stream mode.")
-            if payload.get("truncate_prompt_tokens") is not None or payload.get("truncation") not in (None, "disabled"):
+            if (payload.get("truncate_prompt_tokens") is not None
+                    or ("truncation" in payload and payload["truncation"] != "disabled")):
                 raise ProviderCapabilityError("Strict context budgets require server-side input truncation to be disabled.")
             if protocol == "responses" and (payload.get("previous_response_id") is not None or payload.get("store", False) is not False):
                 raise ProviderCapabilityError("Strict Responses budgets require stateless requests with store=false.")
@@ -567,16 +580,50 @@ class OpenAICompatibleProvider:
             raise
         if token_count is not None:
             if render_error is not None:
+                self._check_discovered_output_window(call, token_count.max_model_len)
                 input_budget = self.context_window_tokens - (call.effective_max_output_tokens or 1)
                 if token_count.exact is not True or token_count.count <= input_budget:
                     raise render_error
                 return replace(token_count, exact=False)
             return token_count
         if render_error is not None:
+            # A Responses request (or renderer-specific Chat input) cannot be
+            # counted by TokenizeChatRequest. Its completion tokenizer can
+            # still independently discover the window. Never use this probe's
+            # token count as a count of the original generation request.
+            try:
+                model_len = await self._probe_prepared_context_window(call)
+            except ProviderCapabilityError:
+                raise render_error
+            self._check_discovered_output_window(call, model_len)
             raise render_error
         if call.token_counting == "vllm":
             raise ProviderTokenCountError("No compatible vLLM render/tokenize endpoint is available for the prepared request.")
         return None
+
+    def _check_discovered_output_window(
+        self, call: PreparedModelCall, model_len: int | None,
+    ) -> None:
+        output = call.effective_max_output_tokens
+        if model_len is not None and output is not None and output >= model_len:
+            raise ProviderContextWindowError(max_model_len=model_len, output_limit=output)
+
+    async def _probe_prepared_context_window(self, call: PreparedModelCall) -> int | None:
+        if self._tokenize_unavailable or call.capabilities.tokenize == "unsupported":
+            return None
+        model = call.payload["model"]
+        key = (call.base_url, model)
+        if key in self._window_probe_results:
+            return self._window_probe_results[key]
+        result = await self._prepared_counter_post(
+            "/tokenize", {"model": model, "prompt": "Context window probe"}, call,
+        )
+        if result is None:
+            return None
+        model_len = self._prepared_model_len(result.get("max_model_len"), call)
+        if model_len is not None:
+            self._window_probe_results[key] = model_len
+        return model_len
 
     async def _count_tokenize_prepared(self, call: PreparedModelCall) -> ModelTokenCount | None:
         tokenize = self._prepared_tokenize_body(call)

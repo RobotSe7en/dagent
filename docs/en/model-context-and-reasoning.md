@@ -511,6 +511,13 @@ supported server counting path is available. `ContextUsage.count_precision`
 distinguishes `rendered`, `tokenized_estimate`, and `estimated`, independently of
 `estimator`. `request_fingerprint` identifies the frozen body, not a cache key.
 
+Strict budgets reject explicit `truncation=null` as well as automatic server
+truncation; omit the field or use `"disabled"`. If rendering rejects an automatic
+output reservation before returning a count, a supported tokenizer endpoint can
+discover the model window separately. A window-only probe is not a count of the
+generation request. The SDK rebuilds the automatic reservation and renders the
+final request again; explicit output limits are never silently reduced.
+
 Render availability is version- and deployment-dependent. In the
 [verified vLLM source](https://github.com/vllm-project/vllm/blob/428cd0cb4a42750f5339d08bb67d534cf8051429/vllm/entrypoints/scale_out/render/api_router.py),
 the render routes use the full generation request schema; an ordinary server
@@ -554,13 +561,23 @@ batch can make one explicit transition to reference-only display, recorded as
 `prefix_break_reason="emergency_result_reference"`. All calls, arguments,
 statuses, and corresponding result messages remain present.
 
+Human review feedback is retained independently of an externalized result body.
+It is required display metadata, including after emergency shortening, rather
+than part of the body's truncatable allowance or its character offsets.
+
 Shortening requires the original received text to be readable through the
 agent's existing boundary-checked recovery tool. Tools are not silently added.
-Unreadable result bodies stay intact. Recovery restores what the SDK received;
+Unreadable result bodies stay intact, including NUL text that the built-in file
+reader cannot recover. Budget pressure can then require an explicit failure.
+Recovery restores what the SDK received;
 upstream source truncation cannot be undone. The active user instructions and
 complete latest call/result relationships are protected. Oversized system
 instructions, tool schemas, user input, call arguments, or minimum result
 metadata can therefore still require `ContextWindowExceeded`.
+
+An older frozen display with hidden text also requires working recovery. If its
+reader or source becomes unavailable, preparation fails without rewriting the
+receipt; a display that already contains the complete body remains usable.
 
 `allow_reference_fallback=False` preserves raw source when complete semantic
 summarization fails. A request that still fits may continue. Setting it to `True`
@@ -570,6 +587,18 @@ hard check still applies. `ContextSummary.method="reference_fallback"` and the
 archived record's `partial` or `reference_only` status distinguish this from a
 complete summary. Neither mode promises lossless semantics or zero context errors.
 
+Old partial summaries are reused only for matching input. If another compaction
+changed the root, enabled reference fallback retains the current source and
+explicit unresolved ranges without repeating a model request for that source.
+
+A runtime archive index reuses verified reference links across preparations.
+Every traversal checks file identity; unchanged historical bodies need not be
+reread, rehashed or reparsed. Changed files are reverified; missing or corrupt
+files still fail verification. A new runtime or workspace verifies its history
+afresh. Body I/O is reduced,
+while file-state traversal remains proportional to retained history. The index
+retains links and file identities, not all historical bodies.
+
 ### Failure snapshots and cache verification
 
 For a new-strategy context preparation failure, the original exception keeps its
@@ -578,6 +607,10 @@ execution configuration also supplies a checkpoint through the result and
 `Runner.run_checkpoint(run_id)`. If a later server discovery invalidates an
 explicit output limit, this snapshot keeps the last valid generation configuration;
 initially invalid configuration has no resolved checkpoint.
+Preparation/counting failures after a successful summary also retain the paid
+record. A new run can reuse complete results for matching input, but must pass
+the final budget check before committing them. Original error types and
+cancellation still propagate.
 After resolving the size or capability problem, start a **new run** with
 `Runner.run(agent, input="Continue from the saved progress.",
 conversation=error.result.conversation)`. This is conversation continuation, not

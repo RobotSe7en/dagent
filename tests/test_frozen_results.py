@@ -19,7 +19,7 @@ from dagent.schemas.common import Boundary
 from dagent.schemas.context import ContextPolicy
 from dagent.schemas.conversation import (
     AssistantMessage, ContextSummary, ConversationState, InlineContent,
-    ToolCallItem, ToolResultMessage,
+    FrozenResultDisplay, ToolCallItem, ToolResultMessage,
 )
 from dagent.schemas.retention import ResultRetention, ResultCursor
 
@@ -107,6 +107,137 @@ def test_no_shortening_without_actual_checked_recovery(tmp_path, access_kind):
     assert original in frozen.items[1].model_display.text
     with pytest.raises(ResultBudgetExceeded):
         _freeze(_conversation(original), store, budget=512, access=access, cap=64)
+
+
+def test_nul_text_cannot_be_hidden_behind_an_unreadable_file_window(tmp_path):
+    from dagent.capabilities.tools.file_tools import read_file
+
+    store = ResultStore(tmp_path, ".runtime")
+    source = "a" * 5000 + "\0" + "b" * 5000
+    reference = store.snapshot_text(source)
+    access = RecoveryAccess(store, True)
+    assert not access.can_read(reference)
+    with pytest.raises(ValueError, match="not a UTF-8 text file"):
+        read_file(tmp_path / reference.path, offset_chars=4900, limit_chars=200)
+    frozen = _freeze(_conversation(source), store, access=access, cap=64)
+    assert source in frozen.items[1].model_display.text
+    assert frozen.items[1].model_display.displayed_spans == ((0, len(source)),)
+    with pytest.raises(ResultBudgetExceeded):
+        _freeze(_conversation(source), store, budget=512, access=access, cap=64)
+    with pytest.raises(ResultBudgetExceeded, match="unreadable recovery reference"):
+        reference_frozen_result_displays(
+            frozen, result_store=store, recovery_access=access, result_ids={frozen.items[1].id},
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source,tools", [("start" * 1000 + "\0" + "end" * 1000, _reader_tools()),
+                                          ("Unicode文字🙂" * 1000, [])])
+@pytest.mark.parametrize("complete", [False, True])
+@pytest.mark.parametrize("has_spans", [False, True])
+async def test_old_frozen_receipt_requires_recovery_only_for_hidden_body(tmp_path, source, tools, complete, has_spans):
+    from dagent.harness_runtime.context import ContextAssembler
+
+    store = ResultStore(tmp_path, ".runtime")
+    conversation = _conversation(source)
+    result = conversation.items[1]
+    reference = store.snapshot_text(source)
+    body = source if complete else source[:10] + "\n…\n" + source[-10:]
+    spans = (((0, len(source)),) if complete else ((0, 10), (len(source) - 10, len(source)))) if has_spans else ()
+    # Metadata labels do not determine whether the original result is present.
+    # This represents receipts saved before the recovery validation was added.
+    display = FrozenResultDisplay(
+        text="[status=completed]\n[TRUNCATED] historical metadata\n" + body,
+        recovery=reference, displayed_spans=spans,
+    )
+    result = result.model_copy(update={"content": reference, "model_display": display})
+    conversation = conversation.model_copy(update={"items": (conversation.items[0], result)})
+    assembler = ContextAssembler(context_window_tokens=131072, max_output_tokens=8192)
+    options = dict(system_message={"content": "instructions"}, conversation=conversation,
+                   result_store=store, tools=tools, enable_new_strategy=True)
+    if complete:
+        prepared = await assembler.prepare(policy=ContextPolicy(compaction_strategy="cache_aware"), **options)
+        assert prepared.conversation.items[1].model_display == display
+        assert source in prepared.request.items[-1].content
+    else:
+        with pytest.raises(ResultBudgetExceeded, match="undisplayed text.*recovery reference is unavailable") as caught:
+            await assembler.prepare(policy=ContextPolicy(compaction_strategy="cache_aware"), **options)
+        assert caught.value._conversation == conversation
+    # Legacy projection and serialized receipts remain unchanged.
+    legacy = await assembler.prepare(policy=ContextPolicy(), **options)
+    assert legacy.conversation.items[1].model_display == display
+    assert legacy.request.items[-1].content == display.text
+
+
+@pytest.mark.asyncio
+async def test_empty_frozen_body_needs_no_recovery_capability(tmp_path):
+    from dagent.harness_runtime.context import ContextAssembler
+
+    store = ResultStore(tmp_path, ".runtime")
+    frozen = _freeze(_conversation(""), store, access=RecoveryAccess(store, False))
+    prepared = await ContextAssembler().prepare(
+        system_message={"content": "instructions"}, conversation=frozen,
+        result_store=store, policy=ContextPolicy(compaction_strategy="cache_aware"), enable_new_strategy=True,
+    )
+    assert prepared.conversation.items[1].model_display == frozen.items[1].model_display
+
+
+@pytest.mark.parametrize("data,readable", [
+    (b"a" * 65535 + "🙂".encode() + b"\r\n", True),
+    (b"\xef\xbb\xbf" + "Unicode文字".encode(), True),
+    (b"a" * 65535 + b"\xf0\x9f", False),
+    (b"a" * 65535 + b"\0", False),
+])
+def test_text_recovery_validation_shares_the_integrity_scan(tmp_path, monkeypatch, data, readable):
+    from pathlib import Path
+    from dagent.schemas.conversation import ContentReference
+
+    path = tmp_path / "source.txt"
+    path.write_bytes(data)
+    reference = ContentReference(path="source.txt", byte_length=len(data), sha256=hashlib.sha256(data).hexdigest())
+    store = ResultStore(tmp_path, ".runtime")
+    access = RecoveryAccess(store, True)
+    opens = []
+    original_open = Path.open
+
+    def count_open(target, *args, **kwargs):
+        if target == path and args and args[0] == "rb":
+            opens.append(target)
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", count_open)
+    assert access.can_read(reference) is readable
+    assert RecoveryAccess(store, True).can_read(reference) is readable
+    assert len(opens) == 1
+    path.write_bytes(b"changed")
+    assert not access.can_read(reference)
+    assert len(opens) == 2
+
+
+def test_reviewer_feedback_is_mandatory_and_separate_from_received_body(tmp_path):
+    from dagent.harness_runtime.compaction import _source_texts
+
+    store = ResultStore(tmp_path, ".runtime")
+    source = "received evidence " * 1000
+    feedback = "Do not repeat the operation. " * 50
+    conversation = _conversation(source)
+    item = conversation.items[1].model_copy(update={"reviewer_feedback": feedback})
+    conversation = conversation.model_copy(update={"items": (conversation.items[0], item)})
+    frozen = _freeze(conversation, store, cap=64)
+    result = frozen.items[1]
+    assert f"Reviewer feedback: {feedback}" in result.model_display.text
+    assert store.read_reference(result.model_display.recovery).decode() == source
+    for start, end in result.model_display.displayed_spans:
+        assert source[start:end] in result.model_display.text
+    assert feedback in _source_texts(None, (result,))[result.id]
+    assert feedback in _source_texts(None, (item,))[item.id]
+    emergency = reference_frozen_result_displays(
+        frozen, result_store=store, recovery_access=RecoveryAccess(store, True), result_ids={result.id},
+    )
+    assert f"Reviewer feedback: {feedback}" in emergency.items[1].model_display.text
+    assert emergency.items[1].model_display.displayed_spans == ()
+    with pytest.raises(ResultBudgetExceeded, match="Minimum information"):
+        _freeze(conversation, store, budget=64, cap=64)
 
 
 def test_file_window_coordinates_remain_distinct_from_snapshot_spans(tmp_path):

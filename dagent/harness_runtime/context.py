@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from dagent.harness_runtime.result_storage import ResultStore
+from dagent.harness_runtime.conversation_resources import ConversationResourceIndex
 from dagent.harness_runtime.result_projection import (
     ResultBudgetExceeded,
     project_result,
@@ -197,6 +198,7 @@ class ContextAssembler:
         self.request_preparer = request_preparer
         self.prepared_token_counter = prepared_token_counter
         self.estimator = "custom" if token_counter is not None else "heuristic"
+        self._compaction_resource_index: ConversationResourceIndex | None = None
 
     async def prepare(
         self,

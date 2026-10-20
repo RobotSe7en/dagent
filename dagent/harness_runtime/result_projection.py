@@ -181,6 +181,8 @@ def project_result(
             and not read_available
         )
         metadata = [status]
+        if isinstance(item, ToolResultMessage) and item.reviewer_feedback:
+            metadata.append(f"Reviewer feedback: {item.reviewer_feedback}")
         if truncated:
             metadata.append("[TRUNCATED] model display shortened; received result has undisplayed text")
         if file_window and retention:

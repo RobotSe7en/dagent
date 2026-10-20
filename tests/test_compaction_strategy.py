@@ -299,6 +299,65 @@ async def test_failed_record_reuses_partial_chunks_without_new_model_calls(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_failed_record_with_changed_root_keeps_evidence_without_stale_chunks(tmp_path):
+    calls = 0
+    failing = True
+
+    async def chat(request):
+        nonlocal calls
+        calls += 1
+        if failing and calls > 1:
+            return ModelResponse(content="invalid")
+        return summary_response(request)
+
+    item = UserMessage(id="old", content="old evidence " * 2000)
+    engine = compactor(tmp_path, chat, fallback=True)
+    with pytest.raises(CompactionError) as caught:
+        await engine.compact(None, (item,), 256)
+    failed_ref = caught.value.compaction_record
+    failed = CompactionRecordV1.model_validate_json(engine.result_store.read_reference(failed_ref))
+    assert failed.chunks
+
+    failing = False
+    engine.reset_budget()
+    current = await engine.compact(None, (UserMessage(id="new", content="New root."),), 256)
+    paid_calls = calls
+    engine.reset_budget()
+    recovered = await engine.reference_fallback(current, (item,), 256,
+        reason="old source already attempted", failed_record=failed_ref)
+    record = record_for(engine, recovered)
+    assert calls == paid_calls
+    assert record.reused_from == failed_ref
+    assert record.previous_record == current.compaction_record
+    assert record.chunks == ()
+    assert record.unresolved_ranges == record.source_ranges
+    assert recovered.method == "reference_fallback"
+    assert "[DEGRADED_CONTEXT]" in recovered.content
+
+
+@pytest.mark.asyncio
+async def test_complete_paid_record_reuse_requires_exact_source_and_runs_without_fallback(tmp_path):
+    calls = 0
+
+    async def chat(request):
+        nonlocal calls
+        calls += 1
+        return summary_response(request)
+
+    engine = compactor(tmp_path, chat)
+    item = UserMessage(id="source", content="Important evidence.")
+    first = await engine.compact(None, (item,), 256)
+    second = await engine.reuse_compaction(None, (item,), 256,
+        record_reference=first.compaction_record)
+    assert second == first
+    assert calls == 1
+    assert await engine.reuse_compaction(None,
+        (item.model_copy(update={"content": "Changed evidence."}),), 256,
+        record_reference=first.compaction_record) is None
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_missing_raw_recovery_reference_prevents_normal_compaction(tmp_path):
     async def chat(_request):
         raise AssertionError("Missing raw result must be found before a model call")
@@ -419,6 +478,8 @@ async def test_root_tightening_once_preserves_source_chain_without_raw_replay(tm
     engine = compactor(tmp_path, chat)
     first = await engine.compact(None, (UserMessage(id="raw", content="RAW_NOT_TO_REPLAY"),), 256)
     second = await engine.tighten(first, 128)
+    reused = await engine.reuse_compaction(first, (), 128, record_reference=second.compaction_record)
+    assert reused == second
     assert len(requests) == 2
     assert "RAW_NOT_TO_REPLAY" not in requests[-1].items[0].content
     assert first.content in requests[-1].items[0].content

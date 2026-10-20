@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import hashlib
 import os
 from typing import Any
 
@@ -47,8 +48,10 @@ class RecoveryAccess:
                 break
         return cls(result_store, read_file_enabled=enabled)
 
-    def can_read(self, reference: ContentReference) -> bool:
+    def can_read(self, reference: ContentReference, *, received_text: str | None = None) -> bool:
         if not self.read_file_enabled:
+            return False
+        if received_text is not None and "\0" in received_text:
             return False
         store = self.result_store
         try:
@@ -58,7 +61,8 @@ class RecoveryAccess:
                 enforce_path_allowed(reference.path, store.read_boundary, store.workspace)
             if not path.is_file() or not os.access(path, os.R_OK):
                 return False
-            store.verify_reference(reference)
+            if not store.is_text_reference(reference):
+                return False
         except (BoundaryViolation, ValueError, OSError):
             return False
         return True
@@ -87,6 +91,31 @@ def _replace_results(conversation: ConversationState, updates: dict[str, ResultI
             )})
         items.append(item)
     return conversation.model_copy(update={"items": tuple(items), "revision": conversation.revision + 1})
+
+
+def validate_frozen_result_recovery(
+    conversation: ConversationState,
+    recovery_access: RecoveryAccess | None,
+) -> None:
+    """Reject hidden historical evidence when its recovery is unavailable.
+
+    A complete raw result is the display's suffix, so its stored byte length
+    and digest prove completeness without parsing metadata or rereading the
+    snapshot. This also handles old receipts without displayed spans.
+    """
+
+    for identity, item in _results(conversation):
+        display = item.model_display
+        if display is None or (recovery_access is not None and recovery_access.can_read(display.recovery)):
+            continue
+        shown = display.text.encode("utf-8")
+        length = display.recovery.byte_length
+        body = shown[-length:] if length else b""
+        if len(shown) >= length and hashlib.sha256(body).hexdigest() == display.recovery.sha256:
+            continue
+        raise ResultBudgetExceeded(
+            f"Frozen result {identity} has undisplayed text but its recovery reference is unavailable."
+        )
 
 
 def _display_item(item: ResultItem, text: str, recovery: ContentReference) -> ResultItem:
@@ -121,7 +150,7 @@ def freeze_result_displays(
         text = (result_store.read_reference(item.content).decode("utf-8")
                 if isinstance(item.content, ContentReference) else item.content.text)
         recovery = result_store.snapshot_text(text)
-        readable = recovery_access.can_read(recovery)
+        readable = recovery_access.can_read(recovery, received_text=text)
         shown = _display_item(item, text, recovery)
         minimum = project_result(
             shown, 2**60, counter, read_available=readable,

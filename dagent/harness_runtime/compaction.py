@@ -311,11 +311,38 @@ class HistoryCompactor:
         chunks: list[CompactionChunk] = []
         if failed_record:
             record = CompactionRecordV1.model_validate_json(self._read_reference(failed_record))
-            if record.source_digest != source.sha256:
-                raise CompactionError("Failed compaction record does not match the current source.")
-            chunks = list(record.chunks)
+            # The failed item projection can remain unchanged while a later
+            # slice updates the root. Chunks summarize both inputs, so only an
+            # exact source match is reusable; the old record remains evidence.
+            if record.source_digest == source.sha256:
+                chunks = list(record.chunks)
         return self._fallback(previous, items, source, sources, chunks,
                               max_tokens, reason=reason, reused_from=failed_record)
+
+    async def reuse_compaction(
+        self, previous: ContextSummary | None, items: tuple[ConversationItem, ...],
+        max_tokens: int, *, record_reference: ContentReference,
+    ) -> ContextSummary | None:
+        """Recover an exact paid replacement without issuing another request."""
+
+        record = CompactionRecordV1.model_validate_json(self._read_reference(record_reference))
+        if record.status != "complete" or record.task_summary is None or record.unresolved_ranges:
+            return None
+        source = self._archive(previous, items)
+        if record.source_digest != source.sha256:
+            return None
+        try:
+            content = self._summary_content(previous, record.task_summary, max_tokens)
+        except CompactionError:
+            return None
+        last_call = record.calls[-1] if record.calls else None
+        return ContextSummary(
+            content=content,
+            source_item_count=(previous.source_item_count if previous else 0) + len(items),
+            compaction_record=record_reference,
+            usage=last_call.usage if last_call else None,
+            model_call=last_call.model_call if last_call else None,
+        )
 
     async def tighten(self, summary: ContextSummary, max_tokens: int, *,
                       allow_fallback: bool = False) -> ContextSummary:
@@ -577,7 +604,7 @@ class HistoryCompactor:
     def _archive(self, previous: ContextSummary | None,
                  items: tuple[ConversationItem, ...]) -> ContentReference:
         from dagent.harness_runtime.conversation_resources import (
-            ConversationResourceError, iter_resource_closure,
+            ConversationResourceError, ConversationResourceIndex, iter_resource_closure,
         )
 
         if self.result_store is None:
@@ -601,8 +628,12 @@ class HistoryCompactor:
             roots.append((previous.compaction_record, "record"))
         if previous and previous.result_manifest:
             roots.append((previous.result_manifest, "legacy_results"))
+        index = self.assembler._compaction_resource_index
+        if index is None or index.workspace != self.result_store.workspace:
+            index = ConversationResourceIndex(self.result_store.workspace)
+            self.assembler._compaction_resource_index = index
         try:
-            for _ in iter_resource_closure(roots, self.result_store.read_reference):
+            for _ in iter_resource_closure(roots, self.result_store.read_reference, index=index):
                 pass
         except (OSError, ValueError, ConversationResourceError) as exc:
             raise CompactionArchiveError(f"Cannot retain compaction source references: {exc}") from exc
@@ -621,6 +652,14 @@ class HistoryCompactor:
         source: ContentReference, sources: dict[str, str], chunks: list[CompactionChunk],
         summary: TaskSummary, response: ModelResponse | None, max_tokens: int,
     ) -> ContextSummary:
+        content = self._summary_content(previous, summary, max_tokens)
+        record = self._save_record(previous, source, sources, chunks, status="complete", task_summary=summary)
+        return ContextSummary(content=content, source_item_count=(previous.source_item_count if previous else 0) + len(items),
+                              compaction_record=record, usage=response.usage if response else None,
+                              model_call=response.metadata if response else None)
+
+    def _summary_content(self, previous: ContextSummary | None,
+                         summary: TaskSummary, max_tokens: int) -> str:
         content = summary.render()
         if self.assembler.token_counter.count_text(content) > max_tokens:
             raise CompactionError("Final task summary exceeds its budget.")
@@ -628,10 +667,7 @@ class HistoryCompactor:
             banner = ("[DEGRADED_CONTEXT] Earlier history or checkpoint detail is only "
                       "available through the compaction source index.")
             content = self._bounded_summary_text(summary, banner, max_tokens)
-        record = self._save_record(previous, source, sources, chunks, status="complete", task_summary=summary)
-        return ContextSummary(content=content, source_item_count=(previous.source_item_count if previous else 0) + len(items),
-                              compaction_record=record, usage=response.usage if response else None,
-                              model_call=response.metadata if response else None)
+        return content
 
     def _fallback(
         self, previous: ContextSummary | None, items: tuple[ConversationItem, ...],
@@ -642,10 +678,13 @@ class HistoryCompactor:
             ConversationResourceError, iter_resource_closure,
         )
 
-        def read_checked(ref: ContentReference) -> bytes:
+        def check_readable(ref: ContentReference) -> None:
             allowed = self.read_available(ref) if callable(self.read_available) else self.read_available
             if not allowed:
                 raise CompactionArchiveError("Reference fallback requires an available read capability and allowed source.")
+
+        def read_checked(ref: ContentReference) -> bytes:
+            check_readable(ref)
             return self._read_reference(ref)
 
         roots = [(source, "source")]
@@ -654,8 +693,10 @@ class HistoryCompactor:
         if reused_from:
             roots.append((reused_from, "record"))
         try:
-            for _ in iter_resource_closure(roots, read_checked):
-                pass
+            for ref in iter_resource_closure(roots, read_checked, index=self.assembler._compaction_resource_index):
+                # A cached digest is not an authorization decision. Recheck
+                # today's capability and boundary even when no body read is needed.
+                check_readable(ref)
         except ConversationResourceError as exc:
             raise CompactionArchiveError(str(exc)) from exc
         unresolved = _unresolved(sources, chunks)
@@ -783,6 +824,8 @@ def _source_texts(previous: ContextSummary | None,
         else:
             text = f"Tool {item.capability_id or item.name} ({item.status}):\n"
             text += item.model_display.text if item.model_display else stored_content_text(item.content)
+            if item.model_display is None and item.reviewer_feedback:
+                text += "\nReviewer feedback: " + item.reviewer_feedback
         sources[item.id] = text
     return sources
 

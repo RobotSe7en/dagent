@@ -7,6 +7,7 @@ import mimetypes
 import os
 import tempfile
 from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 import json
 from pathlib import Path, PurePosixPath
 
@@ -21,6 +22,47 @@ from dagent.schemas.common import validate_runtime_directory
 
 class ConversationResourceError(RuntimeError):
     """Raised when retained conversation result data is unavailable or invalid."""
+
+
+@dataclass(frozen=True)
+class _IndexedResource:
+    file_identity: tuple[int, ...]
+    edges: tuple[tuple[ContentReference, str], ...]
+
+
+class ConversationResourceIndex:
+    """Reuse verified archive links without retaining historical file bodies.
+
+    Each traversal still checks file identity, so deletion or replacement of an
+    old leaf invalidates it immediately. Only changed or newly encountered files
+    need another full read, digest check and schema parse. This index is runtime
+    state, never a persisted assertion that a resource is trustworthy.
+    """
+
+    def __init__(self, workspace_path: str | Path) -> None:
+        self.workspace = Path(workspace_path).expanduser().resolve()
+        self._resources: dict[tuple[str, int, str, str], _IndexedResource] = {}
+
+    def edges(
+        self,
+        reference: ContentReference,
+        kind: str,
+        read_reference: Callable[[ContentReference], bytes],
+    ) -> tuple[tuple[ContentReference, str], ...]:
+        target = _resolve_workspace_resource(self.workspace, reference.path)
+        stat = target.stat()
+        identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        key = (reference.path, reference.byte_length, reference.sha256, kind)
+        cached = self._resources.get(key)
+        if cached is not None and cached.file_identity == identity:
+            return cached.edges
+        data = read_reference(reference)
+        edges = _resource_edges(data, kind)
+        after = target.stat()
+        if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise ConversationResourceError(f"Conversation resource changed during verification: {reference.path}.")
+        self._resources[key] = _IndexedResource(identity, edges)
+        return edges
 
 
 class ConversationResourceStore:
@@ -278,6 +320,8 @@ def _resource_roots(
 def iter_resource_closure(
     roots: Iterable[tuple[ContentReference, str]],
     read_reference: Callable[[ContentReference], bytes],
+    *,
+    index: ConversationResourceIndex | None = None,
 ) -> Iterator[ContentReference]:
     """Read schema-owned recovery edges, keeping ordinary result data opaque."""
 
@@ -289,9 +333,10 @@ def iter_resource_closure(
         if identity in seen:
             continue
         seen.add(identity)
-        data = read_reference(reference)
+        edges = (index.edges(reference, kind, read_reference) if index is not None
+                 else _resource_edges(read_reference(reference), kind))
         yield reference
-        pending.extend(_resource_edges(data, kind))
+        pending.extend(edges)
 
 
 def _resource_edges(data: bytes, kind: str) -> tuple[tuple[ContentReference, str], ...]:

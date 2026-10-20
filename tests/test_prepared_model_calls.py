@@ -4,11 +4,11 @@ from dataclasses import replace
 
 import httpx
 import pytest
-from openai import BadRequestError, PermissionDeniedError
+from openai import BadRequestError, InternalServerError, PermissionDeniedError
 
 from dagent.config import ProviderConfig
 from dagent.providers import OpenAICompatibleProvider, ProviderCapabilityError
-from dagent.providers.openai_compatible import ProviderTokenCountError
+from dagent.providers.openai_compatible import ProviderContextWindowError, ProviderTokenCountError
 from dagent.providers.model_io import ModelRequest, ModelUserInput
 from tests.test_model_protocols import DualProtocolClient, _openapi
 
@@ -47,6 +47,26 @@ class RenderClient(DualProtocolClient):
                 raise self.render_error
             return {"token_ids": [10, 20, 30], "sampling_params": {"max_tokens": 512}}
         return await super().post(path, body=body, **kwargs)
+
+
+class SmallWindowRenderClient(RenderClient):
+    def __init__(self, *, max_model_len=4096, always_reject=False):
+        super().__init__()
+        self.max_model_len = max_model_len
+        self.always_reject = always_reject
+
+    async def post(self, path, *, body, **kwargs):
+        self.raw_posts.append((path, body))
+        if path == "/tokenize":
+            # The Responses window probe is not a count of Responses input.
+            count = 100000 if "prompt" in body else 3
+            return {"count": count, "max_model_len": self.max_model_len}
+        assert path.endswith("/render")
+        output = body.get("max_completion_tokens", body.get("max_output_tokens"))
+        if self.always_reject or output >= self.max_model_len:
+            response = httpx.Response(400, request=httpx.Request("POST", "http://localhost" + path))
+            raise BadRequestError("validation rejected", response=response, body={})
+        return {"token_ids": [10, 20, 30]}
 
 
 @pytest.mark.asyncio
@@ -248,6 +268,168 @@ async def test_strict_server_window_shrinks_and_refreezes_automatic_output_budge
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
+@pytest.mark.parametrize("with_tools", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_render_rejection_discovers_small_window_before_refreezing_automatic_output(protocol, with_tools, stream):
+    from dagent.harness_runtime.context import ContextAssembler
+    from dagent.schemas import ContextPolicy, ConversationState, UserMessage
+
+    client = SmallWindowRenderClient()
+    configured = provider(client)
+    configured.config.protocol = protocol
+    tools = ({"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}},) if with_tools else ()
+    assembler = ContextAssembler(
+        context_window_tokens=131072,
+        request_preparer=configured.prepare_call, prepared_token_counter=configured.count_prepared,
+    )
+    prepared = await assembler.prepare(
+        system_message={"content": "Short instructions"},
+        conversation=ConversationState(items=(UserMessage(content="Hello"),)), tools=tools,
+        policy=ContextPolicy(compaction_strategy="chunked"), enable_new_strategy=True, stream=stream,
+    )
+    assert prepared.usage.context_window_tokens == 4096
+    assert prepared.usage.max_output_tokens == 512
+    assert prepared.usage.input_budget_tokens == 3584
+    assert prepared.usage.estimated_input_tokens == 3
+    assert prepared.usage.count_precision == "rendered"
+    render_path = "/v1/responses/render" if protocol == "responses" else "/v1/chat/completions/render"
+    assert [path for path, _ in client.raw_posts] == [render_path, "/tokenize", render_path]
+    measured = client.raw_posts[-1][1]
+    assert not client.completions.calls and not client.responses.calls
+    if stream:
+        _ = [event async for event in configured.stream_prepared(prepared.prepared_call)]
+    else:
+        await configured.complete_prepared(prepared.prepared_call)
+    endpoint = client.responses if protocol == "responses" else client.completions
+    sent = dict(endpoint.calls[-1])
+    sent.update(sent.pop("extra_body", {}))
+    assert sent == measured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
+@pytest.mark.parametrize("with_tools", [False, True])
+async def test_small_window_discovery_preserves_explicit_output_limit(protocol, with_tools):
+    from dagent.harness_runtime.context import ContextAssembler
+    from dagent.schemas import ContextPolicy, ConversationState, UserMessage
+
+    client = SmallWindowRenderClient()
+    configured = provider(client, max_output_tokens=8192)
+    configured.config.protocol = protocol
+    assembler = ContextAssembler(
+        context_window_tokens=131072, max_output_tokens=8192,
+        request_preparer=configured.prepare_call, prepared_token_counter=configured.count_prepared,
+    )
+    tools = ({"type": "function", "function": {"name": "lookup"}},) if with_tools else ()
+    with pytest.raises(ProviderCapabilityError, match="output limit.*8192.*4096") as failure:
+        await assembler.prepare(
+            system_message={"content": "Short instructions"},
+            conversation=ConversationState(items=(UserMessage(content="Hello"),)), tools=tools,
+            policy=ContextPolicy(compaction_strategy="chunked"), enable_new_strategy=True,
+        )
+    assert failure.value._conversation.items[-1].content == "Hello"
+    assert configured.max_output_tokens == 8192
+    assert len(client.raw_posts) == 2
+    assert not client.completions.calls and not client.responses.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
+@pytest.mark.parametrize("max_model_len", [4096, 131072])
+async def test_window_discovery_does_not_hide_unrelated_render_400(protocol, max_model_len):
+    from dagent.harness_runtime.context import ContextAssembler
+    from dagent.schemas import ContextPolicy, ConversationState, UserMessage
+
+    client = SmallWindowRenderClient(max_model_len=max_model_len, always_reject=True)
+    configured = provider(client)
+    configured.config.protocol = protocol
+    assembler = ContextAssembler(
+        context_window_tokens=131072,
+        request_preparer=configured.prepare_call, prepared_token_counter=configured.count_prepared,
+    )
+    with pytest.raises(ProviderTokenCountError, match="validation rejected"):
+        await assembler.prepare(
+            system_message={"content": "Short instructions"},
+            conversation=ConversationState(items=(UserMessage(content="Hello"),)), tools=(),
+            policy=ContextPolicy(compaction_strategy="chunked"), enable_new_strategy=True,
+        )
+    expected_renders = 2 if max_model_len == 4096 else 1
+    assert sum(path.endswith("/render") for path, _ in client.raw_posts) == expected_renders
+    if protocol == "responses":
+        assert sum(path == "/tokenize" for path, _ in client.raw_posts) == 1
+    assert not client.completions.calls and not client.responses.calls
+
+
+@pytest.mark.asyncio
+async def test_responses_window_probe_uses_frozen_model_and_transport_once():
+    client = SmallWindowRenderClient()
+    roots = []
+    options = []
+    original_post = client.post
+
+    def with_options(**kwargs):
+        if "base_url" in kwargs:
+            roots.append(kwargs["base_url"])
+        return client
+
+    async def post(path, *, body, **kwargs):
+        options.append(kwargs.get("options"))
+        return await original_post(path, body=body, **kwargs)
+
+    client.with_options = with_options
+    client.post = post
+    configured = provider(client, extra_request_args={
+        "extra_headers": {"X-Tenant": "original"}, "extra_query": {"deployment": "one"},
+    })
+    configured.config.protocol = "responses"
+    call = await configured.prepare_call(request())
+    configured.config.base_url = "http://different.invalid/v1"
+    configured.config.model = "changed-model"
+    configured.config.extra_request_args["extra_headers"]["X-Tenant"] = "changed"
+    for _ in range(2):
+        with pytest.raises(ProviderContextWindowError) as failure:
+            await configured.count_prepared(call)
+        assert failure.value.max_model_len == 4096
+    probes = [body for path, body in client.raw_posts if path == "/tokenize"]
+    assert probes == [{"model": "local-model", "prompt": "Context window probe"}]
+    assert set(roots) == {"http://localhost:8000/"}
+    assert all(value == {"headers": {"X-Tenant": "original"}, "params": {"deployment": "one"}}
+               for value in options)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token_counting", ["auto", "vllm"])
+async def test_failed_window_probe_can_recover_on_next_explicit_count(token_counting):
+    client = SmallWindowRenderClient()
+    original_post = client.post
+    attempts = 0
+
+    async def post(path, *, body, **kwargs):
+        nonlocal attempts
+        if path == "/tokenize":
+            attempts += 1
+            if attempts == 1:
+                client.raw_posts.append((path, body))
+                response = httpx.Response(500, request=httpx.Request("POST", "http://localhost/tokenize"))
+                raise InternalServerError("temporarily unavailable", response=response, body={})
+        return await original_post(path, body=body, **kwargs)
+
+    client.post = post
+    configured = provider(client, token_counting=token_counting)
+    configured.config.protocol = "responses"
+    call = await configured.prepare_call(request())
+    with pytest.raises(ProviderTokenCountError, match="validation rejected"):
+        await configured.count_prepared(call)
+    assert attempts == 1
+    with pytest.raises(ProviderContextWindowError) as failure:
+        await configured.count_prepared(call)
+    assert failure.value.max_model_len == 4096
+    assert attempts == 2
+    assert not client.completions.calls and not client.responses.calls
+
+
+@pytest.mark.asyncio
 async def test_count_uses_frozen_root_and_transport_options():
     client = RenderClient()
     roots = []
@@ -275,11 +457,31 @@ async def test_count_uses_frozen_root_and_transport_options():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("override", [{"max_completion_tokens": None}, {"truncate_prompt_tokens": -1}])
+@pytest.mark.parametrize("override", [
+    {"max_completion_tokens": None}, {"truncate_prompt_tokens": -1},
+    {"truncation": None}, {"truncation": "auto"},
+])
 async def test_strict_budget_rejects_unbounded_output_or_silent_server_truncation(override):
     configured = provider(DualProtocolClient(), extra_request_args={"extra_body": override})
     with pytest.raises(ProviderCapabilityError):
         await configured.prepare_call(request())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
+@pytest.mark.parametrize("truncation", [None, "auto", "disabled"])
+async def test_strict_truncation_check_preserves_legacy_extra_precedence(protocol, truncation):
+    client = DualProtocolClient()
+    configured = provider(client, extra_body={"truncation": truncation})
+    configured.config.protocol = protocol
+    if truncation == "disabled":
+        assert (await configured.prepare_call(request())).payload["truncation"] == "disabled"
+    else:
+        with pytest.raises(ProviderCapabilityError, match="truncation to be disabled"):
+            await configured.prepare_call(request())
+    await configured.complete(replace(request(), strict_context_budget=False))
+    endpoint = client.responses if protocol == "responses" else client.completions
+    assert endpoint.calls[-1]["extra_body"]["truncation"] == truncation
 
 
 @pytest.mark.asyncio

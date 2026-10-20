@@ -94,6 +94,8 @@ class _OptionalDisplay(BaseModel):
         payload = serializer(self)
         if self.model_display is None:
             payload.pop("model_display", None)
+        if getattr(self, "reviewer_feedback", None) is None:
+            payload.pop("reviewer_feedback", None)
         return payload
 
 
@@ -197,6 +199,7 @@ class ToolResultMessage(_OptionalDisplay):
     scope: ModelScope = "conversation"
     visibility: ItemVisibility = "internal"
     model_display: FrozenResultDisplay | None = None
+    reviewer_feedback: str | None = None
 
 
 ConversationItem: TypeAlias = Annotated[

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import hashlib
 import json
 import mimetypes
@@ -77,9 +78,10 @@ class ResultStore:
         self.root.relative_to(self.workspace)
         self.on_event = on_event
         self.read_boundary = read_boundary
-        # A ResultStore belongs to one prepare operation. Recounting its
-        # candidates must not rehash every large immutable result repeatedly.
+        # New strategies share this unchanged-file verification cache for a run;
+        # legacy preparation continues to create its own ResultStore each time.
         self._verified_references: dict[tuple[str, int, str], tuple[int, ...]] = {}
+        self._text_readability: dict[tuple[str, int, str], bool] = {}
 
     @staticmethod
     def _file_identity(target: Path) -> tuple[int, ...]:
@@ -87,7 +89,7 @@ class ResultStore:
         return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
     def verify_reference(self, reference: ContentReference) -> None:
-        """Check recovery once per unchanged file in this prepare operation."""
+        """Check each unchanged file once within this store's lifetime."""
 
         target = (self.workspace / reference.path).resolve()
         target.relative_to(self.workspace)
@@ -97,10 +99,22 @@ class ResultStore:
             return
         digest = hashlib.sha256()
         length = 0
+        decoder = codecs.getincrementaldecoder("utf-8-sig")()
+        text_readable = True
         with target.open("rb") as source:
             for chunk in iter(lambda: source.read(65536), b""):
                 digest.update(chunk)
                 length += len(chunk)
+                if text_readable:
+                    try:
+                        text_readable = "\0" not in decoder.decode(chunk)
+                    except UnicodeDecodeError:
+                        text_readable = False
+        if text_readable:
+            try:
+                decoder.decode(b"", final=True)
+            except UnicodeDecodeError:
+                text_readable = False
         if length != reference.byte_length:
             raise OSError(f"Result reference size mismatch: {reference.path}")
         if digest.hexdigest() != reference.sha256:
@@ -108,6 +122,18 @@ class ResultStore:
         if self._file_identity(target) != identity:
             raise OSError(f"Result reference changed during verification: {reference.path}")
         self._verified_references[key] = identity
+        self._text_readability[key] = text_readable
+
+    def is_text_reference(self, reference: ContentReference) -> bool:
+        """Whether every character can be recovered by the UTF-8 file tool.
+
+        Decode checks share the existing integrity scan and its unchanged-file
+        cache. The file tool rejects NUL text even when it is valid UTF-8.
+        """
+
+        self.verify_reference(reference)
+        target = (self.workspace / reference.path).resolve()
+        return self._text_readability[(str(target), reference.byte_length, reference.sha256)]
 
     def read_reference(self, reference: ContentReference) -> bytes:
         """Read an immutable result reference, verifying its stored identity."""
@@ -123,6 +149,11 @@ class ResultStore:
         if self._file_identity(target) != identity:
             raise OSError(f"Result reference changed during verification: {reference.path}")
         self._verified_references[(str(target), reference.byte_length, reference.sha256)] = identity
+        try:
+            text_readable = "\0" not in data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text_readable = False
+        self._text_readability[(str(target), reference.byte_length, reference.sha256)] = text_readable
         return data
 
     def snapshot_text(self, text: str) -> ContentReference:

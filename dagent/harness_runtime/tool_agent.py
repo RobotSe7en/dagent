@@ -726,8 +726,11 @@ class ToolAgentLoop:
                     result = normalized.result
                     stored_content = normalized.content
                     content = stored_content_text(stored_content)
+                separate_feedback = context_policy.compaction_strategy != "legacy"
+                if separate_feedback and stored_content is None:
+                    stored_content = inline_content(content)
                 content = _append_reviewer_feedback(content, item.feedback)
-                if item.feedback and stored_content is not None:
+                if item.feedback and stored_content is not None and not separate_feedback:
                     stored_content = (stored_content.model_copy(update={"preview": content})
                                       if isinstance(stored_content, ContentReference) else inline_content(content))
                 status = "denied" if denied else "completed" if result is not None and result.status == "completed" else "failed"
@@ -739,6 +742,8 @@ class ToolAgentLoop:
                     value_reference=None if normalized is None else normalized.value_reference,
                     artifacts=() if normalized is None else normalized.references,
                 )
+                if separate_feedback and item.feedback and item.feedback.strip():
+                    tool_item = tool_item.model_copy(update={"reviewer_feedback": item.feedback.strip()})
                 loop_conversation = _append_item(loop_conversation, tool_item)
                 new_items.append(tool_item)
                 if node is not None and invocation is not None:
@@ -764,12 +769,14 @@ class ToolAgentLoop:
             if resumed is not None:
                 return resumed
 
+        result_store = None
         for step in range(1, max_steps + 1):
             tool_definitions = self._llm_tool_definitions(capability_ids=capability_ids)
             while True:
                 if steering is not None:
                     apply_steers(steering.drain(resolved_run_id))
-                result_store = ResultStore(workspace, self.runtime_directory, on_event, read_boundary=boundary)
+                if result_store is None or context_policy.compaction_strategy == "legacy":
+                    result_store = ResultStore(workspace, self.runtime_directory, on_event, read_boundary=boundary)
                 compactor = None
                 if context_policy.compaction_strategy != "legacy":
                     from dagent.harness_runtime.compaction import HistoryCompactor
