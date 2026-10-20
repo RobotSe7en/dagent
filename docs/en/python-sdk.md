@@ -145,5 +145,11 @@ print(result.output_text)
 - This project has released public SDK contracts. Treat documented behavior,
   capability ids, configuration semantics, and runnable examples as user-facing
   contracts.
-- Public breaking changes should be documented in [Migration Notes](migration.md).
+- Future updates preserve backward compatibility with released public SDK
+  contracts, including accepted inputs, defaults, configuration precedence, and
+  result/event schemas. New features are opt-in; existing applications do not
+  need source or configuration changes to keep working.
+- Public breaking changes require explicit maintainer authorization and a
+  versioned migration/deprecation plan, regression coverage, updated examples,
+  and [Migration Notes](migration.md). Deprecation alone does not remove support.
 - Keep this page synchronized with `dagent/__init__.py`.

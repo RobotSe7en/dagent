@@ -9,27 +9,39 @@ dynamic DAG planning, and user-defined static DAG execution. Public agent object
 are declarative configuration; `Runner` owns runtime state, provider wiring,
 capability registration, review continuations, and execution dispatch.
 
-This project has been released. Treat the public SDK and documented behavior as
-intentional user-facing contracts. Prefer clean current design, but do not break
-public APIs, capability ids, documented request shapes, config semantics, or
-example workflows casually. Public breaking changes must be deliberate,
-documented, covered by tests, and accompanied by migration guidance.
+This SDK is mature, released, and widely used. All future updates must preserve
+backward compatibility with released public SDK contracts. A pre-1.0 version,
+internal cleanup, or a preferred new design does not exempt a change from this
+requirement.
 
-For every change, assess backward-compatibility impact before implementation.
-Preserve released public behavior by default; if a compatibility break is
-necessary, make it explicit and include migration guidance, documentation, and
-test coverage in the same change.
+## Backward Compatibility
 
-Do not add hidden compatibility shims, legacy aliases, conversion layers, or
-duplicate code paths as a reflex. If compatibility is necessary for a released
-surface, make the compatibility policy explicit in the design, tests, and docs.
-Update or delete obsolete tests only when the intended released behavior has
-changed deliberately.
-
-Do not write compatibility code merely to satisfy old, deprecated, or obsolete
-tests. When tests encode behavior the project no longer intends to support,
-update or remove those tests as part of the deliberate behavior change instead
-of preserving legacy runtime paths.
+- Assess compatibility impact before implementation. Released contracts include
+  public exports and signatures, capability ids, accepted request and config
+  shapes, defaults and precedence, provider wire payloads, result and event
+  schemas, persisted SDK records, errors, and documented example workflows.
+- Make new features additive and explicitly opt-in. New configuration must be
+  optional; omitting it must preserve existing behavior. Existing applications
+  must not need source or configuration changes to keep working after an update.
+- Preserve released behavior during refactoring and bug fixes. Internal changes
+  may simplify ownership without changing observable public contracts. Treat
+  deprecated public behavior as supported until its removal is explicitly
+  authorized; deprecation alone is not permission to remove it.
+- Do not make a breaking change unless the user explicitly authorizes that
+  specific contract change. A version bump, release note, or migration guide is
+  not a substitute for authorization. If a requested implementation would break
+  compatibility, first pursue an additive alternative. An authorized break must
+  include a versioned migration/deprecation plan, docs, examples, regression
+  tests, and release notes in the same change.
+- Keep regression coverage for released behavior. Do not update or delete a test
+  solely because a new implementation no longer satisfies the old contract.
+  Correct tests that never represented a released contract; change tests for a
+  released contract only as part of an explicitly authorized behavior change.
+- Avoid speculative aliases, hidden coercions, and duplicate runtime paths.
+  When preserving a released contract requires compatibility handling, keep it
+  narrow, explicit, documented, and tested, with one shared implementation where
+  practical. Never use simplicity or a blanket ban on compatibility code as a
+  reason to break supported behavior.
 
 ## Core Engineering Rules
 
@@ -39,15 +51,11 @@ of preserving legacy runtime paths.
   patterns.
 - Do not write duplicate or redundant implementations. When moving behavior to
   a clearer owner, remove the old path rather than leaving parallel code behind.
-- Clean up historical leftovers that are in the edited ownership area and no
-  longer represent intended released behavior.
+- Clean up historical leftovers in the edited ownership area only after
+  confirming they are not required by a released contract.
 - Do not add broad fallback or catch-all behavior by default. Prefer explicit
   failures, narrow error handling, and typed contracts over defensive code that
   hides invalid states or preserves unsupported inputs.
-- Do not preserve historical behavior unless the user explicitly asks for it.
-- Do not add compatibility aliases such as old capability ids or renamed SDK
-  entrypoints.
-- Do not add transition layers that convert old request shapes into new ones.
 - Prefer typed data contracts and Pydantic models over ad hoc dictionaries when
   the value crosses SDK, API, or runtime boundaries.
 - Keep public SDK surfaces intentional. If something is internal, import it from
@@ -77,6 +85,17 @@ of preserving legacy runtime paths.
 - The API layer should use the public SDK where practical. If the API must reach
   internal modules, treat that as a design smell and consider whether a public
   SDK method belongs on `Runner` or another intentional surface.
+
+## Provider Configuration
+
+- When adding reasoning configuration mappings, support both request field
+  paths and effort-value mappings. Apply the same mapping to ordinary generation
+  and context compaction, including streaming requests.
+- Reasoning mappings must be explicitly opt-in. Without a mapping, preserve the
+  released effort defaults, capability checks, protocol selection, generated
+  request fields, and `extra_request_args` / `extra_body` precedence. Explicit
+  mapping behavior must be documented and covered by regression tests alongside
+  unchanged existing configurations.
 
 ## Capabilities And Skills
 
