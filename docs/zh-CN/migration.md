@@ -16,6 +16,9 @@ Chat/Responses 的标准缓存计数进入可选字段 `ModelTokenUsage.cached_i
 非法缓存计数会被省略并告警，生成结果与其它合法 usage 保留。本次不包含私有缓存
 字段或 run 级汇总。
 
+WebUI 用户模型可在 `~/.dagent/config.yaml` 中设置 `capture_cache_usage: true`；
+选择、编辑和保存模型时均会保留该选项。
+
 默认行为、reasoning 回放、workspace 选择和上下文投影不变。缓存数未知时，序列化
 usage 省略该字段，包括嵌套的会话、摘要和 checkpoint。旧记录无需迁移；包含已知
 缓存计数的新记录需要支持该字段的读取方。外层 schema 版本与包版本保持不变。

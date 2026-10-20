@@ -652,6 +652,7 @@ export interface ModelProvider {
   reasoning_mapping?: Partial<Record<'chat_completions' | 'responses', ReasoningMapping>> | null;
   reasoning_capture: 'field' | 'field_and_tags';
   stream_include_usage: boolean;
+  capture_cache_usage?: boolean;
   context_window_tokens: number | null;
   max_output_tokens: number | null;
   extra_request_args: Record<string, unknown>;
@@ -676,6 +677,7 @@ export interface ModelProviderInput {
   reasoning_mapping?: ModelProvider['reasoning_mapping'];
   reasoning_capture: 'field' | 'field_and_tags';
   stream_include_usage: boolean;
+  capture_cache_usage?: boolean;
   context_window_tokens: number | null;
   max_output_tokens: number | null;
   extra_request_args: Record<string, unknown>;

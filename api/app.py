@@ -488,6 +488,7 @@ class ModelProviderRequest(BaseModel):
     reasoning_mapping: dict[Literal["chat_completions", "responses"], ReasoningMapping] | None = None
     reasoning_capture: ReasoningCapture = "field_and_tags"
     stream_include_usage: bool = False
+    capture_cache_usage: bool = False
     context_window_tokens: int | None = Field(default=None, ge=1024)
     max_output_tokens: int | None = Field(default=None, ge=1)
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
@@ -539,6 +540,7 @@ class ModelProviderPayload(BaseModel):
     reasoning_mapping: dict[Literal["chat_completions", "responses"], ReasoningMapping] | None = None
     reasoning_capture: ReasoningCapture
     stream_include_usage: bool
+    capture_cache_usage: bool = False
     context_window_tokens: int | None
     max_output_tokens: int | None
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
@@ -3750,6 +3752,7 @@ def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
         "token_counting": model.token_counting,
         "chat_reasoning_field": model.chat_reasoning_field,
         "stream_include_usage": model.stream_include_usage,
+        "capture_cache_usage": model.capture_cache_usage,
         "context_window_tokens": model.context_window_tokens,
         "max_output_tokens": model.max_output_tokens,
         "reasoning_effort": model.reasoning_effort,
@@ -3781,6 +3784,7 @@ def _model_request_from_user_config(model_id: str, model: UserModelProviderConfi
         reasoning_mapping=model.reasoning_mapping,
         reasoning_capture=model.reasoning_capture,
         stream_include_usage=model.stream_include_usage,
+        capture_cache_usage=model.capture_cache_usage,
         context_window_tokens=(
             model.context_window_tokens
             if "context_window_tokens" in model.model_fields_set
@@ -3807,6 +3811,7 @@ def _user_model_provider_config(model: ModelProviderRequest) -> UserModelProvide
         reasoning_mapping=model.reasoning_mapping,
         reasoning_capture=model.reasoning_capture,
         stream_include_usage=model.stream_include_usage,
+        capture_cache_usage=model.capture_cache_usage,
         context_window_tokens=model.context_window_tokens,
         max_output_tokens=model.max_output_tokens,
         extra_request_args=dict(model.extra_request_args),
@@ -3870,6 +3875,7 @@ def _config_model_payload(*, active: bool) -> ModelProviderPayload:
         reasoning_mapping=provider.reasoning_mapping,
         reasoning_capture=provider.reasoning_capture,
         stream_include_usage=provider.stream_include_usage,
+        capture_cache_usage=provider.capture_cache_usage,
         context_window_tokens=(
             provider.context_window_tokens
             if "context_window_tokens" in provider.model_fields_set
@@ -3900,6 +3906,7 @@ def _user_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelPr
         reasoning_mapping=model.reasoning_mapping,
         reasoning_capture=model.reasoning_capture,
         stream_include_usage=model.stream_include_usage,
+        capture_cache_usage=model.capture_cache_usage,
         context_window_tokens=model.context_window_tokens,
         max_output_tokens=model.max_output_tokens,
         extra_request_args=_redact_json_secrets(model.extra_request_args),

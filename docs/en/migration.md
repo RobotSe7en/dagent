@@ -19,6 +19,9 @@ Malformed cache counters are omitted with a warning, preserving generation and
 other valid usage. Provider-private cache fields and run-level aggregation are
 not included.
 
+WebUI user models can set `capture_cache_usage: true` in `~/.dagent/config.yaml`;
+model selection, editing, and saves preserve this option.
+
 Defaults, reasoning replay, workspace selection and context projection are
 unchanged. Unknown cache counts are omitted from serialized usage, including
 nested conversations, summaries and checkpoints. Old records require no
