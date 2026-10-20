@@ -49,7 +49,7 @@ from dagent.review import CapabilityReviewDecision, ReviewDecision, ReviewLevel,
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.providers.base import normalize_chat_response
-from dagent.providers.openai_compatible import ProviderRequestError, ProviderResponseError
+from dagent.providers.openai_compatible import ProviderCapabilityError, ProviderRequestError, ProviderResponseError
 from dagent.providers.model_io import (
     ModelRequest,
     ModelResponse,
@@ -84,7 +84,9 @@ from dagent.state import PromptBuilder, PromptRequest
 from dagent.state.prompt_builder import PromptSkill
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import normalize_capability_result, ResultStore, ResultStorageError
+from dagent.harness_runtime.result_projection import ResultBudgetExceeded
 from dagent.schemas.retention import ResultRetention
+from dagent.schemas.context import ContextWindowExceeded
 from dagent.schemas.conversation import (
     StoredContent,
     ToolResultStatus,
@@ -99,6 +101,15 @@ class ToolResultStorageFailure(RuntimeError):
     """Carry the stopped loop snapshot to the public Runner boundary."""
 
     def __init__(self, cause: ResultStorageError, outcome: LoopOutcome) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.outcome = outcome
+
+
+class ToolContextFailure(RuntimeError):
+    """Carry a context failure and the latest complete loop state to Runner."""
+
+    def __init__(self, cause: Exception, outcome: LoopOutcome) -> None:
         super().__init__(str(cause))
         self.cause = cause
         self.outcome = outcome
@@ -182,6 +193,8 @@ class ToolAgent:
                 "context_reasoning_field",
                 None,
             ),
+            request_preparer=getattr(loop.provider, "prepare_call", None),
+            prepared_token_counter=getattr(loop.provider, "count_prepared", None),
         )
         self.prompt_context = prompt_context
         self.tools = self.loop.available_capabilities()
@@ -208,6 +221,7 @@ class ToolAgent:
                 context=self.prompt_context,
                 extra_system_prompt=self.extra_system_prompt,
                 workspace_path=workspace_path,
+                context_management=self.context_policy.compaction_strategy != "legacy",
             )
         )
 
@@ -346,7 +360,7 @@ class ToolAgent:
                 )
             ),
         )
-        failure: ToolResultStorageFailure | None = None
+        failure: ToolResultStorageFailure | ToolContextFailure | None = None
         try:
             outcome = await self.loop.run(
                 conversation,
@@ -366,7 +380,7 @@ class ToolAgent:
                 on_token=on_token,
                 on_event=on_event,
             )
-        except ToolResultStorageFailure as exc:
+        except (ToolResultStorageFailure, ToolContextFailure) as exc:
             failure = exc
             outcome = exc.outcome
 
@@ -755,27 +769,52 @@ class ToolAgentLoop:
             while True:
                 if steering is not None:
                     apply_steers(steering.drain(resolved_run_id))
-                prepared = await context_assembler.prepare(
-                    result_store=ResultStore(
-                        execution_context.workspace_path or current_workspace_root(self.capability_executor.workspace_root),
-                        self.runtime_directory, on_event, read_boundary=boundary,
-                    ),
-                    system_message=system_message,
-                    conversation=loop_conversation,
-                    tools=tool_definitions,
-                    policy=context_policy,
-                    active_run_id=resolved_run_id,
-                    compact=lambda summary, items, limit: self._compact_history(
-                        summary,
-                        items,
-                        limit,
-                        run_id=resolved_run_id,
-                        on_event=on_event,
-                        context_assembler=context_assembler,
-                        context_policy=context_policy,
-                    ),
-                    stream=on_token is not None or on_event is not None,
-                )
+                result_store = ResultStore(workspace, self.runtime_directory, on_event, read_boundary=boundary)
+                compactor = None
+                if context_policy.compaction_strategy != "legacy":
+                    from dagent.harness_runtime.compaction import HistoryCompactor
+                    from dagent.harness_runtime.frozen_results import RecoveryAccess
+
+                    if not callable(getattr(self.provider, "prepare_call", None)):
+                        raise ValueError("The new ToolAgent context strategies require a provider with prepared-call support.")
+                    access = RecoveryAccess.from_tools(result_store, tool_definitions)
+
+                    async def summarize(request: ModelRequest) -> ModelResponse:
+                        return await self._summary_chat(
+                            request, max_attempts=compactor.remaining_http_attempts,
+                            prepared_call=compactor.prepared_call if compactor.prepared_request is request else None,
+                        )
+
+                    compactor = HistoryCompactor(
+                        policy=context_policy, assembler=context_assembler,
+                        result_store=result_store, system_message=system_message,
+                        tools=tool_definitions, chat=summarize, read_available=access.can_read,
+                    )
+                try:
+                    prepared = await context_assembler.prepare(
+                        result_store=result_store,
+                        system_message=system_message,
+                        conversation=loop_conversation,
+                        tools=tool_definitions,
+                        policy=context_policy,
+                        active_run_id=resolved_run_id,
+                        compact=lambda summary, items, limit: self._compact_history(
+                            summary, items, limit, run_id=resolved_run_id, on_event=on_event,
+                            context_assembler=context_assembler, context_policy=context_policy,
+                        ),
+                        stream=on_token is not None or on_event is not None,
+                        history_compactor=compactor,
+                        enable_new_strategy=True,
+                    )
+                except (ContextWindowExceeded, ProviderCapabilityError, ResultBudgetExceeded, OSError) as exc:
+                    if context_policy.compaction_strategy == "legacy":
+                        raise
+                    loop_conversation = getattr(exc, "_conversation", loop_conversation)
+                    if isinstance(exc, ContextWindowExceeded):
+                        context_usages.append(exc.usage)
+                    trace.root.error = RunTraceError(code=type(exc).__name__, message=str(exc))
+                    trace.root.ended_at = datetime.now(timezone.utc)
+                    raise ToolContextFailure(exc, failed_outcome()) from exc
                 loop_conversation = prepared.conversation
                 updated_items = {item.id: item for item in loop_conversation.items}
                 new_items[:] = [updated_items.get(item.id, item) for item in new_items]
@@ -813,6 +852,7 @@ class ToolAgentLoop:
                 response = await self._chat(
                     prepared.request, run_id=resolved_run_id, step=step,
                     on_token=on_token, on_event=on_event,
+                    prepared_call=prepared.prepared_call,
                 )
             except ProviderResponseError as exc:
                 response = (chat_response_from_model(exc.response) if exc.response is not None
@@ -1017,10 +1057,13 @@ class ToolAgentLoop:
         step: int,
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
+        prepared_call: Any = None,
     ) -> ChatResponse:
         async def chat_attempt() -> ChatResponse:
             record_model_turn()
-            return chat_response_from_model(await complete_model(self.provider, request))
+            response = (await self.provider.complete_prepared(prepared_call)
+                        if prepared_call is not None else await complete_model(self.provider, request))
+            return chat_response_from_model(response)
 
         if on_token is None and on_event is None:
             return normalize_chat_response(
@@ -1055,7 +1098,9 @@ class ToolAgentLoop:
             reasoning_parts: list[str] = []
             record_model_turn()
             if hasattr(self.provider, "stream") or hasattr(self.provider, "stream_chat"):
-                async for event in stream_model(self.provider, request):
+                events = (self.provider.stream_prepared(prepared_call) if prepared_call is not None
+                          else stream_model(self.provider, request))
+                async for event in events:
                     if event.type == "token" and event.content:
                         emitted_tokens = True
                         if getattr(event, "channel", "content") == "reasoning":
@@ -1095,6 +1140,31 @@ class ToolAgentLoop:
             )
         finally:
             stream.finish()
+
+    async def _summary_chat(self, request: ModelRequest, *, max_attempts: int, prepared_call: Any = None) -> ModelResponse:
+        """Collect an internal streaming summary without tool dispatch or UI tokens."""
+
+        if max_attempts < 1:
+            raise RuntimeError("Compaction HTTP attempt budget exhausted.")
+        prepared = prepared_call or await self.provider.prepare_call(request, stream=True)
+
+        async def attempt() -> ModelResponse:
+            record_model_turn()
+            response = None
+            events = self.provider.stream_prepared(prepared)
+            try:
+                async for event in events:
+                    if event.type == "done":
+                        response = event.response
+            finally:
+                await events.aclose()
+            if response is None:
+                raise ProviderResponseError("incomplete", reason="missing_terminal_response")
+            return response
+
+        retry_policy = replace(self.llm_retry_policy,
+                               max_retries=min(self.llm_retry_policy.max_retries, max_attempts - 1))
+        return await run_with_llm_retries(attempt, policy=retry_policy, sleep=self.llm_retry_sleep)
 
     def _assistant_message(self, response: ChatResponse) -> AssistantMessage:
         return AssistantMessage(

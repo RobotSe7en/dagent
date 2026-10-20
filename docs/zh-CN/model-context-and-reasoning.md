@@ -288,6 +288,9 @@ usage 不代表已覆盖全部失败重试的消耗。
 
 ## Token 计数与压缩
 
+本节描述默认的 `compaction_strategy="legacy"`。下节显式启用的 ToolAgent 策略
+使用最终请求计数和独立摘要预算。已有应用保留本节行为。
+
 当 endpoint 已声明能力时，`token_counting="auto"` 会用 vLLM `/tokenize` 计算投影后的
 messages 与 tools。此时 `ContextUsage.estimator` 为 `"vllm"`，
 `server_max_model_len` 记录发现的上限。设置 `token_counting="vllm"` 会在无法精确计数时
@@ -364,6 +367,159 @@ context = dagent.ContextPolicy(
 SDK 创建的子 agent 和辅助角色会继承 Provider 最后验证的服务端窗口，后续精确计数不可用时
 也会保留该上限。`auto` 仍允许启发式计数；窗口完全未知时仍警告并使用 128K 兜底。
 显式 `vllm` 计数继续采用严格模式。
+
+## 有界的 ToolAgent 上下文策略（尚未发布）
+
+SDK 中的长 ToolAgent 任务可显式选择 `"chunked"` 或 `"cache_aware"`：
+
+```python
+provider = dagent.Provider(
+    base_url="http://localhost:8000/v1",
+    model="qwen-3.8-flash",  # 使用实际部署的模型名。
+    context_window_tokens=131072,  # 已确认支持 256K 的部署可设为 262144。
+    max_output_tokens=8192,
+    token_counting="auto",
+    capture_cache_usage=True,
+    stream_include_usage=True,
+    timeout_seconds=600,  # 示例：慢速本地模型的单次请求超时。
+)
+agent = dagent.ToolAgent(
+    profile="conversation",
+    context=dagent.ContextPolicy(
+        compaction_strategy="cache_aware",
+        allow_reference_fallback=True,
+        compaction_timeout_seconds=600,  # 可选：一次压缩过程的总时限。
+    ),
+)
+```
+
+仍按普通方式在 `Runner` 注册 agent 所需工具。`chunked` 使用独立摘要请求。
+`cache_aware` 优先在符合条件的完整历史前缀后追加摘要指令，并保留该请求原有的
+system 和 tools；放不下或不兼容时改用独立分块。不会仅为复用缓存而把受保护的最新
+交互也塞进摘要请求。固定的维护指令从首次 `cache_aware` 生成起就存在。
+实际前缀复用仍受服务端模板、路由和缓存状态影响，不能保证命中。
+这两种策略只作用于 SDK ToolAgent；DAG 和默认 `legacy` 保持已发布行为。
+自定义 provider 需要实现内部 prepared-call 契约才能使用新策略。
+
+### 同一请求计数与三条预算线
+
+Provider 按额外参数优先级构造最终请求后将其冻结，计数与发送共用同一份不可变
+payload；普通生成、摘要与流式请求均如此。新策略拒绝将已投影的模型、历史、
+instructions 或 tools 替换为不同值的额外参数，也拒绝服务端静默截断输入和有状态
+Responses 链。摘要请求还会拒绝与任务摘要不兼容的固定额外输出 schema；普通生成
+仍保留受支持的额外输出格式覆盖。
+
+设有效总窗口为 `W`，强制生效的输出预留为 `O`。新策略取有效的配置值、已发现服务端
+上限与已知模型上限的最小值。服务端窗口更小时缩小预算，并在生成前重新冻结自动输出
+上限，不会扩大服务端容量。Reasoning 可能消耗 `O`，不会另得
+一份额度。硬输入预算 `H = W - O`，默认软触发线为 `floor(0.8 * H)`。
+压缩尽量留出接近 `floor(0.65 * H)` 的空间；必要输入无法再缩减时，仍可接受高于
+目标但不超过硬上限的请求。软触发时，`compaction_retain_ratio` 按完整组保留最近历史，
+默认目标 16%，至少保留最新一组；硬压力下可继续压缩这部分近期历史，直到受保护的最新组。
+发送 generation 前重新校验整个请求，缓存命中不会增大 `H`。
+
+| 已确认的总窗口 | 输出预留 | 硬输入预算 | 默认软触发线 |
+| --- | --- | --- | --- |
+| 131,072（128K） | 8,192 | 122,880 | 98,304 |
+| 262,144（256K） | 8,192 | 253,952 | 203,161 |
+
+与 `legacy` 不同，新策略未配置普通输出上限时，会在实际请求里设置
+`min(8192, W // 8)`。最终额外参数中的显式输出上限仍按原优先级生效，并计入预算。
+`summary_max_tokens` 限制可见摘要正文；每次摘要调用独立预留最多
+`min(2 * requested_summary_tokens, W // 4)` 的总输出 token，包括 reasoning，
+不会被普通生成较小的上限再次压低。这不保证一定获得所请求长度的可见正文。
+摘要目标还会按最终 generation 必须保留的输入所剩空间缩小。
+
+计数优先使用探测到的 vLLM `/v1/chat/completions/render` 或
+`/v1/responses/render`，提交完整最终 payload，并依据返回的 prompt token IDs 计数。
+其次使用兼容的 `/tokenize` 请求；工具选择渲染或模板选项不一致时，不会声称精确。
+`auto` 允许本地估算并加 `token_safety_margin`（默认 15%）；显式 `vllm` 在没有
+受支持的服务端计数路径时失败。`ContextUsage.count_precision` 区分 `rendered`、
+`tokenized_estimate` 和 `estimated`，独立于 `estimator`。
+`request_fingerprint` 标识被冻结的请求体，不是服务端缓存键。
+
+Render 能力取决于版本与部署方式。[已核对的 vLLM 源码](https://github.com/vllm-project/vllm/blob/428cd0cb4a42750f5339d08bb67d534cf8051429/vllm/entrypoints/scale_out/render/api_router.py)
+使用完整 generation 请求 schema；普通服务需要 `--enable-scale-out` 才开放可用的
+render handler。dagent 会探测，不假设部署一定支持。`/tokenize` 不能通用替代包含
+所有 generation 选项的渲染。已知超预算请求会在生成前缩减或拒绝；未知计数、服务端
+配置不一致或部署变化仍可能造成服务端上下文错误。SDK 不把任意 HTTP 400 归类为
+上下文超限，也不依据错误文本猜测后重放 generation。
+
+### 完整来源覆盖与稳定结果展示
+
+摘要连续覆盖选中的来源；过大的来源按明确范围分块，不先丢弃中间部分。
+结构化摘要保存目标、约束、决策、已完成步骤、有关工具观察、未完成工作和来源引用，
+帮助模型记住已做事项；不会据此去重或禁止工具调用。收到的原始内容、摘要覆盖范围和
+各次模型调用 usage 都会归档。
+
+一次压缩最多进行 8 次逻辑模型调用、12 次模型请求尝试（含重试）；这些限制不约束
+普通生成次数或整个任务持续时间。摘要在内部通过流收集，不作为 agent 答案输出。
+`compaction_timeout_seconds` 默认为 `None`，不额外施加总时限，仍受 provider
+单次请求超时约束。显式设置后限制整次压缩（含重试）；慢速自托管模型还需单独调大
+provider timeout。取消会继续传播。未变化且已失败的来源不会每轮重复总结，
+不能收敛的替换也不会形成无限摘要循环。
+最终计数仍超过硬预算时，同一压缩过程最多再收紧一次当前根摘要，不重新发送历史原文。
+
+新收到的工具结果在第一次交给 generation 展示前共享本批可用预算。
+新策略中 `max_tool_result_tokens` 限制每条结果的常规正文额度，必要的身份、状态和
+恢复元数据另计。持久化 receipt 冻结实际展示文本、已显示范围和续读 cursor。
+后续步骤、review 续跑与新 run 复用该文本，不会逐轮重新分配。
+`max_total_tool_result_tokens` 仍已弃用且忽略。其它缩减后仍硬超限时，最新的已冻结
+批次可明确地单向转为仅引用展示一次，记录
+`prefix_break_reason="emergency_result_reference"`。全部 call、参数、状态及对应
+result 消息仍保留。
+
+只有通过 agent 现有且受边界检查的恢复工具真实可读的原文才能缩短，SDK 不会自动
+添加工具。不可补读的结果正文保持完整。补读只能恢复 SDK 收到的内容，不能找回上游
+已经截断的部分。当前用户指令和最新完整 call/result 关系受保护，因此 system、工具
+schema、用户输入、调用参数或最小结果元数据本身过大时，仍可能抛出
+`ContextWindowExceeded`。
+
+`allow_reference_fallback=False` 在完整语义摘要失败时保留原始来源；请求仍放得下就
+可以继续。设为 `True` 后，还允许在必须缩减才能容纳时以较低保真的引用继续：只替换
+可恢复来源，未总结范围明确记录，最终硬校验仍执行。
+`ContextSummary.method="reference_fallback"` 与归档 record 的 `partial` 或
+`reference_only` 状态将其与完整摘要区分。两种配置都不承诺语义无损或超限错误归零。
+
+### 失败快照与缓存验证
+
+新策略准备上下文失败时，原异常类型保留，其 `result` 带有失败结果及最新已执行
+工具批次。已解析的执行配置还会生成 checkpoint，可从 result 或
+`Runner.run_checkpoint(run_id)` 取得。如果后续发现的服务端窗口使显式输出上限失效，
+快照保留最后有效的生成配置；初始配置本身非法时没有已解析 checkpoint。
+解决大小或能力问题后，使用
+`Runner.run(agent, input="Continue from the saved progress.",
+conversation=error.result.conversation)` 开始**新 run**。这是通过会话续聊，不是
+同 run 恢复，也不会自动重放已完成工具。请保留来源 workspace 和持久化资源。
+恢复文件缺失或损坏会明确失败，单有引用不能代替实际来源数据。
+
+验证 vLLM 缓存时，需在服务端启用前缀缓存及 `--enable-prompt-tokens-details`；
+后者决定是否返回标准 `cached_tokens`，见[已核对的实现](https://github.com/vllm-project/vllm/blob/428cd0cb4a42750f5339d08bb67d534cf8051429/vllm/entrypoints/openai/chat_completion/serving.py)。
+SDK 配置 `capture_cache_usage=True`；支持 Chat 流式 usage 时再启用
+`stream_include_usage=True`。把两次足够长且相同的请求固定到同一 pod，对比冷、热
+请求的服务端缓存计数。统计缺失表示未知。SDK 不修改服务端开关，不清生产缓存，也
+不保证命中。还应统计未缓存输入、摘要输入/输出和延迟，单独提高命中比例不代表总成本降低。
+
+新增 policy 和审计字段取默认值时不进入持久化记录，保持旧默认 checkpoint 的
+fingerprint。启用新策略、冻结展示或摘要 manifest 的记录，需要支持这些字段的读取方。
+
+运行[离线上下文示例](../../examples/context_management.py)：
+`uv run python -m examples.context_management`。实际部署可使用
+[vLLM 长时验证脚本](../../examples/vllm_context_soak.py)，默认验收目标为一小时、
+200 次工具执行和 5 次压缩：
+
+```bash
+uv run python -m examples.vllm_context_soak --live \
+  --base-url http://localhost:8000/v1 --model MODEL --context-window 128 \
+  --workspace /tmp/dagent-vllm-soak --report /tmp/dagent-vllm-soak.json
+```
+
+已确认的 256K 部署使用 `--context-window 256`。脚本使用
+`token_counting="vllm"`，要求服务端计数可用；`/tokenize` 无法匹配实际生成选项时，
+需要开放 render handler。由部署方配置工具模板、APC、usage details 和所需的 API key
+环境变量。没有 `--live` 不发送请求；统计缺失或缩短的 smoke 参数不能算完整验收通过。
+报告记录实际预算、usage 和执行进度，conversation/checkpoint 文件保存合成任务的可恢复
+状态。脚本不会重置共享缓存。
 
 ## Custom provider 兼容
 

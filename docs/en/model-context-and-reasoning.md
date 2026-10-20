@@ -326,6 +326,10 @@ prefixes. Enabling usage capture does not change those policies.
 
 ## Token accounting and compaction
 
+This section describes the default `compaction_strategy="legacy"`. The opt-in
+ToolAgent strategies described below use final-request counting and independent
+summary budgets instead. Existing applications keep the behavior in this section.
+
 `token_counting="auto"` calls vLLM `/tokenize` for the projected messages and
 tools when the endpoint is advertised. `ContextUsage.estimator` is then
 `"vllm"`, and `server_max_model_len` records the discovered maximum. Set
@@ -422,6 +426,200 @@ SDK-created subagents and auxiliary roles inherit the provider's last verified
 server window, including when exact counting later becomes unavailable. `auto`
 still permits heuristic counting; a completely unknown window still uses the
 warned 128K fallback. Explicit `vllm` counting remains strict.
+
+## Bounded ToolAgent context strategies (unreleased)
+
+For long SDK ToolAgent runs, explicitly select `"chunked"` or `"cache_aware"`:
+
+```python
+provider = dagent.Provider(
+    base_url="http://localhost:8000/v1",
+    model="qwen-3.8-flash",  # Use the model name served by your deployment.
+    context_window_tokens=131072,  # Use 262144 for a verified 256K deployment.
+    max_output_tokens=8192,
+    token_counting="auto",
+    capture_cache_usage=True,
+    stream_include_usage=True,
+    timeout_seconds=600,  # Example per-request timeout for a slow local model.
+)
+agent = dagent.ToolAgent(
+    profile="conversation",
+    context=dagent.ContextPolicy(
+        compaction_strategy="cache_aware",
+        allow_reference_fallback=True,
+        compaction_timeout_seconds=600,  # Optional total deadline per compaction episode.
+    ),
+)
+```
+
+Register the agent's required tools on `Runner` as usual. `chunked` uses dedicated
+summary requests. `cache_aware` first tries a summary instruction appended after
+an eligible, complete history prefix, retaining the original system instructions
+and tools for that request. It falls back to dedicated chunks when the prefix
+request cannot fit or is incompatible. The latest protected exchange is not
+included merely to preserve its cached prefix. The fixed maintenance instruction
+is present from the first `cache_aware` generation. Actual prefix reuse still
+depends on the server's template, routing, and cache state; it is not guaranteed.
+These strategies apply to SDK ToolAgent execution. DAG execution and the default
+`legacy` strategy keep their released behavior. Custom providers must implement
+the internal prepared-call contract to use the new strategies.
+
+### One counted request and three budget thresholds
+
+The provider freezes its actual request after applying extra-parameter precedence.
+The same immutable payload is counted and sent, for normal generation and
+compaction, including streaming. New strategies reject extra parameters that
+replace the projected model, history, instructions, or tools with different
+values. Server-side input truncation and stateful Responses chains are rejected.
+Summary calls also reject fixed extra output schemas incompatible with their task
+summary. Ordinary generation retains supported extra output-format overrides.
+
+Let `W` be the effective total window and `O` the enforced output allowance.
+New strategies use the smallest valid configured, discovered server, and known
+model limit. A smaller server window shrinks the budget and refreezes automatic
+output limits before generation; it does not enlarge the server's capacity.
+Reasoning can consume `O`; it is not an additional allowance. The hard input
+budget is `H = W - O`. The default soft trigger is `floor(0.8 * H)`. Compaction
+tries to leave space near `floor(0.65 * H)` but accepts a legal request above that
+target when mandatory input prevents further reduction. At the soft trigger,
+`compaction_retain_ratio` keeps recent complete groups near its 16% default,
+including at least the latest group. Hard pressure may compact this recent tail
+up to the protected latest group. Every candidate is checked against `H` again
+before generation; cache hits do not increase `H`.
+
+| Verified total window | Output allowance | Hard input budget | Default soft trigger |
+| --- | --- | --- | --- |
+| 131,072 (128K) | 8,192 | 122,880 | 98,304 |
+| 262,144 (256K) | 8,192 | 253,952 | 203,161 |
+
+Unlike `legacy`, an unset normal output limit in the new strategies becomes an
+explicit wire limit of `min(8192, W // 8)`. An explicit final extra output limit
+retains its precedence and is included in the budget. `summary_max_tokens`
+limits visible summary text; each summary request independently reserves at most
+`min(2 * requested_summary_tokens, W // 4)` total output tokens, including any
+reasoning. It does not inherit a smaller normal-generation limit. This allowance
+does not guarantee that all requested visible summary text will be generated.
+The requested summary size is reduced to fit the mandatory final generation input.
+
+Counting prefers a detected vLLM `/v1/chat/completions/render` or
+`/v1/responses/render` endpoint using the complete final payload. The returned
+prompt token IDs provide the strongest available count. A compatible `/tokenize`
+request is next; differences such as tool-choice rendering or unsupported
+template options are never silently labelled exact. `auto` can use the local
+estimate with `token_safety_margin` (15% by default); explicit `vllm` fails if no
+supported server counting path is available. `ContextUsage.count_precision`
+distinguishes `rendered`, `tokenized_estimate`, and `estimated`, independently of
+`estimator`. `request_fingerprint` identifies the frozen body, not a cache key.
+
+Render availability is version- and deployment-dependent. In the
+[verified vLLM source](https://github.com/vllm-project/vllm/blob/428cd0cb4a42750f5339d08bb67d534cf8051429/vllm/entrypoints/scale_out/render/api_router.py),
+the render routes use the full generation request schema; an ordinary server
+requires `--enable-scale-out` to expose the usable handlers. dagent probes this
+capability and does not assume it exists. `/tokenize` is not a universal
+replacement for rendering every generation option. Known over-budget candidates
+are reduced or rejected before generation. Unknown counts, incompatible server
+settings, or a changed deployment can still produce a server context error.
+dagent does not classify arbitrary HTTP 400 responses as context overflow or
+automatically replay generation based on error-message text.
+
+### Complete source coverage and stable result displays
+
+Summary requests cover the selected source continuously, splitting oversized
+sources into explicit ranges instead of dropping a middle section. Structured
+summaries retain goals, constraints, decisions, completed work and relevant tool
+observations, with pending work and source references. This helps the model avoid
+forgetting completed steps; it does not deduplicate or suppress tool calls.
+Raw received sources, summary coverage, and model-call usage are archived.
+
+Each compaction episode permits at most eight logical model calls and twelve
+model request attempts, including retries. These limits do not cap normal agent
+generation or the total task duration. Summary text is collected internally from
+a stream and is not emitted as the agent's answer. `compaction_timeout_seconds`
+defaults to `None`, adding no total deadline beyond the provider's request
+timeouts. Set it explicitly to bound the entire episode, including retries;
+increase the provider timeout separately for slow self-hosted models. Cancellation
+still propagates. Repeated unchanged failed sources are not resummarized every
+turn, and nonconverging replacements cannot create an unlimited summary loop.
+If the final count still exceeds the hard budget, the same episode can tighten
+only its current root summary once, without resending the original history.
+
+New tool results share the remaining batch budget before their first generation
+display. In these strategies, `max_tool_result_tokens` caps each result's normal
+body allowance; required identity/status/recovery metadata is additional. A
+persisted receipt freezes the exact text, shown ranges, and recovery cursor.
+Later steps, review continuations, and new runs reuse that text without repeatedly
+redistributing the budget. `max_total_tool_result_tokens` remains deprecated and
+ignored. Under otherwise unresolved hard pressure, the latest already frozen
+batch can make one explicit transition to reference-only display, recorded as
+`prefix_break_reason="emergency_result_reference"`. All calls, arguments,
+statuses, and corresponding result messages remain present.
+
+Shortening requires the original received text to be readable through the
+agent's existing boundary-checked recovery tool. Tools are not silently added.
+Unreadable result bodies stay intact. Recovery restores what the SDK received;
+upstream source truncation cannot be undone. The active user instructions and
+complete latest call/result relationships are protected. Oversized system
+instructions, tool schemas, user input, call arguments, or minimum result
+metadata can therefore still require `ContextWindowExceeded`.
+
+`allow_reference_fallback=False` preserves raw source when complete semantic
+summarization fails. A request that still fits may continue. Setting it to `True`
+also permits lower-fidelity reference continuation when necessary to fit: only
+recoverable source is replaced, unresolved coverage stays explicit, and the final
+hard check still applies. `ContextSummary.method="reference_fallback"` and the
+archived record's `partial` or `reference_only` status distinguish this from a
+complete summary. Neither mode promises lossless semantics or zero context errors.
+
+### Failure snapshots and cache verification
+
+For a new-strategy context preparation failure, the original exception keeps its
+type and exposes a failed `result` with the latest executed tool batch. A resolved
+execution configuration also supplies a checkpoint through the result and
+`Runner.run_checkpoint(run_id)`. If a later server discovery invalidates an
+explicit output limit, this snapshot keeps the last valid generation configuration;
+initially invalid configuration has no resolved checkpoint.
+After resolving the size or capability problem, start a **new run** with
+`Runner.run(agent, input="Continue from the saved progress.",
+conversation=error.result.conversation)`. This is conversation continuation, not
+same-run resume or an automatic replay of completed tools. Keep the source
+workspace and persisted resources available. Missing or corrupt recovery files
+are explicit failures; a reference is not a substitute for retained source data.
+
+For vLLM cache validation, configure the server's prefix caching and
+`--enable-prompt-tokens-details`; the latter controls whether standard
+`cached_tokens` is reported in the
+[verified vLLM implementation](https://github.com/vllm-project/vllm/blob/428cd0cb4a42750f5339d08bb67d534cf8051429/vllm/entrypoints/openai/chat_completion/serving.py).
+Use `capture_cache_usage=True`; for Chat streams also request usage with
+`stream_include_usage=True` when supported. Pin two sufficiently long identical
+requests to the same pod, inspect their provider-reported cached counts, and
+compare cold and warm requests. Missing statistics mean unknown. The SDK does not
+enable server flags, clear production caches, or promise a hit. Track uncached
+input plus summary input/output and latency, since a higher hit ratio alone does
+not establish a lower total cost.
+
+Default-valued new policy and audit fields are omitted from saved records so old
+default checkpoints retain their fingerprints. Records using the new strategies,
+frozen displays, or summary manifests require a reader supporting those fields.
+
+Run the offline [context management example](../../examples/context_management.py)
+with `uv run python -m examples.context_management`. For a real deployment, the
+[vLLM soak harness](../../examples/vllm_context_soak.py) defaults to a one-hour,
+200-tool-call, five-compaction acceptance target:
+
+```bash
+uv run python -m examples.vllm_context_soak --live \
+  --base-url http://localhost:8000/v1 --model MODEL --context-window 128 \
+  --workspace /tmp/dagent-vllm-soak --report /tmp/dagent-vllm-soak.json
+```
+
+Use `--context-window 256` for a verified 256K deployment. This harness requires
+usable server counting (`token_counting="vllm"`); enable the render handler when
+`/tokenize` cannot mirror the deployed generation options. The operator supplies
+the matching tool template, APC, usage details, and any required API-key
+environment variable. Without `--live` it sends no requests. Missing cache usage
+or reduced smoke-test targets cannot count as a full acceptance pass. Reports
+include observed budgets, usage and progress; conversation/checkpoint files keep
+the synthetic task's recoverable state. The harness never resets a shared cache.
 
 ## Custom provider compatibility
 

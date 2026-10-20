@@ -27,6 +27,10 @@ ResultItem = ToolResultMessage | ResultObservation
 class ResultBudgetExceeded(ValueError):
     """Mandatory result information cannot fit the requested budget."""
 
+    def __init__(self, message: str, *, minimum_tokens: int | None = None) -> None:
+        self.minimum_tokens = minimum_tokens
+        super().__init__(message)
+
 
 @dataclass(frozen=True)
 class ResultProjection:
@@ -35,6 +39,7 @@ class ResultProjection:
     metadata_tokens: int
     body_tokens: int
     unrecoverable: bool
+    displayed_spans: tuple[tuple[int, int], ...] = ()
 
 
 def result_references(item: ResultItem) -> tuple[ContentReference, ...]:
@@ -45,6 +50,10 @@ def result_references(item: ResultItem) -> tuple[ContentReference, ...]:
             candidates.append(item.value_reference)
     else:
         candidates.extend(item.references)
+    if item.model_display is not None:
+        candidates.append(item.model_display.recovery)
+        if item.model_display.previous_display is not None:
+            candidates.append(item.model_display.previous_display)
     unique = {(ref.path, ref.sha256): ref for ref in candidates}
     return tuple(unique.values())
 
@@ -66,7 +75,27 @@ def project_result(
     counter: TextCounter,
     *,
     read_available: bool,
+    max_body_chars: int | None = None,
+    recovery_reference: ContentReference | None = None,
 ) -> ResultProjection:
+    if item.model_display is not None:
+        display = item.model_display
+        marker = "[Recover received result with read_file: "
+        start = display.text.find(marker)
+        next_line = display.text.find("\n", start) if start >= 0 else -1
+        body_start = (next_line + 1 if next_line >= 0 else len(display.text)) if start >= 0 else 0
+        metadata = display.text[:body_start].rstrip("\n")
+        total_tokens = counter.count_text(display.text)
+        metadata_tokens = counter.count_text(metadata)
+        return ResultProjection(
+            display.text,
+            display.revision == 1
+            or hashlib.sha256(display.text[body_start:].encode("utf-8")).hexdigest() != display.recovery.sha256,
+            metadata_tokens,
+            max(0, total_tokens - metadata_tokens),
+            not read_available,
+            display.displayed_spans,
+        )
     text = stored_content_text(item.content)
     refs = result_references(item)
     retention = item.retention
@@ -123,9 +152,24 @@ def project_result(
             for name in ("pattern", "glob", "depth"):
                 if getattr(cursor, name) is not None:
                     args[name] = getattr(cursor, name)
-        cursor_text = (
-            f"[Continue with {cursor.tool}: {json.dumps(args, ensure_ascii=False)}]"
+        cursor_label = (
+            "Continue source with"
+            if recovery_reference is not None and cursor.tool == "read_file"
+            else "Continue with"
         )
+        cursor_text = f"[{cursor_label} {cursor.tool}: {json.dumps(args, ensure_ascii=False)}]"
+
+    tail = item.capability_id == "tool.shell" or bool(retention and retention.exit_code is not None)
+
+    def spans(chars: int) -> tuple[tuple[int, int], ...]:
+        if chars <= 0:
+            return ()
+        if chars >= len(text) or file_window:
+            return ((0, min(chars, len(text))),)
+        if tail:
+            return ((len(text) - chars, len(text)),)
+        head = (chars + 1) // 2
+        return ((0, head), (len(text) - (chars - head), len(text))) if chars > head else ((0, head),)
 
     def render(chars: int) -> tuple[str, str, str, bool]:
         truncated = chars < len(text) or externalized
@@ -162,7 +206,14 @@ def project_result(
             )
         if reference_text:
             metadata.append(reference_text)
-        if file_window and retention and retention.continuation:
+        if (recovery_reference is not None and retention and retention.continuation
+                and retention.continuation.tool == "read_file"):
+            # Undisplayed received text belongs to the immutable snapshot below.
+            # Reading the mutable source again is only for not-yet-received data,
+            # starting at the tool's actual continuation, never the display end.
+            if retention.source_completeness != "complete":
+                metadata.append(cursor_text)
+        elif file_window and retention and retention.continuation:
             if truncated or source_partial:
                 args = {
                     "path": retention.continuation.path,
@@ -174,35 +225,43 @@ def project_result(
                 )
         elif cursor_text:
             metadata.append(cursor_text)
+        if recovery_reference is not None:
+            shown = spans(chars)
+            offset = shown[0][1] if shown and shown[0][0] == 0 else 0
+            if text.startswith("\ufeff") and offset:
+                offset -= 1  # read_file Unicode offsets exclude an initial BOM.
+            args = {"path": recovery_reference.path, "offset_chars": offset, "limit_chars": 1024}
+            metadata.append(f"[Recover received result with read_file: {json.dumps(args, ensure_ascii=False)}]")
         body = (
             text[:chars]
             if file_window
             else _excerpt(
                 text,
                 chars,
-                tail=item.capability_id == "tool.shell"
-                or bool(retention and retention.exit_code is not None),
+                tail=tail,
             )
         )
         meta = "\n".join(metadata)
         return "\n".join(part for part in (meta, body) if part), meta, body, unavailable
 
-    full, meta, body, unavailable = render(len(text))
+    initial_chars = len(text) if max_body_chars is None else min(len(text), max(0, max_body_chars))
+    full, meta, body, unavailable = render(initial_chars)
     if counter.count_text(full) <= budget:
         metadata_tokens = counter.count_text(meta)
         return ResultProjection(
             full,
-            externalized,
+            externalized or initial_chars < len(text),
             metadata_tokens,
             counter.count_text(full) - metadata_tokens,
             unavailable,
+            spans(initial_chars),
         )
     minimal, _, _, _ = render(0)
     if counter.count_text(minimal) > budget:
         raise ResultBudgetExceeded(
             f"Minimum information for result {item.id} exceeds {budget} tokens."
         )
-    lo, hi = 0, len(text)
+    lo, hi = 0, initial_chars
     while lo < hi:
         mid = (lo + hi + 1) // 2
         if counter.count_text(render(mid)[0]) <= budget:
@@ -217,6 +276,7 @@ def project_result(
         metadata_tokens,
         counter.count_text(rendered) - metadata_tokens,
         unavailable,
+        spans(lo),
     )
 
 

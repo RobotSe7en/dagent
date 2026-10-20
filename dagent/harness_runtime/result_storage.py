@@ -71,10 +71,81 @@ class ResultStore:
     ) -> None:
         self.workspace = Path(workspace_path).expanduser().resolve()
         runtime = PurePosixPath(validate_runtime_directory(runtime_directory))
+        self.snapshot_root = self.workspace.joinpath(*runtime.parts, "history").resolve()
+        self.snapshot_root.relative_to(self.workspace)
         self.root = self.workspace.joinpath(*runtime.parts, "results").resolve()
         self.root.relative_to(self.workspace)
         self.on_event = on_event
         self.read_boundary = read_boundary
+        # A ResultStore belongs to one prepare operation. Recounting its
+        # candidates must not rehash every large immutable result repeatedly.
+        self._verified_references: dict[tuple[str, int, str], tuple[int, ...]] = {}
+
+    @staticmethod
+    def _file_identity(target: Path) -> tuple[int, ...]:
+        stat = target.stat()
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+    def verify_reference(self, reference: ContentReference) -> None:
+        """Check recovery once per unchanged file in this prepare operation."""
+
+        target = (self.workspace / reference.path).resolve()
+        target.relative_to(self.workspace)
+        identity = self._file_identity(target)
+        key = (str(target), reference.byte_length, reference.sha256)
+        if self._verified_references.get(key) == identity:
+            return
+        digest = hashlib.sha256()
+        length = 0
+        with target.open("rb") as source:
+            for chunk in iter(lambda: source.read(65536), b""):
+                digest.update(chunk)
+                length += len(chunk)
+        if length != reference.byte_length:
+            raise OSError(f"Result reference size mismatch: {reference.path}")
+        if digest.hexdigest() != reference.sha256:
+            raise OSError(f"Result reference SHA-256 mismatch: {reference.path}")
+        if self._file_identity(target) != identity:
+            raise OSError(f"Result reference changed during verification: {reference.path}")
+        self._verified_references[key] = identity
+
+    def read_reference(self, reference: ContentReference) -> bytes:
+        """Read an immutable result reference, verifying its stored identity."""
+
+        target = (self.workspace / reference.path).resolve()
+        target.relative_to(self.workspace)
+        identity = self._file_identity(target)
+        data = target.read_bytes()
+        if len(data) != reference.byte_length:
+            raise OSError(f"Result reference size mismatch: {reference.path}")
+        if hashlib.sha256(data).hexdigest() != reference.sha256:
+            raise OSError(f"Result reference SHA-256 mismatch: {reference.path}")
+        if self._file_identity(target) != identity:
+            raise OSError(f"Result reference changed during verification: {reference.path}")
+        self._verified_references[(str(target), reference.byte_length, reference.sha256)] = identity
+        return data
+
+    def snapshot_text(self, text: str) -> ContentReference:
+        """Save received text under a stable, content-addressed relative path."""
+
+        data = text.encode("utf-8")
+        digest = hashlib.sha256(data).hexdigest()
+        root = self.snapshot_root.resolve()
+        root.relative_to(self.workspace)
+        target = (root / f"{digest}.txt").resolve()
+        target.relative_to(root)
+        if target.exists():
+            if target.read_bytes() != data:
+                raise OSError(f"Result snapshot conflicts with existing data: {target}")
+            return ContentReference(
+                path=target.relative_to(self.workspace).as_posix(),
+                media_type="text/plain; charset=utf-8", byte_length=len(data),
+                sha256=digest, preview=_head_tail_preview(text),
+            )
+        return _write_reference(
+            self.workspace, root, target.name, data,
+            media_type="text/plain; charset=utf-8", preview=_head_tail_preview(text),
+        )
 
     def can_read(self, item: ToolResultMessage | ResultObservation) -> bool:
         paths = [reference.path for reference in result_references(item)]

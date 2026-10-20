@@ -67,6 +67,7 @@ from dagent.harness_runtime.execution_usage import (
     execution_usage_scope,
 )
 from dagent.harness_runtime.context import ContextAssembler
+from dagent.harness_runtime.conversation_resources import ConversationResourceError
 from dagent.harness_runtime.dag_design import design_dag as design_dag_candidate
 from dagent.harness_runtime.planner_skill import load_dag_generation_skill
 from dagent.harness_runtime.steering import (
@@ -77,6 +78,7 @@ from dagent.harness_runtime.tool_agent import (
     LoopEventHandler,
     TokenHandler,
     ToolResultStorageFailure,
+    ToolContextFailure,
 )
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
@@ -1358,6 +1360,12 @@ class Runner:
                     user_request=input if isinstance(input, str) else "",
                     review_level=review or exc.outcome.state.review_level,
                 ) from exc.cause
+            except ToolContextFailure as exc:
+                raise self._context_failure_error(
+                    exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
+                    user_request=input if isinstance(input, str) else "",
+                    review_level=review or exc.outcome.state.review_level,
+                ) from exc
 
     async def _run_dispatch(
         self,
@@ -1588,6 +1596,47 @@ class Runner:
             result=RunResult(state=state, new_items=outcome.new_items, usage=usage),
         )
 
+    def _context_failure_error(
+        self, failure: ToolContextFailure, *, usage: ExecutionUsage,
+        execution: RunExecution, user_request: str, review_level: ReviewLevel,
+    ) -> Exception:
+        outcome = failure.outcome
+        state = outcome.state.model_copy(update={
+            "execution": execution, "user_request": user_request,
+            "review_level": review_level, "pending_review": None,
+            "pending_tool_batch": None,
+        })
+        conversation = state.model_thread or state.conversation
+        runtime = getattr(failure, "runtime", self._runtime)
+        assembler = runtime.tool_agent.context_assembler
+        snapshot_window = assembler.context_window_tokens
+        if assembler.max_output_tokens is not None and assembler.max_output_tokens >= snapshot_window:
+            snapshot_window = assembler.last_valid_generation_context_window_tokens
+        if snapshot_window is None:
+            # Initially invalid configuration has no valid resolved plan. Keep
+            # the complete failed state even though no checkpoint can be built.
+            state = self._runtime.session.save_run_state(state)
+            result = RunResult(state=state, new_items=outcome.new_items, usage=usage)
+        else:
+            result = self._finalize_run_result(
+                RunResult(state=state, new_items=outcome.new_items, usage=usage), runtime=runtime,
+                capability_ids=state.capability_scope.capability_ids or (),
+                skill_ids=state.capability_scope.skills or (), review_level=review_level,
+                dynamic_adjust=state.dynamic_adjust, usage=usage, context_window_snapshot=snapshot_window,
+            )
+        # Preserve ContextWindowExceeded and provider diagnostics. New strategy
+        # exceptions gain a failed result without changing their public type.
+        failure.cause.result = result
+        if conversation is not None and state.workspace_path:
+            try:
+                runtime.conversation_resources.persist(conversation, workspace_path=state.workspace_path)
+            except ConversationResourceError as exc:
+                # Broken source storage must not replace the original failure
+                # or discard the complete in-memory conversation snapshot.
+                failure.cause.recovery_error = str(exc)
+                failure.cause.add_note(f"Conversation resource recovery failed: {exc}")
+        return failure.cause
+
     def _finalize_run_result(
         self,
         result: RunResult,
@@ -1598,6 +1647,7 @@ class Runner:
         review_level: ReviewLevel,
         dynamic_adjust: bool,
         usage: ExecutionUsage,
+        context_window_snapshot: int | None = None,
     ) -> RunResult:
         capability_ids = tuple(sorted(capability_ids))
         skill_ids = tuple(sorted(skill_ids))
@@ -1656,7 +1706,7 @@ class Runner:
             context_policy=runtime.tool_agent.context_policy,
             result_storage_policy=runtime.tool_agent.result_storage_policy,
             runtime_directory=runtime.runtime_directory,
-            context_window_tokens=context_assembler.context_window_tokens,
+            context_window_tokens=context_window_snapshot or context_assembler.context_window_tokens,
             max_output_tokens=context_assembler.max_output_tokens,
             extra_system_prompt=runtime.tool_agent.extra_system_prompt,
         )
@@ -1976,6 +2026,13 @@ class Runner:
                 user_request=resume_state.user_request,
                 review_level=review_level,
             ) from exc.cause
+        except ToolContextFailure as exc:
+            runtime.session.discard_review(decision.review_id)
+            exc.runtime = runtime
+            raise self._context_failure_error(
+                exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
+                user_request=resume_state.user_request, review_level=review_level,
+            ) from exc
         except BaseException:
             usage = usage_tracker.snapshot()
             failed_update: dict[str, Any] = {
@@ -2432,6 +2489,8 @@ def _assemble_runtime(
             ),
             max_output_tokens=resolved_max_output_tokens,
             request_token_counter=getattr(provider, "count_tokens", None),
+            request_preparer=getattr(provider, "prepare_call", None),
+            prepared_token_counter=getattr(provider, "count_prepared", None),
             request_reasoning_field=getattr(
                 provider,
                 "context_reasoning_field",

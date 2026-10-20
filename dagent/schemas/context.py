@@ -43,6 +43,20 @@ class ContextPolicy(BaseModel):
         json_schema_extra={"deprecated": True},
     )
     token_safety_margin: float = Field(default=0.15, ge=0, le=1)
+    compaction_strategy: Literal["legacy", "chunked", "cache_aware"] = "legacy"
+    allow_reference_fallback: bool = False
+    compaction_timeout_seconds: float | None = Field(default=None, gt=0)
+
+    @model_serializer(mode="wrap")
+    def serialize_strategy(self, serializer):
+        payload = serializer(self)
+        # Omitted new options must preserve released checkpoint fingerprints.
+        for name, default in (("compaction_strategy", "legacy"),
+                              ("allow_reference_fallback", False),
+                              ("compaction_timeout_seconds", None)):
+            if getattr(self, name) == default:
+                payload.pop(name, None)
+        return payload
 
     @model_validator(mode="after")
     def validate_compaction_ratios(self) -> "ContextPolicy":
@@ -98,8 +112,19 @@ class ContextUsage(BaseModel):
     omitted_reasoning_items: int = Field(default=0, ge=0)
     omitted_reasoning_tokens: int = Field(default=0, ge=0)
     compacted_active_run_items: int = Field(default=0, ge=0)
-    compaction_method: Literal["none", "model", "deterministic_fallback"] = "none"
+    compaction_method: Literal["none", "model", "deterministic_fallback", "reference_fallback"] = "none"
     compaction_reason: str | None = None
+    count_precision: Literal["rendered", "tokenized_estimate", "estimated"] | None = None
+    request_fingerprint: str | None = None
+    prefix_break_reason: Literal["compaction", "emergency_result_reference"] | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_budget_details(self, serializer):
+        payload = serializer(self)
+        for name in ("count_precision", "request_fingerprint", "prefix_break_reason"):
+            if getattr(self, name) is None:
+                payload.pop(name, None)
+        return payload
 
 
 class ModelTokenUsage(BaseModel):
@@ -190,6 +215,8 @@ class ContextWindowExceeded(RuntimeError):
 
     def __init__(self, message: str, *, usage: ContextUsage) -> None:
         self.usage = usage
+        # Populated by Runner only when a complete failed run has been saved.
+        self.result = None
         super().__init__(message)
 
 

@@ -6,13 +6,15 @@ import hashlib
 import mimetypes
 import os
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+import json
 from pathlib import Path, PurePosixPath
 
 from dagent.schemas import (
     ContentReference,
     ConversationState,
     ToolResultMessage,
+    UserMessage,
 )
 from dagent.schemas.common import validate_runtime_directory
 
@@ -47,15 +49,20 @@ class ConversationResourceStore:
         """Copy retained result references into the stable object store."""
 
         workspace = Path(workspace_path).expanduser().resolve()
-        for path, byte_length, sha256 in _conversation_resource_records(conversation):
-            source = _resolve_workspace_resource(workspace, path)
+        def retain(reference: ContentReference) -> bytes:
+            source = _resolve_workspace_resource(workspace, reference.path)
             data = _read_verified(
                 source,
-                byte_length=byte_length,
-                sha256=sha256,
-                label=path,
+                byte_length=reference.byte_length,
+                sha256=reference.sha256,
+                label=reference.path,
             )
-            self._write_object(conversation.id, sha256, data)
+            self._write_object(conversation.id, reference.sha256, data)
+            return data
+
+        roots = ((ref, kind) for ref, _, kind in _resource_roots(conversation))
+        for _ in iter_resource_closure(roots, retain):
+            pass
 
     def materialize(
         self,
@@ -69,6 +76,21 @@ class ConversationResourceStore:
             return conversation
         workspace = Path(workspace_path).expanduser().resolve()
         materialized: dict[str, str] = {}
+
+        # Frozen displays and compaction records contain exact relative paths.
+        # Restore their declared closure without rewriting opaque source text.
+        def restore(reference: ContentReference) -> bytes:
+            destination = _resolve_workspace_resource(workspace, reference.path)
+            source = destination if destination.is_file() else self._object_path(conversation.id, reference.sha256)
+            data = _read_verified(source, byte_length=reference.byte_length,
+                                  sha256=reference.sha256, label=reference.path)
+            _write_verified_file(destination, data)
+            materialized.setdefault(reference.sha256, reference.path)
+            return data
+
+        roots = ((ref, kind) for ref, preserve, kind in _resource_roots(conversation) if preserve)
+        for _ in iter_resource_closure(roots, restore):
+            pass
 
         def rebase(
             *,
@@ -116,7 +138,7 @@ class ConversationResourceStore:
         items = []
         changed = False
         for item in conversation.items:
-            if isinstance(item, ToolResultMessage):
+            if isinstance(item, ToolResultMessage) and item.model_display is None:
                 content = item.content
                 if isinstance(content, ContentReference):
                     content = _rebase_reference(content, rebase)
@@ -201,6 +223,17 @@ def _conversation_resource_records(
     conversation: ConversationState,
 ) -> Iterator[tuple[str, int, str]]:
     seen: set[tuple[str, str]] = set()
+    for resource, _, _ in _resource_roots(conversation):
+        identity = (resource.path, resource.sha256)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        yield resource.path, resource.byte_length, resource.sha256
+
+
+def _resource_roots(
+    conversation: ConversationState,
+) -> Iterator[tuple[ContentReference, bool, str]]:
     for item in conversation.items:
         if isinstance(item, ToolResultMessage):
             content = (
@@ -214,18 +247,90 @@ def _conversation_resource_records(
                 else ()
             )
             resources = (*content, *value, *item.artifacts)
+            for resource in resources:
+                yield resource, item.model_display is not None, "opaque"
+            if item.model_display is not None:
+                yield item.model_display.recovery, True, "opaque"
+                if item.model_display.previous_display is not None:
+                    yield item.model_display.previous_display, True, "opaque"
+        elif isinstance(item, UserMessage):
+            for result in item.result_observations:
+                if result.model_display is None:
+                    continue
+                if isinstance(result.content, ContentReference):
+                    yield result.content, True, "opaque"
+                for reference in result.references:
+                    yield reference, True, "opaque"
+                yield result.model_display.recovery, True, "opaque"
+                if result.model_display.previous_display is not None:
+                    yield result.model_display.previous_display, True, "opaque"
         else:
             continue
-        for resource in resources:
-            identity = (resource.path, resource.sha256)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            yield (
-                resource.path,
-                resource.byte_length,
-                resource.sha256,
-            )
+    if conversation.summary is not None and conversation.summary.compaction_record is not None:
+        yield conversation.summary.compaction_record, True, "record"
+        if conversation.summary.result_manifest is not None:
+            yield conversation.summary.result_manifest, True, "legacy_results"
+    if conversation.compaction_state is not None:
+        for failure in conversation.compaction_state.failed_records:
+            yield failure.record, True, "record"
+
+
+def iter_resource_closure(
+    roots: Iterable[tuple[ContentReference, str]],
+    read_reference: Callable[[ContentReference], bytes],
+) -> Iterator[ContentReference]:
+    """Read schema-owned recovery edges, keeping ordinary result data opaque."""
+
+    pending = list(roots)
+    seen: set[tuple[str, str, str]] = set()
+    while pending:
+        reference, kind = pending.pop()
+        identity = (reference.path, reference.sha256, kind)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        data = read_reference(reference)
+        yield reference
+        pending.extend(_resource_edges(data, kind))
+
+
+def _resource_edges(data: bytes, kind: str) -> tuple[tuple[ContentReference, str], ...]:
+    """Traverse only schema-owned links; ordinary result JSON stays opaque."""
+
+    if kind == "opaque":
+        return ()
+    from dagent.harness_runtime.compaction import CompactionRecordV1, CompactionSourceV1
+
+    try:
+        if kind == "record":
+            record = CompactionRecordV1.model_validate_json(data)
+            edges = [(record.source, "source"), *((ref, "opaque") for ref in record.refs)]
+            if record.previous_record is not None:
+                edges.append((record.previous_record, "record"))
+            if record.reused_from is not None:
+                edges.append((record.reused_from, "record"))
+            return tuple(edges)
+        if kind == "source":
+            source = CompactionSourceV1.model_validate_json(data)
+            edges = [(ref, "opaque") for ref in source.refs]
+            if source.previous_result_manifest is not None:
+                edges.append((source.previous_result_manifest, "legacy_results"))
+            return tuple(edges)
+        if kind == "legacy_results":
+            edges = []
+            from dagent.harness_runtime.result_projection import result_references
+
+            for line in data.splitlines():
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("Result manifest entries must be objects.")
+                if row.get("type") == "tool_result":
+                    result = ToolResultMessage.model_validate(row)
+                    edges.extend((ref, "opaque") for ref in result_references(result))
+            return tuple(edges)
+    except (ValueError, UnicodeError) as exc:
+        raise ConversationResourceError(f"Invalid retained conversation {kind} resource.") from exc
+    raise ValueError(f"Unsupported conversation resource kind: {kind}")
 
 
 def _has_conversation_resources(conversation: ConversationState) -> bool:
