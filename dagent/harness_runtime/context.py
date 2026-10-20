@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from dagent.harness_runtime.result_storage import ResultStore
+from dagent.harness_runtime.conversation_resources import ConversationResourceIndex
 from dagent.harness_runtime.result_projection import (
     ResultBudgetExceeded,
     project_result,
@@ -142,6 +143,7 @@ class PreparedModelContext:
     request: ModelRequest
     conversation: ConversationState
     usage: ContextUsage
+    prepared_call: Any = None
 
     @property
     def messages(self) -> list[dict[str, Any]]:
@@ -163,6 +165,8 @@ class ContextAssembler:
         token_counter: TokenCounter | None = None,
         request_token_counter: RequestTokenCounter | None = None,
         request_reasoning_field: RequestReasoningField | None = None,
+        request_preparer: Callable[..., Awaitable[Any]] | None = None,
+        prepared_token_counter: Callable[..., Awaitable[ModelTokenCount | None]] | None = None,
     ) -> None:
         if context_window_tokens is not None and context_window_tokens < 1024:
             raise ValueError("context_window_tokens must be at least 1024.")
@@ -184,10 +188,17 @@ class ContextAssembler:
             discovered=server_max_model_len or model_context_window_tokens,
         )
         self.max_output_tokens = max_output_tokens
+        self.last_valid_generation_context_window_tokens = (
+            self.context_window_tokens
+            if max_output_tokens is None or max_output_tokens < self.context_window_tokens else None
+        )
         self.token_counter = token_counter or HeuristicTokenCounter()
         self.request_token_counter = request_token_counter
         self.request_reasoning_field = request_reasoning_field
+        self.request_preparer = request_preparer
+        self.prepared_token_counter = prepared_token_counter
         self.estimator = "custom" if token_counter is not None else "heuristic"
+        self._compaction_resource_index: ConversationResourceIndex | None = None
 
     async def prepare(
         self,
@@ -204,7 +215,19 @@ class ContextAssembler:
         reasoning_effort: ReasoningEffort | None = None,
         purpose: Literal["generation", "compaction"] = "generation",
         result_store: ResultStore | None = None,
+        history_compactor: Any = None,
+        enable_new_strategy: bool = False,
     ) -> PreparedModelContext:
+        if enable_new_strategy and policy.compaction_strategy != "legacy":
+            from dagent.harness_runtime.context_strategy import prepare_context
+
+            return await prepare_context(
+                self, system_message=system_message, conversation=conversation,
+                tools=tools, policy=policy, active_run_id=active_run_id,
+                response_format=response_format, stream=stream,
+                max_output_tokens=max_output_tokens, reasoning_effort=reasoning_effort,
+                purpose=purpose, result_store=result_store, compactor=history_compactor,
+            )
         working = conversation
         compacted_items = 0
         compacted_active_run_items = 0
@@ -577,6 +600,7 @@ class ContextAssembler:
         reasoning_effort: ReasoningEffort | None,
         purpose: Literal["generation", "compaction"],
         readable_result_ids: frozenset[str] = frozenset(),
+        strict_context_budget: bool = False,
     ) -> tuple[ModelRequest, "_ProjectionUsage"]:
         items: list[ModelUserInput | ModelAssistantTurn | ModelToolResultInput] = []
         summary_tokens = 0
@@ -595,6 +619,8 @@ class ContextAssembler:
             )
             if conversation.summary.result_manifest:
                 summary_text += "\n[Earlier tool results: " + conversation.summary.result_manifest.path + "; use file tools to read the index]"
+            if conversation.summary.compaction_record:
+                summary_text += "\n[Compaction source index: " + conversation.summary.compaction_record.path + "; use file tools to recover earlier visible messages and received results]"
             if conversation.summary.result_archive_incomplete:
                 summary_text += "\n[RECOVERY_UNAVAILABLE: some earlier results could not be archived]"
             items.append(ModelUserInput(source_id="context_summary", content=summary_text))
@@ -690,6 +716,7 @@ class ContextAssembler:
             reasoning_effort=reasoning_effort,
             purpose=purpose,
             reasoning_omission_reasons=tuple(sorted(reasoning_omission_reasons)),
+            strict_context_budget=strict_context_budget,
         )
         return request, _ProjectionUsage(
             summary_tokens=summary_tokens,

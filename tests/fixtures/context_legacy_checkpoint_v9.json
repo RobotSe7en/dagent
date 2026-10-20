@@ -1,0 +1,258 @@
+{
+  "schema_version": 9,
+  "state": {
+    "schema_version": 6,
+    "run_id": "legacy_run",
+    "kind": "tool",
+    "status": "completed",
+    "conversation": {
+      "schema_version": 4,
+      "id": "legacy_conversation",
+      "revision": 2,
+      "summary": {
+        "content": "Prior requirements and evidence.",
+        "result_manifest": null,
+        "result_archive_incomplete": false,
+        "source_item_count": 1,
+        "method": "model",
+        "fallback_reason": null,
+        "source_truncated": false,
+        "output_truncated": false,
+        "reasoning": "",
+        "usage": null,
+        "model_call": null,
+        "context_usage": null
+      },
+      "items": [
+        {
+          "type": "user",
+          "id": "user",
+          "run_id": "legacy_run",
+          "content": "Continue.",
+          "attachments": [],
+          "result_observations": [],
+          "scope": "conversation",
+          "visibility": "user"
+        },
+        {
+          "type": "assistant",
+          "id": "assistant",
+          "run_id": "legacy_run",
+          "content": "",
+          "reasoning": "",
+          "refusal": "",
+          "usage": null,
+          "model_call": null,
+          "tool_calls": [
+            {
+              "id": "call",
+              "name": "tool_query",
+              "arguments": {
+                "index": 1
+              },
+              "capability_id": null
+            }
+          ],
+          "scope": "conversation",
+          "visibility": "user"
+        },
+        {
+          "type": "tool_result",
+          "id": "result",
+          "run_id": "legacy_run",
+          "call_id": "call",
+          "name": "tool_query",
+          "capability_id": null,
+          "status": "completed",
+          "retention": null,
+          "content": {
+            "type": "inline",
+            "text": ""
+          },
+          "value": null,
+          "value_reference": null,
+          "artifacts": [],
+          "scope": "conversation",
+          "visibility": "internal"
+        }
+      ]
+    },
+    "model_thread": {
+      "schema_version": 4,
+      "id": "legacy_conversation",
+      "revision": 2,
+      "summary": {
+        "content": "Prior requirements and evidence.",
+        "result_manifest": null,
+        "result_archive_incomplete": false,
+        "source_item_count": 1,
+        "method": "model",
+        "fallback_reason": null,
+        "source_truncated": false,
+        "output_truncated": false,
+        "reasoning": "",
+        "usage": null,
+        "model_call": null,
+        "context_usage": null
+      },
+      "items": [
+        {
+          "type": "user",
+          "id": "user",
+          "run_id": "legacy_run",
+          "content": "Continue.",
+          "attachments": [],
+          "result_observations": [],
+          "scope": "conversation",
+          "visibility": "user"
+        },
+        {
+          "type": "assistant",
+          "id": "assistant",
+          "run_id": "legacy_run",
+          "content": "",
+          "reasoning": "",
+          "refusal": "",
+          "usage": null,
+          "model_call": null,
+          "tool_calls": [
+            {
+              "id": "call",
+              "name": "tool_query",
+              "arguments": {
+                "index": 1
+              },
+              "capability_id": null
+            }
+          ],
+          "scope": "conversation",
+          "visibility": "user"
+        },
+        {
+          "type": "tool_result",
+          "id": "result",
+          "run_id": "legacy_run",
+          "call_id": "call",
+          "name": "tool_query",
+          "capability_id": null,
+          "status": "completed",
+          "retention": null,
+          "content": {
+            "type": "inline",
+            "text": ""
+          },
+          "value": null,
+          "value_reference": null,
+          "artifacts": [],
+          "scope": "conversation",
+          "visibility": "internal"
+        }
+      ]
+    },
+    "context_usage": [
+      {
+        "context_window_tokens": 131072,
+        "max_output_tokens": null,
+        "input_budget_tokens": 131071,
+        "compaction_trigger_tokens": 104856,
+        "compaction_retain_tokens": 20971,
+        "estimated_input_tokens": 100,
+        "system_tokens": 0,
+        "schema_tokens": 0,
+        "summary_tokens": 0,
+        "history_tokens": 0,
+        "tool_result_tokens": 0,
+        "included_items": 0,
+        "compacted_items": 0,
+        "truncated_tool_results": 0,
+        "tool_result_metadata_tokens": 0,
+        "tool_result_body_tokens": 0,
+        "source_truncated_tool_results": 0,
+        "unrecoverable_tool_results": 0,
+        "estimator": "heuristic",
+        "server_max_model_len": null,
+        "model_context_window_tokens": null,
+        "configured_context_limit": null,
+        "context_window_source": null,
+        "reasoning_replay_mode": "active_run",
+        "replayed_reasoning_items": 0,
+        "replayed_reasoning_tokens": 0,
+        "omitted_reasoning_items": 0,
+        "omitted_reasoning_tokens": 0,
+        "compacted_active_run_items": 0,
+        "compaction_method": "none",
+        "compaction_reason": null
+      }
+    ],
+    "dag": null,
+    "dag_spec": null,
+    "trace": null,
+    "pending_review": null,
+    "pending_tool_batch": null,
+    "user_request": "",
+    "review_level": "fast",
+    "runtime_mode": "tool",
+    "execution": "local",
+    "dynamic_adjust": true,
+    "planner_frontend": "typed_spec",
+    "capability_scope": {
+      "capability_ids": [],
+      "skills": []
+    },
+    "spec_id": null,
+    "workspace_path": null,
+    "dag_boundary_approved_version": null,
+    "static_agent_continuation": null,
+    "input_artifact_files": []
+  },
+  "plan": {
+    "schema_version": 9,
+    "runtime_kind": "tool",
+    "tool_profile": {
+      "name": "legacy",
+      "description": "",
+      "content": "Continue the task."
+    },
+    "planner_profile": {
+      "name": "legacy",
+      "description": "",
+      "content": "Continue the task."
+    },
+    "max_steps": 10,
+    "review_level": "fast",
+    "dynamic_adjust": true,
+    "capability_ids": [],
+    "capability_fingerprints": {},
+    "skill_ids": [],
+    "agent_ids": [],
+    "validation_enabled": false,
+    "validator_profile": null,
+    "max_validation_retries": 1,
+    "planner_frontend": "typed_spec",
+    "planner_skill": null,
+    "context_policy": {
+      "reasoning_replay": "active_run",
+      "compaction_trigger_ratio": 0.8,
+      "compaction_retain_ratio": 0.16,
+      "summary_max_tokens": 8192,
+      "compaction_reasoning_effort": "low",
+      "max_tool_result_tokens": 2048,
+      "max_total_tool_result_tokens": 16384,
+      "token_safety_margin": 0.15
+    },
+    "result_storage_policy": {
+      "max_inline_bytes": 262144,
+      "max_shell_output_bytes": 67108864
+    },
+    "runtime_directory": ".runtime",
+    "context_window_tokens": 131072,
+    "max_output_tokens": null,
+    "extra_system_prompt": null,
+    "fingerprint": "0c43204601ec968c772f4892d512cb61919d40f0c431fce3c34a02088bf9f6f5"
+  },
+  "usage": {
+    "total_operations": 0,
+    "model_turns": 0,
+    "capability_calls": 0
+  }
+}

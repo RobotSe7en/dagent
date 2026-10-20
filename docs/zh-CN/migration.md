@@ -8,6 +8,61 @@
 
 ## 尚未发布
 
+### 上下文管理正确性修复
+
+新策略保留外置工具结果的人工审批反馈，在后续准备或计数失败时保存已付费摘要，
+并允许总摘要更新后继续合法引用降级。含 NUL 文本不会通过不兼容的文件读取器截断。
+运行期归档索引避免旧正文重复读取和解析，每轮仍检查文件身份。
+
+严格预算拒绝显式 `truncation=null`；请省略该字段或使用 `"disabled"`。render 拒绝
+自动输出预算后，可通过服务端窗口发现重新预算，覆盖带工具 Chat 和 Responses。
+窗口探测不是生成输入计数。显式输出上限和无关 HTTP 400 错误保持原有含义。
+默认 legacy 行为及现有 checkpoint 无需迁移。
+
+### 显式启用有界 ToolAgent 上下文管理
+
+`ContextPolicy.compaction_strategy` 新增 `"chunked"` 和 `"cache_aware"`，默认
+`"legacy"` 保留原有 SDK 行为，DAG 执行也不变。新策略对同一份冻结的最终 provider
+请求计数并发送，强制预留 generation 输出，并通过独立且有界的摘要请求连续覆盖来源。
+未配置普通输出上限时，仅新策略在请求里发送
+`min(8192, context_window_tokens // 8)`。新模式拒绝将已投影历史、模型、instructions
+或 tools 替换为不同值的额外参数；legacy 仍支持原有覆盖优先级。
+
+工具结果 display receipt 保存首次按预算展示的片段，后续步骤、review 与会话续聊
+保持稳定。新模式的 `max_tool_result_tokens` 表示正文额度，必要元数据另计；
+已弃用的总结果预算仍忽略。最新批次仅在原文真实可读时，允许明确地紧急转为引用
+一次，全部 call/result 关系保留。`allow_reference_fallback` 默认 `False`；启用后，
+当语义摘要不能使请求放下时，允许明确记录的部分摘要或仅引用摘要。
+
+一次压缩最多 8 次逻辑调用、12 次模型请求尝试。
+`compaction_timeout_seconds=None` 不增加超出 provider timeout 的总时限；显式值
+限制一次压缩过程，不限制整个任务。vLLM 优先使用探测到的 render 计数，再使用
+兼容的 `/tokenize`，`auto` 最后允许明确标注的估算。新模式取配置、服务端和模型窗口的
+最小值，发现更小的有效服务端上限时缩小自动输出预留；legacy 配置校验不变。
+不增加 HTTP 400 自动重放。
+已知过大的请求会在生成前停止，但未知计数及必要输入自身过大时仍不能保证超限归零。
+
+准备上下文失败时，原异常附带的失败 result/checkpoint 保留最新已执行工具。
+解决原因并保留恢复资源后，通过
+`Runner.run(..., conversation=error.result.conversation)` 发起新 run 继续。
+既有 review-resume 行为不变。新增字段取默认值时不序列化，保持旧默认 checkpoint
+fingerprint；启用新模式的记录需要兼容读取方。无需迁移旧记录，也不增加同 run 续跑 API。
+初始配置本身非法时没有已解析 checkpoint，但失败结果仍保留会话；后续发现窗口变化
+而失败时，checkpoint 保留最后有效的生成配置。
+
+配置、128K/256K 预算、恢复边界与真实缓存验证见
+[ToolAgent 上下文策略](model-context-and-reasoning.md#有界的-toolagent-上下文策略尚未发布)。
+Render 能力和标准缓存统计依赖实际服务端版本及开关，启用采集本身不会开启缓存。
+尚未对真实自托管部署的缓存性能或上下文错误率进行基准测试。
+
+验证：Python 测试 1,804 项通过，3 项因环境条件跳过。覆盖 200 次工具执行及至少
+5 次实际压缩、Chat/Responses 流式调用、失败恢复，以及提交 `8c2e9f2` 生成的旧
+checkpoint 原样读取。新增回归覆盖外置结果审批反馈、已付费摘要链恢复、旧总摘要下
+失败记录降级、小窗口发现、NUL 文本及归档文件删改。200 次合成压缩的累计归档正文读取
+从约 1.25 GB 降至 25 MB；每轮文件状态遍历仍随历史量线性增长。
+离线上下文示例、文档代码片段与 `git diff --check` 通过。
+真实 vLLM 一小时 soak 需要服务端地址，尚未执行。
+
 ### 显式启用提示缓存统计
 
 `Provider(...)` 和 `ProviderConfig` 新增 `capture_cache_usage=False`。启用后，

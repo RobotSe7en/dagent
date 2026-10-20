@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import warnings
+from copy import deepcopy
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import replace
 from time import monotonic
@@ -37,6 +38,7 @@ from dagent.providers.model_io import (
     ModelResponse,
     ModelStreamEvent,
     ModelTokenCount,
+    PreparedModelCall,
     chat_messages_to_model_request,
     chat_response_from_model,
     model_request_to_chat,
@@ -76,6 +78,17 @@ class ProviderCapabilityError(RuntimeError):
 
 class ProviderTokenCountError(ProviderCapabilityError):
     """Exact token counting was unavailable or returned invalid data."""
+
+
+class ProviderContextWindowError(ProviderCapabilityError):
+    """A discovered server window invalidates the frozen output reservation."""
+
+    def __init__(self, *, max_model_len: int, output_limit: int) -> None:
+        self.max_model_len = max_model_len
+        super().__init__(
+            f"The effective output limit ({output_limit}) must be smaller than "
+            f"the server context window ({max_model_len})."
+        )
 
 
 class ProviderRequestError(RuntimeError):
@@ -172,6 +185,9 @@ class OpenAICompatibleProvider:
         self._capability_lock = asyncio.Lock()
         self._warning_keys: set[str] = set()
         self._tokenize_unavailable = False
+        self._openapi_document: Mapping[str, Any] | None = None
+        self._render_unavailable: set[str] = set()
+        self._window_probe_results: dict[tuple[str, str], int] = {}
         self.server_max_model_len: int | None = None
 
     @property
@@ -205,13 +221,17 @@ class OpenAICompatibleProvider:
 
     async def _read_model_stream(
         self, source: Any, partial: Callable[[], ModelResponse],
+        *, capture_tag_reasoning: bool | None = None,
     ) -> AsyncIterator[Any]:
         try:
             async for item in source:
                 yield item
         except (APIConnectionError, APIStatusError, OSError, TransportError) as exc:
             response = normalize_model_response(
-                partial(), capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
+                partial(), capture_tag_reasoning=(
+                    self.config.reasoning_capture == "field_and_tags"
+                    if capture_tag_reasoning is None else capture_tag_reasoning
+                ),
             )
             assert response.metadata is not None
             attempt = response.metadata.attempts[-1].model_copy(update={
@@ -234,6 +254,8 @@ class OpenAICompatibleProvider:
         return self._capabilities
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
+        if request.strict_context_budget:
+            return await self.complete_prepared(await self.prepare_call(request))
         capabilities = await self.inspect_capabilities()
         protocol, reason = self._resolve_protocol(capabilities, request=request)
         if protocol == "responses":
@@ -241,6 +263,10 @@ class OpenAICompatibleProvider:
         return await self._chat_complete(request, capabilities, reason)
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ModelStreamEvent]:
+        if request.strict_context_budget:
+            async for event in self.stream_prepared(await self.prepare_call(request, stream=True)):
+                yield event
+            return
         capabilities = await self.inspect_capabilities()
         protocol, reason = self._resolve_protocol(
             capabilities,
@@ -252,6 +278,126 @@ class OpenAICompatibleProvider:
                 yield event
             return
         async for event in self._chat_stream(request, capabilities, reason):
+            yield event
+
+    async def prepare_call(
+        self, request: ModelRequest, *, stream: bool = False,
+    ) -> PreparedModelCall:
+        """Freeze effective provider arguments before budget checks and dispatch."""
+
+        capabilities = await self.inspect_capabilities()
+        if request.strict_context_budget and self._effective_max_output_tokens(request) is None:
+            request = replace(
+                request,
+                max_output_tokens=min(8192, max(1, self.context_window_tokens // 8)),
+                inherit_provider_max_output_tokens=False,
+            )
+        request = deepcopy(request)
+        protocol, reason = self._resolve_protocol(capabilities, request=request, stream=stream)
+        build = self._responses_kwargs if protocol == "responses" else self._chat_kwargs
+        kwargs, metadata = build(request, capabilities, resolution_reason=reason, stream=stream)
+        payload = {
+            key: value for key, value in kwargs.items()
+            if key not in {"extra_body", "extra_headers", "extra_query", "timeout"}
+        }
+        # The OpenAI client applies extra_body as a final, shallow JSON overlay.
+        payload.update(kwargs.get("extra_body") or {})
+        if request.strict_context_budget:
+            self._validate_strict_projection(request, payload, protocol, capabilities)
+            output_field, output_limit = _strict_output_limit(payload, protocol, capabilities)
+            if bool(payload.get("stream", False)) != stream:
+                raise ProviderCapabilityError("A strict context budget cannot override the request's stream mode.")
+            if (payload.get("truncate_prompt_tokens") is not None
+                    or ("truncation" in payload and payload["truncation"] != "disabled")):
+                raise ProviderCapabilityError("Strict context budgets require server-side input truncation to be disabled.")
+            if protocol == "responses" and (payload.get("previous_response_id") is not None or payload.get("store", False) is not False):
+                raise ProviderCapabilityError("Strict Responses budgets require stateless requests with store=false.")
+            metadata = metadata.model_copy(update={
+                "effective_max_output_tokens": output_limit,
+                "output_limit_field": output_field,
+            })
+        mapping = self._reasoning_mapping(protocol)
+        try:
+            kwargs_json = json.dumps(kwargs, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ProviderCapabilityError("Prepared model calls require JSON-compatible provider arguments.") from exc
+        return PreparedModelCall(
+            request=request, protocol=protocol, stream=stream,
+            kwargs_json=kwargs_json, payload_json=payload_json,
+            metadata=metadata, capabilities=capabilities, provider_identity=id(self),
+            base_url=self.config.base_url,
+            capture_cache_usage=self.config.capture_cache_usage,
+            capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
+            reasoning_field="reasoning" if protocol == "responses" else self._resolved_chat_reasoning_field(capabilities),
+            explicit_reasoning_omit=self.config.chat_reasoning_field == "omit",
+            effort_field=mapping.field if mapping is not None else None,
+            token_counting=self.config.token_counting,
+        )
+
+    def _validate_strict_projection(
+        self,
+        request: ModelRequest,
+        payload: Mapping[str, Any],
+        protocol: Literal["chat_completions", "responses"],
+        capabilities: ProviderCapabilities,
+    ) -> None:
+        canonical: dict[str, Any] = {"model": self.config.model}
+        if protocol == "responses":
+            canonical["input"] = model_request_to_responses_input(request)
+            if request.instructions:
+                canonical["instructions"] = request.instructions
+            if request.tools:
+                canonical["tools"] = responses_tools(request.tools)
+        else:
+            canonical["messages"] = model_request_to_chat(
+                request, reasoning_field=self._resolved_chat_reasoning_field(capabilities),
+            )
+            if request.tools:
+                canonical["tools"] = list(request.tools)
+        for field in ("model", "messages", "input", "instructions", "tools"):
+            if payload.get(field) != canonical.get(field):
+                raise ProviderCapabilityError(
+                    f"Strict context budgets cannot override the projected '{field}' field."
+                )
+        if request.purpose != "compaction":
+            return
+        if protocol == "responses":
+            text = payload.get("text")
+            actual_format = text.get("format") if isinstance(text, Mapping) else None
+            expected_format = (
+                _responses_text_format(request.response_format)
+                if request.response_format is not None else None
+            )
+        else:
+            actual_format = payload.get("response_format")
+            expected_format = (
+                _chat_response_format(request.response_format)
+                if request.response_format is not None else None
+            )
+        if actual_format == expected_format or actual_format in (
+            None, {"type": "text"}, {"type": "json_object"},
+        ):
+            return
+        raise ProviderCapabilityError(
+            "Compaction cannot use an extra response format that constrains the task summary schema."
+        )
+
+    def _validate_prepared(self, call: PreparedModelCall, *, stream: bool | None = None) -> None:
+        if call.provider_identity != id(self):
+            raise ValueError("Prepared model call belongs to another provider.")
+        if stream is not None and call.stream != stream:
+            raise ValueError("Prepared model call has a different stream mode.")
+
+    async def complete_prepared(self, call: PreparedModelCall) -> ModelResponse:
+        self._validate_prepared(call, stream=False)
+        complete = self._responses_complete if call.protocol == "responses" else self._chat_complete
+        return await complete(call.request, call.capabilities, "", prepared=call)
+
+    async def stream_prepared(self, call: PreparedModelCall) -> AsyncIterator[ModelStreamEvent]:
+        self._validate_prepared(call, stream=True)
+        stream = self._responses_stream if call.protocol == "responses" else self._chat_stream
+        async for event in stream(call.request, call.capabilities, "", prepared=call):
             yield event
 
     async def context_reasoning_field(
@@ -277,6 +423,9 @@ class OpenAICompatibleProvider:
         reasoning_field: Literal["reasoning", "reasoning_content", "omit"] | None = None,
     ) -> ModelTokenCount | None:
         """Use vLLM's exact ``/tokenize`` endpoint when configured or available."""
+
+        if request.strict_context_budget:
+            return await self.count_prepared(await self.prepare_call(request))
 
         if self.config.token_counting == "heuristic":
             return None
@@ -382,6 +531,205 @@ class OpenAICompatibleProvider:
             self._warn_once("tokenize-failed", message + suffix)
             return None
 
+    async def count_prepared(self, call: PreparedModelCall) -> ModelTokenCount | None:
+        """Count the frozen wire input; unsupported paths leave estimation to the host.
+
+        Render receives the complete generation body. Tokenize is a narrower
+        protocol and its count is explicitly approximate when renderer options
+        cannot be represented with the same semantics.
+        """
+
+        self._validate_prepared(call)
+        if call.token_counting == "heuristic":
+            return None
+        if self._is_deepseek_official:
+            if call.token_counting == "vllm":
+                raise ProviderTokenCountError("DeepSeek's official API does not provide vLLM token counting.")
+            return None
+        if call.capabilities.server_kind != "vllm":
+            if call.token_counting == "vllm":
+                raise ProviderTokenCountError("Strict vLLM counting requires an identified vLLM endpoint.")
+            return None
+        path = "/v1/responses/render" if call.protocol == "responses" else "/v1/chat/completions/render"
+        paths = (self._openapi_document or {}).get("paths")
+        paths = paths if isinstance(paths, Mapping) else None
+        advertised = paths is None or path in paths
+        render_error: ProviderTokenCountError | None = None
+        if advertised and path not in self._render_unavailable:
+            try:
+                result = await self._prepared_counter_post(path, call.payload, call)
+            except ProviderTokenCountError as exc:
+                if not isinstance(exc.__cause__, APIStatusError) or exc.__cause__.status_code != 400:
+                    raise
+                # Rendering validates length before returning token ids. A
+                # second, non-generating tokenizer call may prove that input
+                # needs compaction without classifying the generic HTTP 400.
+                render_error = exc
+                result = None
+            if result is not None:
+                tokens = result.get("token_ids")
+                if not isinstance(tokens, list) or not tokens or any(type(token) is not int or token < 0 for token in tokens):
+                    raise ProviderTokenCountError("vLLM render did not return nonempty nonnegative token_ids.")
+                model_len = self._prepared_model_len(result.get("max_model_len"), call)
+                return ModelTokenCount(count=len(tokens), max_model_len=model_len, exact=True, source="render")
+        try:
+            token_count = await self._count_tokenize_prepared(call)
+        except ProviderCapabilityError:
+            if render_error is not None:
+                raise render_error
+            raise
+        if token_count is not None:
+            if render_error is not None:
+                self._check_discovered_output_window(call, token_count.max_model_len)
+                input_budget = self.context_window_tokens - (call.effective_max_output_tokens or 1)
+                if token_count.exact is not True or token_count.count <= input_budget:
+                    raise render_error
+                return replace(token_count, exact=False)
+            return token_count
+        if render_error is not None:
+            # A Responses request (or renderer-specific Chat input) cannot be
+            # counted by TokenizeChatRequest. Its completion tokenizer can
+            # still independently discover the window. Never use this probe's
+            # token count as a count of the original generation request.
+            try:
+                model_len = await self._probe_prepared_context_window(call)
+            except ProviderCapabilityError:
+                raise render_error
+            self._check_discovered_output_window(call, model_len)
+            raise render_error
+        if call.token_counting == "vllm":
+            raise ProviderTokenCountError("No compatible vLLM render/tokenize endpoint is available for the prepared request.")
+        return None
+
+    def _check_discovered_output_window(
+        self, call: PreparedModelCall, model_len: int | None,
+    ) -> None:
+        output = call.effective_max_output_tokens
+        if model_len is not None and output is not None and output >= model_len:
+            raise ProviderContextWindowError(max_model_len=model_len, output_limit=output)
+
+    async def _probe_prepared_context_window(self, call: PreparedModelCall) -> int | None:
+        if self._tokenize_unavailable or call.capabilities.tokenize == "unsupported":
+            return None
+        model = call.payload["model"]
+        key = (call.base_url, model)
+        if key in self._window_probe_results:
+            return self._window_probe_results[key]
+        result = await self._prepared_counter_post(
+            "/tokenize", {"model": model, "prompt": "Context window probe"}, call,
+        )
+        if result is None:
+            return None
+        model_len = self._prepared_model_len(result.get("max_model_len"), call)
+        if model_len is not None:
+            self._window_probe_results[key] = model_len
+        return model_len
+
+    async def _count_tokenize_prepared(self, call: PreparedModelCall) -> ModelTokenCount | None:
+        tokenize = self._prepared_tokenize_body(call)
+        if tokenize is None or self._tokenize_unavailable or call.capabilities.tokenize == "unsupported":
+            return None
+        body, exact = tokenize
+        result = await self._prepared_counter_post("/tokenize", body, call)
+        if result is None:
+            return None
+        count = result.get("count")
+        if count is None:
+            tokens = result.get("tokens")
+            if not isinstance(tokens, list) or any(type(token) is not int or token < 0 for token in tokens):
+                raise ProviderTokenCountError("vLLM tokenize did not return a count or nonnegative token ids.")
+            count = len(tokens)
+        if type(count) is not int or count <= 0:
+            raise ProviderTokenCountError("vLLM tokenize returned an invalid count for nonempty input.")
+        model_len = self._prepared_model_len(result.get("max_model_len"), call)
+        return ModelTokenCount(count=count, max_model_len=model_len, exact=exact, source="tokenize")
+
+    async def _prepared_counter_post(
+        self, path: str, body: Mapping[str, Any], call: PreparedModelCall,
+    ) -> Mapping[str, Any] | None:
+        try:
+            client = self._root_client(base_url=call.base_url)
+            kwargs = call.kwargs
+            options: dict[str, Any] = {}
+            for key, target in (("extra_headers", "headers"), ("extra_query", "params"), ("timeout", "timeout")):
+                if key in kwargs:
+                    options[target] = kwargs[key]
+            result = await client.post(path, cast_to=object, body=dict(body), options=options)
+            if not isinstance(result, Mapping):
+                raise TypeError(f"{path} did not return a JSON object.")
+            return result
+        except APIStatusError as exc:
+            if exc.status_code in {403, 404, 405, 501}:
+                if path == "/tokenize":
+                    self._tokenize_unavailable = True
+                else:
+                    self._render_unavailable.add(path)
+                return None
+            # A rendering validation failure may itself be a context overflow.
+            # Keep its diagnostic instead of guessing from a generic HTTP 400.
+            if exc.status_code < 500 and exc.status_code not in {408, 429}:
+                raise ProviderTokenCountError(f"vLLM {path} rejected the prepared request: {exc}") from exc
+            if call.token_counting == "vllm":
+                raise ProviderTokenCountError(f"vLLM {path} failed: {exc}") from exc
+            self._warn_once("prepared-count-" + path, f"vLLM {path} is unavailable; using the next counting method.")
+            return None
+        except (APIConnectionError, OSError, TransportError) as exc:
+            if call.token_counting == "vllm":
+                raise ProviderTokenCountError(f"vLLM {path} failed: {exc}") from exc
+            self._warn_once("prepared-count-" + path, f"vLLM {path} is unavailable; using the next counting method.")
+            return None
+        except (TypeError, ValueError) as exc:
+            raise ProviderTokenCountError(f"vLLM {path} returned invalid counting data: {exc}") from exc
+
+    def _prepared_model_len(self, value: Any, call: PreparedModelCall) -> int | None:
+        if value is None:
+            return None
+        if type(value) is not int or value <= 0:
+            raise ProviderTokenCountError("vLLM max_model_len must be a positive integer.")
+        if (not call.request.strict_context_budget
+                and self.configured_context_window_tokens is not None
+                and self.configured_context_window_tokens > value):
+            raise ProviderCapabilityError(
+                f"Configured context_window_tokens ({self.configured_context_window_tokens}) "
+                f"exceeds vLLM max_model_len ({value}) for model '{self.config.model}'."
+            )
+        self.server_max_model_len = value
+        self.context_window_tokens = min(limit for limit in (
+            self.configured_context_window_tokens, self.model_context_window_tokens, value,
+        ) if limit is not None)
+        return value
+
+    def _prepared_tokenize_body(self, call: PreparedModelCall) -> tuple[dict[str, Any], bool] | None:
+        if call.protocol != "chat_completions":
+            return None
+        payload = call.payload
+        if not isinstance(payload.get("messages"), list):
+            raise ProviderTokenCountError("Prepared Chat input must contain a messages array.")
+        if payload.get("response_format") is not None:
+            return None
+        paths = (self._openapi_document or {}).get("paths")
+        paths = paths if isinstance(paths, Mapping) else {}
+        operation = paths.get("/tokenize") or {}
+        operation = operation if isinstance(operation, Mapping) else {}
+        supported = _request_property_names(self._openapi_document or {}, operation)
+        body = {name: payload[name] for name in ("model", "messages", "tools") if name in payload}
+        exact = not bool(payload.get("tools"))
+        for name in (
+            "chat_template", "chat_template_kwargs", "add_generation_prompt",
+            "continue_final_message", "add_special_tokens",
+        ):
+            if name in payload:
+                if name not in supported:
+                    return None
+                body[name] = payload[name]
+        # These generation-only renderer inputs are not part of TokenizeChatRequest.
+        # Never drop them and then call the resulting count exact.
+        if any(payload.get(name) is not None for name in ("documents", "reasoning_effort", "mm_processor_kwargs", "media_io_kwargs")):
+            return None
+        if payload.get("tool_choice") is not None:
+            exact = False
+        return body, exact
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -452,15 +800,19 @@ class OpenAICompatibleProvider:
         request: ModelRequest,
         capabilities: ProviderCapabilities,
         resolution_reason: str,
+        *,
+        prepared: PreparedModelCall | None = None,
     ) -> ModelResponse:
-        kwargs, metadata = self._chat_kwargs(
+        kwargs, metadata = (prepared.kwargs, prepared.metadata) if prepared else self._chat_kwargs(
             request,
             capabilities,
             resolution_reason=resolution_reason,
         )
         raw, metadata = await self._create_model_response(self.client.chat.completions, kwargs, metadata)
-        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
-        response = raw.parse(to=CacheChatCompletion) if self.config.capture_cache_usage else raw.parse()
+        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities, prepared=prepared)
+        capture_cache = prepared.capture_cache_usage if prepared else self.config.capture_cache_usage
+        capture_tags = prepared.capture_tag_reasoning if prepared else self.config.reasoning_capture == "field_and_tags"
+        response = raw.parse(to=CacheChatCompletion) if capture_cache else raw.parse()
         choices = getattr(response, "choices", None) or []
         choice = choices[0] if choices else None
         message = getattr(choice, "message", None)
@@ -474,13 +826,13 @@ class OpenAICompatibleProvider:
             refusal=str(getattr(message, "refusal", None) or ""),
             usage=_model_token_usage(
                 getattr(response, "usage", None), protocol="chat_completions",
-                capture_cache_usage=self.config.capture_cache_usage,
+                capture_cache_usage=capture_cache,
             ),
             metadata=metadata,
         )
         result = normalize_model_response(
             result,
-            capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
+            capture_tag_reasoning=capture_tags,
         )
         raw_calls = getattr(message, "tool_calls", None) or []
         _require_chat_completion(result, raw_calls)
@@ -491,19 +843,22 @@ class OpenAICompatibleProvider:
         request: ModelRequest,
         capabilities: ProviderCapabilities,
         resolution_reason: str,
+        *,
+        prepared: PreparedModelCall | None = None,
     ) -> AsyncIterator[ModelStreamEvent]:
         started = monotonic()
-        kwargs, metadata = self._chat_kwargs(
+        kwargs, metadata = (prepared.kwargs, prepared.metadata) if prepared else self._chat_kwargs(
             request,
             capabilities,
             resolution_reason=resolution_reason,
             stream=True,
         )
         raw, metadata = await self._create_model_response(self.client.chat.completions, kwargs, metadata)
-        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
+        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities, prepared=prepared)
+        capture_cache = prepared.capture_cache_usage if prepared else self.config.capture_cache_usage
         response_stream = (
             raw.parse(to=AsyncStream[CacheChatCompletionChunk])
-            if self.config.capture_cache_usage else raw.parse()
+            if capture_cache else raw.parse()
         )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -511,7 +866,7 @@ class OpenAICompatibleProvider:
         tool_call_parts: dict[int, dict[str, str]] = {}
         token_usage: ModelTokenUsage | None = None
         finish_reason: str | None = None
-        capture_tag_reasoning = self.config.reasoning_capture == "field_and_tags"
+        capture_tag_reasoning = prepared.capture_tag_reasoning if prepared else self.config.reasoning_capture == "field_and_tags"
         thinking_parser = _ThinkingStreamParser(enabled=True)
 
         def partial() -> ModelResponse:
@@ -525,10 +880,14 @@ class OpenAICompatibleProvider:
                 metadata=metadata.model_copy(update={"finish_reason": finish_reason, "attempts": (attempt,)}),
             )
 
-        async for chunk in self._read_model_stream(response_stream, partial):
+        chunks = (self._read_model_stream(response_stream, partial)
+                  if prepared is None else self._read_model_stream(
+                      response_stream, partial, capture_tag_reasoning=capture_tag_reasoning,
+                  ))
+        async for chunk in chunks:
             chunk_usage = _model_token_usage(
                 getattr(chunk, "usage", None), protocol="chat_completions",
-                capture_cache_usage=self.config.capture_cache_usage,
+                capture_cache_usage=capture_cache,
             )
             if chunk_usage is not None:
                 token_usage = chunk_usage
@@ -593,20 +952,23 @@ class OpenAICompatibleProvider:
         request: ModelRequest,
         capabilities: ProviderCapabilities,
         resolution_reason: str,
+        *,
+        prepared: PreparedModelCall | None = None,
     ) -> ModelResponse:
-        kwargs, metadata = self._responses_kwargs(
+        kwargs, metadata = (prepared.kwargs, prepared.metadata) if prepared else self._responses_kwargs(
             request,
             capabilities,
             resolution_reason=resolution_reason,
         )
         raw, metadata = await self._create_model_response(self.client.responses, kwargs, metadata)
-        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
-        response = raw.parse(to=CacheResponse) if self.config.capture_cache_usage else raw.parse()
+        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities, prepared=prepared)
+        capture_cache = prepared.capture_cache_usage if prepared else self.config.capture_cache_usage
+        response = raw.parse(to=CacheResponse) if capture_cache else raw.parse()
         result = _model_response_from_responses(
             response,
             metadata=metadata,
-            capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
-            capture_cache_usage=self.config.capture_cache_usage,
+            capture_tag_reasoning=prepared.capture_tag_reasoning if prepared else self.config.reasoning_capture == "field_and_tags",
+            capture_cache_usage=capture_cache,
         )
         return result
 
@@ -615,19 +977,23 @@ class OpenAICompatibleProvider:
         request: ModelRequest,
         capabilities: ProviderCapabilities,
         resolution_reason: str,
+        *,
+        prepared: PreparedModelCall | None = None,
     ) -> AsyncIterator[ModelStreamEvent]:
         started = monotonic()
-        kwargs, metadata = self._responses_kwargs(
+        kwargs, metadata = (prepared.kwargs, prepared.metadata) if prepared else self._responses_kwargs(
             request,
             capabilities,
             resolution_reason=resolution_reason,
             stream=True,
         )
         raw, metadata = await self._create_model_response(self.client.responses, kwargs, metadata)
-        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
+        metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities, prepared=prepared)
+        capture_cache = prepared.capture_cache_usage if prepared else self.config.capture_cache_usage
+        capture_tags = prepared.capture_tag_reasoning if prepared else self.config.reasoning_capture == "field_and_tags"
         response_stream = (
             raw.parse(to=AsyncStream[CacheResponseStreamEvent])
-            if self.config.capture_cache_usage else raw.parse()
+            if capture_cache else raw.parse()
         )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -645,7 +1011,11 @@ class OpenAICompatibleProvider:
                 metadata=metadata.model_copy(update={"attempts": (attempt,)}),
             )
 
-        async for event in self._read_model_stream(response_stream, partial):
+        events = (self._read_model_stream(response_stream, partial)
+                  if prepared is None else self._read_model_stream(
+                      response_stream, partial, capture_tag_reasoning=capture_tags,
+                  ))
+        async for event in events:
             event_type = str(getattr(event, "type", ""))
             delta = str(getattr(event, "delta", None) or "")
             if "reasoning" in event_type and event_type.endswith(".delta"):
@@ -723,13 +1093,13 @@ class OpenAICompatibleProvider:
                 result = _model_response_from_responses(
                     completed_response,
                     metadata=partial().metadata,
-                    capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
-                    capture_cache_usage=self.config.capture_cache_usage,
+                    capture_tag_reasoning=capture_tags,
+                    capture_cache_usage=capture_cache,
                 )
             except ProviderResponseError as exc:
                 if exc.response is not None:
                     received = normalize_model_response(
-                        partial(), capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
+                        partial(), capture_tag_reasoning=capture_tags,
                     )
                     exc.response = replace(
                         exc.response,
@@ -740,7 +1110,7 @@ class OpenAICompatibleProvider:
                 raise
         else:
             result = normalize_model_response(
-                partial(), capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
+                partial(), capture_tag_reasoning=capture_tags,
             )
         if terminal_status != "completed":
             raise ProviderResponseError(
@@ -756,7 +1126,15 @@ class OpenAICompatibleProvider:
     def _observe_reasoning(
         self, body: bytes, request: ModelRequest, metadata: ModelCallMetadata,
         capabilities: ProviderCapabilities,
+        *,
+        prepared: PreparedModelCall | None = None,
     ) -> ModelCallMetadata:
+        if prepared is not None:
+            return observe_request_reasoning(
+                body, request, metadata, resolved_field=prepared.reasoning_field,
+                explicit_omit=prepared.explicit_reasoning_omit,
+                effort_field=prepared.effort_field,
+            )
         mapping = self._reasoning_mapping(metadata.protocol)
         return observe_request_reasoning(
             body, request, metadata,
@@ -943,6 +1321,8 @@ class OpenAICompatibleProvider:
     def _effective_max_output_tokens(self, request: ModelRequest) -> int | None:
         configured = self.config.max_output_tokens
         requested = request.max_output_tokens
+        if request.strict_context_budget and requested is not None:
+            return requested
         if configured is not None and requested is not None:
             return min(configured, requested)
         if requested is not None:
@@ -1114,6 +1494,7 @@ class OpenAICompatibleProvider:
             raw_openapi = await self._get_root_json("/openapi.json")
             if isinstance(raw_openapi, Mapping):
                 openapi = raw_openapi
+                self._openapi_document = raw_openapi
         except (APIConnectionError, APIStatusError, OSError, TypeError, ValueError) as exc:
             self._warn_once(
                 "openapi-probe",
@@ -1183,11 +1564,11 @@ class OpenAICompatibleProvider:
             raise TypeError(f"{path} did not return a JSON object.")
         return value
 
-    def _root_client(self) -> Any:
+    def _root_client(self, *, base_url: str | None = None) -> Any:
         with_options = getattr(self.client, "with_options", None)
         if not callable(with_options):
             raise TypeError("The configured OpenAI client does not support raw requests.")
-        base_url = self.config.base_url.rstrip("/")
+        base_url = (base_url or self.config.base_url).rstrip("/")
         if base_url.endswith("/v1"):
             base_url = base_url[:-3]
         return with_options(base_url=base_url + "/")
@@ -1250,6 +1631,25 @@ class Provider(OpenAICompatibleProvider):
             ),
             client=client,
         )
+
+
+def _strict_output_limit(
+    payload: Mapping[str, Any],
+    protocol: Literal["chat_completions", "responses"],
+    capabilities: ProviderCapabilities,
+) -> tuple[Literal["max_tokens", "max_completion_tokens", "max_output_tokens"], int]:
+    fields = ("max_output_tokens",) if protocol == "responses" else ("max_completion_tokens", "max_tokens")
+    present = [(field, payload[field]) for field in fields if payload.get(field) is not None]
+    if not present:
+        raise ProviderCapabilityError("Strict context budgets require a positive effective output limit in the final request.")
+    for _, value in present:
+        if type(value) is not int or value <= 0:
+            raise ProviderCapabilityError("Strict context budgets require integer positive output limits.")
+    if len(present) > 1 and capabilities.server_kind != "vllm" and present[0][1] != present[1][1]:
+        raise ProviderCapabilityError("Conflicting output limit fields cannot be budgeted for this provider.")
+    # vLLM explicitly gives max_completion_tokens precedence over max_tokens.
+    field, value = present[0]
+    return cast(Literal["max_tokens", "max_completion_tokens", "max_output_tokens"], field), value
 
 
 def _unknown_capabilities(

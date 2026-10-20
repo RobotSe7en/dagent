@@ -22,6 +22,7 @@ from dagent.capabilities.workspace import current_workspace_root
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
     ToolResultStorageFailure,
+    ToolContextFailure,
     LoopEventHandler,
     TokenHandler,
 )
@@ -319,7 +320,7 @@ class HarnessRuntime:
                         )
                 try:
                     next_outcome = await run_once(feedback_item)
-                except ToolResultStorageFailure as exc:
+                except (ToolResultStorageFailure, ToolContextFailure) as exc:
                     failed = exc.outcome
                     failed_state = failed.state.model_copy(update={
                         "context_usage": [
@@ -497,14 +498,14 @@ class HarnessRuntime:
             )
             return next_outcome
 
-        failure: ToolResultStorageFailure | None = None
+        failure: ToolResultStorageFailure | ToolContextFailure | None = None
         try:
             outcome = await self._run_with_review_and_validation(
                 user_request,
                 run_once=run_once,
                 on_event=on_event,
             )
-        except ToolResultStorageFailure as exc:
+        except (ToolResultStorageFailure, ToolContextFailure) as exc:
             failure = exc
             outcome = exc.outcome
 
@@ -533,6 +534,8 @@ class HarnessRuntime:
         )
         if failure is not None:
             failure.outcome = outcome
+            if isinstance(failure, ToolContextFailure):
+                failure.runtime = self
             raise failure
         return self._finish_loop_outcome(
             outcome,

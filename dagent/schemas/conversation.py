@@ -6,7 +6,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated, Any, Literal, TypeAlias
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from dagent.schemas.context import ContextUsage, ModelCallMetadata, ModelTokenUsage
 from dagent.schemas.retention import ResultRetention
@@ -67,7 +67,39 @@ class ToolCallItem(BaseModel):
     capability_id: str | None = None
 
 
-class ResultObservation(BaseModel):
+class FrozenResultDisplay(BaseModel):
+    """Exact model-visible result text and its immutable received snapshot."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str
+    recovery: ContentReference
+    displayed_spans: tuple[tuple[int, int], ...] = ()
+    revision: Literal[0, 1] = 0
+    previous_display: ContentReference | None = None
+
+    @model_validator(mode="after")
+    def validate_spans(self) -> "FrozenResultDisplay":
+        last_end = 0
+        for start, end in self.displayed_spans:
+            if start < last_end or end < start:
+                raise ValueError("Displayed spans must be ordered Unicode intervals.")
+            last_end = end
+        return self
+
+
+class _OptionalDisplay(BaseModel):
+    @model_serializer(mode="wrap")
+    def serialize_display(self, serializer):
+        payload = serializer(self)
+        if self.model_display is None:
+            payload.pop("model_display", None)
+        if getattr(self, "reviewer_feedback", None) is None:
+            payload.pop("reviewer_feedback", None)
+        return payload
+
+
+class ResultObservation(_OptionalDisplay):
     """Runtime result data embedded in a planner observation, not a tool reply."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -82,6 +114,7 @@ class ResultObservation(BaseModel):
     content: StoredContent = Field(default_factory=InlineContent)
     references: tuple[ContentReference, ...] = ()
     retention: ResultRetention | None = None
+    model_display: FrozenResultDisplay | None = None
 
 
 class Attachment(BaseModel):
@@ -146,7 +179,7 @@ class AssistantMessage(BaseModel):
     visibility: ItemVisibility = "user"
 
 
-class ToolResultMessage(BaseModel):
+class ToolResultMessage(_OptionalDisplay):
     """Recorded result for one assistant tool call."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -165,6 +198,8 @@ class ToolResultMessage(BaseModel):
     artifacts: tuple[ContentReference, ...] = ()
     scope: ModelScope = "conversation"
     visibility: ItemVisibility = "internal"
+    model_display: FrozenResultDisplay | None = None
+    reviewer_feedback: str | None = None
 
 
 ConversationItem: TypeAlias = Annotated[
@@ -182,7 +217,7 @@ class ContextSummary(BaseModel):
     result_manifest: ContentReference | None = None
     result_archive_incomplete: bool = False
     source_item_count: int = Field(ge=1)
-    method: Literal["model", "deterministic_fallback"] = "model"
+    method: Literal["model", "deterministic_fallback", "reference_fallback"] = "model"
     fallback_reason: str | None = None
     source_truncated: bool = False
     output_truncated: bool = False
@@ -190,6 +225,30 @@ class ContextSummary(BaseModel):
     usage: ModelTokenUsage | None = None
     model_call: ModelCallMetadata | None = None
     context_usage: ContextUsage | None = None
+    compaction_record: ContentReference | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_record(self, serializer):
+        payload = serializer(self)
+        if self.compaction_record is None:
+            payload.pop("compaction_record", None)
+        return payload
+
+
+class FailedCompaction(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_keys: tuple[str, ...]
+    record: ContentReference
+
+
+class CompactionState(BaseModel):
+    """Failed source projections already attempted; not a tool execution guard."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    failed_sources: tuple[str, ...] = ()
+    failed_records: tuple[FailedCompaction, ...] = ()
 
 
 class ConversationState(BaseModel):
@@ -202,6 +261,14 @@ class ConversationState(BaseModel):
     revision: int = Field(default=0, ge=0)
     summary: ContextSummary | None = None
     items: tuple[ConversationItem, ...] = ()
+    compaction_state: CompactionState | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_compaction_state(self, serializer):
+        payload = serializer(self)
+        if self.compaction_state is None:
+            payload.pop("compaction_state", None)
+        return payload
 
     @model_validator(mode="after")
     def validate_item_ids(self) -> "ConversationState":

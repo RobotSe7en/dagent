@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, TypeAlias
 
+from dagent.providers.capabilities import ProviderCapabilities
+
 from dagent.providers.base import (
     ChatProvider,
     ChatResponse,
@@ -60,6 +62,50 @@ class ModelRequest:
     purpose: Literal["generation", "compaction"] = "generation"
     # Context-only audit provenance; never serialized into provider input.
     reasoning_omission_reasons: tuple[ReasoningOmissionReason, ...] = ()
+    # Opt-in request budgets may override the ordinary provider output ceiling.
+    # Explicit provider extra arguments retain their normal precedence.
+    strict_context_budget: bool = False
+
+
+@dataclass(frozen=True)
+class PreparedModelCall:
+    """Internal immutable wire snapshot shared by counting and dispatch.
+
+    JSON keeps nested request data isolated from caller/configuration mutations.
+    The public provider methods do not require this internal contract.
+    """
+
+    request: ModelRequest
+    protocol: Literal["chat_completions", "responses"]
+    stream: bool
+    kwargs_json: str
+    payload_json: str
+    metadata: ModelCallMetadata
+    capabilities: ProviderCapabilities
+    provider_identity: int
+    base_url: str = ""
+    capture_cache_usage: bool = False
+    capture_tag_reasoning: bool = True
+    reasoning_field: Literal["reasoning", "reasoning_content", "omit"] = "omit"
+    explicit_reasoning_omit: bool = False
+    effort_field: str | None = None
+    token_counting: Literal["auto", "vllm", "heuristic"] = "auto"
+
+    @property
+    def payload(self) -> dict[str, Any]:
+        return json.loads(self.payload_json)
+
+    @property
+    def kwargs(self) -> dict[str, Any]:
+        return json.loads(self.kwargs_json)
+
+    @property
+    def effective_max_output_tokens(self) -> int | None:
+        return self.metadata.effective_max_output_tokens
+
+    @property
+    def fingerprint(self) -> str:
+        return hashlib.sha256(self.payload_json.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -92,6 +138,9 @@ class ModelTokenCount:
     count: int
     max_model_len: int | None = None
     estimator: Literal["vllm", "heuristic", "custom"] = "vllm"
+    # None preserves legacy/custom counters without claiming wire equivalence.
+    exact: bool | None = None
+    source: Literal["render", "tokenize"] | None = None
 
 
 def normalize_model_response(
