@@ -115,7 +115,7 @@ content. Capture controls response parsing only and does not change the request.
 
 ### Custom reasoning fields and effort names
 
-Unreleased addition: use `reasoning_mapping` when an endpoint needs a different
+Since 0.9.19, use `reasoning_mapping` when an endpoint needs a different
 request field or effort name. Each protocol has its own optional mapping:
 
 ```python

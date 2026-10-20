@@ -5,9 +5,9 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.18`.
+The current package version is `0.9.19`.
 
-## Unreleased
+## 0.9.19
 
 ### Optional reasoning field and effort-name mappings
 
@@ -18,7 +18,7 @@ same mapping applies to generation, streaming, Chat entrypoints, and compaction.
 Compaction retains its independent `low` default.
 
 Mappings are opt-in. Existing applications need no source or config changes;
-the package version, existing request defaults, extra-parameter precedence, and
+existing request defaults, extra-parameter precedence, and
 result/event schemas are unchanged. A mapped protocol trusts the explicit effort
 configuration instead of the built-in effort capability checks and stops adding
 automatic reasoning control fields. Other capability checks remain enforced.
@@ -29,6 +29,25 @@ Target values are strings only; this adds no token-budget API, automatic
 downgrade, or omission retry. An unconfigured protocol can still be selected by
 `auto` and uses its normal built-in controls. No persisted-record migration is
 required; existing model-call metadata carries mapping diagnostics.
+
+WebUI user models pass mappings to the provider and preserve them when selecting,
+saving, or reloading models. The model API accepts the optional configuration and
+includes a nullable `reasoning_mapping` field in model responses.
+
+### Release verification and upgrade
+
+Install with `pip install --upgrade dagent-ai==0.9.19`. Upgrading from 0.9.18
+requires no source, configuration, or stored-record migration. This release adds
+optional configuration and introduces no breaking SDK changes.
+
+Known limitations: mapped field paths and effort names must match the endpoint's
+contract; capability discovery does not validate custom reasoning controls. With
+`auto`, an unmapped protocol can still be selected and uses its built-in behavior.
+
+- Verification: 1,526 Python/MCP tests and 128 WebUI tests passed; the WebUI build,
+  offline reasoning-mapping example, wheel and source distribution builds,
+  package metadata checks, installed-wheel smoke test, and `git diff --check` passed.
+- Three environment-dependent Python tests were skipped.
 
 ## 0.9.18
 

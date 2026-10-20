@@ -145,7 +145,7 @@ print(result.output_text)
 Provider configuration types `ProviderConfig` and `ReasoningMapping` live in
 `dagent.config`; they are not package-root exports. The optional
 [`reasoning_mapping`](model-context-and-reasoning.md#custom-reasoning-fields-and-effort-names)
-feature is unreleased and supports Python dictionaries, typed models, and YAML.
+feature is available since 0.9.19 and supports Python dictionaries, typed models, and YAML.
 
 - This project has released public SDK contracts. Treat documented behavior,
   capability ids, configuration semantics, and runnable examples as user-facing

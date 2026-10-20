@@ -172,7 +172,7 @@ to the Chat `reasoning_effort` field or Responses `reasoning.effort`.
 Token-based reasoning budgets are not supported. The old nested `reasoning`
 object is rejected.
 
-The optional `reasoning_mapping` configuration (unreleased) adapts request field
+The optional `reasoning_mapping` configuration (since 0.9.19) adapts request field
 paths and string effort names independently for Chat and Responses. Protocols
 without a mapping keep their built-in behavior. See
 [custom reasoning fields and effort names](model-context-and-reasoning.md#custom-reasoning-fields-and-effort-names).
@@ -335,7 +335,7 @@ The WebUI model list includes the project `config.yaml` provider plus user
 the runner with that provider; otherwise the project `config.yaml` provider
 remains the default. The WebUI registers both project and user MCP servers.
 User model entries also accept [`reasoning_mapping`](model-context-and-reasoning.md#custom-reasoning-fields-and-effort-names)
-(unreleased); the WebUI passes it to the provider and preserves it when selecting or saving models.
+(since 0.9.19); the WebUI passes it to the provider and preserves it when selecting or saving models.
 Project `mcp_servers` win on name conflicts, and conflicting user MCP entries
 are reported instead of silently overriding project configuration.
 The backend also applies the project-level `planner_frontend` when rebuilding a

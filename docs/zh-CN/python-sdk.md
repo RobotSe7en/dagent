@@ -137,7 +137,7 @@ print(result.output_text)
 Provider 配置类型 `ProviderConfig` 和 `ReasoningMapping` 位于 `dagent.config`，
 不从包根导出。可选的
 [`reasoning_mapping`](model-context-and-reasoning.md#自定义思考字段与强度名称)
-功能尚未发布，支持 Python 字典、类型化模型及 YAML 配置。
+功能自 0.9.19 起可用，支持 Python 字典、类型化模型及 YAML 配置。
 
 - 本项目已经发布公开 SDK contracts。文档化行为、capability ids、配置语义和可运行示例
   都应视为面向用户的契约。
