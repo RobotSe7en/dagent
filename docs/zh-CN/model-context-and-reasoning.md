@@ -228,6 +228,64 @@ OpenAI client 的自动重试被关闭，确保每次尝试均可观察。直接
 传输或 HTTP 失败抛出 `dagent.providers.ProviderRequestError`，保留 `metadata`、
 `cause` 和可能存在的部分 `response`。
 
+## 提示缓存用量（尚未发布）
+
+缓存统计显式启用，来自服务端，独立于上下文 token 估算。通过 `Provider(...)` 或
+`Runner.from_config(...)` 使用的 provider 配置设置 `capture_cache_usage=True`；
+默认值为 `False`。
+
+```python
+provider = dagent.Provider(
+    base_url="http://localhost:8000/v1",
+    model="local-model",
+    capture_cache_usage=True,
+    stream_include_usage=True,  # 仅对支持 Chat 流式 usage 的端点启用。
+)
+```
+
+该选项不会发送新请求字段、开启服务端缓存、改变协议选择或自动启用流式 usage。
+Chat 读取 `usage.prompt_tokens_details.cached_tokens`，Responses 读取
+`usage.input_tokens_details.cached_tokens`，包括流式终止响应。
+不映射 `prompt_cache_hit_tokens` 等私有字段。
+
+`ModelTokenUsage.cached_input_tokens` 是现有 `input_tokens` 的一部分，不额外增加
+token 消耗。关闭采集、字段缺失或统计非法时为 `None`；明确的 `0` 表示服务端报告
+零命中。缺失统计不能当作零。开启后，负数、非整数（包括布尔值和数字字符串）、超过
+已知输入数的缓存计数会被省略，并记录不含请求或响应正文的 warning；其它合法 usage
+和生成结果保留。输入 token 数未知时，合法缓存数仍可单独保留。
+
+逐响应统计通过 `AssistantMessage.usage` 读取，包括 `result.new_items` 中的 planner
+审计消息。压缩保留独立的 `ContextSummary.usage` 和
+`model_call.request_purpose="compaction"`。现有模型调用 trace 输出、最终结果和
+checkpoint 序列化会保留计数。`ContextUsage` 描述请求估算和上下文投影，
+`RunResult.usage` 统计操作次数，两者都不是缓存命中数。统计属于审计数据，不会被
+回放到模型输入。
+
+```python
+for item in result.new_items:
+    if isinstance(item, dagent.AssistantMessage) and item.usage is not None:
+        usage = item.usage
+        ratio = (
+            usage.cached_input_tokens / usage.input_tokens
+            if usage.cached_input_tokens is not None
+            and usage.input_tokens is not None and usage.input_tokens > 0
+            else None
+        )
+        print(usage.cached_input_tokens, ratio)  # None 表示未知或无法定义比例。
+```
+
+SDK 不提供 run 级缓存汇总或序列化命中率字段。宿主可根据已知计数计算比例，需要显式
+排除未知调用并说明统计覆盖范围。流式 usage 快照替换前一快照，不累加。返回响应的
+usage 不代表已覆盖全部失败重试的消耗。
+
+缓存数未知时，序列化 usage 省略该新字段，保持已发布的默认记录结构。旧记录无需
+迁移即可读取；包含显式启用字段的新记录需要支持该字段的读取方，旧版严格读取方可能
+拒绝。可运行离线[缓存统计示例](../../examples/cache_usage.py)。
+
+前缀复用仍取决于实际模型输入和服务端缓存状态。固定 workspace 可保持路径稳定，
+但 `active_run` reasoning 省略、上下文压力、摘要或 DAG 规划历史重建仍可能改变前缀。
+开启统计不改变这些策略。
+
 ## Token 计数与压缩
 
 当 endpoint 已声明能力时，`token_counting="auto"` 会用 vLLM `/tokenize` 计算投影后的

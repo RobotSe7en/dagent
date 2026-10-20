@@ -148,6 +148,7 @@ provider = dagent.Provider(
     reasoning_mapping=None,
     reasoning_capture="field_and_tags",
     stream_include_usage=False,
+    capture_cache_usage=False,
     context_window_tokens=None,
     max_output_tokens=None,
     extra_request_args={},
@@ -202,6 +203,13 @@ Streaming usage metadata is disabled by default because some compatible
 endpoints reject `stream_options`. Set `stream_include_usage=True` only when the
 target endpoint supports OpenAI's streamed usage extension; usage remains
 optional in SDK results.
+
+The unreleased `capture_cache_usage=True` option records standard server-reported
+cache counts in `ModelTokenUsage.cached_input_tokens`. It changes response parsing
+only and does not enable streaming usage or server-side caching. With compatible
+Chat streaming endpoints, enable `stream_include_usage=True` separately. See
+[prompt cache usage](model-context-and-reasoning.md#prompt-cache-usage-unreleased).
+
 `reasoning_capture="field_and_tags"` records both dedicated reasoning fields
 and tag content. `reasoning_capture="field"` trusts only the dedicated field
 and discards tag content; tags are never left in visible content. Capture

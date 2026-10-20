@@ -4671,6 +4671,64 @@ def test_api_model_reasoning_mapping_survives_activation_and_save(monkeypatch, t
         state.active_model_id = None
 
 
+@pytest.mark.parametrize("capture", [None, False, True])
+def test_api_model_cache_capture_survives_activation_and_save(monkeypatch, tmp_path, capture) -> None:
+    provider = {
+        "base_url": "http://model.example/v1",
+        "model": "private-model",
+        "token_counting": "heuristic",
+    }
+    if capture is not None:
+        provider["capture_cache_usage"] = capture
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump({"provider": provider}), encoding="utf-8")
+    monkeypatch.setenv("DAGENT_CONFIG", str(config))
+    user_config = state.get_user_config_path()
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text(yaml.safe_dump({
+        "model_providers": {"cached-model": {"name": "Cached Model", **provider}},
+    }), encoding="utf-8")
+    state.close_runner()
+    state.custom_model_providers.clear()
+    state.active_model_id = None
+    client = TestClient(app)
+    enabled = capture is True
+
+    try:
+        listed = client.get("/models")
+        assert listed.status_code == 200
+        assert all(model["capture_cache_usage"] is enabled for model in listed.json()["models"])
+
+        activated = client.post("/models/cached-model/activate")
+        assert activated.status_code == 200
+        assert state.get_runner().runtime.provider.config.capture_cache_usage is enabled
+        raw = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+        assert raw["model_providers"]["cached-model"].get("capture_cache_usage", False) is enabled
+
+        request = {
+            key: value for key, value in activated.json()["model"].items()
+            if key not in {"source", "active", "api_key_configured", "api_key_saved"}
+        }
+        request["name"] = "Renamed Model"
+        saved = client.put("/models/cached-model", json=request)
+        assert saved.status_code == 200
+        assert saved.json()["model"]["capture_cache_usage"] is enabled
+        assert state.get_runner().runtime.provider.config.capture_cache_usage is enabled
+        raw = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+        assert ("capture_cache_usage" in raw["model_providers"]["cached-model"]) is enabled
+
+        state.close_runner()
+        state.custom_model_providers.clear()
+        state.active_model_id = None
+        reloaded = client.get("/models")
+        assert reloaded.status_code == 200
+        assert reloaded.json()["models"][1]["capture_cache_usage"] is enabled
+    finally:
+        state.close_runner()
+        state.custom_model_providers.clear()
+        state.active_model_id = None
+
+
 def test_api_user_config_env_model_never_persists_resolved_secret(monkeypatch, tmp_path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(

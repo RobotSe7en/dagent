@@ -7,6 +7,34 @@ that may require action when upgrading.
 
 The current package version is `0.9.19`.
 
+## Unreleased
+
+### Opt-in prompt cache usage
+
+`Provider(...)` and `ProviderConfig` accept `capture_cache_usage=False`. Enabling
+it reads standard Chat/Responses cache statistics into the optional
+`ModelTokenUsage.cached_input_tokens` field, including streaming and compaction.
+It adds no request field and does not enable streamed usage or server caching.
+Malformed cache counters are omitted with a warning, preserving generation and
+other valid usage. Provider-private cache fields and run-level aggregation are
+not included.
+
+WebUI user models can set `capture_cache_usage: true` in `~/.dagent/config.yaml`;
+model selection, editing, and saves preserve this option.
+
+Defaults, reasoning replay, workspace selection and context projection are
+unchanged. Unknown cache counts are omitted from serialized usage, including
+nested conversations, summaries and checkpoints. Old records require no
+migration; new records with a known opt-in count require readers that support
+the field. Outer schema versions and the package version remain unchanged.
+See [prompt cache usage](model-context-and-reasoning.md#prompt-cache-usage-unreleased)
+and the offline [example](../../examples/cache_usage.py).
+
+Verification: 1,634 Python tests passed with three environment-dependent skips;
+108 cache/prefix tests also passed on Python 3.13. The offline example, added
+documentation links, and `git diff --check` passed. Live cache hit rates were not
+benchmarked.
+
 ## 0.9.19
 
 ### Optional reasoning field and effort-name mappings

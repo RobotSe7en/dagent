@@ -135,6 +135,13 @@ for item in result.new_items:
 Reasoning deltas use `response.reasoning.delta` in the typed stream protocol.
 Content deltas use `response.content.delta`.
 
+For unreleased opt-in cache statistics, enable `Provider(capture_cache_usage=True)`
+and inspect `item.usage.cached_input_tokens`. `None` means unknown, not zero hits.
+Chat streamed usage still requires `stream_include_usage=True` on a compatible
+endpoint. Compaction usage is separate on `ContextSummary.usage`. See
+[prompt cache usage](model-context-and-reasoning.md#prompt-cache-usage-unreleased)
+for serialization compatibility and per-call ratios.
+
 ## Large tool and MCP results
 
 Tool and MCP text up to 256 KiB normally stays inline. Text shortened for model
