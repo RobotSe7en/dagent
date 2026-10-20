@@ -4608,6 +4608,69 @@ def test_api_model_management_persists_user_models_to_user_config(monkeypatch, t
         state.active_model_id = None
 
 
+@pytest.mark.parametrize("mapping", [
+    None,
+    {},
+    {
+        "chat_completions": {"field": "custom.level", "values": {"high": "deep"}},
+        "responses": {"field": "reasoning.effort", "values": {"high": "xhigh"}},
+    },
+])
+def test_api_model_reasoning_mapping_survives_activation_and_save(monkeypatch, tmp_path, mapping) -> None:
+    provider = {
+        "base_url": "http://model.example/v1",
+        "model": "private-model",
+        "reasoning_effort": "high",
+    }
+    if mapping is not None:
+        provider["reasoning_mapping"] = mapping
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump({"provider": provider}), encoding="utf-8")
+    monkeypatch.setenv("DAGENT_CONFIG", str(config))
+    user_config = state.get_user_config_path()
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text(yaml.safe_dump({
+        "model_providers": {"mapped-model": {"name": "Mapped Model", **provider}},
+    }), encoding="utf-8")
+    state.close_runner()
+    state.custom_model_providers.clear()
+    state.active_model_id = None
+    client = TestClient(app)
+
+    try:
+        listed = client.get("/models")
+        assert listed.status_code == 200
+        for model in listed.json()["models"]:
+            assert model["reasoning_mapping"] == mapping
+
+        activated = client.post("/models/mapped-model/activate")
+        assert activated.status_code == 200
+        assert activated.json()["model"]["reasoning_mapping"] == mapping
+        assert state.get_runner().runtime.provider.config.model_dump()["reasoning_mapping"] == mapping
+        raw = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+        assert raw["model_providers"]["mapped-model"].get("reasoning_mapping") == mapping
+
+        request = {
+            key: value for key, value in activated.json()["model"].items()
+            if key not in {"source", "active", "api_key_configured", "api_key_saved"}
+        }
+        request["name"] = "Renamed Model"
+        saved = client.put("/models/mapped-model", json=request)
+        assert saved.status_code == 200
+        assert saved.json()["model"]["reasoning_mapping"] == mapping
+        assert state.get_runner().runtime.provider.config.model_dump()["reasoning_mapping"] == mapping
+        raw = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+        assert raw["model_providers"]["mapped-model"].get("reasoning_mapping") == mapping
+
+        reloaded = client.get("/models")
+        assert reloaded.status_code == 200
+        assert reloaded.json()["models"][1]["reasoning_mapping"] == mapping
+    finally:
+        state.close_runner()
+        state.custom_model_providers.clear()
+        state.active_model_id = None
+
+
 def test_api_user_config_env_model_never_persists_resolved_secret(monkeypatch, tmp_path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(

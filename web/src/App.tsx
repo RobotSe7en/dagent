@@ -14530,6 +14530,7 @@ function modelInputFromProvider(model: ModelProvider): ModelProviderInput {
     token_counting: model.token_counting,
     chat_reasoning_field: model.chat_reasoning_field,
     reasoning_effort: model.reasoning_effort ?? null,
+    reasoning_mapping: model.reasoning_mapping ?? null,
     reasoning_capture: model.reasoning_capture,
     stream_include_usage: model.stream_include_usage,
     context_window_tokens: model.context_window_tokens,

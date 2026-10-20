@@ -629,6 +629,11 @@ export interface PythonToolEntry extends PythonToolConfig {
   error?: string | null;
 }
 
+export interface ReasoningMapping {
+  field: string;
+  values?: Partial<Record<NonNullable<ModelProvider['reasoning_effort']>, string>>;
+}
+
 export interface ModelProvider {
   id: string;
   name: string;
@@ -644,6 +649,7 @@ export interface ModelProvider {
   token_counting: 'auto' | 'vllm' | 'heuristic';
   chat_reasoning_field: 'auto' | 'reasoning' | 'reasoning_content' | 'omit';
   reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+  reasoning_mapping?: Partial<Record<'chat_completions' | 'responses', ReasoningMapping>> | null;
   reasoning_capture: 'field' | 'field_and_tags';
   stream_include_usage: boolean;
   context_window_tokens: number | null;
@@ -667,6 +673,7 @@ export interface ModelProviderInput {
   token_counting: 'auto' | 'vllm' | 'heuristic';
   chat_reasoning_field: 'auto' | 'reasoning' | 'reasoning_content' | 'omit';
   reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+  reasoning_mapping?: ModelProvider['reasoning_mapping'];
   reasoning_capture: 'field' | 'field_and_tags';
   stream_include_usage: boolean;
   context_window_tokens: number | null;

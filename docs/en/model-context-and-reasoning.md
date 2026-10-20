@@ -104,14 +104,100 @@ provider = dagent.Provider(
 ```
 
 `reasoning_effort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
-or `max`. The SDK sends it as `reasoning_effort` to Chat or `reasoning.effort`
-to Responses. Model support is still determined by the model served by vLLM.
+or `max`. By default the SDK sends it as `reasoning_effort` to Chat or
+`reasoning.effort` to Responses. Model support is still determined by the model served by vLLM.
 Token-based reasoning budgets are not part of the SDK contract.
 
 `reasoning_capture="field_and_tags"` combines the dedicated response reasoning
 field with `<think>` content. `reasoning_capture="field"` trusts only the
 dedicated field. In both cases thinking tags are removed from visible assistant
 content. Capture controls response parsing only and does not change the request.
+
+### Custom reasoning fields and effort names
+
+Unreleased addition: use `reasoning_mapping` when an endpoint needs a different
+request field or effort name. Each protocol has its own optional mapping:
+
+```python
+from dagent.config import ReasoningMapping
+
+provider = dagent.Provider(
+    base_url="http://localhost:8000/v1",
+    model="private-model",
+    reasoning_effort="high",
+    reasoning_mapping={
+        "chat_completions": ReasoningMapping(
+            field="custom_reasoning.level",
+            values={"high": "deep"},
+        ),
+        "responses": ReasoningMapping(
+            field="reasoning.effort",
+            values={"high": "xhigh"},
+        ),
+    },
+)
+```
+
+The example fields and values must match your endpoint's contract. Chat sends
+`{"custom_reasoning": {"level": "deep"}}`; Responses sends
+`{"reasoning": {"effort": "xhigh"}}`. Plain dictionaries are also accepted in
+Python. The equivalent configuration-file shape is:
+
+```yaml
+provider:
+  base_url: http://localhost:8000/v1
+  model: private-model
+  reasoning_effort: high
+  reasoning_mapping:
+    chat_completions:
+      field: custom_reasoning.level
+      values: {high: deep}
+    responses:
+      field: reasoning.effort
+      values: {high: xhigh}
+```
+
+`field` is a required, nonempty dotted JSON object path; arrays and SDK-managed
+fields such as model, input, tools, output limits, and Responses state are
+rejected. `values` defaults to an empty dictionary. Its keys are the existing
+effort names, and its target values must be strings. Unlisted effort names pass
+through unchanged. An unset effective effort sends no mapped parameter; the
+string `"none"` remains a transmitted value.
+
+Mappings apply to generation, streaming, the Chat entrypoints, and context
+compaction. Compaction still selects its independent `low` effort by default,
+so the example sends `low` for compaction. Add a `low` entry to translate that
+value too. This does not change the compaction policy or `/tokenize` payload.
+
+For a mapped protocol, the SDK trusts the explicit field/value configuration
+instead of requiring OpenAPI to advertise the built-in effort controls. It
+does not generate the usual effort field or `include_reasoning`; add any
+required switches explicitly through extra parameters. Endpoint, tools,
+streaming, structured-output, output-limit, and reasoning-replay checks still
+apply. Capability inspection continues to report the server's declarations.
+
+`auto` retains the existing protocol preference. An unconfigured protocol uses
+the built-in behavior, even when the other protocol has a mapping. Set an
+explicit protocol when only that protocol's mapping should be used. Omitting
+`reasoning_mapping`, setting it to `None`, or using an empty dictionary preserves
+the existing behavior.
+
+Extra parameters retain their existing precedence. `extra_request_args` can
+replace the mapped root object; `extra_body` overrides generated body values
+and overlays SDK arguments in the final JSON. An explicit
+`extra_request_args["extra_body"]` replaces the entire generated/configured body,
+including mapped fields it does not repeat. Use `extra_body` for custom fields
+that are not OpenAI client arguments.
+
+For mapped calls, metadata keeps the original `requested_reasoning_effort` and
+reads `effective_reasoning_effort` from the final serialized mapped field. A
+missing or non-string value is recorded as `None`. `fallback_reason` includes
+the configured field path. This reports what was sent, not whether the model
+honored it. Rejected mappings do not trigger automatic downgrades, parameter
+omission, or protocol switching.
+
+Run the offline [reasoning mapping example](../../examples/reasoning_mapping.py)
+with `uv run python -m examples.reasoning_mapping`.
 
 ## Capability discovery and protocol selection
 

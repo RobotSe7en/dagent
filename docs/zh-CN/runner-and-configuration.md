@@ -118,6 +118,7 @@ provider = dagent.Provider(
     token_counting="auto",
     chat_reasoning_field="auto",
     reasoning_effort="high",
+    reasoning_mapping=None,
     reasoning_capture="field_and_tags",
     stream_include_usage=False,
     context_window_tokens=None,
@@ -139,6 +140,10 @@ provider = dagent.Provider(
 `reasoning_effort` 在 Chat 中映射为 `reasoning_effort`，在 Responses 中映射为
 `reasoning.effort`。SDK 不支持 token 数形式的 reasoning budget；旧的嵌套
 `reasoning` 对象会被拒绝。
+
+可选的 `reasoning_mapping` 配置（尚未发布）分别适配 Chat 和 Responses 的请求字段路径
+及字符串强度名称。未配置映射的协议保留内置行为，详见
+[自定义思考字段与强度名称](model-context-and-reasoning.md#自定义思考字段与强度名称)。
 
 `chat_reasoning_field` 只控制 Chat 的 reasoning 回放序列化。`auto` 对已识别的 DeepSeek
 官方 V4 端点与模型使用 `reasoning_content`，对 vLLM 使用 `reasoning`，其他情况省略。
@@ -280,7 +285,9 @@ onlyoffice:
 
 WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `model_providers`。
 如果 `active_model` 指向一个用户模型，backend 会用该 provider 重建 runner；否则项目
-`config.yaml` provider 仍是默认模型。WebUI 会同时注册项目和用户 MCP servers。同名冲突时，
+`config.yaml` provider 仍是默认模型。用户模型条目也支持
+[`reasoning_mapping`](model-context-and-reasoning.md)（尚未发布）；WebUI 会将其传给 provider，
+并在选择或保存模型时保留。WebUI 会同时注册项目和用户 MCP servers。同名冲突时，
 项目 `mcp_servers` 优先；冲突的用户 MCP 条目会被报告，而不是静默覆盖项目配置。
 Backend 使用用户选择的 model 重建 runner 时，也会应用项目级 `planner_frontend`。这是
 service-wide setting；message request 和 WebUI 不提供 per-request override。

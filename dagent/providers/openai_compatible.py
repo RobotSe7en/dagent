@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 from httpx import TransportError
 
-from dagent.config import ProviderConfig, ReasoningCapture
+from dagent.config import ProviderConfig, ReasoningCapture, ReasoningMapping
 from dagent.providers.base import (
     ChatResponse,
     ChatStreamEvent,
@@ -39,7 +39,7 @@ from dagent.providers.model_io import (
     normalize_model_response,
     responses_tools,
 )
-from dagent.providers.request_observation import observe_request_reasoning
+from dagent.providers.request_observation import observe_request_reasoning, reasoning_effort_at_path
 from dagent.schemas.context import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     ModelCallAttempt,
@@ -735,11 +735,13 @@ class OpenAICompatibleProvider:
         self, body: bytes, request: ModelRequest, metadata: ModelCallMetadata,
         capabilities: ProviderCapabilities,
     ) -> ModelCallMetadata:
+        mapping = self._reasoning_mapping(metadata.protocol)
         return observe_request_reasoning(
             body, request, metadata,
             resolved_field=("reasoning" if metadata.protocol == "responses"
                             else self._resolved_chat_reasoning_field(capabilities)),
             explicit_omit=self.config.chat_reasoning_field == "omit",
+            effort_field=mapping.field if mapping is not None else None,
         )
 
     def _chat_kwargs(
@@ -766,9 +768,11 @@ class OpenAICompatibleProvider:
                 kwargs["stream_options"] = {"include_usage": True}
         extra_body: dict[str, Any] = {}
         reasoning_effort = self._effective_reasoning_effort(request)
-        if reasoning_effort is not None:
+        mapping = self._reasoning_mapping("chat_completions")
+        if mapping is not None:
+            extra_body = self._mapped_reasoning_body(mapping, reasoning_effort)
+        elif reasoning_effort is not None:
             kwargs["reasoning_effort"] = reasoning_effort
-        if reasoning_effort is not None:
             extra_body["include_reasoning"] = True
         max_output_tokens = self._effective_max_output_tokens(request)
         requested_max_output_tokens = self._requested_max_output_tokens(request)
@@ -800,7 +804,7 @@ class OpenAICompatibleProvider:
             output_limit_field=output_limit_field,
             fallback_reason=resolution_reason,
         )
-        return kwargs, metadata
+        return kwargs, self._mapping_metadata(kwargs, metadata, mapping)
 
     def _responses_kwargs(
         self,
@@ -823,10 +827,13 @@ class OpenAICompatibleProvider:
             kwargs["stream"] = True
         extra_body: dict[str, Any] = {}
         reasoning_effort = self._effective_reasoning_effort(request)
-        if reasoning_effort is not None:
+        mapping = self._reasoning_mapping("responses")
+        if mapping is not None:
+            extra_body = self._mapped_reasoning_body(mapping, reasoning_effort)
+        elif reasoning_effort is not None:
             kwargs["reasoning"] = {"effort": reasoning_effort}
-        if reasoning_effort is not None and capabilities.server_kind == "vllm":
-            extra_body["include_reasoning"] = True
+            if capabilities.server_kind == "vllm":
+                extra_body["include_reasoning"] = True
         max_output_tokens = self._effective_max_output_tokens(request)
         requested_max_output_tokens = self._requested_max_output_tokens(request)
         if max_output_tokens is not None:
@@ -870,7 +877,41 @@ class OpenAICompatibleProvider:
             ),
             fallback_reason=resolution_reason,
         )
-        return kwargs, metadata
+        return kwargs, self._mapping_metadata(kwargs, metadata, mapping)
+
+    def _reasoning_mapping(
+        self, protocol: Literal["chat_completions", "responses"],
+    ) -> ReasoningMapping | None:
+        return (self.config.reasoning_mapping or {}).get(protocol)
+
+    def _mapped_reasoning_body(
+        self, mapping: ReasoningMapping, effort: str | None,
+    ) -> dict[str, Any]:
+        parts = mapping.field.split(".")
+        # Explicit SDK arguments replace an entire root object, as they do for
+        # built-in defaults. Generated extra_body must not override them later.
+        if effort is None or parts[0] in self.config.extra_request_args:
+            return {}
+        value: Any = mapping.values.get(effort, effort)
+        for part in reversed(parts):
+            value = {part: value}
+        return value
+
+    @staticmethod
+    def _mapping_metadata(
+        kwargs: Mapping[str, Any], metadata: ModelCallMetadata,
+        mapping: ReasoningMapping | None,
+    ) -> ModelCallMetadata:
+        if mapping is None:
+            return metadata
+        # The OpenAI client applies extra_body as a final, shallow JSON overlay.
+        payload = dict(kwargs)
+        payload.update(kwargs.get("extra_body") or {})
+        reason = f"Reasoning effort mapping configured for '{mapping.field}'."
+        return metadata.model_copy(update={
+            "effective_reasoning_effort": reasoning_effort_at_path(payload, mapping.field),
+            "fallback_reason": f"{metadata.fallback_reason} {reason}" if metadata.fallback_reason else reason,
+        })
 
     def _effective_reasoning_effort(self, request: ModelRequest) -> str | None:
         if request.reasoning_effort is not None:
@@ -1035,12 +1076,10 @@ class OpenAICompatibleProvider:
             protocol == "responses"
             or self._resolved_chat_reasoning_field(capabilities) != "omit"
         )
-        if (
-            reasoning_effort is not None
-            or sends_replayed_reasoning
-        ):
+        builtin_effort = reasoning_effort is not None and self._reasoning_mapping(protocol) is None
+        if builtin_effort or sends_replayed_reasoning:
             required.append("reasoning")
-        if reasoning_effort is not None:
+        if builtin_effort:
             required.append("reasoning_effort")
         if request is not None and self._effective_max_output_tokens(request) is not None:
             required.append("output_limit")
@@ -1155,6 +1194,9 @@ class Provider(OpenAICompatibleProvider):
             "auto", "reasoning", "reasoning_content", "omit"
         ] = "auto",
         reasoning_effort: ReasoningEffort | None = None,
+        reasoning_mapping: Mapping[
+            Literal["chat_completions", "responses"], ReasoningMapping | Mapping[str, Any]
+        ] | None = None,
         reasoning_capture: ReasoningCapture = "field_and_tags",
         stream_include_usage: bool = False,
         context_window_tokens: int | None = None,
@@ -1174,6 +1216,7 @@ class Provider(OpenAICompatibleProvider):
                 token_counting=token_counting,
                 chat_reasoning_field=chat_reasoning_field,
                 reasoning_effort=reasoning_effort,
+                reasoning_mapping=reasoning_mapping,
                 reasoning_capture=reasoning_capture,
                 stream_include_usage=stream_include_usage,
                 context_window_tokens=context_window_tokens,

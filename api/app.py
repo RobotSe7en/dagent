@@ -94,6 +94,7 @@ from dagent.config import (
     DEFAULT_WORKSPACE,
     ProtocolMode,
     ReasoningCapture,
+    ReasoningMapping,
     TokenCountingMode,
     UserDagentConfig,
     UserModelProviderConfig,
@@ -484,6 +485,7 @@ class ModelProviderRequest(BaseModel):
     token_counting: TokenCountingMode = "auto"
     chat_reasoning_field: ChatReasoningField = "auto"
     reasoning_effort: ReasoningEffort | None = None
+    reasoning_mapping: dict[Literal["chat_completions", "responses"], ReasoningMapping] | None = None
     reasoning_capture: ReasoningCapture = "field_and_tags"
     stream_include_usage: bool = False
     context_window_tokens: int | None = Field(default=None, ge=1024)
@@ -534,6 +536,7 @@ class ModelProviderPayload(BaseModel):
     token_counting: TokenCountingMode
     chat_reasoning_field: ChatReasoningField
     reasoning_effort: ReasoningEffort | None = None
+    reasoning_mapping: dict[Literal["chat_completions", "responses"], ReasoningMapping] | None = None
     reasoning_capture: ReasoningCapture
     stream_include_usage: bool
     context_window_tokens: int | None
@@ -3750,6 +3753,7 @@ def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
         "context_window_tokens": model.context_window_tokens,
         "max_output_tokens": model.max_output_tokens,
         "reasoning_effort": model.reasoning_effort,
+        "reasoning_mapping": model.reasoning_mapping,
         "reasoning_capture": model.reasoning_capture,
         "extra_request_args": dict(model.extra_request_args),
         "extra_body": dict(model.extra_body),
@@ -3774,6 +3778,7 @@ def _model_request_from_user_config(model_id: str, model: UserModelProviderConfi
         token_counting=model.token_counting,
         chat_reasoning_field=model.chat_reasoning_field,
         reasoning_effort=model.reasoning_effort,
+        reasoning_mapping=model.reasoning_mapping,
         reasoning_capture=model.reasoning_capture,
         stream_include_usage=model.stream_include_usage,
         context_window_tokens=(
@@ -3799,6 +3804,7 @@ def _user_model_provider_config(model: ModelProviderRequest) -> UserModelProvide
         token_counting=model.token_counting,
         chat_reasoning_field=model.chat_reasoning_field,
         reasoning_effort=model.reasoning_effort,
+        reasoning_mapping=model.reasoning_mapping,
         reasoning_capture=model.reasoning_capture,
         stream_include_usage=model.stream_include_usage,
         context_window_tokens=model.context_window_tokens,
@@ -3861,6 +3867,7 @@ def _config_model_payload(*, active: bool) -> ModelProviderPayload:
         token_counting=provider.token_counting,
         chat_reasoning_field=provider.chat_reasoning_field,
         reasoning_effort=provider.reasoning_effort,
+        reasoning_mapping=provider.reasoning_mapping,
         reasoning_capture=provider.reasoning_capture,
         stream_include_usage=provider.stream_include_usage,
         context_window_tokens=(
@@ -3890,6 +3897,7 @@ def _user_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelPr
         token_counting=model.token_counting,
         chat_reasoning_field=model.chat_reasoning_field,
         reasoning_effort=model.reasoning_effort,
+        reasoning_mapping=model.reasoning_mapping,
         reasoning_capture=model.reasoning_capture,
         stream_include_usage=model.stream_include_usage,
         context_window_tokens=model.context_window_tokens,
