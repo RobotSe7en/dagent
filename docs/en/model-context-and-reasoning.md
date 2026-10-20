@@ -257,6 +257,73 @@ make every attempt observable. Direct provider calls make one attempt and raise
 `dagent.providers.ProviderRequestError` on transport/HTTP failure, exposing
 `metadata`, `cause`, and any partial `response`.
 
+## Prompt cache usage (unreleased)
+
+Cache statistics are opt-in and provider-reported, independently of the context
+estimator. Enable `capture_cache_usage=True` on `Provider(...)` or in the provider
+configuration used by `Runner.from_config(...)`. The default is `False`.
+
+```python
+provider = dagent.Provider(
+    base_url="http://localhost:8000/v1",
+    model="local-model",
+    capture_cache_usage=True,
+    stream_include_usage=True,  # Only for endpoints supporting Chat streamed usage.
+)
+```
+
+This option does not send a new request field, enable server caching, change
+protocol selection, or automatically enable streamed usage. Chat reads
+`usage.prompt_tokens_details.cached_tokens`; Responses reads
+`usage.input_tokens_details.cached_tokens`, including terminal streaming
+responses. Private fields such as `prompt_cache_hit_tokens` are not mapped.
+
+`ModelTokenUsage.cached_input_tokens` is a subset of the existing `input_tokens`,
+not an additional token charge. It is `None` when capture is disabled, the count
+is absent, or the statistic is invalid; explicit `0` means a reported cache miss.
+Missing statistics never imply zero hits. With capture enabled, negative,
+non-integer (including boolean and numeric-string), or greater-than-known-input
+counts are omitted with a warning containing no request or response text. Other
+valid usage and generation results are preserved. A valid cache count can remain
+known even when `input_tokens` is unknown.
+
+Read per-response usage on `AssistantMessage.usage`, including planner audit
+items in `result.new_items`. Compaction has its own `ContextSummary.usage` and
+`model_call.request_purpose="compaction"`. Existing model-call trace outputs and
+final result/checkpoint serialization retain these counts. `ContextUsage`
+describes request estimates and projection, while `RunResult.usage` counts
+operations; neither represents prompt-cache hits. Statistics are audit data and
+are never replayed into model input.
+
+```python
+for item in result.new_items:
+    if isinstance(item, dagent.AssistantMessage) and item.usage is not None:
+        usage = item.usage
+        ratio = (
+            usage.cached_input_tokens / usage.input_tokens
+            if usage.cached_input_tokens is not None
+            and usage.input_tokens is not None and usage.input_tokens > 0
+            else None
+        )
+        print(usage.cached_input_tokens, ratio)  # None means unknown/undefined.
+```
+
+The SDK supplies no run-level cache aggregate or serialized hit-rate field.
+Hosts can compute ratios from known counts; exclude unknown calls explicitly
+and report that coverage. Streaming usage snapshots replace earlier snapshots,
+rather than being summed. A returned response's usage does not claim to include
+all failed retry attempts.
+
+Unknown cache counts are omitted from serialized usage, preserving the released
+default record shape. Old records load without migration. Records containing
+the opt-in field require a reader supporting it; old strict readers may reject
+them. See the offline [cache usage example](../../examples/cache_usage.py).
+
+Prefix reuse still depends on the actual model input and server cache state.
+Fixed workspaces help preserve paths, while `active_run` reasoning omission,
+context pressure, summaries, or reconstructed DAG planner history can change
+prefixes. Enabling usage capture does not change those policies.
+
 ## Token accounting and compaction
 
 `token_counting="auto"` calls vLLM `/tokenize` for the projected messages and

@@ -117,6 +117,12 @@ for item in result.new_items:
 类型化流事件中，推理增量使用 `response.reasoning.delta`，回答增量使用
 `response.content.delta`。
 
+尚未发布的缓存统计需要显式启用 `Provider(capture_cache_usage=True)`，再读取
+`item.usage.cached_input_tokens`。`None` 表示未知，不能当作零命中；兼容 Chat 端点的
+流式 usage 仍需单独开启 `stream_include_usage=True`。压缩用量独立保存在
+`ContextSummary.usage`。序列化兼容性和逐调用比例见
+[提示缓存用量](model-context-and-reasoning.md#提示缓存用量尚未发布)。
+
 ## 大型工具与 MCP 结果
 
 通常情况下，256 KiB 以内的工具/MCP 文本内联保存；展示预算截断也会触发原文保存。

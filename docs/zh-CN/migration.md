@@ -6,6 +6,26 @@
 
 当前包版本是 `0.9.19`。
 
+## 尚未发布
+
+### 显式启用提示缓存统计
+
+`Provider(...)` 和 `ProviderConfig` 新增 `capture_cache_usage=False`。启用后，
+Chat/Responses 的标准缓存计数进入可选字段 `ModelTokenUsage.cached_input_tokens`，
+覆盖流式与压缩调用。不增加请求字段，也不自动开启流式 usage 或服务端缓存。
+非法缓存计数会被省略并告警，生成结果与其它合法 usage 保留。本次不包含私有缓存
+字段或 run 级汇总。
+
+默认行为、reasoning 回放、workspace 选择和上下文投影不变。缓存数未知时，序列化
+usage 省略该字段，包括嵌套的会话、摘要和 checkpoint。旧记录无需迁移；包含已知
+缓存计数的新记录需要支持该字段的读取方。外层 schema 版本与包版本保持不变。
+详见[提示缓存用量](model-context-and-reasoning.md#提示缓存用量尚未发布)和
+离线[示例](../../examples/cache_usage.py)。
+
+验证：1,634 项 Python 测试通过，3 项依赖外部环境的测试跳过；108 项缓存及前缀测试
+在 Python 3.13 上通过。离线示例、新增文档链接和 `git diff --check` 通过。
+本次未进行真实服务端缓存命中率基准测试。
+
 ## 0.9.19
 
 ### 可选的思考字段与强度名称映射

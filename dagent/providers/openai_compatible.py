@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import replace
@@ -11,7 +12,7 @@ from time import monotonic
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, AsyncStream
 from httpx import TransportError
 
 from dagent.config import ProviderConfig, ReasoningCapture, ReasoningMapping
@@ -25,6 +26,10 @@ from dagent.providers.capabilities import (
     CapabilitySupport,
     ProtocolCapabilities,
     ProviderCapabilities,
+)
+from dagent.providers.cache_usage import (
+    CacheChatCompletion, CacheChatCompletionChunk, CacheResponse,
+    CacheResponseStreamEvent,
 )
 from dagent.providers.model_io import (
     ModelCallMetadata,
@@ -46,6 +51,9 @@ from dagent.schemas.context import (
     ModelTokenUsage,
     ReasoningEffort,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 # Official API model limits, checked 2026-09-07. /models does not expose limits.
@@ -452,7 +460,7 @@ class OpenAICompatibleProvider:
         )
         raw, metadata = await self._create_model_response(self.client.chat.completions, kwargs, metadata)
         metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
-        response = raw.parse()
+        response = raw.parse(to=CacheChatCompletion) if self.config.capture_cache_usage else raw.parse()
         choices = getattr(response, "choices", None) or []
         choice = choices[0] if choices else None
         message = getattr(choice, "message", None)
@@ -464,7 +472,10 @@ class OpenAICompatibleProvider:
             content=str(getattr(message, "content", None) or ""),
             reasoning=_reasoning_content(message),
             refusal=str(getattr(message, "refusal", None) or ""),
-            usage=_model_token_usage(getattr(response, "usage", None)),
+            usage=_model_token_usage(
+                getattr(response, "usage", None), protocol="chat_completions",
+                capture_cache_usage=self.config.capture_cache_usage,
+            ),
             metadata=metadata,
         )
         result = normalize_model_response(
@@ -490,7 +501,10 @@ class OpenAICompatibleProvider:
         )
         raw, metadata = await self._create_model_response(self.client.chat.completions, kwargs, metadata)
         metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
-        response_stream = raw.parse()
+        response_stream = (
+            raw.parse(to=AsyncStream[CacheChatCompletionChunk])
+            if self.config.capture_cache_usage else raw.parse()
+        )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         refusal_parts: list[str] = []
@@ -512,7 +526,10 @@ class OpenAICompatibleProvider:
             )
 
         async for chunk in self._read_model_stream(response_stream, partial):
-            chunk_usage = _model_token_usage(getattr(chunk, "usage", None))
+            chunk_usage = _model_token_usage(
+                getattr(chunk, "usage", None), protocol="chat_completions",
+                capture_cache_usage=self.config.capture_cache_usage,
+            )
             if chunk_usage is not None:
                 token_usage = chunk_usage
             choices = getattr(chunk, "choices", None) or []
@@ -584,11 +601,12 @@ class OpenAICompatibleProvider:
         )
         raw, metadata = await self._create_model_response(self.client.responses, kwargs, metadata)
         metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
-        response = raw.parse()
+        response = raw.parse(to=CacheResponse) if self.config.capture_cache_usage else raw.parse()
         result = _model_response_from_responses(
             response,
             metadata=metadata,
             capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
+            capture_cache_usage=self.config.capture_cache_usage,
         )
         return result
 
@@ -607,7 +625,10 @@ class OpenAICompatibleProvider:
         )
         raw, metadata = await self._create_model_response(self.client.responses, kwargs, metadata)
         metadata = self._observe_reasoning(raw.http_request.content, request, metadata, capabilities)
-        response_stream = raw.parse()
+        response_stream = (
+            raw.parse(to=AsyncStream[CacheResponseStreamEvent])
+            if self.config.capture_cache_usage else raw.parse()
+        )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         refusal_parts: list[str] = []
@@ -703,6 +724,7 @@ class OpenAICompatibleProvider:
                     completed_response,
                     metadata=partial().metadata,
                     capture_tag_reasoning=self.config.reasoning_capture == "field_and_tags",
+                    capture_cache_usage=self.config.capture_cache_usage,
                 )
             except ProviderResponseError as exc:
                 if exc.response is not None:
@@ -1199,6 +1221,7 @@ class Provider(OpenAICompatibleProvider):
         ] | None = None,
         reasoning_capture: ReasoningCapture = "field_and_tags",
         stream_include_usage: bool = False,
+        capture_cache_usage: bool = False,
         context_window_tokens: int | None = None,
         max_output_tokens: int | None = None,
         extra_request_args: dict[str, Any] | None = None,
@@ -1219,6 +1242,7 @@ class Provider(OpenAICompatibleProvider):
                 reasoning_mapping=reasoning_mapping,
                 reasoning_capture=reasoning_capture,
                 stream_include_usage=stream_include_usage,
+                capture_cache_usage=capture_cache_usage,
                 context_window_tokens=context_window_tokens,
                 max_output_tokens=max_output_tokens,
                 extra_request_args=extra_request_args or {},
@@ -1377,6 +1401,7 @@ def _model_response_from_responses(
     *,
     metadata: ModelCallMetadata,
     capture_tag_reasoning: bool,
+    capture_cache_usage: bool = False,
 ) -> ModelResponse:
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -1410,7 +1435,10 @@ def _model_response_from_responses(
         content="".join(content_parts),
         reasoning="".join(reasoning_parts),
         refusal="".join(refusal_parts),
-        usage=_model_token_usage(getattr(response, "usage", None)),
+        usage=_model_token_usage(
+            getattr(response, "usage", None), protocol="responses",
+            capture_cache_usage=capture_cache_usage,
+        ),
         status=str(status or "unknown"),
         metadata=metadata.model_copy(update={"response_status": status}),
     )
@@ -1565,7 +1593,10 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
     return merged
 
 
-def _model_token_usage(value: Any) -> ModelTokenUsage | None:
+def _model_token_usage(
+    value: Any, *, protocol: Literal["chat_completions", "responses"],
+    capture_cache_usage: bool = False,
+) -> ModelTokenUsage | None:
     if value is None:
         return None
     input_tokens = getattr(value, "prompt_tokens", None)
@@ -1580,12 +1611,34 @@ def _model_token_usage(value: Any) -> ModelTokenUsage | None:
     )
     reasoning_tokens = getattr(details, "reasoning_tokens", None)
     total_tokens = getattr(value, "total_tokens", None)
-    return ModelTokenUsage(
+    usage = ModelTokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         reasoning_tokens=reasoning_tokens,
         total_tokens=total_tokens,
     )
+    if not capture_cache_usage:
+        return usage
+    details_field = (
+        "prompt_tokens_details" if protocol == "chat_completions"
+        else "input_tokens_details"
+    )
+    cached = getattr(getattr(value, details_field, None), "cached_tokens", None)
+    if cached is None:
+        return usage
+    if type(cached) is not int or cached < 0:
+        logger.warning(
+            "Invalid %s usage.%s.cached_tokens: expected a nonnegative integer; "
+            "cache usage omitted.", protocol, details_field,
+        )
+    elif usage.input_tokens is not None and cached > usage.input_tokens:
+        logger.warning(
+            "Invalid %s usage.%s.cached_tokens: exceeds input_tokens; "
+            "cache usage omitted.", protocol, details_field,
+        )
+    else:
+        return usage.model_copy(update={"cached_input_tokens": cached})
+    return usage
 
 
 class _ThinkingStreamParser:

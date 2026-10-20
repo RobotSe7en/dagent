@@ -17,6 +17,7 @@ credentials.
 | `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/en/agents.md), [Capabilities](../docs/en/capabilities.md) |
 | `model_failure.py` | Inspect retained tool errors and an inert reasoning-only final response. | [Model contracts](../docs/en/model-context-and-reasoning.md), [Results](../docs/en/results-streaming-review.md) |
 | `reasoning_mapping.py` | Map request field paths and string effort names for Chat, Responses, and compaction using an offline endpoint. | [Reasoning mappings](../docs/en/model-context-and-reasoning.md#custom-reasoning-fields-and-effort-names) |
+| `cache_usage.py` | Inspect opt-in synthetic cache counts, explicit zero and unknown usage through Chat, Responses, and streaming without network access. | [Prompt cache usage](../docs/en/model-context-and-reasoning.md#prompt-cache-usage-unreleased) |
 | `agent_delegation.py` | Register a leaf subagent and expose it to a top-level `ToolAgent`. | [Agents](../docs/en/agents.md) |
 | `auto_agent.py` | Let the runtime choose direct tool use or dynamic DAG execution. | [Agents](../docs/en/agents.md) |
 | `dynamic_dag_agent.py` | Run a `DagAgent` that plans, executes a tool node, and returns a final answer. | [Agents](../docs/en/agents.md), [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
@@ -38,6 +39,7 @@ credentials.
 uv run python -m examples.tool_agent
 uv run python -m examples.model_failure
 uv run python -m examples.reasoning_mapping
+uv run python -m examples.cache_usage
 uv run python -m examples.editable_uploads
 uv run python -m examples.agent_delegation
 uv run python -m examples.auto_agent

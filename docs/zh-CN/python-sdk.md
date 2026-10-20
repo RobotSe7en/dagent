@@ -48,6 +48,10 @@ import dagent
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionUsage`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`；`dagent.providers` 也导出 `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于能力查看、custom providers 和 tests |
 
+尚未发布的显式缓存统计为现有 `ModelTokenUsage` 增加可空的 `cached_input_tokens`。
+采集配置及记录兼容性见
+[提示缓存用量](model-context-and-reasoning.md#提示缓存用量尚未发布)。
+
 ## 最小 Runner
 
 ```python

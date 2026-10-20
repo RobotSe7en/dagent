@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 
 DEFAULT_CONTEXT_WINDOW_TOKENS = 131072
@@ -111,6 +111,15 @@ class ModelTokenUsage(BaseModel):
     output_tokens: int | None = Field(default=None, ge=0)
     reasoning_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+
+    @model_serializer(mode="wrap")
+    def serialize_cache_usage(self, serializer):
+        payload = serializer(self)
+        # Preserve released usage records unless cache statistics are known.
+        if self.cached_input_tokens is None:
+            payload.pop("cached_input_tokens", None)
+        return payload
 
     @model_validator(mode="after")
     def validate_total(self) -> "ModelTokenUsage":

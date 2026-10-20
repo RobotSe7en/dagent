@@ -79,6 +79,7 @@ class ProviderConfig(BaseModel):
     reasoning_mapping: dict[Literal["chat_completions", "responses"], ReasoningMapping] | None = None
     reasoning_capture: ReasoningCapture = "field_and_tags"
     stream_include_usage: bool = False
+    capture_cache_usage: bool = False
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
     context_window_tokens: int | None = Field(default=None, ge=1024)
@@ -359,6 +360,8 @@ def _provider_storage_data(provider: ProviderConfig) -> dict[str, Any]:
         data.pop("extra_body", None)
     if not data.get("stream_include_usage"):
         data.pop("stream_include_usage", None)
+    if not data.get("capture_cache_usage"):
+        data.pop("capture_cache_usage", None)
     if "context_window_tokens" not in provider.model_fields_set:
         data.pop("context_window_tokens", None)
     return data
