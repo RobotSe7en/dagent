@@ -135,11 +135,11 @@ for item in result.new_items:
 Reasoning deltas use `response.reasoning.delta` in the typed stream protocol.
 Content deltas use `response.content.delta`.
 
-For unreleased opt-in cache statistics, enable `Provider(capture_cache_usage=True)`
+For opt-in cache statistics since 0.10.0, enable `Provider(capture_cache_usage=True)`
 and inspect `item.usage.cached_input_tokens`. `None` means unknown, not zero hits.
 Chat streamed usage still requires `stream_include_usage=True` on a compatible
 endpoint. Compaction usage is separate on `ContextSummary.usage`. See
-[prompt cache usage](model-context-and-reasoning.md#prompt-cache-usage-unreleased)
+[prompt cache usage](model-context-and-reasoning.md#prompt-cache-usage)
 for serialization compatibility and per-call ratios.
 
 ## Large tool and MCP results
@@ -276,7 +276,7 @@ either field keep their default whole-review approval. The WebUI requires an
 explicit choice per item, supports approve/reject all, displays full arguments,
 and submits the decisions together. Review claim/locking remains host-owned.
 See [batch_tool_review.py](../../examples/batch_tool_review.py) for a deterministic
-example and [migration notes](migration.md#unreleased) before upgrading pending runs.
+example and [migration notes](migration.md#0912) before upgrading pending runs.
 
 
 ## Steer an active tool-agent run

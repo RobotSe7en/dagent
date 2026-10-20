@@ -228,10 +228,10 @@ OpenAI client 的自动重试被关闭，确保每次尝试均可观察。直接
 传输或 HTTP 失败抛出 `dagent.providers.ProviderRequestError`，保留 `metadata`、
 `cause` 和可能存在的部分 `response`。
 
-## 提示缓存用量（尚未发布）
+## 提示缓存用量
 
-缓存统计显式启用，来自服务端，独立于上下文 token 估算。通过 `Provider(...)` 或
-`Runner.from_config(...)` 使用的 provider 配置设置 `capture_cache_usage=True`；
+自 0.10.0 起，缓存统计显式启用，来自服务端，独立于上下文 token 估算。
+通过 `Provider(...)` 或 `Runner.from_config(...)` 使用的 provider 配置设置 `capture_cache_usage=True`；
 默认值为 `False`。
 
 ```python
@@ -368,9 +368,9 @@ SDK 创建的子 agent 和辅助角色会继承 Provider 最后验证的服务�
 也会保留该上限。`auto` 仍允许启发式计数；窗口完全未知时仍警告并使用 128K 兜底。
 显式 `vllm` 计数继续采用严格模式。
 
-## 有界的 ToolAgent 上下文策略（尚未发布）
+## 有界的 ToolAgent 上下文策略
 
-SDK 中的长 ToolAgent 任务可显式选择 `"chunked"` 或 `"cache_aware"`：
+自 0.10.0 起，SDK 中的长 ToolAgent 任务可显式选择 `"chunked"` 或 `"cache_aware"`：
 
 ```python
 provider = dagent.Provider(

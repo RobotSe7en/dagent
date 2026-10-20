@@ -50,9 +50,9 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionUsage`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`; `dagent.providers` also exports `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for capability inspection, custom providers, and tests |
 
-Unreleased opt-in prompt-cache statistics extend the existing `ModelTokenUsage`
+Since 0.10.0, opt-in prompt-cache statistics extend the existing `ModelTokenUsage`
 with nullable `cached_input_tokens`. See
-[prompt cache usage](model-context-and-reasoning.md#prompt-cache-usage-unreleased)
+[prompt cache usage](model-context-and-reasoning.md#prompt-cache-usage)
 for capture configuration and record compatibility.
 
 ## Minimal Runner

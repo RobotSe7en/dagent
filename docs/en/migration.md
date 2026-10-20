@@ -5,9 +5,13 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.9.19`.
+The current package version is `0.10.0`.
 
-## Unreleased
+## 0.10.0
+
+This release adds opt-in long-task context management and prompt-cache usage
+capture. Existing applications keep the released defaults; enabling either
+feature is an explicit configuration choice.
 
 ### Context-management correctness fixes
 
@@ -66,7 +70,7 @@ still retains conversation state. Later window-discovery failures keep the last
 valid generation configuration in the checkpoint.
 
 See the [configuration, 128K/256K budgets, recovery boundaries, and vLLM cache
-verification guide](model-context-and-reasoning.md#bounded-toolagent-context-strategies-unreleased).
+verification guide](model-context-and-reasoning.md#bounded-toolagent-context-strategies).
 Render availability and standard cache statistics require the appropriate server
 version and flags; usage capture alone does not enable caching. Live self-hosted
 cache performance and server context-error rates have not been benchmarked.
@@ -99,14 +103,28 @@ Defaults, reasoning replay, workspace selection and context projection are
 unchanged. Unknown cache counts are omitted from serialized usage, including
 nested conversations, summaries and checkpoints. Old records require no
 migration; new records with a known opt-in count require readers that support
-the field. Outer schema versions and the package version remain unchanged.
-See [prompt cache usage](model-context-and-reasoning.md#prompt-cache-usage-unreleased)
+the field. Outer schema versions remain unchanged.
+See [prompt cache usage](model-context-and-reasoning.md#prompt-cache-usage)
 and the offline [example](../../examples/cache_usage.py).
 
-Verification: 1,634 Python tests passed with three environment-dependent skips;
-108 cache/prefix tests also passed on Python 3.13. The offline example, added
-documentation links, and `git diff --check` passed. Live cache hit rates were not
-benchmarked.
+### Release verification and upgrade
+
+Install with `pip install --upgrade dagent-ai==0.10.0`. Upgrading from 0.9.19
+requires no source, configuration, or stored-record migration. There are no
+breaking SDK changes. The default context strategy remains `"legacy"`, and cache
+capture remains disabled. Records produced with the new opt-in fields require
+a 0.10.0-compatible reader; do not downgrade such records to an older reader.
+
+Known limitations: summaries are lossy; oversized mandatory input and unknown
+server limits can still cause context errors. Prefix-cache hits depend on the
+deployment, tokenizer and server cache state. Real vLLM cache hit rates and the
+hour-long live soak were not benchmarked for this release.
+
+- Verification: 1,804 Python/MCP tests passed on Python 3.11, with three
+  environment-dependent skips; 128 WebUI tests and the production build passed.
+- Wheel and source distribution builds, package metadata checks, an isolated
+  installed-wheel smoke test, both offline cache/context examples, and
+  `git diff --check` passed.
 
 ## 0.9.19
 

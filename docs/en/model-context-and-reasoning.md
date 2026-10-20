@@ -257,10 +257,10 @@ make every attempt observable. Direct provider calls make one attempt and raise
 `dagent.providers.ProviderRequestError` on transport/HTTP failure, exposing
 `metadata`, `cause`, and any partial `response`.
 
-## Prompt cache usage (unreleased)
+## Prompt cache usage
 
-Cache statistics are opt-in and provider-reported, independently of the context
-estimator. Enable `capture_cache_usage=True` on `Provider(...)` or in the provider
+Since 0.10.0, cache statistics are opt-in and provider-reported, independently of
+the context estimator. Enable `capture_cache_usage=True` on `Provider(...)` or in the provider
 configuration used by `Runner.from_config(...)`. The default is `False`.
 
 ```python
@@ -427,9 +427,10 @@ server window, including when exact counting later becomes unavailable. `auto`
 still permits heuristic counting; a completely unknown window still uses the
 warned 128K fallback. Explicit `vllm` counting remains strict.
 
-## Bounded ToolAgent context strategies (unreleased)
+## Bounded ToolAgent context strategies
 
-For long SDK ToolAgent runs, explicitly select `"chunked"` or `"cache_aware"`:
+Since 0.10.0, long SDK ToolAgent runs can explicitly select `"chunked"` or
+`"cache_aware"`:
 
 ```python
 provider = dagent.Provider(

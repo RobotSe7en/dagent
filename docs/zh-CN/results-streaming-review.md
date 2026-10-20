@@ -117,11 +117,11 @@ for item in result.new_items:
 类型化流事件中，推理增量使用 `response.reasoning.delta`，回答增量使用
 `response.content.delta`。
 
-尚未发布的缓存统计需要显式启用 `Provider(capture_cache_usage=True)`，再读取
+自 0.10.0 起，缓存统计需要显式启用 `Provider(capture_cache_usage=True)`，再读取
 `item.usage.cached_input_tokens`。`None` 表示未知，不能当作零命中；兼容 Chat 端点的
 流式 usage 仍需单独开启 `stream_include_usage=True`。压缩用量独立保存在
 `ContextSummary.usage`。序列化兼容性和逐调用比例见
-[提示缓存用量](model-context-and-reasoning.md#提示缓存用量尚未发布)。
+[提示缓存用量](model-context-and-reasoning.md#提示缓存用量)。
 
 ## 大型工具与 MCP 结果
 
@@ -237,7 +237,7 @@ Checkpoint 保存完整顺序、决定和执行位置，也适用于已支持的
 WebUI 要求每项明确选择，支持全选批准/拒绝、查看完整参数以及一次提交。
 审核认领和锁仍由宿主管理。确定性示例见
 [batch_tool_review.py](../../examples/batch_tool_review.py)；升级待审运行前参阅
-[迁移说明](migration.md#unreleased)。
+[迁移说明](migration.md#0912)。
 
 
 ## 调整正在运行的 ToolAgent

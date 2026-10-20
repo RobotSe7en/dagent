@@ -166,10 +166,10 @@ DeepSeek 官网 V4 模型通过端点与模型 ID 识别其公布的 1M 窗口�
 只有目标 endpoint 支持 OpenAI 的流式 usage 扩展时才设置
 `stream_include_usage=True`；SDK 结果中的 usage 始终是可选值。
 
-尚未发布的 `capture_cache_usage=True` 选项将标准服务端缓存计数记录到
+自 0.10.0 起，`capture_cache_usage=True` 选项将标准服务端缓存计数记录到
 `ModelTokenUsage.cached_input_tokens`。它只改变响应解析，不会自动开启流式 usage
 或服务端缓存。兼容的 Chat 流式端点仍需单独设置 `stream_include_usage=True`。
-详见[提示缓存用量](model-context-and-reasoning.md#提示缓存用量尚未发布)。
+详见[提示缓存用量](model-context-and-reasoning.md#提示缓存用量)。
 
 `reasoning_capture="field_and_tags"` 会记录专用 reasoning 字段和 tag 内容；
 `reasoning_capture="field"` 只信任专用字段并丢弃 tag 内容；tag 不会残留在可见正文中。
