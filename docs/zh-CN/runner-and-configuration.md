@@ -559,3 +559,10 @@ available = dagent.list_builtin_profiles()
 trace = runner.run_trace(run_id)
 state = runner.run_state(run_id)
 ```
+
+## 可选上下文观测
+
+自 0.10.1 起，向 `Runner` 或 `Runner.from_config` 传入
+`context_observability=True`，通过 `stream` / `resume_stream` 观测 ToolAgent
+HTTP 调用及 cache-aware 上下文维护。默认 `False`；此开关不改变生成请求、策略、
+检查点或 SDK 持久化状态；开启后 legacy 摘要使用内部流式调用报告真实进度。见[流式观测](results-streaming-review.md#上下文与请求观测)。

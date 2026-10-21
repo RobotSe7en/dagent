@@ -397,3 +397,24 @@ side effects are not rolled back. See `examples/streaming.py` for stream handlin
 
 For projection counters versus final HTTP reasoning statistics, see
 [request reasoning observability](model-context-and-reasoning.md#observe-reasoning-carried-by-a-request).
+
+## Context and request observations
+
+With `Runner(context_observability=True)`, ToolAgent streams include
+`model.call.observed` for each actual request attempt, including failed attempts.
+Use `call_id` to deduplicate snapshots. `purpose` separates generation and
+compaction; usage is provider-reported and may be absent. These observations are
+not a billing ledger and never include prompt, response, or reasoning text.
+
+Cache-aware maintenance emits `context.compaction.started` with `compaction_id`,
+then `context.compaction.progress` on nonempty internal summary output (at most
+once per second) or request completion. `context.compaction.ended` closes the
+same episode with `model`, `reference_fallback`, `none`, `failed`, or `canceled`.
+These events make real internal work visible without exposing summaries or
+creating synthetic heartbeats. `context.compaction.finished` still requires an
+actual context replacement. Hosts should clear progress on the ended event and
+on terminal Run events. See [`context_management.py`](../../examples/context_management.py).
+
+Streaming failures preserve any typed failed `RunResult` attached to their
+exception, including context-window failures. A snapshot is failure evidence; it
+does not authorize recovery or publication of the failed workspace.

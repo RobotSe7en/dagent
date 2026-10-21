@@ -349,3 +349,20 @@ SDK 不会重试工具，也不会在此失败后调用结果验证模型。
 
 内部投影计数与最终 HTTP 请求推理统计的区别，详见
 [请求推理可观测性](model-context-and-reasoning.md#观察请求实际携带的推理)。
+
+## 上下文与请求观测
+
+开启 `Runner(context_observability=True)` 后，ToolAgent 流会为每次实际请求尝试
+（包括失败）产生 `model.call.observed`。按 `call_id` 去重，`purpose` 区分生成与
+压缩。usage 由服务端报告，缺失表示未知。这不是计费账本，不含提示、响应或思考正文。
+
+cache-aware 维护以带 `compaction_id` 的 `context.compaction.started` 开始；
+收到非空内部摘要输出时每秒最多一次发送 `context.compaction.progress`，
+请求完成也会报告进度。`context.compaction.ended` 以 `model`、
+`reference_fallback`、`none`、`failed` 或 `canceled` 关闭同一轮维护。
+进度仅来自实际工作，不暴露摘要，也不生成假心跳。`context.compaction.finished`
+仍要求实际替换上下文。宿主应在 ended 及 Run 终态清除进度。
+可运行 [`context_management.py`](../../examples/context_management.py)。
+
+流式失败会保留异常上已有的失败 `RunResult`，包括上下文窗口失败。
+快照只作为失败证据，不授权恢复或发布失败工作区。

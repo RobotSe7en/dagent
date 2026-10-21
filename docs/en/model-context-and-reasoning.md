@@ -736,3 +736,36 @@ The summary travels with normal response metadata, including the final stream
 result; it is not a separate failed-request or transport-attempt log. It adds
 no reasoning text, complete request, or credentials to logs or persistence.
 It establishes only what the request carried, not what the server used.
+
+## Provider wrappers and observations
+
+Provider wrappers can use the supported `dagent.providers.ModelRequest`,
+`PreparedModelCall`, and `ProviderReprepareRequired` contracts. A wrapper may
+request re-preparation only after an explicit request rejection and before any
+response events. The ToolAgent budget owner freezes and counts the replacement
+before dispatch, retaining completed tools and paid summaries. Re-preparation is
+bounded to four changes per call and rejects repeated payload fingerprints.
+Summary attempts share the existing twelve-attempt compaction budget and deadline.
+
+`ModelRequest(omit_reasoning_effort=True)` explicitly omits strength controls,
+including the selected mapping field and standard strength fields in extra
+arguments. It does not inherit the provider strength. Other nested settings,
+including explicit thinking switches, are retained; provider configuration is
+never modified. Omission is opt-in and does not itself add retries or change
+reasoning mappings or protocol selection.
+
+`Runner(context_observability=True)` enables ToolAgent model-call observations
+and context-maintenance progress. `model.call.observed` contains a unique request
+ID, purpose, available usage, metadata, status, and elapsed time, without prompt or
+response text. Failed requests may have unknown usage. `context.compaction.progress`
+reports actual internal summary progress, throttled to once per second, and
+`context.compaction.ended` closes the episode even on failure or cancellation.
+`context.compaction.finished` continues to mean an actual context replacement.
+No new events are emitted unless observation is enabled. Existing SDK defaults,
+legacy compaction defaults, schemas 4/6/9 and default checkpoint fingerprints are retained.
+With observation enabled, legacy summaries stream internally for progress;
+their fallback policy is retained.
+
+Streaming context failures now include the typed failed result already attached
+to the original exception, preserving the same evidence as non-streaming calls.
+This does not add same-Run or cross-restart recovery.

@@ -203,7 +203,9 @@ class HistoryCompactor:
         chat: Callable[[ModelRequest], Awaitable[ModelResponse | ChatResponse]],
         read_available: bool | Callable[[ContentReference], bool] = False,
         source_request: ModelRequest | None = None,
+        observer: Any = None,
     ) -> None:
+        self.observer = observer
         self.policy = policy
         self.assembler = assembler
         self.result_store = result_store
@@ -237,6 +239,8 @@ class HistoryCompactor:
         if not items:
             raise CompactionError("No history items were selected for compaction.")
         self._call_offset = len(self.calls)
+        if self.observer is not None:
+            self.observer.start(len(items))
         sources = _source_texts(previous, items)
         source = self._archive(previous, items)
         chunks: list[CompactionChunk] = []
@@ -306,6 +310,8 @@ class HistoryCompactor:
         if not items:
             raise CompactionError("No history items were selected for compaction.")
         self._call_offset = len(self.calls)
+        if self.observer is not None:
+            self.observer.start(len(items))
         sources = _source_texts(previous, items)
         source = self._archive(previous, items)
         chunks: list[CompactionChunk] = []
@@ -335,6 +341,8 @@ class HistoryCompactor:
             content = self._summary_content(previous, record.task_summary, max_tokens)
         except CompactionError:
             return None
+        if self.observer is not None:
+            self.observer.start(len(items))
         last_call = record.calls[-1] if record.calls else None
         return ContextSummary(
             content=content,
@@ -351,6 +359,8 @@ class HistoryCompactor:
         if self._tightened:
             raise CompactionBudgetExceeded("Root summary tightening was already attempted in this episode.")
         self._tightened = True
+        if self.observer is not None:
+            self.observer.start(0)
         self._call_offset = len(self.calls)
         sources = _source_texts(summary, ())
         source = self._archive(summary, ())
@@ -391,6 +401,20 @@ class HistoryCompactor:
             if not timeout.expired():
                 raise
             raise CompactionBudgetExceeded("Compaction deadline exhausted.") from exc
+
+    def before_attempt(self) -> None:
+        if self.remaining_http_attempts < 1:
+            raise CompactionBudgetExceeded("Compaction exhausted 12 HTTP attempts.")
+        self.http_attempts += 1
+
+    async def reprepare(self):
+        request = self.prepared_request
+        self.prepared_request = None
+        self.prepared_call = None
+        self._prepared_estimate = None
+        if request is None or not await self._fits(request):
+            raise CompactionBudgetExceeded("Replacement compaction request exceeds its budget.")
+        return self.prepared_call
 
     async def _fits(self, request: ModelRequest) -> bool:
         self._check_budget(check_calls=False)
@@ -514,12 +538,15 @@ class HistoryCompactor:
         if not await self._fits(request):
             raise CompactionBudgetExceeded("Final compactor request exceeds its input budget.")
         self.logical_calls += 1
+        attempts_before = self.http_attempts
         try:
             raw = await self._bounded(self.chat(request))
         except (RuntimeError, ValueError, OSError) as exc:
             metadata = getattr(exc, "metadata", None)
             attempts = max(1, len(metadata.attempts) if metadata is not None else 0)
-            self.http_attempts += attempts
+            if self.http_attempts == attempts_before:
+                self.http_attempts += attempts
+            attempts = self.http_attempts - attempts_before
             self.calls.append(CompactionCall(kind=kind, http_attempts=attempts,
                                              model_call=metadata, error=f"{type(exc).__name__}: {exc}"))
             if isinstance(exc, CompactionBudgetExceeded):
@@ -527,7 +554,9 @@ class HistoryCompactor:
             raise CompactionError(f"Summary request failed: {type(exc).__name__}: {exc}") from exc
         response = normalize_model_response(model_response_from_chat(raw) if isinstance(raw, ChatResponse) else raw)
         attempts = max(1, len(response.metadata.attempts) if response.metadata else 0)
-        self.http_attempts += attempts
+        if self.http_attempts == attempts_before:
+            self.http_attempts += attempts
+        attempts = self.http_attempts - attempts_before
         self.calls.append(CompactionCall(kind=kind, http_attempts=attempts,
                                          usage=response.usage, model_call=response.metadata))
         if self.http_attempts > 12:

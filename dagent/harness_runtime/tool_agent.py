@@ -7,7 +7,7 @@ import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
@@ -29,6 +29,7 @@ from dagent.harness_runtime.capability_scope import (
     capability_scope_to_state,
 )
 from dagent.harness_runtime.execution_usage import record_model_turn
+from dagent.harness_runtime.model_observation import ContextObserver, provider_events
 from dagent.harness_runtime.runtime_events import (
     LoopEventHandler,
     ResponseStreamContext,
@@ -82,7 +83,7 @@ from dagent.schemas import (
 )
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.state.prompt_builder import PromptSkill
-from dagent.harness_runtime.context import ContextAssembler
+from dagent.harness_runtime.context import ContextAssembler, PreparedModelContext
 from dagent.harness_runtime.result_storage import normalize_capability_result, ResultStore, ResultStorageError
 from dagent.harness_runtime.result_projection import ResultBudgetExceeded
 from dagent.schemas.retention import ResultRetention
@@ -167,7 +168,10 @@ class ToolAgent:
         result_storage_policy: ResultStoragePolicy | None = None,
         context_assembler: ContextAssembler | None = None,
         prompt_context: str = "",
+        context_observability: bool = False,
     ) -> None:
+        self.context_observability = context_observability
+        loop.context_observability = context_observability
         self.loop = loop
         self.profile = profile
         self.prompt_builder = prompt_builder or PromptBuilder()
@@ -417,6 +421,7 @@ class ToolAgentLoop:
         _llm_retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
         _llm_retry_sleep: LLMRetrySleep = asyncio.sleep,
     ) -> None:
+        self.context_observability = False
         self.provider = provider
         self.capability_executor = capability_executor
         self.tool_adapter = tool_adapter
@@ -769,6 +774,34 @@ class ToolAgentLoop:
             if resumed is not None:
                 return resumed
 
+        def adopt_context(value: PreparedModelContext) -> None:
+            nonlocal loop_conversation
+            loop_conversation = value.conversation
+            updated_items = {item.id: item for item in loop_conversation.items}
+            new_items[:] = [updated_items.get(item.id, item) for item in new_items]
+            result_items = {item.call_id: item for item in loop_conversation.items
+                            if isinstance(item, ToolResultMessage)}
+            for node in trace.root.children:
+                execution = node.capability_execution
+                if execution is None or execution.result is None:
+                    continue
+                item = result_items.get(execution.invocation.invocation_id)
+                if item is not None:
+                    execution.result = execution.result.model_copy(update={
+                        "retention": item.retention,
+                        "content_reference": item.content if isinstance(item.content, ContentReference) else None,
+                    })
+            context_usages.append(value.usage)
+            if on_event is not None and value.usage.compaction_method != "none":
+                on_event(
+                    {
+                        "type": "context_compacted",
+                        "run_id": resolved_run_id,
+                        "scope": "conversation",
+                        "usage": value.usage.model_dump(mode="json"),
+                    }
+                )
+
         result_store = None
         for step in range(1, max_steps + 1):
             tool_definitions = self._llm_tool_definitions(capability_ids=capability_ids)
@@ -790,12 +823,15 @@ class ToolAgentLoop:
                         return await self._summary_chat(
                             request, max_attempts=compactor.remaining_http_attempts,
                             prepared_call=compactor.prepared_call if compactor.prepared_request is request else None,
+                            reprepare=compactor.reprepare, before_attempt=compactor.before_attempt,
+                            observer=compactor.observer,
                         )
 
                     compactor = HistoryCompactor(
                         policy=context_policy, assembler=context_assembler,
                         result_store=result_store, system_message=system_message,
                         tools=tool_definitions, chat=summarize, read_available=access.can_read,
+                        observer=ContextObserver(self.context_observability, on_event, resolved_run_id),
                     )
                 try:
                     prepared = await context_assembler.prepare(
@@ -822,44 +858,47 @@ class ToolAgentLoop:
                     trace.root.error = RunTraceError(code=type(exc).__name__, message=str(exc))
                     trace.root.ended_at = datetime.now(timezone.utc)
                     raise ToolContextFailure(exc, failed_outcome()) from exc
-                loop_conversation = prepared.conversation
-                updated_items = {item.id: item for item in loop_conversation.items}
-                new_items[:] = [updated_items.get(item.id, item) for item in new_items]
-                result_items = {item.call_id: item for item in loop_conversation.items
-                                if isinstance(item, ToolResultMessage)}
-                for node in trace.root.children:
-                    execution = node.capability_execution
-                    if execution is None or execution.result is None:
-                        continue
-                    item = result_items.get(execution.invocation.invocation_id)
-                    if item is not None:
-                        execution.result = execution.result.model_copy(update={
-                            "retention": item.retention,
-                            "content_reference": item.content if isinstance(item.content, ContentReference) else None,
-                        })
-                context_usages.append(prepared.usage)
-                if on_event is not None and prepared.usage.compaction_method != "none":
-                    on_event(
-                        {
-                            "type": "context_compacted",
-                            "run_id": resolved_run_id,
-                            "scope": "conversation",
-                            "usage": prepared.usage.model_dump(mode="json"),
-                        }
-                    )
+                adopt_context(prepared)
                 late_steers = (
                     () if steering is None else steering.drain(resolved_run_id)
                 )
                 if not late_steers:
                     break
                 apply_steers(late_steers)
+            async def reprepare_generation():
+                nonlocal loop_conversation, prepared
+                try:
+                    fresh = await context_assembler.prepare(
+                        result_store=result_store,
+                        system_message=system_message,
+                        conversation=loop_conversation,
+                        tools=tool_definitions,
+                        policy=context_policy,
+                        active_run_id=resolved_run_id,
+                        compact=lambda summary, items, limit: self._compact_history(
+                            summary, items, limit, run_id=resolved_run_id, on_event=on_event,
+                            context_assembler=context_assembler, context_policy=context_policy,
+                        ),
+                        stream=on_token is not None or on_event is not None,
+                        history_compactor=compactor,
+                        enable_new_strategy=True,
+                    )
+                except (ContextWindowExceeded, ProviderCapabilityError, ResultBudgetExceeded, OSError) as exc:
+                    loop_conversation = getattr(exc, "_conversation", loop_conversation)
+                    trace.root.error = RunTraceError(code=type(exc).__name__, message=str(exc))
+                    trace.root.ended_at = datetime.now(timezone.utc)
+                    raise ToolContextFailure(exc, failed_outcome()) from exc
+                prepared = fresh
+                adopt_context(fresh)
+                return fresh.prepared_call
+
             model_error: RunTraceError | None = None
             provider_details: Any = None
             try:
                 response = await self._chat(
                     prepared.request, run_id=resolved_run_id, step=step,
                     on_token=on_token, on_event=on_event,
-                    prepared_call=prepared.prepared_call,
+                    prepared_call=prepared.prepared_call, reprepare=reprepare_generation,
                 )
             except ProviderResponseError as exc:
                 response = (chat_response_from_model(exc.response) if exc.response is not None
@@ -983,7 +1022,9 @@ class ToolAgentLoop:
         context_assembler: ContextAssembler,
         context_policy: ContextPolicy,
     ) -> ContextSummary:
-        if on_event is not None:
+        observer = ContextObserver(self.context_observability, on_event, run_id)
+        observer.start(len(items))
+        if on_event is not None and not observer.enabled:
             on_event(
                 {
                     "type": "context_compaction_started",
@@ -991,60 +1032,68 @@ class ToolAgentLoop:
                     "item_count": len(items),
                 }
             )
-        summary_output_limit, source_limit = context_assembler.compaction_limits(
-            max_tokens
-        )
-        source, source_truncated = context_assembler.truncate_text(
-            compaction_source(previous, items),
-            max_tokens=source_limit,
-        )
-        system_message = {
-            "role": "system",
-            "content": (
-                "Summarize earlier conversation data for later task continuation. "
-                "Preserve facts, decisions, constraints, unresolved work, and important "
-                "tool outcomes. Do not include hidden reasoning. Return only the summary."
-            ),
-        }
-        prepared = await context_assembler.prepare(
-            system_message=system_message,
-            conversation=ConversationState(
-                items=(
-                    UserMessage(
-                        content=source,
-                        scope="compactor",
-                        visibility="internal",
-                    ),
-                )
-            ),
-            policy=context_policy,
-            max_output_tokens=summary_output_limit,
-            reasoning_effort=context_policy.compaction_reasoning_effort,
-            purpose="compaction",
-        )
+        outcome = "failed"
+        try:
+            summary_output_limit, source_limit = context_assembler.compaction_limits(
+                max_tokens
+            )
+            source, source_truncated = context_assembler.truncate_text(
+                compaction_source(previous, items),
+                max_tokens=source_limit,
+            )
+            system_message = {
+                "role": "system",
+                "content": (
+                    "Summarize earlier conversation data for later task continuation. "
+                    "Preserve facts, decisions, constraints, unresolved work, and important "
+                    "tool outcomes. Do not include hidden reasoning. Return only the summary."
+                ),
+            }
+            prepared = await context_assembler.prepare(
+                system_message=system_message,
+                conversation=ConversationState(
+                    items=(
+                        UserMessage(
+                            content=source,
+                            scope="compactor",
+                            visibility="internal",
+                        ),
+                    )
+                ),
+                policy=context_policy,
+                max_output_tokens=summary_output_limit,
+                reasoning_effort=context_policy.compaction_reasoning_effort,
+                purpose="compaction",
+            )
 
-        response = await self._chat(
-            prepared.request, run_id=run_id, step=0, on_token=None, on_event=None,
-        )
-        raw_content = response.content.strip()
-        if not raw_content:
-            raise ValueError("Context compactor returned an empty summary.")
-        content, output_truncated = context_assembler.truncate_text(
-            raw_content,
-            max_tokens=max_tokens,
-        )
-        summary = ContextSummary(
-            content=content,
-            source_item_count=(previous.source_item_count if previous else 0) + len(items),
-            method="model",
-            source_truncated=source_truncated,
-            output_truncated=output_truncated,
-            reasoning="",
-            usage=response.usage,
-            model_call=response.metadata,
-            context_usage=prepared.usage,
-        )
-        return summary
+            response = await self._chat(
+                prepared.request, run_id=run_id, step=0, on_token=None, on_event=None, observer=observer,
+            )
+            raw_content = response.content.strip()
+            if not raw_content:
+                raise ValueError("Context compactor returned an empty summary.")
+            content, output_truncated = context_assembler.truncate_text(
+                raw_content,
+                max_tokens=max_tokens,
+            )
+            summary = ContextSummary(
+                content=content,
+                source_item_count=(previous.source_item_count if previous else 0) + len(items),
+                method="model",
+                source_truncated=source_truncated,
+                output_truncated=output_truncated,
+                reasoning="",
+                usage=response.usage,
+                model_call=response.metadata,
+                context_usage=prepared.usage,
+            )
+            outcome = "model"
+            return summary
+        except asyncio.CancelledError:
+            outcome = "canceled"
+            raise
+        finally:
+            observer.end(outcome)
 
     def _llm_tool_definitions(
         self,
@@ -1057,108 +1106,81 @@ class ToolAgentLoop:
         )
 
     async def _chat(
-        self,
-        request: ModelRequest,
-        *,
-        run_id: str | None,
-        step: int,
-        on_token: TokenHandler | None,
-        on_event: LoopEventHandler | None,
+        self, request: ModelRequest, *, run_id: str | None, step: int,
+        on_token: TokenHandler | None, on_event: LoopEventHandler | None,
         prepared_call: Any = None,
+        reprepare: Callable[[], Awaitable[Any]] | None = None,
+        observer: ContextObserver | None = None,
     ) -> ChatResponse:
-        async def chat_attempt() -> ChatResponse:
-            record_model_turn()
-            response = (await self.provider.complete_prepared(prepared_call)
-                        if prepared_call is not None else await complete_model(self.provider, request))
-            return chat_response_from_model(response)
-
-        if on_token is None and on_event is None:
-            return normalize_chat_response(
-                await run_with_llm_retries(
-                    chat_attempt,
-                    policy=self.llm_retry_policy,
-                    sleep=self.llm_retry_sleep,
-                )
-            )
-
-        stream = response_token_stream(
-            on_raw=on_token,
-            on_event=on_event,
+        observer = observer or ContextObserver(self.context_observability, on_event, run_id)
+        output = response_token_stream(
+            on_raw=on_token, on_event=on_event,
             context=ResponseStreamContext.create(run_id=run_id, model_step=step),
         )
-        if stream is None:
-            return normalize_chat_response(
-                await run_with_llm_retries(
-                    chat_attempt,
-                    policy=self.llm_retry_policy,
-                    sleep=self.llm_retry_sleep,
-                )
-            )
+        emitted = False
 
-        response: ChatResponse | None = None
-        emitted_tokens = False
+        async def replacement():
+            nonlocal prepared_call
+            prepared_call = await reprepare()
+            return prepared_call
 
-        async def attempt() -> ChatResponse:
-            nonlocal emitted_tokens, response
+        async def attempt():
+            nonlocal emitted
             response = None
-            content_parts: list[str] = []
-            reasoning_parts: list[str] = []
-            record_model_turn()
-            if hasattr(self.provider, "stream") or hasattr(self.provider, "stream_chat"):
-                events = (self.provider.stream_prepared(prepared_call) if prepared_call is not None
-                          else stream_model(self.provider, request))
+            content, reasoning = [], []
+            events = provider_events(self.provider, request,
+                stream=output is not None or (request.purpose == "compaction" and observer.enabled),
+                prepared=prepared_call, reprepare=replacement if reprepare else None, observer=observer)
+            try:
                 async for event in events:
                     if event.type == "token" and event.content:
-                        emitted_tokens = True
-                        if getattr(event, "channel", "content") == "reasoning":
-                            reasoning_parts.append(event.content)
-                            stream.emit_channel("reasoning", event.content)
+                        emitted = emitted or output is not None
+                        if event.channel == "reasoning":
+                            reasoning.append(event.content)
+                            if output is not None:
+                                output.emit_channel("reasoning", event.content)
                         else:
-                            content_parts.append(event.content)
-                            stream(event.content)
+                            content.append(event.content)
+                            if output is not None:
+                                output(event.content)
                     elif event.type == "done":
-                        response = (
-                            chat_response_from_model(event.response)
-                            if event.response is not None
-                            else None
-                        )
-            else:
-                response = chat_response_from_model(
-                    await complete_model(self.provider, request)
-                )
+                        response = event.response
+            finally:
+                await events.aclose()
             if response is None:
-                raise ProviderResponseError(
-                    "incomplete", reason="missing_terminal_response",
-                    response=ModelResponse(
-                        content="".join(content_parts), reasoning="".join(reasoning_parts), status="unknown",
-                    ),
-                )
-            return response
+                raise ProviderResponseError("incomplete", reason="missing_terminal_response",
+                    response=ModelResponse(content="".join(content), reasoning="".join(reasoning), status="unknown"))
+            return chat_response_from_model(response)
 
         try:
-            stream.start()
-            return normalize_chat_response(
-                await run_with_llm_retries(
-                    attempt,
-                    policy=self.llm_retry_policy,
-                    sleep=self.llm_retry_sleep,
-                    should_retry=lambda _exc: not emitted_tokens,
-                )
-            )
+            if output is not None:
+                output.start()
+            return normalize_chat_response(await run_with_llm_retries(
+                attempt, policy=self.llm_retry_policy, sleep=self.llm_retry_sleep,
+                should_retry=lambda _exc: not emitted))
         finally:
-            stream.finish()
+            if output is not None:
+                output.finish()
 
-    async def _summary_chat(self, request: ModelRequest, *, max_attempts: int, prepared_call: Any = None) -> ModelResponse:
-        """Collect an internal streaming summary without tool dispatch or UI tokens."""
-
+    async def _summary_chat(
+        self, request: ModelRequest, *, max_attempts: int, prepared_call: Any = None,
+        reprepare: Callable[[], Awaitable[Any]] | None = None,
+        before_attempt: Callable[[], None] | None = None,
+        observer: ContextObserver | None = None,
+    ) -> ModelResponse:
         if max_attempts < 1:
             raise RuntimeError("Compaction HTTP attempt budget exhausted.")
         prepared = prepared_call or await self.provider.prepare_call(request, stream=True)
 
-        async def attempt() -> ModelResponse:
-            record_model_turn()
+        async def replacement():
+            nonlocal prepared
+            prepared = await reprepare()
+            return prepared
+
+        async def attempt():
             response = None
-            events = self.provider.stream_prepared(prepared)
+            events = provider_events(self.provider, request, stream=True, prepared=prepared,
+                reprepare=replacement if reprepare else None, observer=observer, before_attempt=before_attempt)
             try:
                 async for event in events:
                     if event.type == "done":

@@ -328,6 +328,7 @@ class AgentCapabilityProvider:
             loop=loop,
             profile=profile,
             prompt_builder=self.prompt_builder,
+            context_observability=config.get("context_observability", False),
             max_steps=max_steps,
             extra_system_prompt=None if context is None else context.extra_system_prompt,
             skill_prompt_resolver=self.skill_prompt_resolver,

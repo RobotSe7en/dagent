@@ -48,7 +48,7 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | Reviews and results | `RunResult` (`output_text` plus structured static `output_value`), `RunExecutionError`, `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `CapabilityReviewDecision`, `ReviewLevel` |
 | Tool-run steering | `Runner.steer`, `SteerReceipt`, `SteerError`, `RunNotActiveError`, `RunNotSteerableError`, `SteerQueueFullError` |
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionUsage`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
-| Providers | `Provider`; `dagent.providers` also exports `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for capability inspection, custom providers, and tests |
+| Providers | `Provider`; `dagent.providers` also exports `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ModelRequest`, `PreparedModelCall`, `ProviderReprepareRequired`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for capability inspection, custom providers, and tests |
 
 Since 0.10.0, opt-in prompt-cache statistics extend the existing `ModelTokenUsage`
 with nullable `cached_input_tokens`. See
@@ -163,3 +163,8 @@ feature is available since 0.9.19 and supports Python dictionaries, typed models
   versioned migration/deprecation plan, regression coverage, updated examples,
   and [Migration Notes](migration.md). Deprecation alone does not remove support.
 - Keep this page synchronized with `dagent/__init__.py`.
+
+Since 0.10.1, provider wrappers can request budget-checked re-preparation and
+explicit effort omission. `Runner(context_observability=True)` enables request
+observations and summary progress. These extensions live in `dagent.providers`;
+see [provider wrappers and observations](model-context-and-reasoning.md#provider-wrappers-and-observations).

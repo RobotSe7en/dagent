@@ -4,7 +4,33 @@
 
 ## 当前发布线
 
-当前包版本是 `0.10.0`。
+当前包版本是 `0.10.1`。
+
+## 0.10.1
+
+### Provider 扩展与上下文观测
+
+Provider 包装可使用受支持的 `dagent.providers.ModelRequest`、
+`PreparedModelCall` 和 `ProviderReprepareRequired`。包装只应在明确的请求拒绝后、
+尚未输出响应事件时请求重准备。ToolAgent 的预算所有者重新冻结、计数并校验替代请求，
+保留已完成工具及已付费摘要。一次调用最多改变请求四次，重复 fingerprint 明确拒绝。
+摘要尝试继续共享一次压缩的十二次请求尝试额度和截止时间。
+
+`ModelRequest(omit_reasoning_effort=True)` 显式省略思考强度，不继承 Provider 默认值，
+并移除额外参数中的当前映射强度字段和标准强度字段。其它嵌套参数和显式思考开关保留，
+不会修改 Provider 配置。省略为显式行为，本身不增加重试、不改变映射或协议选择。
+
+`Runner(context_observability=True)` 为 ToolAgent 开启模型调用观测及压缩进度。
+`model.call.observed` 包含唯一请求 ID、用途、可用 usage、元数据、状态与耗时，
+不包含提示或响应正文；失败请求的 usage 可能未知。
+`context.compaction.progress` 上报内部摘要的真实进展，每秒最多一次；
+`context.compaction.ended` 在失败或取消时也结束当前压缩过程。
+`context.compaction.finished` 仍仅表示实际发生上下文替换。
+默认不发送新增观测事件，SDK 旧默认、legacy 压缩、4/6/9 状态版本和默认 checkpoint
+fingerprint 保持不变。
+
+流式上下文失败现在也传递原异常已经附带的类型化失败 result，保留与非流式调用一致的
+失败证据；不增加同 Run 或跨服务重启恢复。
 
 ## 0.10.0
 

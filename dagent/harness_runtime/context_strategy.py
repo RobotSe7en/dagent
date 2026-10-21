@@ -6,6 +6,7 @@ Only a fully counted candidate is returned to the tool loop for transmission.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -131,8 +132,9 @@ async def prepare_context(
     compactor: Any,
 ) -> PreparedModelContext:
     progress = _CompactionProgress(conversation)
+    outcome = "failed"
     try:
-        return await _prepare_context(
+        prepared = await _prepare_context(
             assembler, system_message=system_message, conversation=conversation,
             tools=tools, policy=policy, active_run_id=active_run_id,
             response_format=response_format, stream=stream,
@@ -140,12 +142,21 @@ async def prepare_context(
             purpose=purpose, result_store=result_store, compactor=compactor,
             compaction_progress=progress,
         )
+        outcome = prepared.usage.compaction_method
+        return prepared
+    except asyncio.CancelledError:
+        outcome = "canceled"
+        raise
     except (ContextWindowExceeded, ProviderCapabilityError, ResultBudgetExceeded, OSError) as exc:
         # The original items remain authoritative until the final gate passes.
         # Keep every paid replacement and failed span even when a later render,
         # prepare, or storage operation fails. Cancellation bypasses this path.
         exc._conversation = progress.snapshot()
         raise
+    finally:
+        observer = getattr(compactor, "observer", None)
+        if observer is not None:
+            observer.end(outcome)
 
 
 async def _prepare_context(

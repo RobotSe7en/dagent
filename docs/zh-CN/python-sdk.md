@@ -46,7 +46,7 @@ import dagent
 | Reviews and results | `RunResult`（包含 `output_text` 和静态结构化 `output_value`）、`RunExecutionError`, `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `CapabilityReviewDecision`, `ReviewLevel` |
 | Tool-run steering | `Runner.steer`, `SteerReceipt`, `SteerError`, `RunNotActiveError`, `RunNotSteerableError`, `SteerQueueFullError` |
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionUsage`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
-| Providers | `Provider`；`dagent.providers` 也导出 `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于能力查看、custom providers 和 tests |
+| Providers | `Provider`；`dagent.providers` 也导出 `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ModelRequest`, `PreparedModelCall`, `ProviderReprepareRequired`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于能力查看、custom providers 和 tests |
 
 自 0.10.0 起，显式缓存统计为现有 `ModelTokenUsage` 增加可空的 `cached_input_tokens`。
 采集配置及记录兼容性见
@@ -150,3 +150,7 @@ Provider 配置类型 `ProviderConfig` 和 `ReasoningMapping` 位于 `dagent.con
 - 公开破坏性变更必须获得维护者的明确授权，并提供版本化的迁移和弃用计划、回归测试、
   更新后的示例及[迁移说明](migration.md)。仅声明弃用不代表终止支持。
 - 本页应与 `dagent/__init__.py` 保持同步。
+
+自 0.10.1 起，包装 provider 可以请求重新准备并校验预算，或显式省略思考强度。
+`Runner(context_observability=True)` 开启请求观测与摘要进度。扩展契约位于
+`dagent.providers`，见[Provider 扩展与观测](model-context-and-reasoning.md#provider-包装与观测)。
