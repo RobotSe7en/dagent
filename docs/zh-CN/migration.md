@@ -4,7 +4,68 @@
 
 ## 当前发布线
 
-当前包版本是 `0.10.0`。
+当前包版本是 `0.10.1a0`（`0.10.1.alpha`）；稳定发布版本仍为 `0.10.1`。
+
+## 0.10.1a0 (0.10.1.alpha)
+
+### prepared token 计数阶段重新准备
+
+Provider 包装识别请求拒绝并更新准备策略后，现在可从 `count_prepared` 抛出
+`ProviderReprepareRequired`。显式启用的 `cache_aware`、`chunked` ToolAgent 路径
+会重新准备并计数快照，按实际输出上限及有效上下文窗口检查预算，发送通过检查的同一
+快照。覆盖生成阶段请求重准备后的计数及压缩请求。每条计数链最多替换四次，fingerprint
+不变或循环时保留原类型化信号失败。
+
+普通计数错误、已有生成阶段重准备、默认上下文行为及公共签名/导出不变，不重放工具
+或整个 Run。拒绝识别、降级规则与拒绝缓存由上层包装负责，已有应用无需迁移。参见
+[Provider 包装](model-context-and-reasoning.md#provider-包装与观测)
+及离线示例 `examples.prepared_count_reprepare`。
+
+### 失败处理与观测修复
+
+- 注册子代理和 DAG ToolAgent 的观测事件不再因归属字段触发严格校验失败。
+  适配层显式处理这些字段，保持观测事件结构不变；父能力、DAG 和节点归属继续
+  通过 response、capability 事件提供。
+- 计数重准备以类型化信号终止时，保存已完成压缩分块，将部分记录关联到失败会话。
+  后续显式引用恢复可复用这些已付费摘要，无需新模型调用。即使启用了引用降级，
+  仍保留原类型化信号向上传递。
+- 生成替换请求超预算时，失败结果包含该请求溢出的 `ContextUsage`，包括流式结果。
+
+### 安装与验证
+
+Python 将 `0.10.1.alpha` 规范化为 `0.10.1a0`，排序早于稳定版 `0.10.1`。
+请显式安装该预发布版本：`pip install 'dagent-ai==0.10.1a0'`。
+本次没有 breaking changes，无需迁移源码、配置或持久化记录。
+
+验证：完整 Python/MCP 测试 1,872 项通过、3 项跳过，含一条预期 tokenizer 告警。
+离线 prepared 计数包装示例、wheel/sdist 构建、包元数据检查和隔离 wheel 安装均通过。
+render 拒绝测试使用模拟端点，不代表真实 vLLM 验收。
+
+## 0.10.1
+
+### Provider 扩展与上下文观测
+
+Provider 包装可使用受支持的 `dagent.providers.ModelRequest`、
+`PreparedModelCall` 和 `ProviderReprepareRequired`。包装只应在明确的请求拒绝后、
+尚未输出响应事件时请求重准备。ToolAgent 的预算所有者重新冻结、计数并校验替代请求，
+保留已完成工具及已付费摘要。一次调用最多改变请求四次，重复 fingerprint 明确拒绝。
+摘要尝试继续共享一次压缩的十二次请求尝试额度和截止时间。
+
+`ModelRequest(omit_reasoning_effort=True)` 显式省略思考强度，不继承 Provider 默认值，
+并移除额外参数中的当前映射强度字段和标准强度字段。其它嵌套参数和显式思考开关保留，
+不会修改 Provider 配置。省略为显式行为，本身不增加重试、不改变映射或协议选择。
+
+`Runner(context_observability=True)` 为 ToolAgent 开启模型调用观测及压缩进度。
+`model.call.observed` 包含唯一请求 ID、用途、可用 usage、元数据、状态与耗时，
+不包含提示或响应正文；失败请求的 usage 可能未知。
+`context.compaction.progress` 上报内部摘要的真实进展，每秒最多一次；
+`context.compaction.ended` 在失败或取消时也结束当前压缩过程。
+`context.compaction.finished` 仍仅表示实际发生上下文替换。
+默认不发送新增观测事件，SDK 旧默认、legacy 压缩、4/6/9 状态版本和默认 checkpoint
+fingerprint 保持不变。
+
+流式上下文失败现在也传递原异常已经附带的类型化失败 result，保留与非流式调用一致的
+失败证据；不增加同 Run 或跨服务重启恢复。
 
 ## 0.10.0
 

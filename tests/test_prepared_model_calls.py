@@ -7,9 +7,9 @@ import pytest
 from openai import BadRequestError, InternalServerError, PermissionDeniedError
 
 from dagent.config import ProviderConfig
-from dagent.providers import OpenAICompatibleProvider, ProviderCapabilityError
+from dagent.providers import OpenAICompatibleProvider, ProviderCapabilityError, ProviderReprepareRequired
 from dagent.providers.openai_compatible import ProviderContextWindowError, ProviderTokenCountError
-from dagent.providers.model_io import ModelRequest, ModelUserInput
+from dagent.providers.model_io import ModelRequest, ModelTokenCount, ModelUserInput
 from tests.test_model_protocols import DualProtocolClient, _openapi
 
 
@@ -611,3 +611,277 @@ async def test_unknown_custom_counter_precision_keeps_the_safety_margin():
     )
     assert candidate.usage.estimated_input_tokens == 1150
     assert candidate.usage.count_precision == "estimated"
+
+
+class CountingRepreparingProvider:
+    """Host-owned preparation policy; SDK must count and gate each replacement."""
+
+    def __init__(self, native, *, outputs=(512, 1024), reject_counts=(1,), reject_generation=False):
+        self.native = native
+        self.outputs = outputs
+        self.reject_counts = reject_counts
+        self.reject_generation = reject_generation
+        self.prepared = []
+        self.count_attempts = []
+        self.counted = []
+        self.sent = []
+        self.rejections = []
+        self.count_result = None
+        self.count_error = None
+
+    async def prepare_call(self, request, *, stream=False):
+        output = self.outputs[min(len(self.prepared), len(self.outputs) - 1)]
+        call = await self.native.prepare_call(replace(request, max_output_tokens=output), stream=stream)
+        self.prepared.append(call)
+        return call
+
+    def reject(self, call):
+        error = ProviderReprepareRequired(ValueError("explicit parameter rejection"), metadata=call.metadata)
+        self.rejections.append(error)
+        raise error
+
+    async def count_prepared(self, call):
+        self.count_attempts.append(call)
+        if len(self.count_attempts) in self.reject_counts:
+            self.reject(call)
+        if self.count_error is not None:
+            raise self.count_error
+        count = self.count_result or await self.native.count_prepared(call)
+        self.counted.append(call)
+        return count
+
+    async def complete_prepared(self, call):
+        assert any(call is counted for counted in self.counted)
+        self.sent.append(call)
+        if self.reject_generation and len(self.sent) == 1:
+            self.reject(call)
+        return await self.native.complete_prepared(call)
+
+    async def stream_prepared(self, call):
+        assert any(call is counted for counted in self.counted)
+        self.sent.append(call)
+        if self.reject_generation and len(self.sent) == 1:
+            self.reject(call)
+        async for event in self.native.stream_prepared(call):
+            yield event
+
+
+def counting_assembler(wrapper):
+    from dagent.harness_runtime.context import ContextAssembler
+
+    return ContextAssembler(
+        context_window_tokens=4096, max_output_tokens=512,
+        request_preparer=wrapper.prepare_call, prepared_token_counter=wrapper.count_prepared,
+    )
+
+
+async def counting_candidate(assembler, *, stream=False, content="Continue"):
+    from dagent.schemas import ContextPolicy, ConversationState, UserMessage
+
+    return await assembler.prepare(
+        system_message={"content": "Stable instructions"},
+        conversation=ConversationState(items=(UserMessage(run_id="active", content=content),)),
+        active_run_id="active", policy=ContextPolicy(compaction_strategy="cache_aware"),
+        enable_new_strategy=True, stream=stream,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("force_count", [False, True])
+async def test_count_reprepare_recounts_and_sends_the_same_checked_call(protocol, stream, force_count):
+    from dagent.harness_runtime.model_observation import provider_events
+
+    client = RenderClient()
+    native = provider(client)
+    native.config.protocol = protocol
+    wrapper = CountingRepreparingProvider(native)
+    candidate = await counting_candidate(
+        counting_assembler(wrapper), stream=stream, content="a" * 30000 if force_count else "Continue")
+    call = candidate.prepared_call
+    assert len(wrapper.prepared) == len(wrapper.count_attempts) == 2
+    assert wrapper.counted == [call]
+    assert candidate.usage.max_output_tokens == 1024
+    assert candidate.usage.input_budget_tokens == 3072
+    assert candidate.usage.request_fingerprint == call.fingerprint
+    assert candidate.usage.estimated_input_tokens == 3
+    assert client.raw_posts[-1][1] == call.payload
+    events = [event async for event in provider_events(
+        wrapper, candidate.request, stream=stream, prepared=call)]
+    assert events[-1].response.status == "completed"
+    assert wrapper.sent[0] is wrapper.counted[-1] is call
+    endpoint = client.responses if protocol == "responses" else client.completions
+    sent = dict(endpoint.calls[-1])
+    sent.update(sent.pop("extra_body", {}))
+    assert sent == client.raw_posts[-1][1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("overflow", [False, True])
+async def test_generation_reprepare_can_request_another_reprepare_during_counting(stream, overflow):
+    from dagent.harness_runtime.model_observation import provider_events
+    from dagent.schemas import ContextWindowExceeded
+
+    client = RenderClient()
+    wrapper = CountingRepreparingProvider(provider(client), outputs=(512, 768, 3800 if overflow else 1024),
+                                         reject_counts=(2,), reject_generation=True)
+    if overflow:
+        wrapper.count_result = ModelTokenCount(count=400, exact=True)
+    assembler = counting_assembler(wrapper)
+    candidate = await counting_candidate(assembler, stream=stream)
+
+    async def reprepare():
+        return (await counting_candidate(assembler, stream=stream)).prepared_call
+
+    async def send():
+        return [event async for event in provider_events(
+            wrapper, candidate.request, stream=stream, prepared=candidate.prepared_call, reprepare=reprepare)]
+
+    if overflow:
+        with pytest.raises(ContextWindowExceeded):
+            await send()
+        assert len(wrapper.count_attempts) == 3
+        assert len(wrapper.sent) == 1
+        assert not client.completions.calls
+        return
+    events = await send()
+    assert events[-1].response.status == "completed"
+    assert len(wrapper.prepared) == len(wrapper.count_attempts) == 3
+    assert [call.effective_max_output_tokens for call in wrapper.sent] == [512, 1024]
+    assert wrapper.sent[-1] is wrapper.counted[-1]
+    assert len(client.completions.calls) == 1
+    assert client.raw_posts[-1][1] == wrapper.sent[-1].payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output, count, window, error_type", [
+    (3800, 400, 4096, "context"),
+    (4096, 3, 4096, "capability"),
+    (1024, 1500, 2048, "context"),
+    (1024, 3, 1024, "capability"),
+])
+async def test_count_replacement_cannot_bypass_effective_output_or_discovered_window(output, count, window, error_type):
+    from dagent.schemas import ContextWindowExceeded
+
+    client = RenderClient()
+    wrapper = CountingRepreparingProvider(provider(client), outputs=(512, output))
+    wrapper.count_result = ModelTokenCount(count=count, max_model_len=window, exact=True)
+    expected = ContextWindowExceeded if error_type == "context" else ProviderCapabilityError
+    with pytest.raises(expected):
+        await counting_candidate(counting_assembler(wrapper))
+    assert len(wrapper.count_attempts) == 2
+    assert not wrapper.sent and not client.completions.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outputs, attempts, preparations", [
+    ((512, 512), 1, 2),
+    ((512, 1024, 512), 2, 3),
+    ((512, 513, 514, 515, 516, 517), 5, 5),
+])
+@pytest.mark.parametrize("purpose", ["generation", "compaction"])
+async def test_count_reprepare_requires_progress_and_is_bounded(outputs, attempts, preparations, purpose):
+    client = RenderClient()
+    wrapper = CountingRepreparingProvider(provider(client), outputs=outputs, reject_counts=range(1, 10))
+    with pytest.raises(ProviderReprepareRequired) as failure:
+        if purpose == "generation":
+            await counting_candidate(counting_assembler(wrapper))
+        else:
+            await counting_compactor(wrapper)._fits(request(max_output_tokens=512, purpose="compaction"))
+    assert failure.value is wrapper.rejections[-1]
+    assert len(wrapper.count_attempts) == attempts
+    assert len(wrapper.prepared) == preparations
+    assert not wrapper.sent and not client.completions.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [ProviderTokenCountError("render rejected"), ValueError("invalid"), OSError("offline")])
+@pytest.mark.parametrize("purpose", ["generation", "compaction"])
+async def test_ordinary_count_errors_do_not_request_repreparation(error, purpose):
+    client = RenderClient()
+    wrapper = CountingRepreparingProvider(provider(client), reject_counts=())
+    wrapper.count_error = error
+    with pytest.raises(type(error)) as failure:
+        if purpose == "generation":
+            await counting_candidate(counting_assembler(wrapper))
+        else:
+            await counting_compactor(wrapper)._fits(request(max_output_tokens=512, purpose="compaction"))
+    assert failure.value is error
+    assert len(wrapper.prepared) == len(wrapper.count_attempts) == 1
+    assert not wrapper.rejections and not wrapper.sent and not client.completions.calls
+
+
+def counting_compactor(wrapper):
+    from dagent.harness_runtime.compaction import HistoryCompactor
+    from dagent.schemas import ContextPolicy
+
+    async def chat(request):
+        raise AssertionError("This test dispatches the checked call directly.")
+
+    return HistoryCompactor(
+        policy=ContextPolicy(compaction_strategy="cache_aware"),
+        assembler=counting_assembler(wrapper), result_store=None,
+        system_message={"content": "Stable instructions"}, chat=chat,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reject_generation", [False, True])
+async def test_compaction_reprepares_during_initial_or_replacement_count(reject_generation):
+    from dagent.harness_runtime.model_observation import provider_events
+
+    client = RenderClient()
+    wrapper = CountingRepreparingProvider(
+        provider(client), outputs=(512, 768, 1024) if reject_generation else (512, 1024),
+        reject_counts=(2,) if reject_generation else (1,), reject_generation=reject_generation)
+    engine = counting_compactor(wrapper)
+    original = request(max_output_tokens=512, purpose="compaction")
+    assert await engine._fits(original)
+    events = [event async for event in provider_events(
+        wrapper, original, stream=True, prepared=engine.prepared_call,
+        reprepare=engine.reprepare, before_attempt=engine.before_attempt)]
+    assert events[-1].response.status == "completed"
+    assert len(wrapper.prepared) == len(wrapper.count_attempts) == (3 if reject_generation else 2)
+    assert engine.prepared_request is original
+    assert engine.prepared_call is wrapper.counted[-1] is wrapper.sent[-1]
+    assert client.raw_posts[-1][1] == wrapper.sent[-1].payload
+    assert engine.http_attempts == (2 if reject_generation else 1)
+    assert engine.remaining_http_attempts == 12 - engine.http_attempts
+    # The final gate must reuse the measured replacement, including its output.
+    attempts = len(wrapper.count_attempts)
+    assert await engine._fits(original)
+    assert len(wrapper.count_attempts) == attempts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reject_generation", [False, True])
+@pytest.mark.parametrize("budget", ["input", "output", "window", "heuristic"])
+async def test_compaction_count_replacement_cannot_bypass_budget(reject_generation, budget):
+    from dagent.harness_runtime.compaction import CompactionBudgetExceeded
+    from dagent.harness_runtime.model_observation import provider_events
+
+    client = RenderClient()
+    native = provider(client, token_counting="heuristic" if budget == "heuristic" else "auto")
+    output = 1024 if budget == "window" else 4096 if budget == "output" else 4095 if budget == "heuristic" else 3800
+    wrapper = CountingRepreparingProvider(
+        native, outputs=(512, 768, output) if reject_generation else (512, output),
+        reject_counts=(2,) if reject_generation else (1,), reject_generation=reject_generation)
+    if budget != "heuristic":
+        wrapper.count_result = ModelTokenCount(count=400, max_model_len=1400 if budget == "window" else 4096, exact=True)
+    engine = counting_compactor(wrapper)
+    original = request(max_output_tokens=512, purpose="compaction")
+    if reject_generation:
+        assert await engine._fits(original)
+        with pytest.raises(CompactionBudgetExceeded):
+            async for _event in provider_events(
+                wrapper, original, stream=True, prepared=engine.prepared_call,
+                reprepare=engine.reprepare, before_attempt=engine.before_attempt):
+                pass
+        assert len(wrapper.sent) == 1
+    else:
+        assert not await engine._fits(original)
+        assert not wrapper.sent
+    assert len(wrapper.count_attempts) == (3 if reject_generation else 2)
+    assert not client.completions.calls

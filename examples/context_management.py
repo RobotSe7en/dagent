@@ -86,7 +86,8 @@ async def main() -> None:
                 protocol="chat_completions", token_counting="heuristic",
                 context_window_tokens=8192, max_output_tokens=512,
             )
-            with closing(dagent.Runner(provider=provider, workspace=temporary, skill_roots=[])) as runner:
+            with closing(dagent.Runner(provider=provider, workspace=temporary, skill_roots=[],
+                                      context_observability=True)) as runner:
                 agent = dagent.ToolAgent(
                     # A real text reader is required for recoverable shortening;
                     # unreadable bodies (including NUL text) must fit intact.
@@ -96,8 +97,15 @@ async def main() -> None:
                         max_tool_result_tokens=1024, allow_reference_fallback=True,
                     ),
                 )
-                result = await runner.run(agent, input="Collect 24 synthetic observations.",
-                                          workspace_path=Path(temporary) / "first")
+                events = [event async for event in runner.stream(
+                    agent, input="Collect 24 synthetic observations.",
+                    workspace_path=Path(temporary) / "first",
+                )]
+                result = events[-1].data.result
+                assert result is not None
+                calls = [event.data for event in events if event.type == "model.call.observed"]
+                assert {call.purpose for call in calls} == {"generation", "compaction"}
+                assert any(event.type == "context.compaction.ended" for event in events)
                 assert result.status == "completed"
                 assert endpoint.summaries >= 2
                 assert all(usage.estimated_input_tokens <= usage.input_budget_tokens for usage in result.context_usage)
@@ -109,6 +117,7 @@ async def main() -> None:
                 assert continued.status == "completed"
                 assert (Path(continued.workspace_path) / reference.path).is_file()
                 print(result.output_text)
+                print(f"Observed HTTP requests: {len(calls)} (usage may be unknown).")
                 print(f"Summary requests: {endpoint.summaries}; source index restored across runs.")
                 print("Offline simulation; run the vLLM soak example to measure real cache usage.")
 

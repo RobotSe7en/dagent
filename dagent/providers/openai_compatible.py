@@ -68,6 +68,23 @@ _DEEPSEEK_CONTEXT_WINDOWS = {
 }
 
 
+def _remove_request_path(payload: dict[str, Any], path: str) -> None:
+    parts = path.split(".")
+    parent = payload
+    chain = []
+    for part in parts[:-1]:
+        child = parent.get(part)
+        if not isinstance(child, dict):
+            return
+        chain.append((parent, part))
+        parent = child
+    parent.pop(parts[-1], None)
+    for parent, key in reversed(chain):
+        if parent[key]:
+            break
+        del parent[key]
+
+
 class ProviderCapabilityWarning(RuntimeWarning):
     """A requested optional provider feature could not be verified or used."""
 
@@ -103,6 +120,20 @@ class ProviderRequestError(RuntimeError):
         self.response = response
         self.status_code = getattr(cause, "status_code", None)
         super().__init__(f"{type(cause).__name__}: {cause}")
+
+
+class ProviderReprepareRequired(ProviderRequestError):
+    """Request a fresh budget check after a wrapper changes preparation.
+
+    A wrapper may raise from count_prepared, complete_prepared, or
+    stream_prepared after an explicit request rejection and a preparation
+    strategy change, before emitting any response events. The owning runtime
+    calls the original request preparer, counts the replacement, and checks its
+    effective output limit and context budget before dispatching that same call.
+    Re-preparation is bounded and requires a new payload fingerprint; ordinary
+    token-count errors do not request retries. Rejection detection and fallback
+    policy belong to the wrapper. This signal never authorizes tool or Run replay.
+    """
 
 
 class ProviderResponseError(RuntimeError):
@@ -1204,6 +1235,17 @@ class OpenAICompatibleProvider:
             output_limit_field=output_limit_field,
             fallback_reason=resolution_reason,
         )
+        if request.omit_reasoning_effort:
+            kwargs = deepcopy(kwargs)
+            # Omission wins over defaults and explicit strength overlays.
+            paths = {"reasoning_effort", "reasoning.effort"}
+            if mapping is not None:
+                paths.add(mapping.field)
+            for path in paths:
+                _remove_request_path(kwargs, path)
+                if isinstance(kwargs.get("extra_body"), dict):
+                    _remove_request_path(kwargs["extra_body"], path)
+            metadata = metadata.model_copy(update={"effective_reasoning_effort": None})
         return kwargs, self._mapping_metadata(kwargs, metadata, mapping)
 
     def _responses_kwargs(
@@ -1277,6 +1319,17 @@ class OpenAICompatibleProvider:
             ),
             fallback_reason=resolution_reason,
         )
+        if request.omit_reasoning_effort:
+            kwargs = deepcopy(kwargs)
+            # Omission wins over defaults and explicit strength overlays.
+            paths = {"reasoning_effort", "reasoning.effort"}
+            if mapping is not None:
+                paths.add(mapping.field)
+            for path in paths:
+                _remove_request_path(kwargs, path)
+                if isinstance(kwargs.get("extra_body"), dict):
+                    _remove_request_path(kwargs["extra_body"], path)
+            metadata = metadata.model_copy(update={"effective_reasoning_effort": None})
         return kwargs, self._mapping_metadata(kwargs, metadata, mapping)
 
     def _reasoning_mapping(
@@ -1314,6 +1367,8 @@ class OpenAICompatibleProvider:
         })
 
     def _effective_reasoning_effort(self, request: ModelRequest) -> str | None:
+        if request.omit_reasoning_effort:
+            return None
         if request.reasoning_effort is not None:
             return request.reasoning_effort
         return self.config.reasoning_effort

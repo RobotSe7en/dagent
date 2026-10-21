@@ -16,10 +16,16 @@ from dagent.providers.openai_compatible import (
     ProviderCapabilityWarning,
     ProviderResponseError,
     ProviderRequestError,
+    ProviderReprepareRequired,
     ProviderTokenCountError,
 )
 
+from dagent.providers.model_io import ModelRequest, PreparedModelCall
+
 __all__ = [
+    "ModelRequest",
+    "PreparedModelCall",
+    "ProviderReprepareRequired",
     "ChatProvider",
     "ChatResponse",
     "ChatStreamEvent",

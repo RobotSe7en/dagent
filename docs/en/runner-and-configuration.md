@@ -635,3 +635,12 @@ Runtime inspection helpers:
 trace = runner.run_trace(run_id)
 state = runner.run_state(run_id)
 ```
+
+## Optional context observations
+
+Since 0.10.1, pass `context_observability=True` to `Runner` or
+`Runner.from_config` to observe ToolAgent HTTP calls and cache-aware context
+maintenance through `stream` / `resume_stream`. The default is `False`;
+this flag changes no generation payload, policy, checkpoint, or saved SDK state.
+When enabled, legacy summaries use internal streaming to expose real progress.
+See [stream observations](results-streaming-review.md#context-and-request-observations).

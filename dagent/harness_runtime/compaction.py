@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from dagent.capabilities.tools.boundary import enforce_path_allowed
+from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.result_projection import result_references
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import ChatResponse
@@ -25,6 +26,7 @@ from dagent.providers.model_io import (
     ModelRequest, ModelResponse, ModelUserInput, model_request_to_chat,
     model_response_from_chat, normalize_model_response,
 )
+from dagent.providers.openai_compatible import ProviderReprepareRequired
 from dagent.schemas.context import ContextPolicy, ModelCallMetadata, ModelTokenUsage
 from dagent.schemas.conversation import (
     AssistantMessage, ContentReference, ContextSummary, ConversationItem,
@@ -203,7 +205,9 @@ class HistoryCompactor:
         chat: Callable[[ModelRequest], Awaitable[ModelResponse | ChatResponse]],
         read_available: bool | Callable[[ContentReference], bool] = False,
         source_request: ModelRequest | None = None,
+        observer: Any = None,
     ) -> None:
+        self.observer = observer
         self.policy = policy
         self.assembler = assembler
         self.result_store = result_store
@@ -237,6 +241,8 @@ class HistoryCompactor:
         if not items:
             raise CompactionError("No history items were selected for compaction.")
         self._call_offset = len(self.calls)
+        if self.observer is not None:
+            self.observer.start(len(items))
         sources = _source_texts(previous, items)
         source = self._archive(previous, items)
         chunks: list[CompactionChunk] = []
@@ -277,7 +283,7 @@ class HistoryCompactor:
                 summary, final_response = await self._reduce(chunks, sources, max_tokens)
             return self._finish(previous, items, source, sources, chunks, summary,
                                 final_response, max_tokens)
-        except CompactionError as exc:
+        except (CompactionError, ProviderReprepareRequired) as exc:
             if isinstance(exc, CompactionArchiveError):
                 raise
             failed_record = self._save_record(
@@ -285,6 +291,8 @@ class HistoryCompactor:
                 status="partial" if chunks else "reference_only", reason=str(exc))
             exc.compaction_record = failed_record
             exc.source_reference = source
+            if isinstance(exc, ProviderReprepareRequired):
+                raise
             if allow_fallback and self.policy.allow_reference_fallback:
                 try:
                     return self._fallback(previous, items, source, sources, chunks,
@@ -306,6 +314,8 @@ class HistoryCompactor:
         if not items:
             raise CompactionError("No history items were selected for compaction.")
         self._call_offset = len(self.calls)
+        if self.observer is not None:
+            self.observer.start(len(items))
         sources = _source_texts(previous, items)
         source = self._archive(previous, items)
         chunks: list[CompactionChunk] = []
@@ -335,6 +345,8 @@ class HistoryCompactor:
             content = self._summary_content(previous, record.task_summary, max_tokens)
         except CompactionError:
             return None
+        if self.observer is not None:
+            self.observer.start(len(items))
         last_call = record.calls[-1] if record.calls else None
         return ContextSummary(
             content=content,
@@ -351,6 +363,8 @@ class HistoryCompactor:
         if self._tightened:
             raise CompactionBudgetExceeded("Root summary tightening was already attempted in this episode.")
         self._tightened = True
+        if self.observer is not None:
+            self.observer.start(0)
         self._call_offset = len(self.calls)
         sources = _source_texts(summary, ())
         source = self._archive(summary, ())
@@ -363,13 +377,15 @@ class HistoryCompactor:
             chunks.append(CompactionChunk(ranges=_all_ranges(sources), summary=checkpoint))
             return self._finish(summary, (), source, sources, chunks,
                                 checkpoint, response, max_tokens)
-        except CompactionError as exc:
+        except (CompactionError, ProviderReprepareRequired) as exc:
             if isinstance(exc, CompactionArchiveError):
                 raise
             exc.compaction_record = self._save_record(
                 summary, source, sources, chunks,
                 status="partial" if chunks else "reference_only", reason=str(exc))
             exc.source_reference = source
+            if isinstance(exc, ProviderReprepareRequired):
+                raise
             if allow_fallback and self.policy.allow_reference_fallback:
                 try:
                     return self._fallback(summary, (), source, sources, chunks,
@@ -391,6 +407,20 @@ class HistoryCompactor:
             if not timeout.expired():
                 raise
             raise CompactionBudgetExceeded("Compaction deadline exhausted.") from exc
+
+    def before_attempt(self) -> None:
+        if self.remaining_http_attempts < 1:
+            raise CompactionBudgetExceeded("Compaction exhausted 12 HTTP attempts.")
+        self.http_attempts += 1
+
+    async def reprepare(self):
+        request = self.prepared_request
+        self.prepared_request = None
+        self.prepared_call = None
+        self._prepared_estimate = None
+        if request is None or not await self._fits(request):
+            raise CompactionBudgetExceeded("Replacement compaction request exceeds its budget.")
+        return self.prepared_call
 
     async def _fits(self, request: ModelRequest) -> bool:
         self._check_budget(check_calls=False)
@@ -414,15 +444,26 @@ class HistoryCompactor:
             # every candidate actually dispatched still receives a final count.
             if heuristic + output > self.assembler.context_window_tokens:
                 return False
-            count = (await self._bounded(self.assembler.prepared_token_counter(prepared))
-                     if self.assembler.prepared_token_counter is not None else None)
+            initial = prepared
+            count = None
+            if self.assembler.prepared_token_counter is not None:
+                prepared, count = await self._bounded(count_prepared_call(
+                    prepared, counter=self.assembler.prepared_token_counter,
+                    reprepare=lambda: self.assembler.request_preparer(request, stream=True),
+                ))
+                self.prepared_call = prepared
+                output = prepared.effective_max_output_tokens
+                if output is None:
+                    raise CompactionError("Prepared compaction request has no bounded output limit.")
             if count is not None:
                 estimate = count.count
                 if getattr(count, "exact", None) is not True:
                     estimate = math.ceil(estimate * (1 + self.policy.token_safety_margin))
                 self._learn_window(count.max_model_len)
             else:
-                estimate = heuristic
+                estimate = heuristic if prepared is initial else math.ceil(self.assembler.token_counter.count_text(
+                    json.dumps(prepared.payload, ensure_ascii=False))
+                    * (1 + self.policy.token_safety_margin))
             self._prepared_estimate = estimate
             return estimate + output <= self.assembler.context_window_tokens
         heuristic = math.ceil(self.assembler.token_counter.count_request(
@@ -514,12 +555,15 @@ class HistoryCompactor:
         if not await self._fits(request):
             raise CompactionBudgetExceeded("Final compactor request exceeds its input budget.")
         self.logical_calls += 1
+        attempts_before = self.http_attempts
         try:
             raw = await self._bounded(self.chat(request))
         except (RuntimeError, ValueError, OSError) as exc:
             metadata = getattr(exc, "metadata", None)
             attempts = max(1, len(metadata.attempts) if metadata is not None else 0)
-            self.http_attempts += attempts
+            if self.http_attempts == attempts_before:
+                self.http_attempts += attempts
+            attempts = self.http_attempts - attempts_before
             self.calls.append(CompactionCall(kind=kind, http_attempts=attempts,
                                              model_call=metadata, error=f"{type(exc).__name__}: {exc}"))
             if isinstance(exc, CompactionBudgetExceeded):
@@ -527,7 +571,9 @@ class HistoryCompactor:
             raise CompactionError(f"Summary request failed: {type(exc).__name__}: {exc}") from exc
         response = normalize_model_response(model_response_from_chat(raw) if isinstance(raw, ChatResponse) else raw)
         attempts = max(1, len(response.metadata.attempts) if response.metadata else 0)
-        self.http_attempts += attempts
+        if self.http_attempts == attempts_before:
+            self.http_attempts += attempts
+        attempts = self.http_attempts - attempts_before
         self.calls.append(CompactionCall(kind=kind, http_attempts=attempts,
                                          usage=response.usage, model_call=response.metadata))
         if self.http_attempts > 12:

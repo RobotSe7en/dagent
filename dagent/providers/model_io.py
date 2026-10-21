@@ -65,14 +65,16 @@ class ModelRequest:
     # Opt-in request budgets may override the ordinary provider output ceiling.
     # Explicit provider extra arguments retain their normal precedence.
     strict_context_budget: bool = False
+    # Explicit omission differs from None, which inherits the provider default.
+    omit_reasoning_effort: bool = False
 
 
 @dataclass(frozen=True)
 class PreparedModelCall:
-    """Internal immutable wire snapshot shared by counting and dispatch.
+    """Immutable provider extension contract shared by counting and dispatch.
 
     JSON keeps nested request data isolated from caller/configuration mutations.
-    The public provider methods do not require this internal contract.
+    Providers wrapping this value must preserve its owning provider and payload.
     """
 
     request: ModelRequest

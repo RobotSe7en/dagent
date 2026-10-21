@@ -6,6 +6,7 @@ Only a fully counted candidate is returned to the tool loop for transmission.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -17,6 +18,7 @@ from dagent.harness_runtime.context import (
     _latest_run_id, _should_replay_reasoning, _ProjectionUsage, user_content_for_model,
 )
 from dagent.harness_runtime.compaction import CompactionError
+from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.frozen_results import (
     RecoveryAccess, freeze_result_displays, reference_frozen_result_displays,
     validate_frozen_result_recovery,
@@ -25,7 +27,9 @@ from dagent.harness_runtime.result_projection import ResultBudgetExceeded
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import StructuredOutputFormat
 from dagent.providers.model_io import ModelRequest, ModelTokenCount, PreparedModelCall, model_request_to_chat
-from dagent.providers.openai_compatible import ProviderCapabilityError, ProviderContextWindowError
+from dagent.providers.openai_compatible import (
+    ProviderCapabilityError, ProviderContextWindowError, ProviderReprepareRequired,
+)
 from dagent.schemas.context import ContextPolicy, ContextUsage, ContextWindowExceeded, ReasoningEffort
 from dagent.schemas.conversation import (
     AssistantMessage, CompactionState, ConversationState, FailedCompaction, UserMessage,
@@ -131,8 +135,9 @@ async def prepare_context(
     compactor: Any,
 ) -> PreparedModelContext:
     progress = _CompactionProgress(conversation)
+    outcome = "failed"
     try:
-        return await _prepare_context(
+        prepared = await _prepare_context(
             assembler, system_message=system_message, conversation=conversation,
             tools=tools, policy=policy, active_run_id=active_run_id,
             response_format=response_format, stream=stream,
@@ -140,12 +145,21 @@ async def prepare_context(
             purpose=purpose, result_store=result_store, compactor=compactor,
             compaction_progress=progress,
         )
-    except (ContextWindowExceeded, ProviderCapabilityError, ResultBudgetExceeded, OSError) as exc:
+        outcome = prepared.usage.compaction_method
+        return prepared
+    except asyncio.CancelledError:
+        outcome = "canceled"
+        raise
+    except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError) as exc:
         # The original items remain authoritative until the final gate passes.
         # Keep every paid replacement and failed span even when a later render,
         # prepare, or storage operation fails. Cancellation bypasses this path.
         exc._conversation = progress.snapshot()
         raise
+    finally:
+        observer = getattr(compactor, "observer", None)
+        if observer is not None:
+            observer.end(outcome)
 
 
 async def _prepare_context(
@@ -233,7 +247,10 @@ async def _prepare_context(
             # every sendable candidate still passes the final count below.
             if (force_count or math.ceil(rough * (1 + policy.token_safety_margin)) <= known_window - output) and assembler.prepared_token_counter is not None:
                 try:
-                    count = await assembler.prepared_token_counter(prepared)
+                    prepared, count = await count_prepared_call(
+                        prepared, counter=assembler.prepared_token_counter,
+                        reprepare=lambda: assembler.request_preparer(request, stream=stream),
+                    )
                 except ProviderContextWindowError as exc:
                     assembler.server_max_model_len = exc.max_model_len
                     window = min(value for value in (
@@ -246,6 +263,8 @@ async def _prepare_context(
                         requested_output = inferred_output
                         return await project(force_count=force_count)
                     raise
+            # A wrapper may change the wire output limit during counting.
+            output = prepared.effective_max_output_tokens
         else:
             # Useful for standalone assembly/custom model-aware counters. The
             # ToolAgent boundary separately requires prepared-call support.
@@ -422,7 +441,7 @@ async def _prepare_context(
                     reason="Previously failed source projection; reference continuation requested.", failed_record=prior_record)
             else:
                 summary = await compactor.compact(working.summary, source_items, summary_goal, allow_fallback=hard and policy.allow_reference_fallback)
-        except CompactionError as exc:
+        except (CompactionError, ProviderReprepareRequired) as exc:
             # Failure preserves the original range. Cancellation is a
             # BaseException and deliberately bypasses this handler.
             failed_keys = tuple(source_key(item) for item in source_items)
@@ -430,6 +449,8 @@ async def _prepare_context(
             record = getattr(exc, "compaction_record", None)
             if record is not None:
                 failed_records.append(FailedCompaction(source_keys=failed_keys, record=record))
+            if isinstance(exc, ProviderReprepareRequired):
+                raise
             reason = f"{type(exc).__name__}: {exc}"[:1000]
             if fallback_only:
                 break
@@ -484,11 +505,13 @@ async def _prepare_context(
             try:
                 summary = await tighten(working.summary, min(goal, policy.summary_max_tokens),
                                         allow_fallback=policy.allow_reference_fallback)
-            except CompactionError as exc:
+            except (CompactionError, ProviderReprepareRequired) as exc:
                 failed.add(root_key)
                 record = getattr(exc, "compaction_record", None)
                 if record is not None:
                     failed_records.append(FailedCompaction(source_keys=(root_key,), record=record))
+                if isinstance(exc, ProviderReprepareRequired):
+                    raise
                 reason = f"{type(exc).__name__}: {exc}"[:1000]
             else:
                 working = working.model_copy(update={"summary": summary, "revision": working.revision + 1})

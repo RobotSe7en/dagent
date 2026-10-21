@@ -736,3 +736,77 @@ The summary travels with normal response metadata, including the final stream
 result; it is not a separate failed-request or transport-attempt log. It adds
 no reasoning text, complete request, or credentials to logs or persistence.
 It establishes only what the request carried, not what the server used.
+
+## Provider wrappers and observations
+
+Provider wrappers can use the supported `dagent.providers.ModelRequest`,
+`PreparedModelCall`, and `ProviderReprepareRequired` contracts. A wrapper may raise
+`ProviderReprepareRequired(cause, metadata=call.metadata)` from `count_prepared`,
+`complete_prepared`, or `stream_prepared` after recognizing an explicit request
+rejection and updating its preparation strategy, before emitting response events.
+
+For the opt-in `cache_aware` and `chunked` ToolAgent strategies, the SDK invokes
+the original request preparer with the same projected `ModelRequest` and stream
+mode, counts the replacement, and checks its **effective wire output limit** and
+the effective context window, including limits discovered during counting.
+The runtime sends that same checked `PreparedModelCall`; the wrapper must not
+silently replace it during dispatch. If it exceeds the budget, the existing
+context strategy compacts or fails before sending it. Completed tools and paid
+summaries are retained; neither tools nor the entire Run are replayed.
+
+This also applies when counting a replacement requested during generation, to
+the final forced count of a protected candidate, and to initial and replacement
+compaction requests. Each counting chain allows at most four replacements
+(five count attempts) and rejects unchanged or repeated payload fingerprints,
+raising the triggering `ProviderReprepareRequired`. Dispatch retains its existing
+four-change limit and fingerprint checks. Summary generation attempts still
+share the twelve-attempt compaction budget; preparation and counting remain
+within the compaction deadline. Ordinary `ProviderTokenCountError` and other
+errors retain their existing handling and do not request re-preparation.
+If counting re-preparation terminates during compaction, completed chunks are
+saved in a partial record linked from the failed conversation for explicit
+reference recovery. The typed signal still propagates when fallback is enabled.
+Replacement overflow failures include that request's `ContextUsage` in the
+failed result, including streaming results.
+
+Rejection classification, parameter fallback rules (such as `high` → `medium`),
+and rejection-cache scope/lifetime belong to the host wrapper. The SDK provides
+no model-specific downgrade or automatic HTTP 400 retry policy. Register the
+wrapper with `Runner(provider=wrapper, ...)`, delegate preparation to the native
+provider using the wrapper's current strategy, and raise the signal only after
+changing that strategy. Direct provider calls do not run this SDK budget loop.
+See the runnable, offline [prepared-count re-preparation example](../../examples/prepared_count_reprepare.py):
+
+```bash
+uv run python -m examples.prepared_count_reprepare
+```
+
+The example recognizes one synthetic render rejection, caches the decision in
+the wrapper, and selects `medium` on the next preparation without changing native
+provider configuration. Unrecognized errors propagate unchanged. Existing
+applications and wrappers need no changes unless opting into this signal.
+
+`ModelRequest(omit_reasoning_effort=True)` explicitly omits strength controls,
+including the selected mapping field and standard strength fields in extra
+arguments. It does not inherit the provider strength. Other nested settings,
+including explicit thinking switches, are retained; provider configuration is
+never modified. Omission is opt-in and does not itself add retries or change
+reasoning mappings or protocol selection.
+
+`Runner(context_observability=True)` enables ToolAgent model-call observations
+and context-maintenance progress. `model.call.observed` contains a unique request
+ID, purpose, available usage, metadata, status, and elapsed time, without prompt or
+response text. Failed requests may have unknown usage. `context.compaction.progress`
+reports actual internal summary progress, throttled to once per second, and
+`context.compaction.ended` closes the episode even on failure or cancellation.
+`context.compaction.finished` continues to mean an actual context replacement.
+No new events are emitted unless observation is enabled. Existing SDK defaults,
+legacy compaction defaults, schemas 4/6/9 and default checkpoint fingerprints are retained.
+Scoped emitters' attribution fields do not change these observation payloads;
+use response and capability events for parent-capability, DAG, and node attribution.
+With observation enabled, legacy summaries stream internally for progress;
+their fallback policy is retained.
+
+Streaming context failures now include the typed failed result already attached
+to the original exception, preserving the same evidence as non-streaming calls.
+This does not add same-Run or cross-restart recovery.

@@ -612,3 +612,59 @@ for item in result.conversation.items:
 未实现请求观测的 Provider 缺少摘要时表示**未知**，不是实际发送零条。摘要随正常
 响应元数据返回，包括流式完成结果；不另建失败请求或传输尝试日志。不额外记录
 推理正文、完整请求和凭据，只证明请求携带，不证明服务端使用。
+
+## Provider 包装与观测
+
+Provider 包装可使用受支持的 `dagent.providers.ModelRequest`、
+`PreparedModelCall` 和 `ProviderReprepareRequired`。包装识别明确的请求拒绝并更新
+准备策略后，可从 `count_prepared`、`complete_prepared` 或 `stream_prepared`
+抛出 `ProviderReprepareRequired(cause, metadata=call.metadata)`，前提是尚未输出响应事件。
+
+对于显式启用的 `cache_aware` 和 `chunked` ToolAgent 策略，SDK 会以同一份已投影
+`ModelRequest` 和 stream 模式调用原 request preparer，对替换请求重新计数，并按
+**最终请求的实际输出上限**和有效上下文窗口检查预算，包括计数时发现的窗口上限。
+最终发送通过检查的同一个 `PreparedModelCall`，包装不能在发送时静默替换它。
+替换请求超预算时，继续按现有上下文策略压缩或在发送前失败。保留已完成工具与已付费
+摘要，不重放工具或整个 Run。
+
+同一机制覆盖生成阶段请求重准备后的再次计数、受保护候选的最终强制计数，以及压缩
+请求的首次计数和替换计数。每条计数链最多替换四次（最多五次计数），fingerprint
+不变或重复时抛出触发该次替换的 `ProviderReprepareRequired`。发送阶段保留原有
+最多四次替换及 fingerprint 检查。摘要生成尝试继续共享一次压缩的十二次请求额度，
+准备与计数也受压缩截止时间约束。普通 `ProviderTokenCountError` 和其它错误仍按
+原有规则处理，不会触发重新准备。
+压缩中途因计数重准备信号终止时，已完成分块会保存为部分压缩记录，并关联到失败会话，
+供后续显式引用恢复；启用降级也不会吞掉原类型化信号。替换请求超预算时，失败结果包含
+该请求的 `ContextUsage`，流式结果同样保留。
+
+拒绝识别、参数降级规则（例如 `high` → `medium`）、拒绝缓存的作用域与有效期均由
+上层包装负责，SDK 不内置模型专属降级或 HTTP 400 自动重试。通过
+`Runner(provider=wrapper, ...)` 接入，让包装按当前策略委托原 Provider 准备请求，
+仅在策略已更新后抛出信号。直接调用 Provider 不会执行这套 SDK 预算循环。
+可运行离线[计数阶段重准备示例](../../examples/prepared_count_reprepare.py)：
+
+```bash
+uv run python -m examples.prepared_count_reprepare
+```
+
+示例识别一种模拟 render 拒绝，在包装内缓存决策，下次准备选择 `medium`，不修改原
+Provider 配置；无法识别的错误原样抛出。已有应用和包装无需修改，除非主动使用该信号。
+
+`ModelRequest(omit_reasoning_effort=True)` 显式省略思考强度，不继承 Provider 默认值，
+并移除额外参数中的当前映射强度字段和标准强度字段。其它嵌套参数和显式思考开关保留，
+不会修改 Provider 配置。省略为显式行为，本身不增加重试、不改变映射或协议选择。
+
+`Runner(context_observability=True)` 为 ToolAgent 开启模型调用观测及压缩进度。
+`model.call.observed` 包含唯一请求 ID、用途、可用 usage、元数据、状态与耗时，
+不包含提示或响应正文；失败请求的 usage 可能未知。
+`context.compaction.progress` 上报内部摘要的真实进展，每秒最多一次；
+`context.compaction.ended` 在失败或取消时也结束当前压缩过程。
+`context.compaction.finished` 仍仅表示实际发生上下文替换。
+默认不发送新增观测事件，SDK 旧默认、legacy 压缩默认、4/6/9 状态版本和默认
+checkpoint fingerprint 保持不变。启用观测时 legacy 摘要使用内部流式调用，
+fallback 策略不变。
+带作用域的 emitter 不会改变上述观测事件结构；父能力、DAG 和节点归属信息继续通过
+response、capability 事件提供。
+
+流式上下文失败现在也传递原异常已经附带的类型化失败 result，保留与非流式调用一致的
+失败证据；不增加同 Run 或跨服务重启恢复。

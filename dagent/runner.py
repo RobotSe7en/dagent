@@ -183,6 +183,7 @@ class Runner:
         mcp_stdio_stderr: MCPStdioStderr = "discard",
         result_storage_policy: ResultStoragePolicy | None = None,
         extra_system_prompt: str | None = None,
+        context_observability: bool = False,
     ) -> None:
         self.workspace = Path(workspace)
         self.runtime_directory = validate_runtime_directory(runtime_directory)
@@ -190,6 +191,7 @@ class Runner:
         self.sandbox = sandbox or SandboxConfig()
         self._mcp_stdio_stderr = validate_mcp_stdio_stderr(mcp_stdio_stderr)
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
+        self.context_observability = context_observability
         self.extra_system_prompt = extra_system_prompt
         if planner_frontend not in {"typed_spec", "sdk_builder"}:
             raise ValueError(
@@ -225,6 +227,7 @@ class Runner:
             planner_skill=planner_skill,
             result_storage_policy=self.result_storage_policy,
             extra_system_prompt=self.extra_system_prompt,
+            context_observability=self.context_observability,
         )
         self._local_tool_binding_ids.update(
             _capability_parts(capability)[0].id
@@ -254,6 +257,7 @@ class Runner:
         mcp_stdio_stderr: MCPStdioStderr = "discard",
         result_storage_policy: ResultStoragePolicy | None = None,
         extra_system_prompt: str | None = None,
+        context_observability: bool = False,
     ) -> "Runner":
         config_path = resolve_config_path(path)
         config = load_config(config_path)
@@ -282,6 +286,7 @@ class Runner:
             mcp_stdio_stderr=mcp_stdio_stderr,
             result_storage_policy=result_storage_policy,
             extra_system_prompt=extra_system_prompt,
+            context_observability=context_observability,
         )
 
     @property
@@ -401,6 +406,7 @@ class Runner:
                 result_storage_policy or self.result_storage_policy
             ),
             extra_system_prompt=self.extra_system_prompt,
+            context_observability=self.context_observability,
         )
         try:
             derived.runtime.max_validation_retries = (
@@ -1913,7 +1919,8 @@ class Runner:
                             if isinstance(exc, RunExecutionError) and exc.__cause__ is not None
                             else type(exc).__name__
                         ),
-                        result=exc.result if isinstance(exc, RunExecutionError) else None,
+                        result=(getattr(exc, "result", None)
+                                if isinstance(getattr(exc, "result", None), RunResult) else None),
                     ),
                     run_id=run_id,
                 )
@@ -2130,6 +2137,7 @@ class Runner:
             context_window_tokens=plan.context_window_tokens,
             max_output_tokens=plan.max_output_tokens,
             extra_system_prompt=plan.extra_system_prompt,
+            context_observability=self.context_observability,
             skill_prompt_resolver=self._runtime.tool_agent.skill_prompt_resolver,
         )
         runtime.session = self._runtime.session
@@ -2147,6 +2155,7 @@ class Runner:
             profile_root=self.profile_root,
             context_policy=agent.context,
             extra_system_prompt=self.extra_system_prompt,
+            context_observability=self.context_observability,
         )
         return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
@@ -2161,6 +2170,7 @@ class Runner:
             profile_root=self.profile_root,
             context_policy=agent.context,
             extra_system_prompt=self.extra_system_prompt,
+            context_observability=self.context_observability,
         )
         return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
@@ -2175,6 +2185,7 @@ class Runner:
             profile_root=self.profile_root,
             context_policy=agent.context,
             extra_system_prompt=self.extra_system_prompt,
+            context_observability=self.context_observability,
         )
         return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
@@ -2354,6 +2365,7 @@ class Runner:
         )
         return {
             "provider": self._runtime.provider,
+            "context_observability": self.context_observability,
             "profile": _resolve_profile(agent.profile, profile_root=self.profile_root),
             "description": agent.description,
             "max_steps": agent.max_steps,
@@ -2447,6 +2459,7 @@ def _assemble_runtime(
     context_window_tokens: int | None = None,
     max_output_tokens: int | None | object = _UNSET_MODEL_LIMIT,
     extra_system_prompt: str | None = None,
+    context_observability: bool = False,
     skill_prompt_resolver: Callable[
         [tuple[str, ...] | None], tuple[PromptSkill, ...]
     ]
@@ -2478,6 +2491,7 @@ def _assemble_runtime(
         profile=_resolve_profile(tool_profile, profile_root=profile_root),
         max_steps=max_steps,
         extra_system_prompt=extra_system_prompt,
+        context_observability=context_observability,
         skill_prompt_resolver=skill_prompt_resolver,
         context_policy=resolved_context_policy,
         result_storage_policy=resolved_result_storage_policy,
@@ -2561,6 +2575,7 @@ def _create_runtime(
     planner_skill: PlannerSkillSnapshot | None = None,
     result_storage_policy: ResultStoragePolicy | None = None,
     extra_system_prompt: str | None = None,
+    context_observability: bool = False,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
     if provider is None:
@@ -2592,6 +2607,7 @@ def _create_runtime(
         planner_skill=planner_skill,
         result_storage_policy=result_storage_policy,
         extra_system_prompt=extra_system_prompt,
+        context_observability=context_observability,
         skill_prompt_resolver=_skill_prompt_resolver(
             resolved_skills_provider.store
         ),
@@ -2608,6 +2624,7 @@ def _runtime_from_existing(
     profile_root: str | Path | None,
     context_policy: ContextPolicy,
     extra_system_prompt: str | None,
+    context_observability: bool = False,
 ) -> HarnessRuntime:
     runtime = _assemble_runtime(
         provider=base.provider,
@@ -2627,6 +2644,7 @@ def _runtime_from_existing(
         context_policy=context_policy,
         result_storage_policy=base.tool_agent.result_storage_policy,
         extra_system_prompt=extra_system_prompt,
+        context_observability=context_observability,
         skill_prompt_resolver=base.tool_agent.skill_prompt_resolver,
     )
     runtime.session = base.session
@@ -2791,11 +2809,28 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
             run_id=_nullable_event_string(data.get("run_id")),
         )
 
+    observation_types = {
+        "context_compaction_progress": "context.compaction.progress",
+        "context_compaction_ended": "context.compaction.ended",
+        "model_call_observed": "model.call.observed",
+    }
+    if event_type in observation_types:
+        return RunStreamEvent.model_validate({
+            "type": observation_types[event_type],
+            "run_id": _nullable_event_string(data.get("run_id")),
+            # Scoped emitters also add attribution used by response/capability
+            # events. Observation data keeps its existing strict public shape.
+            "data": {key: value for key, value in data.items() if key not in {
+                "type", "run_id", "parent_capability_id", "dag_id", "node_id",
+            }},
+        })
+
     if event_type == "context_compaction_started":
         return RunStreamEvent(
             type="context.compaction.started",
             data=ContextCompactionStartedData(
                 item_count=int(data.get("item_count") or 0),
+                compaction_id=data.get("compaction_id"),
                 scope=str(data.get("scope") or "conversation"),
             ),
             run_id=_nullable_event_string(data.get("run_id")),

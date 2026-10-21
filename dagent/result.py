@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import field
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field as PydanticField, TypeAdapter
+from pydantic import ConfigDict, Field as PydanticField, TypeAdapter, model_serializer
 from pydantic.dataclasses import dataclass
 
 from dagent.review import ReviewHandle
@@ -16,6 +16,8 @@ from dagent.schemas.retention import ResultStorageWarning
 from dagent.schemas import (
     ArtifactState,
     ContextUsage,
+    ModelCallMetadata,
+    ModelTokenUsage,
     ConversationItem,
     ConversationState,
     DAG,
@@ -45,6 +47,9 @@ RunStreamEventType = Literal[
     "capability.result.storage_warning",
     "context.compaction.started",
     "context.compaction.finished",
+    "context.compaction.progress",
+    "context.compaction.ended",
+    "model.call.observed",
     "dag.updated",
     "trace.updated",
     "validation.started",
@@ -312,12 +317,44 @@ class CapabilityCallFailedData:
 class ContextCompactionStartedData:
     item_count: int
     scope: str = "conversation"
+    compaction_id: str | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_optional_id(self, serializer):
+        payload = serializer(self)
+        if self.compaction_id is None:
+            payload.pop("compaction_id", None)
+        return payload
 
 
 @dataclass(frozen=True, config=_STRICT)
 class ContextCompactionFinishedData:
     usage: ContextUsage
     scope: str = "conversation"
+
+
+@dataclass(frozen=True, config=_STRICT)
+class ContextCompactionProgressData:
+    compaction_id: str
+    received_characters: int
+    request_completed: bool = False
+
+
+@dataclass(frozen=True, config=_STRICT)
+class ContextCompactionEndedData:
+    compaction_id: str
+    outcome: Literal["model", "reference_fallback", "none", "failed", "canceled"]
+
+
+@dataclass(frozen=True, config=_STRICT)
+class ModelCallObservedData:
+    call_id: str
+    purpose: Literal["generation", "compaction"]
+    status: Literal["completed", "failed"]
+    elapsed_seconds: float
+    usage: ModelTokenUsage | None = None
+    model_call: ModelCallMetadata | None = None
+    error_type: str | None = None
 
 
 @dataclass(frozen=True, config=_STRICT)
@@ -379,6 +416,9 @@ RunStreamEventData = (
     | CapabilityCallFailedData
     | ContextCompactionStartedData
     | ContextCompactionFinishedData
+    | ContextCompactionProgressData
+    | ContextCompactionEndedData
+    | ModelCallObservedData
     | ResultStorageWarningData
     | SteerQueuedData
     | SteerAppliedData
@@ -432,6 +472,9 @@ _EVENT_DATA_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "capability.call.failed": TypeAdapter(CapabilityCallFailedData),
     "context.compaction.started": TypeAdapter(ContextCompactionStartedData),
     "context.compaction.finished": TypeAdapter(ContextCompactionFinishedData),
+    "context.compaction.progress": TypeAdapter(ContextCompactionProgressData),
+    "context.compaction.ended": TypeAdapter(ContextCompactionEndedData),
+    "model.call.observed": TypeAdapter(ModelCallObservedData),
     "capability.result.storage_warning": TypeAdapter(ResultStorageWarningData),
     "steer.queued": TypeAdapter(SteerQueuedData),
     "steer.applied": TypeAdapter(SteerAppliedData),

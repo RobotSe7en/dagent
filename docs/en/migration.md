@@ -5,7 +5,85 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.10.0`.
+The current package version is `0.10.1a0` (`0.10.1.alpha`); the stable release
+remains `0.10.1`.
+
+## 0.10.1a0 (0.10.1.alpha)
+
+### Re-preparation during prepared token counting
+
+Provider wrappers may now raise `ProviderReprepareRequired` from `count_prepared`
+after recognizing a request rejection and updating their preparation strategy.
+The opt-in `cache_aware` and `chunked` ToolAgent paths prepare and count a new
+snapshot, check its actual output limit and effective context window, and send
+that same snapshot. This includes counting after generation-stage re-preparation
+and compaction requests. Counting chains permit at most four replacements and
+reject unchanged/cyclic fingerprints with the original typed signal.
+
+Ordinary counting failures, existing generation re-preparation, default context
+behavior, and public signatures/exports are unchanged. There is no tool or Run
+replay. Host wrappers own rejection detection, fallback rules, and rejection
+caches; no application migration is required. See
+[Provider wrappers](model-context-and-reasoning.md#provider-wrappers-and-observations)
+and the offline `examples.prepared_count_reprepare` example.
+
+### Failure and observation fixes
+
+- Scoped observation events from registered subagents and DAG ToolAgents no
+  longer fail strict event validation. The adapter explicitly handles the
+  emitters' attribution fields without changing observation payload schemas;
+  response and capability events retain parent/DAG/node attribution.
+- A terminal counting re-preparation signal now saves completed compaction
+  chunks and attaches their partial record to the failed conversation. Explicit
+  reference recovery can reuse that paid work without new model calls. The
+  original typed signal still propagates, even when reference fallback is enabled.
+- Generation replacement overflow failures include the overflowing request's
+  `ContextUsage` in the failed result, including streaming results.
+
+### Installation and verification
+
+Python normalizes `0.10.1.alpha` to `0.10.1a0`, which sorts before stable
+`0.10.1`. Install this prerelease explicitly:
+`pip install 'dagent-ai==0.10.1a0'`. There are no breaking changes or required
+source, configuration, or persisted-record migrations.
+
+Validation: 1,872 Python/MCP tests passed, 3 skipped, with one expected tokenizer
+warning. The offline prepared-count wrapper example, wheel/sdist builds, package
+metadata checks, and isolated wheel installation passed. Render rejection tests
+use simulated endpoints; this release does not claim live vLLM acceptance.
+
+## 0.10.1
+
+### Provider extensions and context observations
+
+Provider wrappers can use the supported `dagent.providers.ModelRequest`,
+`PreparedModelCall`, and `ProviderReprepareRequired` contracts. A wrapper may
+request re-preparation only after an explicit request rejection and before any
+response events. The ToolAgent budget owner freezes and counts the replacement
+before dispatch, retaining completed tools and paid summaries. Re-preparation is
+bounded to four changes per call and rejects repeated payload fingerprints.
+Summary attempts share the existing twelve-attempt compaction budget and deadline.
+
+`ModelRequest(omit_reasoning_effort=True)` explicitly omits strength controls,
+including the selected mapping field and standard strength fields in extra
+arguments. It does not inherit the provider strength. Other nested settings,
+including explicit thinking switches, are retained; provider configuration is
+never modified. Omission is opt-in and does not itself add retries or change
+reasoning mappings or protocol selection.
+
+`Runner(context_observability=True)` enables ToolAgent model-call observations
+and context-maintenance progress. `model.call.observed` contains a unique request
+ID, purpose, available usage, metadata, status, and elapsed time, without prompt or
+response text. Failed requests may have unknown usage. `context.compaction.progress`
+reports actual internal summary progress, throttled to once per second, and
+`context.compaction.ended` closes the episode even on failure or cancellation.
+`context.compaction.finished` continues to mean an actual context replacement.
+No new events are emitted unless observation is enabled. Existing SDK defaults,
+legacy compaction, schemas 4/6/9 and default checkpoint fingerprints are retained.
+
+Streaming context failures now include the typed failed result already attached
+to the original exception, preserving the same evidence as non-streaming calls.
+This does not add same-Run or cross-restart recovery.
 
 ## 0.10.0
 
