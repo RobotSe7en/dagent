@@ -196,5 +196,10 @@ changed, verify it in a browser when the UI behavior matters.
 - Every new version release must include clear release notes. At minimum, call
   out user-facing additions, behavior changes, breaking changes, migration
   steps, and relevant verification or known limitations.
+- Before any release, including alpha, beta, and RC prereleases, merge the
+  complete release changes into `main` and push `main` to `origin`. Verify that
+  the release commit is contained in `origin/main` before creating or pushing
+  release tags, publishing a GitHub Release, or uploading packages. Do not
+  release directly from an unmerged feature branch.
 - Push only after the requested checks pass or after clearly reporting why a
   check could not be run.

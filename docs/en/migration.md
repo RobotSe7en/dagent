@@ -5,10 +5,13 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.10.1a0` (`0.10.1.alpha`); the stable release
+The current package version is `0.10.2a0`; the stable release
 remains `0.10.1`.
 
-## 0.10.1a0 (0.10.1.alpha)
+## 0.10.2a0
+
+This prerelease supersedes `0.10.1a0` so its version follows stable `0.10.1`.
+Applications pinned to the earlier prerelease should update to `0.10.2a0`.
 
 ### Re-preparation during prepared token counting
 
@@ -42,9 +45,9 @@ and the offline `examples.prepared_count_reprepare` example.
 
 ### Installation and verification
 
-Python normalizes `0.10.1.alpha` to `0.10.1a0`, which sorts before stable
-`0.10.1`. Install this prerelease explicitly:
-`pip install 'dagent-ai==0.10.1a0'`. There are no breaking changes or required
+This is the alpha prerelease for `0.10.2`: `0.10.1 < 0.10.2a0 < 0.10.2`.
+Install this prerelease explicitly:
+`pip install 'dagent-ai==0.10.2a0'`. There are no breaking changes or required
 source, configuration, or persisted-record migrations.
 
 Validation: 1,872 Python/MCP tests passed, 3 skipped, with one expected tokenizer
