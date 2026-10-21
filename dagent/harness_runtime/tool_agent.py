@@ -50,7 +50,9 @@ from dagent.review import CapabilityReviewDecision, ReviewDecision, ReviewLevel,
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.providers.base import normalize_chat_response
-from dagent.providers.openai_compatible import ProviderCapabilityError, ProviderRequestError, ProviderResponseError
+from dagent.providers.openai_compatible import (
+    ProviderCapabilityError, ProviderReprepareRequired, ProviderRequestError, ProviderResponseError,
+)
 from dagent.providers.model_io import (
     ModelRequest,
     ModelResponse,
@@ -849,7 +851,7 @@ class ToolAgentLoop:
                         history_compactor=compactor,
                         enable_new_strategy=True,
                     )
-                except (ContextWindowExceeded, ProviderCapabilityError, ResultBudgetExceeded, OSError) as exc:
+                except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError) as exc:
                     if context_policy.compaction_strategy == "legacy":
                         raise
                     loop_conversation = getattr(exc, "_conversation", loop_conversation)
@@ -883,7 +885,7 @@ class ToolAgentLoop:
                         history_compactor=compactor,
                         enable_new_strategy=True,
                     )
-                except (ContextWindowExceeded, ProviderCapabilityError, ResultBudgetExceeded, OSError) as exc:
+                except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError) as exc:
                     loop_conversation = getattr(exc, "_conversation", loop_conversation)
                     trace.root.error = RunTraceError(code=type(exc).__name__, message=str(exc))
                     trace.root.ended_at = datetime.now(timezone.utc)

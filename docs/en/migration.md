@@ -7,6 +7,25 @@ that may require action when upgrading.
 
 The current package version is `0.10.1`.
 
+## Unreleased
+
+### Re-preparation during prepared token counting
+
+Provider wrappers may now raise `ProviderReprepareRequired` from `count_prepared`
+after recognizing a request rejection and updating their preparation strategy.
+The opt-in `cache_aware` and `chunked` ToolAgent paths prepare and count a new
+snapshot, check its actual output limit and effective context window, and send
+that same snapshot. This includes counting after generation-stage re-preparation
+and compaction requests. Counting chains permit at most four replacements and
+reject unchanged/cyclic fingerprints with the original typed signal.
+
+Ordinary counting failures, existing generation re-preparation, default context
+behavior, and public signatures/exports are unchanged. There is no tool or Run
+replay. Host wrappers own rejection detection, fallback rules, and rejection
+caches; no application migration is required. See
+[Provider wrappers](model-context-and-reasoning.md#provider-wrappers-and-observations)
+and the offline `examples.prepared_count_reprepare` example.
+
 ## 0.10.1
 
 ### Provider extensions and context observations

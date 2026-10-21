@@ -13,6 +13,8 @@ from dagent.providers.model_io import ModelUserInput
 from tests.test_cache_usage import _completion, _usage
 from tests.test_reasoning_mapping import _endpoint
 from examples.context_management import OfflineEndpoint, evidence
+from examples.prepared_count_reprepare import RenderFallbackProvider
+from tests.test_model_protocols import _openapi
 
 
 class RepreparingProvider:
@@ -60,6 +62,75 @@ class RepreparingProvider:
                 yield event
         except ProviderRequestError as error:
             self.rejected(error)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reject_after_tool, fail_progress", [(False, False), (True, False), (True, True)])
+async def test_render_count_reprepare_uses_host_policy_without_replaying_tools(tmp_path, reject_after_tool, fail_progress):
+    tool_calls = []
+    generations = []
+    rendered = []
+
+    @dagent.tool
+    def remember(value: str) -> str:
+        """Remember one value exactly once."""
+        tool_calls.append(value)
+        return "remembered"
+
+    def respond(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith("/render"):
+            rendered.append(body)
+            if body.get("reasoning_effort") == "high" and (not reject_after_tool or tool_calls):
+                return httpx.Response(400, json={"error": {"param": "reasoning_effort",
+                    "code": "unsupported_value", "message": "Model rejects high effort"}})
+            return httpx.Response(200, json={"token_ids": [1, 2, 3], "max_model_len": 4096})
+        generations.append(body)
+        response = _completion("chat_completions", False, usage=_usage("chat_completions"), content="done")
+        if len(generations) == 1:
+            data = response.json()
+            data["choices"][0]["finish_reason"] = "tool_calls"
+            data["choices"][0]["message"] = {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "remember-once", "type": "function", "function": {
+                    "name": "tool_remember", "arguments": json.dumps({"value": "one"}),
+                },
+            }]}
+            response = httpx.Response(200, json=data)
+        return response
+
+    spec = _openapi()
+    spec["paths"]["/v1/chat/completions/render"] = {"post": {}}
+    async with _endpoint(protocol="chat_completions", spec=spec, responder=respond,
+        context_window_tokens=4096, max_output_tokens=512, reasoning_effort="high", token_counting="vllm",
+    ) as (native, _posts):
+        wrapper = RenderFallbackProvider(native)
+        if fail_progress:
+            # The host changed its strategy flag but failed to change the wire
+            # request. The SDK must fail with the signal and retain paid tools.
+            wrapper.prepare_call = native.prepare_call
+        with closing(dagent.Runner(provider=wrapper, workspace=tmp_path)) as runner:
+            agent = dagent.ToolAgent(
+                profile="conversation", capabilities=[remember],
+                context=dagent.ContextPolicy(compaction_strategy="cache_aware"),
+            )
+            if fail_progress:
+                with pytest.raises(ProviderReprepareRequired) as failure:
+                    await runner.run(agent, input="Remember one value, then finish.")
+                result = failure.value.result
+            else:
+                result = await runner.run(agent, input="Remember one value, then finish.")
+        assert native.config.reasoning_effort == "high"
+    assert tool_calls == ["one"]
+    if fail_progress:
+        assert result.status == "failed"
+        assert len(generations) == 1
+        assert any(isinstance(item, dagent.ToolResultMessage) for item in result.conversation.items)
+        return
+    assert result.status == "completed"
+    assert len(generations) == 2
+    assert wrapper.high_rejected
+    assert generations[-1] == rendered[-1] == wrapper.counted[-1].payload
+    assert generations[-1]["reasoning_effort"] == "medium"
 
 
 @pytest.mark.asyncio

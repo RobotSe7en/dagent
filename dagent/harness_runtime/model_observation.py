@@ -9,9 +9,46 @@ from uuid import uuid4
 
 from dagent.harness_runtime.execution_usage import record_model_turn
 from dagent.providers.model_io import (
-    ModelRequest, ModelStreamEvent, complete_model, stream_model,
+    ModelRequest, ModelStreamEvent, ModelTokenCount, PreparedModelCall,
+    complete_model, stream_model,
 )
 from dagent.providers.openai_compatible import ProviderReprepareRequired, ProviderResponseError
+
+
+class _ReprepareGuard:
+    """Require progress and at most four replacements in a preparation chain."""
+
+    def __init__(self, prepared: Any) -> None:
+        self.seen = {prepared.fingerprint} if prepared is not None else set()
+        self.changes = 0
+
+    async def replace(
+        self, reprepare: Callable[[], Awaitable[Any]], error: ProviderReprepareRequired,
+    ) -> Any:
+        if self.changes >= 4:
+            raise error
+        replacement = await reprepare()
+        if replacement.fingerprint in self.seen:
+            raise error
+        self.seen.add(replacement.fingerprint)
+        self.changes += 1
+        return replacement
+
+
+async def count_prepared_call(
+    prepared: PreparedModelCall, *,
+    counter: Callable[[PreparedModelCall], Awaitable[ModelTokenCount | None]],
+    reprepare: Callable[[], Awaitable[PreparedModelCall]],
+) -> tuple[PreparedModelCall, ModelTokenCount | None]:
+    """Count replacements on explicit signals; the caller owns the budget gate."""
+    guard = None
+    while True:
+        try:
+            return prepared, await counter(prepared)
+        except ProviderReprepareRequired as exc:
+            if guard is None:
+                guard = _ReprepareGuard(prepared)
+            prepared = await guard.replace(reprepare, exc)
 
 
 class ContextObserver:
@@ -57,8 +94,7 @@ async def provider_events(
     observer: ContextObserver | None = None, before_attempt: Callable[[], None] | None = None,
 ) -> AsyncIterator[ModelStreamEvent]:
     """Send counted snapshots; only the budget owner may prepare replacements."""
-    seen = {prepared.fingerprint} if prepared is not None else set()
-    changes = 0
+    guard = _ReprepareGuard(prepared)
     while True:
         if before_attempt is not None:
             before_attempt()
@@ -90,7 +126,7 @@ async def provider_events(
             return
         except ProviderReprepareRequired as exc:
             error = exc
-            if emitted or prepared is None or reprepare is None or changes >= 4:
+            if emitted or prepared is None or reprepare is None:
                 raise
             retry = exc
         except BaseException as exc:
@@ -112,9 +148,4 @@ async def provider_events(
                 )
                 if request.purpose == "compaction" and error is None:
                     observer.progress(completed=True)
-        replacement = await reprepare()
-        if replacement.fingerprint in seen:
-            raise retry
-        seen.add(replacement.fingerprint)
-        prepared = replacement
-        changes += 1
+        prepared = await guard.replace(reprepare, retry)

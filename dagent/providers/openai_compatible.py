@@ -125,8 +125,14 @@ class ProviderRequestError(RuntimeError):
 class ProviderReprepareRequired(ProviderRequestError):
     """Request a fresh budget check after a wrapper changes preparation.
 
-    Raise only before emitting response events. The owning runtime prepares
-    and counts the replacement; this exception never authorizes tool replay.
+    A wrapper may raise from count_prepared, complete_prepared, or
+    stream_prepared after an explicit request rejection and a preparation
+    strategy change, before emitting any response events. The owning runtime
+    calls the original request preparer, counts the replacement, and checks its
+    effective output limit and context budget before dispatching that same call.
+    Re-preparation is bounded and requires a new payload fingerprint; ordinary
+    token-count errors do not request retries. Rejection detection and fallback
+    policy belong to the wrapper. This signal never authorizes tool or Run replay.
     """
 
 

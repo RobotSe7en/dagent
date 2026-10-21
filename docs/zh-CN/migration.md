@@ -6,6 +6,21 @@
 
 当前包版本是 `0.10.1`。
 
+## 未发布
+
+### prepared token 计数阶段重新准备
+
+Provider 包装识别请求拒绝并更新准备策略后，现在可从 `count_prepared` 抛出
+`ProviderReprepareRequired`。显式启用的 `cache_aware`、`chunked` ToolAgent 路径
+会重新准备并计数快照，按实际输出上限及有效上下文窗口检查预算，发送通过检查的同一
+快照。覆盖生成阶段请求重准备后的计数及压缩请求。每条计数链最多替换四次，fingerprint
+不变或循环时保留原类型化信号失败。
+
+普通计数错误、已有生成阶段重准备、默认上下文行为及公共签名/导出不变，不重放工具
+或整个 Run。拒绝识别、降级规则与拒绝缓存由上层包装负责，已有应用无需迁移。参见
+[Provider 包装](model-context-and-reasoning.md#provider-包装与观测)
+及离线示例 `examples.prepared_count_reprepare`。
+
 ## 0.10.1
 
 ### Provider 扩展与上下文观测

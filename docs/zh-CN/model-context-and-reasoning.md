@@ -616,10 +616,36 @@ for item in result.conversation.items:
 ## Provider 包装与观测
 
 Provider 包装可使用受支持的 `dagent.providers.ModelRequest`、
-`PreparedModelCall` 和 `ProviderReprepareRequired`。包装只应在明确的请求拒绝后、
-尚未输出响应事件时请求重准备。ToolAgent 的预算所有者重新冻结、计数并校验替代请求，
-保留已完成工具及已付费摘要。一次调用最多改变请求四次，重复 fingerprint 明确拒绝。
-摘要尝试继续共享一次压缩的十二次请求尝试额度和截止时间。
+`PreparedModelCall` 和 `ProviderReprepareRequired`。包装识别明确的请求拒绝并更新
+准备策略后，可从 `count_prepared`、`complete_prepared` 或 `stream_prepared`
+抛出 `ProviderReprepareRequired(cause, metadata=call.metadata)`，前提是尚未输出响应事件。
+
+对于显式启用的 `cache_aware` 和 `chunked` ToolAgent 策略，SDK 会以同一份已投影
+`ModelRequest` 和 stream 模式调用原 request preparer，对替换请求重新计数，并按
+**最终请求的实际输出上限**和有效上下文窗口检查预算，包括计数时发现的窗口上限。
+最终发送通过检查的同一个 `PreparedModelCall`，包装不能在发送时静默替换它。
+替换请求超预算时，继续按现有上下文策略压缩或在发送前失败。保留已完成工具与已付费
+摘要，不重放工具或整个 Run。
+
+同一机制覆盖生成阶段请求重准备后的再次计数、受保护候选的最终强制计数，以及压缩
+请求的首次计数和替换计数。每条计数链最多替换四次（最多五次计数），fingerprint
+不变或重复时抛出触发该次替换的 `ProviderReprepareRequired`。发送阶段保留原有
+最多四次替换及 fingerprint 检查。摘要生成尝试继续共享一次压缩的十二次请求额度，
+准备与计数也受压缩截止时间约束。普通 `ProviderTokenCountError` 和其它错误仍按
+原有规则处理，不会触发重新准备。
+
+拒绝识别、参数降级规则（例如 `high` → `medium`）、拒绝缓存的作用域与有效期均由
+上层包装负责，SDK 不内置模型专属降级或 HTTP 400 自动重试。通过
+`Runner(provider=wrapper, ...)` 接入，让包装按当前策略委托原 Provider 准备请求，
+仅在策略已更新后抛出信号。直接调用 Provider 不会执行这套 SDK 预算循环。
+可运行离线[计数阶段重准备示例](../../examples/prepared_count_reprepare.py)：
+
+```bash
+uv run python -m examples.prepared_count_reprepare
+```
+
+示例识别一种模拟 render 拒绝，在包装内缓存决策，下次准备选择 `medium`，不修改原
+Provider 配置；无法识别的错误原样抛出。已有应用和包装无需修改，除非主动使用该信号。
 
 `ModelRequest(omit_reasoning_effort=True)` 显式省略思考强度，不继承 Provider 默认值，
 并移除额外参数中的当前映射强度字段和标准强度字段。其它嵌套参数和显式思考开关保留，

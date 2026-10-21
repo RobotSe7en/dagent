@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from dagent.capabilities.tools.boundary import enforce_path_allowed
+from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.result_projection import result_references
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import ChatResponse
@@ -438,15 +439,26 @@ class HistoryCompactor:
             # every candidate actually dispatched still receives a final count.
             if heuristic + output > self.assembler.context_window_tokens:
                 return False
-            count = (await self._bounded(self.assembler.prepared_token_counter(prepared))
-                     if self.assembler.prepared_token_counter is not None else None)
+            initial = prepared
+            count = None
+            if self.assembler.prepared_token_counter is not None:
+                prepared, count = await self._bounded(count_prepared_call(
+                    prepared, counter=self.assembler.prepared_token_counter,
+                    reprepare=lambda: self.assembler.request_preparer(request, stream=True),
+                ))
+                self.prepared_call = prepared
+                output = prepared.effective_max_output_tokens
+                if output is None:
+                    raise CompactionError("Prepared compaction request has no bounded output limit.")
             if count is not None:
                 estimate = count.count
                 if getattr(count, "exact", None) is not True:
                     estimate = math.ceil(estimate * (1 + self.policy.token_safety_margin))
                 self._learn_window(count.max_model_len)
             else:
-                estimate = heuristic
+                estimate = heuristic if prepared is initial else math.ceil(self.assembler.token_counter.count_text(
+                    json.dumps(prepared.payload, ensure_ascii=False))
+                    * (1 + self.policy.token_safety_margin))
             self._prepared_estimate = estimate
             return estimate + output <= self.assembler.context_window_tokens
         heuristic = math.ceil(self.assembler.token_counter.count_request(
