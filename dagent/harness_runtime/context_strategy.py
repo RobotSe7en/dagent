@@ -441,7 +441,7 @@ async def _prepare_context(
                     reason="Previously failed source projection; reference continuation requested.", failed_record=prior_record)
             else:
                 summary = await compactor.compact(working.summary, source_items, summary_goal, allow_fallback=hard and policy.allow_reference_fallback)
-        except CompactionError as exc:
+        except (CompactionError, ProviderReprepareRequired) as exc:
             # Failure preserves the original range. Cancellation is a
             # BaseException and deliberately bypasses this handler.
             failed_keys = tuple(source_key(item) for item in source_items)
@@ -449,6 +449,8 @@ async def _prepare_context(
             record = getattr(exc, "compaction_record", None)
             if record is not None:
                 failed_records.append(FailedCompaction(source_keys=failed_keys, record=record))
+            if isinstance(exc, ProviderReprepareRequired):
+                raise
             reason = f"{type(exc).__name__}: {exc}"[:1000]
             if fallback_only:
                 break
@@ -503,11 +505,13 @@ async def _prepare_context(
             try:
                 summary = await tighten(working.summary, min(goal, policy.summary_max_tokens),
                                         allow_fallback=policy.allow_reference_fallback)
-            except CompactionError as exc:
+            except (CompactionError, ProviderReprepareRequired) as exc:
                 failed.add(root_key)
                 record = getattr(exc, "compaction_record", None)
                 if record is not None:
                     failed_records.append(FailedCompaction(source_keys=(root_key,), record=record))
+                if isinstance(exc, ProviderReprepareRequired):
+                    raise
                 reason = f"{type(exc).__name__}: {exc}"[:1000]
             else:
                 working = working.model_copy(update={"summary": summary, "revision": working.revision + 1})

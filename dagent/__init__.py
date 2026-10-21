@@ -104,7 +104,7 @@ from dagent.schemas import (
     UserMessage,
 )
 
-__version__ = "0.10.1"
+__version__ = "0.10.1a0"
 
 __all__ = [
     "__version__",

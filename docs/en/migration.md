@@ -5,9 +5,10 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.10.1`.
+The current package version is `0.10.1a0` (`0.10.1.alpha`); the stable release
+remains `0.10.1`.
 
-## Unreleased
+## 0.10.1a0 (0.10.1.alpha)
 
 ### Re-preparation during prepared token counting
 
@@ -25,6 +26,31 @@ replay. Host wrappers own rejection detection, fallback rules, and rejection
 caches; no application migration is required. See
 [Provider wrappers](model-context-and-reasoning.md#provider-wrappers-and-observations)
 and the offline `examples.prepared_count_reprepare` example.
+
+### Failure and observation fixes
+
+- Scoped observation events from registered subagents and DAG ToolAgents no
+  longer fail strict event validation. The adapter explicitly handles the
+  emitters' attribution fields without changing observation payload schemas;
+  response and capability events retain parent/DAG/node attribution.
+- A terminal counting re-preparation signal now saves completed compaction
+  chunks and attaches their partial record to the failed conversation. Explicit
+  reference recovery can reuse that paid work without new model calls. The
+  original typed signal still propagates, even when reference fallback is enabled.
+- Generation replacement overflow failures include the overflowing request's
+  `ContextUsage` in the failed result, including streaming results.
+
+### Installation and verification
+
+Python normalizes `0.10.1.alpha` to `0.10.1a0`, which sorts before stable
+`0.10.1`. Install this prerelease explicitly:
+`pip install 'dagent-ai==0.10.1a0'`. There are no breaking changes or required
+source, configuration, or persisted-record migrations.
+
+Validation: 1,872 Python/MCP tests passed, 3 skipped, with one expected tokenizer
+warning. The offline prepared-count wrapper example, wheel/sdist builds, package
+metadata checks, and isolated wheel installation passed. Render rejection tests
+use simulated endpoints; this release does not claim live vLLM acceptance.
 
 ## 0.10.1
 

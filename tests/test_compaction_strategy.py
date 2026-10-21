@@ -19,6 +19,7 @@ from dagent.providers.model_io import (
     ModelAssistantTurn, ModelRequest, ModelResponse, ModelToolResultInput, ModelUserInput,
     ModelTokenCount,
 )
+from dagent.providers import ProviderReprepareRequired
 from dagent.schemas.context import ContextPolicy, ModelCallMetadata
 from dagent.schemas.conversation import (
     AssistantMessage, ContextSummary, FrozenResultDisplay, ToolCallItem,
@@ -296,6 +297,105 @@ async def test_failed_record_reuses_partial_chunks_without_new_model_calls(tmp_p
     assert record.reused_from == failed_ref
     assert record.calls == ()
     assert record.unresolved_ranges == failed.unresolved_ranges
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow_fallback", [False, True])
+@pytest.mark.parametrize("failure_mode", ["repeated_fingerprint", "limit"])
+@pytest.mark.parametrize("via_context", [False, True])
+async def test_count_reprepare_failure_preserves_paid_chunks_and_typed_signal(tmp_path, allow_fallback, failure_mode, via_context):
+    calls = 0
+    preparations = 0
+    failed_counts = 0
+    error = ProviderReprepareRequired(ValueError("explicit rejection"),
+        metadata=ModelCallMetadata(protocol="chat_completions"))
+
+    async def chat(request):
+        nonlocal calls
+        calls += 1
+        return summary_response(request)
+
+    async def prepare(request, *, stream):
+        nonlocal preparations
+        preparations += 1
+        payload = {"messages": [request.items[0].content]}
+        if failure_mode == "limit":
+            payload["revision"] = preparations
+        return SimpleNamespace(request=request, payload=payload, fingerprint=json.dumps(payload),
+                               effective_max_output_tokens=request.max_output_tokens)
+
+    async def count(call):
+        nonlocal failed_counts
+        if call.request.purpose == "generation":
+            return ModelTokenCount(count=6000, exact=True)
+        if calls:
+            failed_counts += 1
+            raise error
+        return None
+
+    item = UserMessage(id="source", run_id="old", content="x" * 14000)
+    engine = compactor(tmp_path, chat, window=4096, fallback=True)
+    engine.assembler.request_preparer = prepare
+    engine.assembler.prepared_token_counter = count
+    with pytest.raises(ProviderReprepareRequired) as failure:
+        if via_context:
+            from dagent.schemas import ConversationState
+
+            await engine.assembler.prepare(
+                system_message=engine.system_message,
+                conversation=ConversationState(items=(item, UserMessage(run_id="active", content="Continue"))),
+                active_run_id="active", policy=engine.policy, enable_new_strategy=True,
+                result_store=engine.result_store, history_compactor=engine,
+            )
+        else:
+            await engine.compact(None, (item,), 256, allow_fallback=allow_fallback)
+    assert failure.value is error
+    assert calls == 1
+    assert failed_counts == (5 if failure_mode == "limit" else 1)
+    reference = error.compaction_record
+    if via_context:
+        assert error._conversation.compaction_state.failed_records[0].record == reference
+    record = CompactionRecordV1.model_validate_json(engine.result_store.read_reference(reference))
+    assert record.status == "partial"
+    assert record.source == error.source_reference
+    assert len(record.chunks) == len(record.calls) == 1
+    assert record.unresolved_ranges
+    assert "explicit rejection" in record.failure_reason
+    engine.reset_budget()
+    recovered = await engine.reference_fallback(None, (item,), 256,
+        reason="reuse paid work", failed_record=reference)
+    recovered_record = record_for(engine, recovered)
+    assert recovered_record.chunks == record.chunks
+    assert recovered_record.reused_from == reference
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_tightening_count_reprepare_failure_retains_the_root_record(tmp_path):
+    async def chat(request):
+        return summary_response(request)
+
+    engine = compactor(tmp_path, chat, fallback=True)
+    original = await engine.compact(None, (UserMessage(id="source", content="Original requirement"),), 256)
+    error = ProviderReprepareRequired(ValueError("explicit rejection"),
+        metadata=ModelCallMetadata(protocol="chat_completions"))
+
+    async def prepare(request, *, stream):
+        return SimpleNamespace(request=request, payload={"messages": ["same"]}, fingerprint="same",
+                               effective_max_output_tokens=request.max_output_tokens)
+
+    async def count(call):
+        raise error
+
+    engine.assembler.request_preparer = prepare
+    engine.assembler.prepared_token_counter = count
+    with pytest.raises(ProviderReprepareRequired) as failure:
+        await engine.tighten(original, 128, allow_fallback=True)
+    assert failure.value is error
+    record = CompactionRecordV1.model_validate_json(engine.result_store.read_reference(error.compaction_record))
+    assert record.source == error.source_reference
+    assert record.previous_record == original.compaction_record
+    assert record.chunks == ()
 
 
 @pytest.mark.asyncio

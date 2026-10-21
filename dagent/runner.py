@@ -2818,7 +2818,11 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
         return RunStreamEvent.model_validate({
             "type": observation_types[event_type],
             "run_id": _nullable_event_string(data.get("run_id")),
-            "data": {key: value for key, value in data.items() if key not in {"type", "run_id"}},
+            # Scoped emitters also add attribution used by response/capability
+            # events. Observation data keeps its existing strict public shape.
+            "data": {key: value for key, value in data.items() if key not in {
+                "type", "run_id", "parent_capability_id", "dag_id", "node_id",
+            }},
         })
 
     if event_type == "context_compaction_started":

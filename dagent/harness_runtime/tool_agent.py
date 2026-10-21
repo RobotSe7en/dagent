@@ -887,6 +887,8 @@ class ToolAgentLoop:
                     )
                 except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError) as exc:
                     loop_conversation = getattr(exc, "_conversation", loop_conversation)
+                    if isinstance(exc, ContextWindowExceeded):
+                        context_usages.append(exc.usage)
                     trace.root.error = RunTraceError(code=type(exc).__name__, message=str(exc))
                     trace.root.ended_at = datetime.now(timezone.utc)
                     raise ToolContextFailure(exc, failed_outcome()) from exc

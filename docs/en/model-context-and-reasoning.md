@@ -763,6 +763,11 @@ four-change limit and fingerprint checks. Summary generation attempts still
 share the twelve-attempt compaction budget; preparation and counting remain
 within the compaction deadline. Ordinary `ProviderTokenCountError` and other
 errors retain their existing handling and do not request re-preparation.
+If counting re-preparation terminates during compaction, completed chunks are
+saved in a partial record linked from the failed conversation for explicit
+reference recovery. The typed signal still propagates when fallback is enabled.
+Replacement overflow failures include that request's `ContextUsage` in the
+failed result, including streaming results.
 
 Rejection classification, parameter fallback rules (such as `high` → `medium`),
 and rejection-cache scope/lifetime belong to the host wrapper. The SDK provides
@@ -797,6 +802,8 @@ reports actual internal summary progress, throttled to once per second, and
 `context.compaction.finished` continues to mean an actual context replacement.
 No new events are emitted unless observation is enabled. Existing SDK defaults,
 legacy compaction defaults, schemas 4/6/9 and default checkpoint fingerprints are retained.
+Scoped emitters' attribution fields do not change these observation payloads;
+use response and capability events for parent-capability, DAG, and node attribution.
 With observation enabled, legacy summaries stream internally for progress;
 their fallback policy is retained.
 

@@ -6,9 +6,10 @@ import json
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 import dagent
-from dagent.providers import ModelRequest, ProviderRequestError, ProviderReprepareRequired
+from dagent.providers import ChatResponse, MockProvider, ModelRequest, ProviderRequestError, ProviderReprepareRequired, ToolCall
 from dagent.providers.model_io import ModelUserInput
 from tests.test_cache_usage import _completion, _usage
 from tests.test_reasoning_mapping import _endpoint
@@ -189,14 +190,61 @@ async def test_reprepare_recounts_without_replaying_tools(tmp_path, stream, over
                     assert result is not None, "stream failure lost its SDK result"
                     assert result.status == "failed"
                 else:
-                    with pytest.raises(dagent.ContextWindowExceeded):
+                    with pytest.raises(dagent.ContextWindowExceeded) as failure:
                         await run()
+                    result = failure.value.result
+                    assert result.context_usage[-1] == failure.value.usage
+                assert result.context_usage[-1].estimated_input_tokens > result.context_usage[-1].input_budget_tokens
+                assert result.context_usage[-2].estimated_input_tokens <= result.context_usage[-2].input_budget_tokens
                 assert len(posts) == 1
             else:
                 result = await run()
                 assert result.status == "completed"
                 assert len(posts) == 2
                 assert "reasoning_effort" not in provider.sent[-1]
+
+
+@pytest.mark.parametrize("payload", [
+    {"type": "model_call_observed", "call_id": "call", "purpose": "generation",
+     "status": "completed", "elapsed_seconds": 0.1},
+    {"type": "context_compaction_progress", "compaction_id": "compaction", "received_characters": 10},
+    {"type": "context_compaction_ended", "compaction_id": "compaction", "outcome": "model"},
+])
+def test_scoped_observations_handle_only_known_attribution_fields(payload):
+    from dagent.runner import _stream_event_from_runtime
+
+    scoped = {**payload, "run_id": "run", "parent_capability_id": "agent.helper",
+              "dag_id": "dag", "node_id": "node"}
+    event = _stream_event_from_runtime(scoped)
+    assert event.run_id == "run"
+    assert dagent.RunStreamEvent.model_validate(event.model_dump(mode="json")) == event
+    # Keep strict validation for unexpected observation data.
+    with pytest.raises(ValidationError):
+        _stream_event_from_runtime({**scoped, "unexpected": True})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution", ["subagent", "dag"])
+async def test_scoped_agent_streams_complete_with_context_observability(tmp_path, execution):
+    helper = dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[], max_steps=1)
+    responses = [ChatResponse(content="helper done")]
+    if execution == "subagent":
+        responses = [ChatResponse(tool_calls=[ToolCall(id="delegate", name="agent_helper",
+                     arguments={"prompt": "Help"})]), *responses, ChatResponse(content="done")]
+    with closing(dagent.Runner(provider=MockProvider(responses), workspace=tmp_path,
+                              context_observability=True)) as runner:
+        if execution == "subagent":
+            runner.add_agent(helper)
+            target = dagent.ToolAgent(profile="conversation", capabilities=[], skills=[], agents=["agent.helper"])
+            events = [event async for event in runner.stream(target, input="Delegate")]
+        else:
+            target = dagent.Dag("observed")
+            target.add_node(dagent.Node("helper", target=helper, inputs={"prompt": "Help"}))
+            events = [event async for event in runner.stream(target, workspace_root=tmp_path / "runs")]
+    assert events[-1].data.result.status == "completed"
+    observations = [event for event in events if event.type == "model.call.observed"]
+    assert len(observations) == (3 if execution == "subagent" else 1)
+    assert all(event.data.status == "completed" for event in observations)
 
 
 @pytest.mark.asyncio

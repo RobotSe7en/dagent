@@ -26,6 +26,7 @@ from dagent.providers.model_io import (
     ModelRequest, ModelResponse, ModelUserInput, model_request_to_chat,
     model_response_from_chat, normalize_model_response,
 )
+from dagent.providers.openai_compatible import ProviderReprepareRequired
 from dagent.schemas.context import ContextPolicy, ModelCallMetadata, ModelTokenUsage
 from dagent.schemas.conversation import (
     AssistantMessage, ContentReference, ContextSummary, ConversationItem,
@@ -282,7 +283,7 @@ class HistoryCompactor:
                 summary, final_response = await self._reduce(chunks, sources, max_tokens)
             return self._finish(previous, items, source, sources, chunks, summary,
                                 final_response, max_tokens)
-        except CompactionError as exc:
+        except (CompactionError, ProviderReprepareRequired) as exc:
             if isinstance(exc, CompactionArchiveError):
                 raise
             failed_record = self._save_record(
@@ -290,6 +291,8 @@ class HistoryCompactor:
                 status="partial" if chunks else "reference_only", reason=str(exc))
             exc.compaction_record = failed_record
             exc.source_reference = source
+            if isinstance(exc, ProviderReprepareRequired):
+                raise
             if allow_fallback and self.policy.allow_reference_fallback:
                 try:
                     return self._fallback(previous, items, source, sources, chunks,
@@ -374,13 +377,15 @@ class HistoryCompactor:
             chunks.append(CompactionChunk(ranges=_all_ranges(sources), summary=checkpoint))
             return self._finish(summary, (), source, sources, chunks,
                                 checkpoint, response, max_tokens)
-        except CompactionError as exc:
+        except (CompactionError, ProviderReprepareRequired) as exc:
             if isinstance(exc, CompactionArchiveError):
                 raise
             exc.compaction_record = self._save_record(
                 summary, source, sources, chunks,
                 status="partial" if chunks else "reference_only", reason=str(exc))
             exc.source_reference = source
+            if isinstance(exc, ProviderReprepareRequired):
+                raise
             if allow_fallback and self.policy.allow_reference_fallback:
                 try:
                     return self._fallback(summary, (), source, sources, chunks,
