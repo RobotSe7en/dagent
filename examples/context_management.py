@@ -100,8 +100,13 @@ async def main() -> None:
                     # unreadable bodies (including NUL text) must fit intact.
                     profile="conversation", capabilities=[evidence, "tool.read_file"], max_steps=32,
                     context=dagent.ContextPolicy(
+                        # This 8K offline demo returns short synthetic checkpoints.
+                        # Real workloads can leave summary_max_tokens at its 8192 default.
                         compaction_strategy="cache_aware", summary_max_tokens=512,
-                        max_tool_result_tokens=1024, allow_reference_fallback=True,
+                        max_tool_result_tokens=1024,
+                        # Permit reference continuation under hard pressure, including
+                        # when preflight leaves too little output room for a summary.
+                        allow_reference_fallback=True,
                     ),
                 )
                 events = [event async for event in runner.stream(

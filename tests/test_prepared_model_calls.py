@@ -112,13 +112,24 @@ async def test_strict_summary_output_is_independent_while_legacy_ceiling_remains
 
 
 @pytest.mark.asyncio
-async def test_strict_default_output_budget_is_present_on_wire():
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_strict_default_output_budget_is_present_on_wire(protocol, stream):
     client = DualProtocolClient()
     configured = provider(client)
-    await configured.complete(request())
-    assert client.completions.calls[-1]["max_completion_tokens"] == 8192
-    await configured.complete(replace(request(), strict_context_budget=False))
-    assert "max_completion_tokens" not in client.completions.calls[-1]
+    configured.config.protocol = protocol
+    endpoint = client.completions if protocol == "chat_completions" else client.responses
+    field = "max_completion_tokens" if protocol == "chat_completions" else "max_output_tokens"
+    for strict in (True, False):
+        call = replace(request(), strict_context_budget=strict)
+        if stream:
+            _events = [event async for event in configured.stream(call)]
+        else:
+            await configured.complete(call)
+        if strict:
+            assert endpoint.calls[-1][field] == 16384
+        else:
+            assert field not in endpoint.calls[-1]
 
 
 @pytest.mark.asyncio
@@ -1099,10 +1110,12 @@ async def test_candidates_far_beyond_the_local_overcount_are_not_sent_to_the_cou
     )
     assert compactor.calls
     assert prepared.usage.count_precision == "rendered"
-    # Only the compacted request was counted; the original is ~4x the budget.
-    assert [path for path, _ in client.raw_posts] == ["/v1/chat/completions/render"]
+    # Count the retained planning request and final replacement, never the
+    # original which is ~4x the budget.
+    assert [path for path, _ in client.raw_posts] == ["/v1/chat/completions/render"] * 2
     counter = HeuristicTokenCounter()
-    assert counter.count_text(json.dumps(client.raw_posts[0][1], ensure_ascii=False)) < 2 * (32768 - 4096)
+    assert all(counter.count_text(json.dumps(body, ensure_ascii=False)) < 2 * (32768 - 4096)
+               for _, body in client.raw_posts)
 
 
 @pytest.mark.asyncio

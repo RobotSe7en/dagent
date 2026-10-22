@@ -10,6 +10,47 @@ remains `0.10.1`.
 
 ## Unreleased
 
+### Counted summary budgets and 16K automatic generation output
+
+Compared with `0.10.2a0`, the maintainer-approved budget changes apply directly to
+`chunked` and `cache_aware`; no new policy switch is required. The automatic
+generation output limit is now `min(16384, max(1, W // 8))`, previously capped at
+8192. At 128K and 256K this reserves 8192 more output tokens, reduces the input
+budget and can trigger compaction earlier. Explicit output limits and extra
+argument precedence are unchanged. Set `max_output_tokens=8192` on those large
+window deployments to retain the previous generation allowance; this does not
+restore the old summary algorithm. Smaller windows retain their proportional
+automatic output allowance. `ProviderConfig.max_output_tokens=None`, non-strict
+calls and `legacy` behavior are unchanged.
+
+Summary planning counts the retained request instead of subtracting raw source
+estimates from a differently measured total. It reserves space for the checkpoint
+wrapper, balances the visible goal with reasoning/output allowance, and can
+reduce spare warm-prefix output before using chunks. The automatic summary
+output cap remains a quarter of the window. `summary_max_tokens` still defaults
+to 8192 and accepts values down to 64. A small root can still tighten once.
+Pure preflight capacity skips do not permanently fail a source; changed
+projections can be reconsidered within the same bounded episode.
+Under hard pressure, `allow_reference_fallback=True` still permits recoverable
+reference continuation when preflight cannot fit a summary, for both history
+compaction and root tightening. No additional configuration is required.
+
+This changes summary prompts, requested output limits and possibly prefix/chunk
+selection, latency and cost. Planning usually adds one count per candidate, or a
+second count for separated spans. Larger summary budgets do not promise fewer
+compactions or enough reasoning for every model. Verification uses deterministic
+regression and offline endurance tests; real-model reasoning quality and cache
+benefits require separate deployment testing.
+
+Public signatures, exports, configuration defaults other than automatic strict
+output, and persisted record schemas are unchanged. Existing records remain
+readable and paid replacements remain reusable. Existing failed-source markers
+are not automatically cleared. To explicitly retry previously blocked history,
+use `conversation.model_copy(update={"compaction_state": None})`; clearing that
+state also discards its paid-record reuse entries, so do so only intentionally.
+No configuration or record format migration is required. These changes will be
+assigned to their release version when published; this section is not a release.
+
 ### Markdown compaction checkpoint protocol
 
 For the opt-in `chunked` and `cache_aware` strategies, summary request instructions

@@ -10,14 +10,16 @@ import asyncio
 import hashlib
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Sequence
 
 from dagent.harness_runtime.context import (
     ContextAssembler, PreparedModelContext, _atomic_groups, _context_results,
-    _latest_run_id, _should_replay_reasoning, _ProjectionUsage, user_content_for_model,
+    _latest_run_id, _should_replay_reasoning, _ProjectionUsage, _summary_context_text, user_content_for_model,
 )
-from dagent.harness_runtime.compaction import HEURISTIC_OVERCOUNT_LIMIT, CompactionError
+from dagent.harness_runtime.compaction import (
+    HEURISTIC_OVERCOUNT_LIMIT, CompactionError, _CompactionCapacityUnavailable, _SummaryBudget,
+)
 from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.frozen_results import (
     RecoveryAccess, freeze_result_displays, reference_frozen_result_displays,
@@ -26,7 +28,9 @@ from dagent.harness_runtime.frozen_results import (
 from dagent.harness_runtime.result_projection import ResultBudgetExceeded
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import StructuredOutputFormat
-from dagent.providers.model_io import ModelRequest, ModelTokenCount, PreparedModelCall, model_request_to_chat
+from dagent.providers.model_io import (
+    ModelRequest, ModelTokenCount, ModelUserInput, PreparedModelCall, _automatic_output_limit, model_request_to_chat,
+)
 from dagent.providers.openai_compatible import (
     ProviderCapabilityError, ProviderContextWindowError, ProviderRenderRejected, ProviderReprepareRequired,
 )
@@ -204,7 +208,7 @@ async def _prepare_context(
     requested_output = max_output_tokens if max_output_tokens is not None else assembler.max_output_tokens
     automatic_output = requested_output is None
     if requested_output is None:
-        requested_output = min(8192, max(1, assembler.context_window_tokens // 8))
+        requested_output = _automatic_output_limit(assembler.context_window_tokens)
 
     # Freeze provisional new views at the normal per-result cap. Old views are
     # never redistributed. Old history gets its compaction opportunity first.
@@ -219,13 +223,15 @@ async def _prepare_context(
             total_budget_tokens=2**60,
         )
 
-    async def project(*, force_count: bool = False, frozen_call: PreparedModelCall | None = None):
+    async def project(*, force_count: bool = False, frozen_call: PreparedModelCall | None = None,
+                      candidate: ConversationState | None = None):
         nonlocal requested_output
-        readable = frozenset(item.id for item in _context_results(working.items)
+        projected = working if candidate is None else candidate
+        readable = frozenset(item.id for item in _context_results(projected.items)
                              if access and (access.can_read(item.model_display.recovery)
                                             if item.model_display else result_store.can_read(item)))
         request, projection = assembler._project(
-            system_message=system_message, conversation=working, tools=tools,
+            system_message=system_message, conversation=projected, tools=tools,
             policy=policy, active_run_id=active_run_id, omitted_reasoning_ids=omitted,
             response_format=response_format, max_output_tokens=requested_output,
             reasoning_effort=reasoning_effort, purpose=purpose,
@@ -270,10 +276,10 @@ async def _prepare_context(
                         assembler.server_max_model_len,
                         assembler.model_context_window_tokens,
                     ) if value is not None)
-                    inferred_output = min(8192, max(1, window // 8))
+                    inferred_output = _automatic_output_limit(window)
                     if automatic_output and requested_output != inferred_output:
                         requested_output = inferred_output
-                        return await project(force_count=force_count)
+                        return await project(force_count=force_count, candidate=candidate)
                     raise
             # A wrapper may change the wire output limit during counting.
             output = prepared.effective_max_output_tokens
@@ -291,10 +297,10 @@ async def _prepare_context(
         limits = [value for value in (assembler.configured_context_window_tokens,
                   assembler.server_max_model_len, assembler.model_context_window_tokens) if value is not None]
         window = min(limits) if limits else assembler.context_window_tokens
-        inferred_output = min(8192, max(1, window // 8))
+        inferred_output = _automatic_output_limit(window)
         if automatic_output and requested_output != inferred_output:
             requested_output = inferred_output
-            return await project(force_count=force_count)
+            return await project(force_count=force_count, candidate=candidate)
         if output is None or output >= window:
             error = ProviderCapabilityError(
                 f"The effective output limit ({output}) must be smaller than the context window ({window}).")
@@ -384,246 +390,338 @@ async def _prepare_context(
     run_state = getattr(compactor, "run_state", None)
     unavailable: set[str] = run_state.unavailable_sources if run_state is not None else set()
     considered_records: set[tuple[str, str | None]] = set()
-    while compactor is not None and state.estimate > math.floor(state.input_budget * policy.compaction_trigger_ratio) and attempts < 8:
-        hard = state.estimate > state.input_budget
-        ranges = _eligible_slices(working, active_run_id, request=state.request, assembler=assembler,
-                                  retain_tokens=0 if hard else math.floor(state.input_budget * policy.compaction_retain_ratio))
-        if not ranges:
-            break
-        selected = None
-        fallback_only = False
-        cached_summary = None
-        reuse = getattr(compactor, "reuse_compaction", None)
-        if callable(reuse):
-            positions = {source_key(item): index for index, item in enumerate(working.items)}
-            boundaries = set(_atomic_groups(working.items, start=0, end=len(working.items)))
-            starts = {start for start, _ in boundaries}
-            ends = {end for _, end in boundaries}
-            for record in reversed(failed_records):
-                # A later paid record can depend on an earlier replacement.
-                # Retry its exact match after restoring that earlier root.
-                reuse_key = (record.record.sha256, summary_key())
-                if reuse_key in considered_records:
-                    continue
-                indices = sorted(positions[key] for key in record.source_keys if key in positions)
-                if (not indices or len(indices) != len(record.source_keys)
-                        or indices != list(range(indices[0], indices[-1] + 1))):
-                    continue
-                start, end = indices[0], indices[-1] + 1
-                if start not in starts or end not in ends or not any(left <= start and end <= right for left, right in ranges):
-                    continue
-                considered_records.add(reuse_key)
-                cached_summary = await reuse(working.summary, working.items[start:end],
-                    policy.summary_max_tokens, record_reference=record.record)
-                if cached_summary is not None:
-                    selected = (start, end)
-                    break
-        for start, end in ranges if selected is None else ():
-            # Split only between complete atomic exchanges. New work can be
-            # summarized without repeatedly sending a failed unchanged span.
-            for group_start, group_end in _atomic_groups(working.items, start=start, end=end):
-                blocked = any(source_key(item) in failed or (not hard and source_key(item) in unavailable)
-                              for item in working.items[group_start:group_end])
-                if blocked and selected is not None:
-                    break
-                if not blocked:
-                    selected = (selected[0], group_end) if selected else (group_start, group_end)
-            if selected is not None:
-                break
-        if selected is None:
-            if hard and policy.allow_reference_fallback:
-                selected, fallback_only = ranges[0], True
-            else:
-                break
-        start, end = selected
-        source_items = working.items[start:end]
-        before = working
-        before_state = state
-        # Estimate a body goal from the fixed/protected remainder, then verify
-        # the entire assembled request before committing the replacement.
-        selected_ids = {item.id for item in source_items}
-        selected_view = tuple(item for item in state.request.items
-                              if item.source_id in selected_ids or item.source_id == "context_summary")
-        source_tokens = assembler.token_counter.count_request(
-            model_request_to_chat(ModelRequest(instructions="", items=selected_view), reasoning_field="reasoning"), ())
-        if not hard and cached_summary is None:
-            # Under soft pressure, wait until the eligible history is worth a
-            # paid summary and a prefix break. Otherwise mandatory input that
-            # stays above the trigger would compact one small group per step.
-            # Its share of the local estimate scales the counted request size.
-            eligible_ids = {item.id for range_start, range_end in ranges for item in working.items[range_start:range_end]
-                            if source_key(item) not in failed and source_key(item) not in unavailable}
-            history_tokens = assembler.token_counter.count_request(model_request_to_chat(ModelRequest(
-                instructions="", items=tuple(item for item in state.request.items if item.source_id in eligible_ids),
-            ), reasoning_field="reasoning"), ())
-            request_tokens = assembler.token_counter.count_request(
-                model_request_to_chat(state.request, reasoning_field="reasoning"), state.request.tools)
-            if history_tokens * state.estimate < math.ceil(state.input_budget * 0.1) * max(1, request_tokens):
-                break
-        target = math.floor(state.input_budget * 0.65)
-        room = target - max(0, state.estimate - source_tokens)
-        summary_goal = min(policy.summary_max_tokens, max(256, room))
-        compactor.source_request = state.request
-        # A replaced root summary was never sent, so its prefix cannot hit.
-        compactor.prefix_sample = working.summary is unprojected.summary
-        attempts += 1
-        try:
-            if cached_summary is not None:
-                summary = cached_summary
-            elif fallback_only:
-                keys = {source_key(item) for item in source_items}
-                prior_record = next((record.record for record in reversed(failed_records) if set(record.source_keys) == keys), None)
-                summary = await compactor.reference_fallback(working.summary, source_items, summary_goal,
-                    reason="Previously failed source projection; reference continuation requested.", failed_record=prior_record)
-            else:
-                summary = await compactor.compact(working.summary, source_items, summary_goal, allow_fallback=hard and policy.allow_reference_fallback)
-        except (CompactionError, ProviderReprepareRequired) as exc:
-            # Failure preserves the original range. Cancellation is a
-            # BaseException and deliberately bypasses this handler.
-            reason = f"{type(exc).__name__}: {exc}"[:1000]
-            if getattr(exc, "transient", False):
-                # Not a verdict on this source: record nothing in the
-                # conversation and stop calling the summarizer in this episode.
-                unavailable.update(source_key(item) for item in source_items)
-                summarizer_unavailable = True
-                break
-            failed_keys = tuple(source_key(item) for item in source_items)
-            failed.update(failed_keys)
-            record = getattr(exc, "compaction_record", None)
-            if record is not None:
-                failed_records.append(FailedCompaction(source_keys=failed_keys, record=record))
-            if isinstance(exc, ProviderReprepareRequired):
-                raise
-            if fallback_only:
-                break
-            continue
-        working = working.model_copy(update={"summary": summary, "items": working.items[:start] + working.items[end:], "revision": working.revision + 1})
-        if summary.compaction_record is not None:
-            staged_records.append(FailedCompaction(source_keys=tuple(source_key(item) for item in source_items),
-                                                   record=summary.compaction_record))
-        state = await project()
-        progress = before_state.estimate - state.estimate
-        minimum_progress = max(256, math.ceil(state.input_budget * .01))
-        if state.estimate > state.input_budget and progress < minimum_progress:
-            working, state = before, before_state
-            failed.update(source_key(item) for item in source_items)
-            if summary.compaction_record is not None:
-                failed_records.append(staged_records[-1])
-            reason = "Summary replacement did not make sufficient budget progress."
-            continue
-        compacted += len(source_items)
-        active_compacted += sum(item.run_id == active_run_id for item in source_items)
-        method, reason = summary.method, summary.fallback_reason
-        prefix_break = "compaction"
-        # Under soft pressure the worth-it check above decides whether the
-        # remaining eligible history justifies another summary.
+    deferred: set[str] = set()
+    probe_cache: dict[tuple[Any, ...], _Candidate] = {}
 
-    # Tighten only the current root once; never re-send raw source just because
-    # wrappers or the final rendered token count made its first goal too large.
-    tighten = getattr(compactor, "tighten", None)
-    root_key = summary_key()
-    if working.summary is not None and root_key in failed and state.estimate > state.input_budget:
-        reuse = getattr(compactor, "reuse_compaction", None)
-        record = next((record.record for record in reversed(failed_records)
-                       if record.source_keys == (root_key,)), None)
-        if callable(reuse) and record is not None:
-            summary = await reuse(working.summary, (), policy.summary_max_tokens,
-                                  record_reference=record)
-            if summary is not None:
-                before, before_state = working, state
-                working = working.model_copy(update={"summary": summary, "revision": working.revision + 1})
-                staged_records.append(FailedCompaction(source_keys=(root_key,), record=summary.compaction_record))
-                state = await project()
-                if state.estimate < before_state.estimate:
-                    method, reason, prefix_break = summary.method, summary.fallback_reason, "compaction"
-                    root_key = summary_key()
+    async def retained_request(removed: set[str]) -> _Candidate:
+        retained = tuple(item for item in working.items if item.id not in removed)
+        key = (tuple(id(item) for item in retained), frozenset(omitted), requested_output,
+               assembler.context_window_tokens, state.output)
+        if key not in probe_cache:
+            check = getattr(compactor, "_check_budget", None)
+            if callable(check):
+                check(check_calls=False)
+            operation = project(candidate=working.model_copy(update={"items": retained, "summary": None}))
+            bounded = getattr(compactor, "_bounded", None)
+            probe_cache[key] = await bounded(operation) if callable(bounded) else await operation
+        return probe_cache[key]
+
+    def summary_overhead(request: ModelRequest) -> int:
+        # Snapshot names have a fixed SHA-256 width. This is only a local text
+        # estimate: no fake ContentReference is constructed or persisted.
+        path = ((result_store.snapshot_root.relative_to(result_store.workspace) / ("0" * 64 + ".txt")).as_posix()
+                if result_store else None)
+        wrapper = ModelUserInput(source_id="context_summary", content=_summary_context_text("", record_path=path))
+        with_wrapper = replace(request, items=(wrapper, *request.items))
+        counter = assembler.token_counter
+        return max(0, counter.count_request(model_request_to_chat(with_wrapper, reasoning_field="reasoning"), request.tools)
+                   - counter.count_request(model_request_to_chat(request, reasoning_field="reasoning"), request.tools))
+
+    tightened_root = False
+    for repair_round in range(2):
+        while compactor is not None and state.estimate > math.floor(state.input_budget * policy.compaction_trigger_ratio) and attempts < 8:
+            hard = state.estimate > state.input_budget
+            ranges = _eligible_slices(working, active_run_id, request=state.request, assembler=assembler,
+                                      retain_tokens=0 if hard else math.floor(state.input_budget * policy.compaction_retain_ratio))
+            if not ranges:
+                break
+            selected = None
+            fallback_only = False
+            cached_summary = None
+            reuse = getattr(compactor, "reuse_compaction", None)
+            if callable(reuse):
+                positions = {source_key(item): index for index, item in enumerate(working.items)}
+                boundaries = set(_atomic_groups(working.items, start=0, end=len(working.items)))
+                starts = {start for start, _ in boundaries}
+                ends = {end for _, end in boundaries}
+                for record in reversed(failed_records):
+                    # A later paid record can depend on an earlier replacement.
+                    # Retry its exact match after restoring that earlier root.
+                    reuse_key = (record.record.sha256, summary_key())
+                    if reuse_key in considered_records:
+                        continue
+                    indices = sorted(positions[key] for key in record.source_keys if key in positions)
+                    if (not indices or len(indices) != len(record.source_keys)
+                            or indices != list(range(indices[0], indices[-1] + 1))):
+                        continue
+                    start, end = indices[0], indices[-1] + 1
+                    if start not in starts or end not in ends or not any(left <= start and end <= right for left, right in ranges):
+                        continue
+                    considered_records.add(reuse_key)
+                    cached_summary = await reuse(working.summary, working.items[start:end],
+                        policy.summary_max_tokens, record_reference=record.record)
+                    if cached_summary is not None:
+                        selected = (start, end)
+                        break
+            for start, end in ranges if selected is None else ():
+                # Split only between complete atomic exchanges. New work can be
+                # summarized without repeatedly sending a failed unchanged span.
+                for group_start, group_end in _atomic_groups(working.items, start=start, end=end):
+                    blocked = any(source_key(item) in failed or source_key(item) in deferred
+                                  or (not hard and source_key(item) in unavailable)
+                                  for item in working.items[group_start:group_end])
+                    if blocked and selected is not None:
+                        break
+                    if not blocked:
+                        selected = (selected[0], group_end) if selected else (group_start, group_end)
+                if selected is not None:
+                    break
+            if selected is None:
+                fallback_range = next(((left, right) for left, right in ranges
+                                       if not any(source_key(item) in deferred for item in working.items[left:right])), None)
+                if hard and policy.allow_reference_fallback and fallback_range is not None:
+                    selected, fallback_only = fallback_range, True
                 else:
-                    working, state = before, before_state
-    if (callable(tighten) and not summarizer_unavailable and working.summary is not None
-            and root_key not in failed and state.estimate > state.input_budget):
-        current_tokens = assembler.token_counter.count_text(working.summary.content)
-        goal = current_tokens - math.ceil((state.estimate - state.input_budget) / (1 + policy.token_safety_margin)) - 64
-        if 64 <= goal < current_tokens:
-            before, before_state = working, state
+                    break
+            start, end = selected
+            source_items = working.items[start:end]
+            before = working
+            before_state = state
+            # Count the retained request rather than subtracting raw source tokens
+            # from a rendered or margin-inflated total.
+            selected_ids = {item.id for item in source_items}
+            if not hard and cached_summary is None:
+                # Under soft pressure, wait until the eligible history is worth a
+                # paid summary and a prefix break. Otherwise mandatory input that
+                # stays above the trigger would compact one small group per step.
+                # Its share of the local estimate scales the counted request size.
+                eligible_ids = {item.id for range_start, range_end in ranges for item in working.items[range_start:range_end]
+                                if source_key(item) not in failed and source_key(item) not in unavailable}
+                history_tokens = assembler.token_counter.count_request(model_request_to_chat(ModelRequest(
+                    instructions="", items=tuple(item for item in state.request.items if item.source_id in eligible_ids),
+                ), reasoning_field="reasoning"), ())
+                request_tokens = assembler.token_counter.count_request(
+                    model_request_to_chat(state.request, reasoning_field="reasoning"), state.request.tools)
+                if history_tokens * state.estimate < math.ceil(state.input_budget * 0.1) * max(1, request_tokens):
+                    break
+            summary_goal = policy.summary_max_tokens
+            if cached_summary is None:
+                try:
+                    remainder = await retained_request(selected_ids)
+                    if remainder.window != state.window:
+                        state = await project()
+                        probe_cache.clear()
+                        deferred.clear()
+                        continue
+                    margin = 1 + policy.token_safety_margin
+                    overhead = summary_overhead(remainder.request)
+                    target_room = math.floor((math.floor(.65 * state.input_budget) - remainder.estimate) / margin) - overhead
+                    hard_room = math.floor((state.input_budget - remainder.estimate) / margin) - overhead
+                    useful = min(policy.summary_max_tokens, max(512, state.input_budget // 16))
+                    if hard and hard_room < 64:
+                        removable = {item.id for left, right in ranges for item in working.items[left:right]
+                                     if source_key(item) not in failed and source_key(item) not in deferred}
+                        removable.update(selected_ids)
+                        if removable != selected_ids:
+                            floor = await retained_request(removable)
+                            if floor.window != state.window:
+                                state = await project()
+                                probe_cache.clear()
+                                deferred.clear()
+                                continue
+                            minimum_progress = max(256, math.ceil(state.input_budget * .01))
+                            final_room = math.floor((state.input_budget - floor.estimate) / margin) - summary_overhead(floor.request)
+                            progress_room = math.floor((state.estimate - minimum_progress - remainder.estimate) / margin) - overhead
+                            hard_room = min(final_room, progress_room)
+                    summary_goal = min(_SummaryBudget.plan(policy.summary_max_tokens, state.window).visible_tokens,
+                                       hard_room, max(target_room, useful))
+                except CompactionError as exc:
+                    reason = f"{type(exc).__name__}: {exc}"[:1000]
+                    break
+                if summary_goal < 64:
+                    deferred.update(source_key(item) for item in source_items)
+                    reason = "Selected history has no usable summary capacity in this projection."
+                    continue
+            compactor.source_request = state.request
+            # A replaced root summary was never sent, so its prefix cannot hit.
+            compactor.prefix_sample = working.summary is unprojected.summary
+            attempts += 1
             try:
-                summary = await tighten(working.summary, min(goal, policy.summary_max_tokens),
-                                        allow_fallback=policy.allow_reference_fallback)
+                if cached_summary is not None:
+                    summary = cached_summary
+                elif fallback_only:
+                    keys = {source_key(item) for item in source_items}
+                    prior_record = next((record.record for record in reversed(failed_records) if set(record.source_keys) == keys), None)
+                    summary = await compactor.reference_fallback(working.summary, source_items, summary_goal,
+                        reason="Previously failed source projection; reference continuation requested.", failed_record=prior_record)
+                else:
+                    summary = await compactor.compact(working.summary, source_items, summary_goal, allow_fallback=hard and policy.allow_reference_fallback)
+            except _CompactionCapacityUnavailable as exc:
+                attempts -= 1
+                deferred.update(source_key(item) for item in source_items)
+                reason = f"CompactionError: {exc}"[:1000]
+                continue
             except (CompactionError, ProviderReprepareRequired) as exc:
+                # Failure preserves the original range. Cancellation is a
+                # BaseException and deliberately bypasses this handler.
                 reason = f"{type(exc).__name__}: {exc}"[:1000]
-                if not getattr(exc, "transient", False):
-                    failed.add(root_key)
-                    record = getattr(exc, "compaction_record", None)
-                    if record is not None:
-                        failed_records.append(FailedCompaction(source_keys=(root_key,), record=record))
+                if getattr(exc, "transient", False):
+                    # Not a verdict on this source: record nothing in the
+                    # conversation and stop calling the summarizer in this episode.
+                    unavailable.update(source_key(item) for item in source_items)
+                    summarizer_unavailable = True
+                    break
+                failed_keys = tuple(source_key(item) for item in source_items)
+                failed.update(failed_keys)
+                record = getattr(exc, "compaction_record", None)
+                if record is not None:
+                    failed_records.append(FailedCompaction(source_keys=failed_keys, record=record))
                 if isinstance(exc, ProviderReprepareRequired):
                     raise
-            else:
-                working = working.model_copy(update={"summary": summary, "revision": working.revision + 1})
-                if summary.compaction_record is not None:
-                    staged_records.append(FailedCompaction(source_keys=(root_key,), record=summary.compaction_record))
-                state = await project()
-                if state.estimate < before_state.estimate:
-                    method, reason, prefix_break = summary.method, summary.fallback_reason, "compaction"
-                else:
-                    working, state = before, before_state
-                    failed.add(root_key)
-                    if summary.compaction_record is not None:
-                        failed_records.append(staged_records[-1])
-
-    # Preserve the original prefix for summary reuse first. Only unresolved
-    # hard pressure sheds replayable reasoning from the ephemeral projection.
-    reasoning = [item for item in working.items if isinstance(item, AssistantMessage)
-                 and _should_replay_reasoning(item, mode=policy.reasoning_replay, active_run_id=active_run_id)]
-    for item in reasoning[:-1]:
-        if state.estimate <= state.input_budget:
-            break
-        omitted.add(item.id)
-        state = await project()
-
-    # If the latest newly received batch still does not fit, adjust only its
-    # provisional displays. A displayed historical batch stays byte-identical.
-    if state.estimate > state.input_budget and new_ids and result_store and access:
-        baseline = working
-        original_by_id = {item.id: item for item in unprojected.items}
-        originals = tuple(original_by_id.get(item.id, item) if item.id in original_by_id and (
-            item.id in new_ids or isinstance(item, UserMessage) and any(f"{item.id}/{obs.id}" in new_ids for obs in item.result_observations)
-        ) else item for item in working.items)
-        unfrozen = working.model_copy(update={"items": originals})
-        local_budget = sum(assembler.token_counter.count_text(item.model_display.text) for item in _context_results(working.items) if item.id in new_ids and item.model_display)
-        for _ in range(8):
-            local_budget = max(0, min(local_budget - 1, local_budget - math.ceil((state.estimate - state.input_budget) / (1 + policy.token_safety_margin))))
-            try:
-                working = freeze_result_displays(unfrozen, result_store=result_store, policy=policy,
-                    counter=assembler.token_counter, recovery_access=access, total_budget_tokens=local_budget)
-            except ResultBudgetExceeded as exc:
-                # An aggressive estimate may cross the metadata floor even
-                # though that exact floor still fits the final wire request.
-                minimum = exc.minimum_tokens
-                if minimum is not None:
-                    working = freeze_result_displays(unfrozen, result_store=result_store, policy=policy,
-                        counter=assembler.token_counter, recovery_access=access, total_budget_tokens=minimum)
-                else:
-                    working = baseline
-                state = await project()
-                break
+                if fallback_only:
+                    break
+                continue
+            working = working.model_copy(update={"summary": summary, "items": working.items[:start] + working.items[end:], "revision": working.revision + 1})
+            if summary.compaction_record is not None:
+                staged_records.append(FailedCompaction(source_keys=tuple(source_key(item) for item in source_items),
+                                                       record=summary.compaction_record))
             state = await project()
+            progress = before_state.estimate - state.estimate
+            minimum_progress = max(256, math.ceil(state.input_budget * .01))
+            if state.estimate > state.input_budget and progress < minimum_progress:
+                working, state = before, before_state
+                failed.update(source_key(item) for item in source_items)
+                if summary.compaction_record is not None:
+                    failed_records.append(staged_records[-1])
+                reason = "Summary replacement did not make sufficient budget progress."
+                continue
+            compacted += len(source_items)
+            active_compacted += sum(item.run_id == active_run_id for item in source_items)
+            method, reason = summary.method, summary.fallback_reason
+            prefix_break = "compaction"
+            deferred.clear()
+            probe_cache.clear()
+            # Under soft pressure the worth-it check above decides whether the
+            # remaining eligible history justifies another summary.
+
+        # Tighten only the current root once; never re-send raw source just because
+        # wrappers or the final rendered token count made its first goal too large.
+        tighten = getattr(compactor, "tighten", None)
+        root_key = summary_key()
+        if working.summary is not None and root_key in failed and state.estimate > state.input_budget:
+            reuse = getattr(compactor, "reuse_compaction", None)
+            record = next((record.record for record in reversed(failed_records)
+                           if record.source_keys == (root_key,)), None)
+            if callable(reuse) and record is not None:
+                summary = await reuse(working.summary, (), policy.summary_max_tokens,
+                                      record_reference=record)
+                if summary is not None:
+                    before, before_state = working, state
+                    working = working.model_copy(update={"summary": summary, "revision": working.revision + 1})
+                    staged_records.append(FailedCompaction(source_keys=(root_key,), record=summary.compaction_record))
+                    state = await project()
+                    if state.estimate < before_state.estimate:
+                        method, reason, prefix_break = summary.method, summary.fallback_reason, "compaction"
+                        root_key = summary_key()
+                    else:
+                        working, state = before, before_state
+        if (callable(tighten) and not tightened_root and not summarizer_unavailable and working.summary is not None
+                and root_key not in failed and state.estimate > state.input_budget):
+            current_tokens = assembler.token_counter.count_text(working.summary.content)
+            try:
+                remainder = await retained_request(set())
+            except CompactionError as exc:
+                reason = f"{type(exc).__name__}: {exc}"[:1000]
+                goal = 0
+            else:
+                if remainder.window != state.window:
+                    state = await project()
+                goal = min(_SummaryBudget.plan(policy.summary_max_tokens, state.window).visible_tokens,
+                           math.floor((state.input_budget - remainder.estimate) / (1 + policy.token_safety_margin))
+                           - summary_overhead(remainder.request))
+            if 64 <= goal < current_tokens:
+                tightened_root = True
+                before, before_state = working, state
+                try:
+                    summary = await tighten(working.summary, min(goal, policy.summary_max_tokens),
+                                            allow_fallback=policy.allow_reference_fallback)
+                except _CompactionCapacityUnavailable as exc:
+                    reason = f"CompactionError: {exc}"[:1000]
+                except (CompactionError, ProviderReprepareRequired) as exc:
+                    reason = f"{type(exc).__name__}: {exc}"[:1000]
+                    if not getattr(exc, "transient", False):
+                        failed.add(root_key)
+                        record = getattr(exc, "compaction_record", None)
+                        if record is not None:
+                            failed_records.append(FailedCompaction(source_keys=(root_key,), record=record))
+                    if isinstance(exc, ProviderReprepareRequired):
+                        raise
+                else:
+                    working = working.model_copy(update={"summary": summary, "revision": working.revision + 1})
+                    if summary.compaction_record is not None:
+                        staged_records.append(FailedCompaction(source_keys=(root_key,), record=summary.compaction_record))
+                    state = await project()
+                    if state.estimate < before_state.estimate:
+                        method, reason, prefix_break = summary.method, summary.fallback_reason, "compaction"
+                    else:
+                        working, state = before, before_state
+                        failed.add(root_key)
+                        if summary.compaction_record is not None:
+                            failed_records.append(staged_records[-1])
+
+        before_relief = state.request
+        # Preserve the original prefix for summary reuse first. Only unresolved
+        # hard pressure sheds replayable reasoning from the ephemeral projection.
+        reasoning = [item for item in working.items if isinstance(item, AssistantMessage)
+                     and _should_replay_reasoning(item, mode=policy.reasoning_replay, active_run_id=active_run_id)]
+        for item in reasoning[:-1]:
             if state.estimate <= state.input_budget:
                 break
-            if not local_budget:
-                break
+            omitted.add(item.id)
+            state = await project()
 
-    if state.estimate > state.input_budget and result_store and access:
-        groups = _atomic_groups(working.items, start=0, end=len(working.items))
-        latest = _context_results(working.items[groups[-1][0]:]) if groups else []
-        emergency_ids = {item.id for item in latest if item.model_display and item.model_display.revision == 0 and item.id not in new_ids}
-        if emergency_ids:
-            try:
-                working = reference_frozen_result_displays(working, result_store=result_store,
-                    recovery_access=access, result_ids=emergency_ids)
+        # If the latest newly received batch still does not fit, adjust only its
+        # provisional displays. A displayed historical batch stays byte-identical.
+        if state.estimate > state.input_budget and new_ids and result_store and access:
+            baseline = working
+            original_by_id = {item.id: item for item in unprojected.items}
+            originals = tuple(original_by_id.get(item.id, item) if item.id in original_by_id and (
+                item.id in new_ids or isinstance(item, UserMessage) and any(f"{item.id}/{obs.id}" in new_ids for obs in item.result_observations)
+            ) else item for item in working.items)
+            unfrozen = working.model_copy(update={"items": originals})
+            local_budget = sum(assembler.token_counter.count_text(item.model_display.text) for item in _context_results(working.items) if item.id in new_ids and item.model_display)
+            for _ in range(8):
+                local_budget = max(0, min(local_budget - 1, local_budget - math.ceil((state.estimate - state.input_budget) / (1 + policy.token_safety_margin))))
+                try:
+                    working = freeze_result_displays(unfrozen, result_store=result_store, policy=policy,
+                        counter=assembler.token_counter, recovery_access=access, total_budget_tokens=local_budget)
+                except ResultBudgetExceeded as exc:
+                    # An aggressive estimate may cross the metadata floor even
+                    # though that exact floor still fits the final wire request.
+                    minimum = exc.minimum_tokens
+                    if minimum is not None:
+                        working = freeze_result_displays(unfrozen, result_store=result_store, policy=policy,
+                            counter=assembler.token_counter, recovery_access=access, total_budget_tokens=minimum)
+                    else:
+                        working = baseline
+                    state = await project()
+                    break
                 state = await project()
-                prefix_break = "emergency_result_reference"
-            except ResultBudgetExceeded:
-                pass
+                if state.estimate <= state.input_budget:
+                    break
+                if not local_budget:
+                    break
+
+        if state.estimate > state.input_budget and result_store and access:
+            groups = _atomic_groups(working.items, start=0, end=len(working.items))
+            latest = _context_results(working.items[groups[-1][0]:]) if groups else []
+            emergency_ids = {item.id for item in latest if item.model_display and item.model_display.revision == 0 and item.id not in new_ids}
+            if emergency_ids:
+                try:
+                    working = reference_frozen_result_displays(working, result_store=result_store,
+                        recovery_access=access, result_ids=emergency_ids)
+                    state = await project()
+                    prefix_break = "emergency_result_reference"
+                except ResultBudgetExceeded:
+                    pass
+
+        # A capacity skip is local to its projection. After relieving protected
+        # input, reconsider it once without restarting the paid-call budget.
+        if (repair_round or compactor is None or summarizer_unavailable
+                or state.estimate <= state.input_budget or state.request == before_relief):
+            break
+        deferred.clear()
+        probe_cache.clear()
 
     # A local estimate can overcount highly compressible protected input. Ask
     # the available counter once before declaring that final candidate too big,
