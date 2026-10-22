@@ -5,10 +5,23 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.10.2a0`; the stable release
-remains `0.10.1`.
+The current stable package version is `0.10.2`.
 
-## Unreleased
+## 0.10.2
+
+This stable release includes the provider counting, failure-handling, and
+observation fixes introduced in [0.10.2a0](#0102a0), plus the context-maintenance
+changes below. Install with `pip install --upgrade 'dagent-ai==0.10.2'`.
+
+### Compatibility and upgrade
+
+Public SDK signatures and persisted record formats remain compatible; no source
+or record-format migration is required. The previously approved automatic output
+budget and summary wire protocol changes affect the opt-in `chunked` and
+`cache_aware` strategies. Deployments needing the previous 8K generation allowance
+can set `max_output_tokens=8192`; custom summary services and test doubles should
+adopt the Markdown protocol described below. The `legacy` strategy retains its
+released behavior.
 
 ### Counted summary budgets and 16K automatic generation output
 
@@ -48,8 +61,7 @@ readable and paid replacements remain reusable. Existing failed-source markers
 are not automatically cleared. To explicitly retry previously blocked history,
 use `conversation.model_copy(update={"compaction_state": None})`; clearing that
 state also discards its paid-record reuse entries, so do so only intentionally.
-No configuration or record format migration is required. These changes will be
-assigned to their release version when published; this section is not a release.
+No configuration or record format migration is required.
 
 ### Markdown compaction checkpoint protocol
 
@@ -120,12 +132,13 @@ configuration, or record migration is required.
   kept the previous prefix rose from 3 to 41. Hard pressure still compacts
   immediately.
 - Summary requests now state their size limit, in tokens and approximate
-  characters, and ask the model to cite a previous checkpoint by its own source
-  ID. This changes the instruction text sent in opt-in compaction requests. An
+  characters, and ask the model to cite a previous checkpoint by its supplied
+  alias. This changes the instruction text sent in opt-in compaction requests. An
   oversized checkpoint is retried once, within the episode's call budget, before
   it fails. Citations copied from inside the previous checkpoint resolve to it.
-  Other unknown citations are dropped, and an entry with no supplied ID still
-  fails. Before, cumulative summaries in long runs eventually exceeded an
+  Other unknown citations are dropped; entries without a known citation use
+  their request's first and last sources, as described above. Before, cumulative
+  summaries in long runs eventually exceeded an
   unstated limit, and a citation copied from the previous checkpoint rejected
   the whole paid summary. Both cases ended the run with `ContextWindowExceeded`.
 - `cache_aware` now checks the provider-reported cache hit of each warm-prefix
@@ -144,6 +157,17 @@ configuration, or record migration is required.
   bounded cache of verified file identities and compaction record links. Changed,
   missing, or corrupt files still fail verification. This applies to every
   strategy.
+
+### Verification and known limitations
+
+Validation: 2,059 Python/MCP tests passed, 3 skipped (two opt-in live MiniMax tests
+and one real Docker test), with one expected tokenizer fallback warning. Both
+offline context-management and prepared-count re-preparation examples passed.
+Wheel/sdist builds, package metadata checks, and an isolated Python 3.13 wheel
+installation with bundled-resource checks and a Runner execution passed.
+Render rejection and endurance coverage use simulated endpoints; real-model
+reasoning quality, live vLLM acceptance, and cache benefits require deployment
+testing.
 
 ## 0.10.2a0
 

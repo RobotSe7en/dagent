@@ -454,7 +454,7 @@ Responses 链。摘要请求还会拒绝与任务摘要不兼容的固定额外�
 
 与 `legacy` 不同，新策略未配置普通输出上限时，会在实际请求里设置
 `min(16384, max(1, W // 8))`。最终额外参数中的显式输出上限仍按原优先级生效，并计入预算。
-此变化适用于 `0.10.2a0` 之后的开发版本，参见[迁移说明](migration.md)。
+此变化自 `0.10.2` 发布，参见[迁移说明](migration.md)。
 `ProviderConfig.max_output_tokens` 默认仍为 `None`，普通非严格请求与 `legacy` 调用
 保持原语义。例如，128K provider 不指定 `max_output_tokens` 并使用
 `ContextPolicy(compaction_strategy="cache_aware")` 时，普通生成预留 16K；显式指定

@@ -527,8 +527,8 @@ generation; cache hits do not increase `H`.
 
 Unlike `legacy`, an unset normal output limit in the new strategies becomes an
 explicit wire limit of `min(16384, max(1, W // 8))`. An explicit final extra output
-limit retains its precedence and is included in the budget. This change follows
-`0.10.2a0`; see [migration notes](migration.md). `ProviderConfig.max_output_tokens`
+limit retains its precedence and is included in the budget. This change ships in
+`0.10.2`; see [migration notes](migration.md). `ProviderConfig.max_output_tokens`
 still defaults to `None`, and ordinary non-strict and `legacy` calls retain their
 existing behavior. For example, omitting `max_output_tokens` with a 128K provider
 and `ContextPolicy(compaction_strategy="cache_aware")` reserves 16K for generation;
