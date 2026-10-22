@@ -8,6 +8,17 @@
 
 ## 未发布
 
+### Markdown 压缩摘要协议
+
+显式启用 `chunked`、`cache_aware` 策略时，摘要请求的指令文本和模型输出协议已从
+JSON 加真实来源 ID 改为固定标题的 Markdown 加本次压缩的短别名（`S0` 指上一份摘要）。
+维护者已批准此 provider wire payload 变化。依赖旧 JSON 协议的自定义摘要服务或测试替身
+需要使用请求提供的别名，改为输出如 `### Next Step\n- Continue the task. [S1]` 的条目。
+不再接受 JSON 输出；格式无效时在既有压缩预算内带说明重试一次。
+
+压缩记录 schema、`task_summary` 字段及其中的真实来源 ID、放回上下文的摘要渲染均不变，
+旧记录仍可正常读取，无需迁移记录或配置；`legacy` 策略不变。
+
 ### `chunked` 与 `cache_aware` 上下文维护修复
 
 除特别说明外，以下修复只影响显式启用的 `chunked`、`cache_aware` ToolAgent 策略，

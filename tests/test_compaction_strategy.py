@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import dagent.harness_runtime.compaction as compaction
 from dagent.harness_runtime.compaction import (
     CompactionArchiveError, CompactionBudgetExceeded, CompactionChunk, CompactionError,
     CompactionRecordV1, CompactionRunState, CompactionSourceV1, HistoryCompactor,
@@ -27,20 +28,32 @@ from dagent.schemas.conversation import (
 )
 
 
+def request_aliases(text: str) -> list[str]:
+    """Aliases offered by any summary request: prefix, chunk or reduce."""
+    line = re.search(r"Sources to summarize: ([^\n]+)", text)
+    if line:
+        return [token.strip() for token in line.group(1).split(",")]
+    found = re.findall(r"\[Source (S\d+);", text)
+    if not found:
+        found = [token.strip() for group in re.findall(r"\[(S\d+(?:, S\d+)*)\]", text)
+                 for token in group.split(",")]
+    return list(dict.fromkeys(found))
+
+
+def checkpoint(**sections: list[tuple[str, list[str]]]) -> str:
+    """Render a Markdown checkpoint with the supplied evidence citations."""
+    return "\n".join(
+        f"### {name.replace('_', ' ').title()}\n"
+        + "\n".join(f"- {text} [{', '.join(ids)}]" for text, ids in entries)
+        for name, entries in sections.items() if entries)
+
+
 def summary_response(request: ModelRequest) -> ModelResponse:
-    text = request.items[-1].content
-    if "Eligible source IDs:" in text:
-        ids = json.loads(re.search(r"Eligible source IDs: (.+)\n", text).group(1))
-    elif request.items[0].source_id == "compaction_chunks":
-        checkpoints = json.loads(text.split("\n", 1)[1])
-        ids = [entry["source_ids"][0] for checkpoint in checkpoints
-               for entries in checkpoint.values() for entry in entries]
-    else:
-        ids = re.findall(r"\[Source ([^;]+);", text)
-    return ModelResponse(content=json.dumps({
-        "requirements": [{"text": "Preserve the user requirement.", "source_ids": [ids[0]]}],
-        "next_step": [{"text": "Continue pending work.", "source_ids": [ids[-1]]}],
-    }))
+    ids = request_aliases(request.items[-1].content)
+    return ModelResponse(content=checkpoint(
+        requirements=[("Preserve the user requirement.", [ids[0]])],
+        next_step=[("Continue pending work.", [ids[-1]])],
+    ))
 
 
 def compactor(tmp_path, chat, *, strategy="chunked", window=4096,
@@ -75,6 +88,7 @@ async def test_chunking_covers_middle_and_all_source_ranges(tmp_path):
     record = record_for(engine, summary)
     assert record.status == "complete"
     assert record.unresolved_ranges == ()
+    assert summary.content == record.task_summary.render()
     assert len(record.chunks) > 1
     assert any("MIDDLE_REQUIREMENT" in request.items[0].content for request in requests)
     ranges = [span for chunk in record.chunks for span in chunk.ranges]
@@ -110,7 +124,7 @@ async def test_cache_aware_preserves_background_prefix_and_excludes_latest_group
     assert request.tools == tools
     assert request.items[:-1] == (background, old_request)
     assert "LATEST_BODY" not in str(request)
-    assert "background only" in request.items[-1].content
+    assert "Background messages give context only" in request.items[-1].content
     archive = CompactionSourceV1.model_validate_json(
         engine.result_store.read_reference(record_for(engine, summary).source))
     assert [item.id for item in archive.items] == [old.id]
@@ -122,15 +136,15 @@ async def test_invalid_prefix_falls_back_once_to_isolated_compactor(tmp_path):
 
     async def chat(request):
         requests.append(request)
-        return ModelResponse(content="wrong format") if len(requests) == 1 else summary_response(request)
+        return ModelResponse(content="wrong format") if len(requests) <= 2 else summary_response(request)
 
     item = UserMessage(id="source", content="Keep this requirement.")
     engine = compactor(tmp_path, chat, strategy="cache_aware")
     engine.source_request = ModelRequest(instructions="Original system.", items=(ModelUserInput(source_id=item.id, content=item.content),))
     summary = await engine.compact(None, (item,), 256)
     assert summary.method == "model"
-    assert [call.kind for call in record_for(engine, summary).calls] == ["prefix", "chunk"]
-    assert requests[1].instructions != requests[0].instructions
+    assert [call.kind for call in record_for(engine, summary).calls] == ["prefix", "prefix", "chunk"]
+    assert requests[2].instructions != requests[0].instructions
 
 
 @pytest.mark.asyncio
@@ -159,12 +173,18 @@ async def test_archive_omits_reasoning_and_preserves_received_snapshot_and_view(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("response", [
     ModelResponse(content=""),
-    ModelResponse(content="{}"),
-    ModelResponse(content='{"requirements":[{"text":"invented","source_ids":["unknown"]}]}'),
+    ModelResponse(content="### Next Step"),
+    ModelResponse(content="- floating entry [S1]"),
+    ModelResponse(content="### Next Step\n- invented [msg_unknown]"),
     ModelResponse(content="text", tool_calls=(ToolCall(id="never", name="shell"),)),
     ModelResponse(content="text", refusal="No."),
     ModelResponse(content="text", status="incomplete"),
     ModelResponse(content="text", metadata=ModelCallMetadata(protocol="chat_completions", finish_reason="length")),
+    ModelResponse(content="text", metadata=ModelCallMetadata(protocol="chat_completions", finish_reason="max_tokens")),
+    ModelResponse(content="text", metadata=ModelCallMetadata(protocol="responses", finish_reason="max_output_tokens")),
+    ModelResponse(content="text", metadata=ModelCallMetadata(protocol="responses", response_status="incomplete")),
+    ModelResponse(content="text", metadata=ModelCallMetadata(protocol="responses", response_status="failed")),
+    ModelResponse(content="text", metadata=ModelCallMetadata(protocol="responses", response_status="cancelled")),
 ])
 async def test_invalid_summary_never_replaces_history(tmp_path, response):
     async def chat(_request):
@@ -175,7 +195,8 @@ async def test_invalid_summary_never_replaces_history(tmp_path, response):
     with pytest.raises(CompactionError):
         await engine.compact(None, (item,), 256)
     assert item.content == "Keep the original."
-    assert engine.logical_calls == 1
+    terminal = response.tool_calls or response.refusal or response.status != "completed" or response.metadata
+    assert engine.logical_calls == (1 if terminal else 2)
 
 
 @pytest.mark.asyncio
@@ -308,10 +329,10 @@ async def test_summary_requests_state_the_visible_budget(tmp_path, strategy, kin
     else:
         chunks = [CompactionChunk(ranges=(), summary=TaskSummary(next_step=(SummaryEntry(text=text, source_ids=("u",)),)))
                   for text in ("First", "Second")]
-        await engine._reduce(chunks, {"u": "Requirement"}, 500, None)
+        await engine._reduce(chunks, {"u": "Requirement"}, 500, None, compaction._SourceAliases({"u": "Requirement"}, None))
     text = requests[0].instructions + "".join(getattr(item, "content", "") for item in requests[0].items)
     assert "must stay under 400 tokens (about 1600 English characters or 400 CJK characters)" in text
-    assert "cite that checkpoint's source ID instead of IDs shown inside it" in text
+    assert "cite S0, never IDs shown inside it" in text
 
 
 @pytest.mark.asyncio
@@ -321,22 +342,20 @@ async def test_carried_forward_citations_resolve_to_the_previous_checkpoint(tmp_
     item = UserMessage(id="source", content="Now update the config.")
 
     async def chat(request):
-        return ModelResponse(content=json.dumps({
-            "completed_work": [{"text": "Read the config.", "source_ids": ["msg_old1", "msg_old2"]}],
-            "next_step": [{"text": "Update it.", "source_ids": ["source", "msg_typo"]}],
-        }))
+        return ModelResponse(content=checkpoint(completed_work=[("Read the config.", ["msg_old1", "msg_old2"])],
+                                                next_step=[("Update it.", ["S1", "msg_typo"])]))
 
     engine = compactor(tmp_path, chat)
     summary = await engine.compact(previous, (item,), 256)
-    checkpoint = record_for(engine, summary).task_summary
-    assert checkpoint.completed_work[0].source_ids == ("previous_summary",)
-    assert checkpoint.next_step[0].source_ids == ("source",)
+    task_summary = record_for(engine, summary).task_summary
+    assert task_summary.completed_work[0].source_ids == ("previous_summary",)
+    assert task_summary.next_step[0].source_ids == ("source",)
     assert "[previous_summary]" in summary.content and "msg_typo" not in summary.content
 
     async def invented(request):
-        return ModelResponse(content=json.dumps({"next_step": [{"text": "Update it.", "source_ids": ["msg_typo"]}]}))
+        return ModelResponse(content=checkpoint(next_step=[("Update it.", ["msg_typo"])]))
 
-    with pytest.raises(CompactionError, match="unknown source"):
+    with pytest.raises(CompactionError, match="invalid task summary"):
         await compactor(tmp_path, invented).compact(previous, (item,), 256)
     # Dropping an unknown ID is reported, never silent.
     assert "cited 1 unknown source IDs; they were removed" in caplog.text
@@ -350,7 +369,7 @@ async def test_oversized_summary_is_retried_once_with_its_measured_size(tmp_path
     async def chat(request):
         requests.append(request)
         text = "Short checkpoint." if recovers and len(requests) > 1 else "x" * 4000
-        return ModelResponse(content=json.dumps({"next_step": [{"text": text, "source_ids": ["source"]}]}))
+        return ModelResponse(content=checkpoint(next_step=[(text, ["S1"])]))
 
     engine = compactor(tmp_path, chat)
     item = UserMessage(id="source", content="Original")
@@ -376,7 +395,7 @@ async def test_oversized_warm_prefix_retry_extends_only_its_control_turn(tmp_pat
     async def chat(request):
         requests.append(request)
         text = "Short checkpoint." if len(requests) > 1 else "x" * 4000
-        return ModelResponse(content=json.dumps({"next_step": [{"text": text, "source_ids": ["a"]}]}))
+        return ModelResponse(content=checkpoint(next_step=[(text, ["S2"])]))
 
     engine = compactor(tmp_path, chat, strategy="cache_aware")
     engine.source_request = ModelRequest(instructions="Original system.", items=(
@@ -394,7 +413,7 @@ async def test_oversized_retry_is_skipped_when_the_shorter_request_cannot_fit(tm
 
     async def chat(request):
         requests.append(request)
-        return ModelResponse(content=json.dumps({"next_step": [{"text": "x" * 4000, "source_ids": ["source"]}]}))
+        return ModelResponse(content=checkpoint(next_step=[("x" * 4000, ["S1"])]))
 
     engine = compactor(tmp_path, chat)
     fits = engine._fits
@@ -766,10 +785,7 @@ async def test_previous_summary_id_does_not_overwrite_a_user_supplied_id(tmp_pat
 @pytest.mark.asyncio
 async def test_operation_evidence_is_typed_and_links_only_real_sources(tmp_path):
     async def chat(_request):
-        return ModelResponse(content=json.dumps({"operation_evidence_refs": [{
-            "text": "Query returned successfully; the remaining page uses its stored cursor.",
-            "source_ids": ["result"],
-        }]}))
+        return ModelResponse(content=checkpoint(operation_evidence_refs=[("Query returned successfully; the remaining page uses its stored cursor.", ["S1"])]))
 
     engine = compactor(tmp_path, chat)
     item = ToolResultMessage(id="result", call_id="call", name="query", status="completed", content=inline_content("Evidence"))
@@ -795,10 +811,13 @@ async def test_root_tightening_once_preserves_source_chain_without_raw_replay(tm
     assert len(requests) == 2
     assert "RAW_NOT_TO_REPLAY" not in requests[-1].items[0].content
     assert first.content in requests[-1].items[0].content
+    assert request_aliases(requests[-1].items[0].content) == ["S0"]
     assert second.source_item_count == first.source_item_count
     record = record_for(engine, second)
     assert record.previous_record == first.compaction_record
     assert record.calls[0].kind == "reduce"
+    assert record.task_summary.requirements[0].source_ids == ("previous_summary",)
+    assert record.task_summary.next_step[0].source_ids == ("previous_summary",)
     assert engine.logical_calls == 2
     with pytest.raises(CompactionBudgetExceeded, match="already attempted"):
         await engine.tighten(second, 128)
@@ -867,7 +886,7 @@ async def test_root_only_hard_failure_can_use_explicit_reference_fallback(tmp_pa
     assert summary.method == "reference_fallback"
     assert summary.source_item_count == original.source_item_count
     assert original.model_dump_json() == before
-    assert len(requests) == (1 if failure_kind == "budget" else 2)
+    assert len(requests) == (1 if failure_kind == "budget" else 3)
     record = record_for(engine, summary)
     assert record.previous_record == original.compaction_record
     assert record.reused_from is not None
@@ -891,3 +910,306 @@ async def test_root_reference_fallback_does_not_fake_read_access_or_metadata_roo
     engine.read_available = True
     with pytest.raises(CompactionBudgetExceeded, match="metadata"):
         await engine.tighten(original, 8, allow_fallback=True)
+
+
+def test_parse_checkpoint_all_sections_use_real_source_ids():
+    aliases = compaction._SourceAliases({"previous_summary": "Earlier", "msg_a": "First", "msg_b": "Second"}, "previous_summary")
+    text = checkpoint(**{name: [(f"Entry for {name}.", ["S0", "S1", "S2"])] for name in TaskSummary.model_fields})
+    summary, report = compaction._parse_checkpoint(text, aliases, set())
+    assert not any(report.values())
+    for name in TaskSummary.model_fields:
+        assert getattr(summary, name) == (SummaryEntry(text=f"Entry for {name}.",
+                                                       source_ids=("previous_summary", "msg_a", "msg_b")),)
+    assert [line for line in summary.render().splitlines() if line.startswith("###")] == [
+        "### " + name.replace("_", " ").title() for name in TaskSummary.model_fields]
+
+
+@pytest.mark.parametrize("prefix,suffix,ignored", [
+    ("```markdown\n", "\n```", 0),
+    ("Here is the checkpoint:\n", "\n\nEnd of checkpoint.", 2),
+    ("<think>discard this</think>discard more</think>\n", "", 0),
+])
+def test_parse_checkpoint_tolerates_wrappers(prefix, suffix, ignored):
+    aliases = compaction._SourceAliases({"msg_a": "First"}, None)
+    summary, report = compaction._parse_checkpoint(prefix + "### Next Step\n- Continue. [S1]" + suffix, aliases, set())
+    assert summary.next_step == (SummaryEntry(text="Continue.", source_ids=("msg_a",)),)
+    assert report == {"unknown_headings": 0, "outside_sections": 0, "uncited": 0, "ignored_lines": ignored}
+
+
+@pytest.mark.parametrize("bullet", ["-", "*", "•", "1.", "2)"])
+def test_parse_checkpoint_accepts_bullet_variants(bullet):
+    summary, report = compaction._parse_checkpoint(f"### Next Step\n{bullet} Continue. [S1]",
+                                        compaction._SourceAliases({"msg_a": "First"}, None), set())
+    assert summary.next_step[0].text == "Continue."
+    assert not any(report.values())
+
+
+def test_parse_checkpoint_joins_continuation_lines():
+    summary, report = compaction._parse_checkpoint("### Completed Work\n- Read config.yaml\n  and confirmed timeout=30s [S1]",
+                                        compaction._SourceAliases({"msg_a": "First"}, None), set())
+    assert summary.completed_work[0].text == "Read config.yaml and confirmed timeout=30s"
+    assert not any(report.values())
+
+
+@pytest.mark.parametrize("heading,field", [
+    ("## completed work", "completed_work"),
+    ("Completed Work:", "completed_work"),
+    ("**Next Step**", "next_step"),
+    ("__Next Step__:", "next_step"),
+    ("### **Confirmed-Decisions**:", "confirmed_decisions"),
+])
+def test_parse_checkpoint_accepts_heading_variants(heading, field):
+    summary, report = compaction._parse_checkpoint(f"{heading}\n- Continue. [S1]",
+                                        compaction._SourceAliases({"msg_a": "First"}, None), set())
+    assert getattr(summary, field)[0].text == "Continue."
+    assert not any(report.values())
+
+
+def test_parse_checkpoint_discards_outside_entries_and_recovers_after_unknown_heading():
+    text = ("- Floating. [S1]\n#### Checkpoint 1\n- Unknown section. [S1]\n"
+            "### Next Step\n- Continue. [S1]\n### Not A Section\n- Discard this too. [S1]")
+    summary, report = compaction._parse_checkpoint(text, compaction._SourceAliases({"msg_a": "First"}, None), set())
+    assert summary.next_step[0].text == "Continue."
+    assert report == {"unknown_headings": 2, "outside_sections": 3, "uncited": 0, "ignored_lines": 0}
+
+
+def test_parse_checkpoint_only_uses_the_last_bracket_as_citations():
+    text = "### Next Step\n- Use list[int] [S2]\n- Use list[int]\n- Keep the empty list []"
+    summary, report = compaction._parse_checkpoint(text, compaction._SourceAliases({"msg_a": "First", "msg_b": "Second"}, None), set())
+    assert summary.next_step == (SummaryEntry(text="Use list[int]", source_ids=("msg_b",)),)
+    assert report["uncited"] == 2
+
+
+def test_parse_checkpoint_resolves_alias_variants_and_preserves_real_and_inherited_ids():
+    sources = {"previous_summary": "### Completed Work\n- Earlier. [msg_old]", "msg_a": "First", "msg_b": "Second"}
+    aliases = compaction._SourceAliases(sources, "previous_summary")
+    inherited = compaction._inherited_ids(sources["previous_summary"])
+    summary, report = compaction._parse_checkpoint("### Next Step\n- Continue. [s1, S01, msg_b, msg_old, s00]", aliases, inherited)
+    assert inherited == {"msg_old"}
+    assert compaction._inherited_ids(None) == set()
+    assert summary.next_step[0].source_ids == ("msg_a", "msg_b", "msg_old", "previous_summary")
+    normalized = compaction._normalize_citations(summary, sources, "previous_summary")
+    assert normalized.next_step[0].source_ids == ("msg_a", "msg_b", "previous_summary")
+    assert not any(report.values())
+
+
+def test_parse_checkpoint_leaves_unknown_tokens_for_normalization(caplog):
+    sources = {"msg_a": "First"}
+    summary, report = compaction._parse_checkpoint("### Next Step\n- Continue. [S99, S1, msg_typo]", compaction._SourceAliases(sources, None), set())
+    assert summary.next_step[0].source_ids == ("S99", "msg_a", "msg_typo")
+    assert not any(report.values())
+    normalized = compaction._normalize_citations(summary, sources, None)
+    assert normalized.next_step[0].source_ids == ("msg_a",)
+    assert "cited 2 unknown source IDs" in caplog.text
+    with pytest.raises(CompactionError, match="unknown source"):
+        compaction._normalize_citations(TaskSummary(next_step=(SummaryEntry(text="Invalid.", source_ids=("S99",)),)), sources, None)
+
+
+@pytest.mark.parametrize("text", [
+    "", "{}", "garbled", "### Next Step", "- Floating. [S1]", "### Unknown\n- Discard. [S1]",
+    "### Next Step\n- Use list[int]", "### Next Step\n- Invented. [S99]", "### Next Step\n-   [S1]",
+])
+def test_parse_checkpoint_without_usable_entries_is_malformed(text):
+    with pytest.raises(CompactionError, match=r"^Compactor returned an invalid task summary\.$") as failure:
+        compaction._parse_checkpoint(text, compaction._SourceAliases({"msg_a": "First"}, None), set())
+    assert failure.value.malformed is True
+
+
+def test_parse_checkpoint_report_contains_only_counts():
+    text = ("PRIVATE preamble\n### Unknown\n- PRIVATE outside [S1]\n"
+            "### Next Step\n- PRIVATE uncited\n\nPRIVATE ignored\n- Continue. [S1]")
+    _, report = compaction._parse_checkpoint(text, compaction._SourceAliases({"msg_a": "First"}, None), set())
+    assert report == {"unknown_headings": 1, "outside_sections": 1, "uncited": 1, "ignored_lines": 2}
+    assert all(type(value) is int for value in report.values())
+    assert "PRIVATE" not in str(report)
+
+
+def test_render_with_aliases_retains_unknown_real_ids():
+    summary = TaskSummary(next_step=(SummaryEntry(text="Continue.", source_ids=("msg_a", "msg_external")),))
+    assert compaction._render_with_aliases(summary, compaction._SourceAliases({"msg_a": "First"}, None)) == (
+        "### Next Step\n- Continue. [S1, msg_external]")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["chunked", "cache_aware"])
+@pytest.mark.parametrize("invalid", ['{"next_step": [{"text": "Continue.", "source_ids": ["source"]}]}', "garbled"])
+async def test_malformed_checkpoint_retries_in_instructions_and_records_both_calls(tmp_path, strategy, invalid):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        return ModelResponse(content=invalid) if len(requests) == 1 else summary_response(request)
+
+    item = UserMessage(id="source", content="Keep this requirement.")
+    engine = compactor(tmp_path, chat, strategy=strategy)
+    engine.source_request = ModelRequest(instructions="Original system.", items=(ModelUserInput(source_id=item.id, content=item.content),))
+    summary = await engine.compact(None, (item,), 256)
+    calls = record_for(engine, summary).calls
+    assert len(requests) == len(calls) == 2
+    assert [call.error is not None for call in calls] == [True, False]
+    assert "invalid task summary" in calls[0].error
+    note = "Your previous output did not follow the checkpoint format."
+    if strategy == "chunked":
+        assert requests[1].items == requests[0].items
+        assert note in requests[1].instructions
+    else:
+        assert requests[1].items[:-1] == requests[0].items[:-1]
+        assert requests[1].instructions == requests[0].instructions
+        assert requests[1].items[-1].source_id == "compaction_control"
+        assert requests[1].items[-1].content.startswith(requests[0].items[-1].content + "\n" + note)
+
+
+@pytest.mark.asyncio
+async def test_malformed_checkpoint_fails_after_one_retry_and_keeps_reason_prefix(tmp_path):
+    from dagent.schemas import ConversationState
+
+    async def chat(_request):
+        return ModelResponse(content="garbled")
+
+    engine = compactor(tmp_path, chat)
+    source = UserMessage(id="source", run_id="old", content="Evidence " * 1200)
+    with pytest.raises(CompactionError, match="invalid task summary") as failure:
+        await engine.compact(None, (source,), 256)
+    record = CompactionRecordV1.model_validate_json(engine.result_store.read_reference(failure.value.compaction_record))
+    assert len(record.calls) == 2 and all(call.error for call in record.calls)
+    engine.reset_budget()
+    prepared = await engine.assembler.prepare(
+        system_message=engine.system_message,
+        conversation=ConversationState(items=(source, UserMessage(run_id="active", content="Continue."))),
+        active_run_id="active", policy=engine.policy, enable_new_strategy=True,
+        result_store=engine.result_store, history_compactor=engine)
+    assert prepared.usage.compaction_reason.startswith("CompactionError:")
+
+
+@pytest.mark.asyncio
+async def test_one_episode_reuses_aliases_across_prefix_chunks_and_reducer(tmp_path):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        if request.items[-1].source_id == "compaction_control":
+            return ModelResponse(content="garbled")
+        return summary_response(request)
+
+    items = (UserMessage(id="msg_first", content="First"), UserMessage(id="msg_second", content="Second"))
+    previous = ContextSummary(content="### Completed Work\n- Earlier. [msg_old]", source_item_count=1)
+    engine = compactor(tmp_path, chat, strategy="cache_aware")
+    engine.source_request = ModelRequest(instructions="Original system.", items=(
+        ModelUserInput(source_id="context_summary", content=previous.content),
+        *(ModelUserInput(source_id=item.id, content=item.content) for item in items)))
+    fits = engine._fits
+
+    async def one_source_per_chunk(request):
+        if request.items[0].source_id == "compaction_sources" and len(request_aliases(request.items[0].content)) > 1:
+            return False
+        return await fits(request)
+
+    engine._fits = one_source_per_chunk
+    summary = await engine.compact(previous, items, 256)
+    assert request_aliases(requests[0].items[-1].content) == ["S0", "S1", "S2"]
+    chunks = [request for request in requests if request.items[0].source_id == "compaction_sources"]
+    reducers = [request for request in requests if request.items[0].source_id == "compaction_chunks"]
+    assert [request_aliases(request.items[0].content) for request in chunks] == [["S0"], ["S1"], ["S2"]]
+    assert len(reducers) == 1
+    assert request_aliases(reducers[0].items[0].content) == ["S0", "S1", "S2"]
+    assert "msg_" not in reducers[0].items[0].content
+    record = record_for(engine, summary)
+    for task_summary in (record.task_summary, *(chunk.summary for chunk in record.chunks)):
+        assert all(not re.fullmatch(r"S\d+", source_id) for name in TaskSummary.model_fields
+                   for entry in getattr(task_summary, name) for source_id in entry.source_ids)
+    assert record.task_summary.requirements[0].source_ids == ("previous_summary",)
+    assert record.task_summary.next_step[0].source_ids == ("msg_second",)
+
+
+@pytest.mark.asyncio
+async def test_warm_prefix_keeps_previous_checkpoint_bytes_and_lists_alias_positions(tmp_path):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        return summary_response(request)
+
+    previous = ContextSummary(content="### Completed Work\n- Path C:\\data\\x stays exact. [msg_old]\n", source_item_count=1)
+    checkpoint_turn = ModelUserInput(source_id="context_summary", content=previous.content)
+    background = ModelUserInput(source_id="task", content="Current task.")
+    items = (AssistantMessage(id="msg_call", tool_calls=(ToolCallItem(id="call", name="query"),)),
+             ToolResultMessage(id="msg_result", call_id="call", name="query", status="completed", content=inline_content("Evidence")))
+    prefix = (checkpoint_turn, background,
+              ModelAssistantTurn(source_id="msg_call", tool_calls=(ToolCall(id="call", name="query"),)),
+              ModelToolResultInput(source_id="msg_result", call_id="call", name="query", content="Evidence"))
+    engine = compactor(tmp_path, chat, strategy="cache_aware")
+    original = ModelRequest(instructions="Original system.", items=(*prefix, ModelUserInput(source_id="latest", content="Continue.")))
+    engine.source_request = original
+    await engine.compact(previous, items, 256)
+    request = requests[0]
+    assert len(requests) == 1
+    assert request.items[:-1] == prefix
+    assert request.items[0] is original.items[0]
+    assert request.items[0].content.encode() == previous.content.encode()
+    assert "Sources to summarize: S0, S1, S2\nHistory messages in order:\n1 checkpoint S0\n2 user background\n3 assistant S1\n4 tool S2\n" in request.items[-1].content
+
+
+def test_markdown_alias_output_uses_fewer_tokens_than_json_real_ids():
+    from dagent.harness_runtime.context import HeuristicTokenCounter
+
+    source_ids = ["msg_" + f"{index:032x}" for index in range(2)]
+    summary = TaskSummary(completed_work=tuple(
+        SummaryEntry(text=f"Read config_{index}.yaml; timeout=30s", source_ids=tuple(source_ids)) for index in range(10)))
+    aliases = compaction._SourceAliases(dict.fromkeys(source_ids, "Evidence"), None)
+    counter = HeuristicTokenCounter()
+    assert counter.count_text(compaction._render_with_aliases(summary, aliases)) < counter.count_text(
+        json.dumps(summary.model_dump(mode="json", exclude_defaults=True)))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_error", ["malformed", "oversized"])
+async def test_format_and_size_errors_share_one_content_retry(tmp_path, first_error):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        oversized = (len(requests) == 1) == (first_error == "oversized")
+        return ModelResponse(content=checkpoint(next_step=[("x" * 4000, ["S1"])]) if oversized else "garbled")
+
+    engine = compactor(tmp_path, chat)
+    with pytest.raises(CompactionError):
+        await engine.compact(None, (UserMessage(id="source", content="Requirement."),), 256)
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_by", ["logical_calls", "http_attempts", "input_budget"])
+async def test_malformed_retry_respects_remaining_budgets(tmp_path, blocked_by):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        return ModelResponse(content="garbled")
+
+    engine = compactor(tmp_path, chat)
+    if blocked_by == "input_budget":
+        fits = engine._fits
+
+        async def no_room_for_note(request):
+            return "Your previous output" not in request.instructions and await fits(request)
+
+        engine._fits = no_room_for_note
+    else:
+        setattr(engine, blocked_by, 7 if blocked_by == "logical_calls" else 11)
+    with pytest.raises(CompactionError, match="invalid task summary"):
+        await engine.compact(None, (UserMessage(id="source", content="Requirement."),), 256)
+    assert len(requests) == 1
+    assert engine.logical_calls <= 8 and engine.http_attempts <= 12
+
+
+@pytest.mark.asyncio
+async def test_skipped_checkpoint_content_logs_only_counts(tmp_path, caplog):
+    async def chat(_request):
+        return ModelResponse(content=("PRIVATE preamble\n### Unknown\n- PRIVATE outside [S1]\n"
+                                      "### Next Step\n- PRIVATE uncited\n- Continue. [S1]"))
+
+    engine = compactor(tmp_path, chat)
+    summary = await engine.compact(None, (UserMessage(id="source", content="Requirement."),), 256)
+    assert record_for(engine, summary).task_summary.next_step[0].text == "Continue."
+    assert "skipped 1 unknown headings, 1 lines outside sections, 1 uncited entries and 1 other lines" in caplog.text
+    assert "PRIVATE" not in caplog.text

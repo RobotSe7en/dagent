@@ -10,6 +10,21 @@ remains `0.10.1`.
 
 ## Unreleased
 
+### Markdown compaction checkpoint protocol
+
+For the opt-in `chunked` and `cache_aware` strategies, summary request instructions
+and model output have changed from JSON with real source IDs to fixed-heading
+Markdown with per-compaction aliases (`S0` is the previous checkpoint). The
+maintainer approved this provider wire payload change. Custom summary services
+and test doubles that depend on the old JSON protocol must return entries such
+as `### Next Step\n- Continue the task. [S1]` using the supplied aliases. JSON
+output is no longer accepted; invalid format gets one correction retry within
+the existing episode budget.
+
+Compaction record schemas, `task_summary` fields and real source IDs, and summaries
+rendered into context are unchanged. Existing records remain readable. No record
+or configuration migration is required; the `legacy` strategy is unchanged.
+
 ### Context maintenance fixes for `chunked` and `cache_aware`
 
 Except where noted, these fixes apply only to the opt-in `chunked` and

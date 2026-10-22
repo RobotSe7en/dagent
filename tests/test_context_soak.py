@@ -17,6 +17,7 @@ from dagent.providers.model_io import ModelTokenCount, ModelToolResultInput
 from dagent.schemas.conversation import inline_content
 from tests.test_cache_usage import _completion, _usage
 from tests.test_reasoning_mapping import _endpoint
+from tests.test_compaction_strategy import checkpoint, request_aliases
 
 
 READ_TOOL = {"type": "function", "function": {
@@ -103,19 +104,13 @@ async def test_two_hundred_tool_steps_preserve_prefix_between_compactions_and_co
         body = json.loads(request.content)
         messages = body.get("messages", [])
         raw = "\n".join(str(message.get("content", "")) for message in messages)
-        if "Eligible source IDs:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
+        if "Sources to summarize:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
             summaries += 1
-            match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
-            ids = json.loads(match.group(1)) if match else re.findall(r"\[Source ([^;]+);", raw)
-            if not ids:
-                match = re.search(r'"source_ids": \["([^"]+)"', raw)
-                ids = [match.group(1)] if match else []
-            assert ids, "Every summarizer request must provide actual evidence source IDs"
-            content = json.dumps({
-                "requirements": [{"text": "Collect evidence and preserve progress.", "source_ids": [ids[0]]}],
-                "operation_evidence_refs": [{"text": "Completed pages and their results remain in the source archive.", "source_ids": [ids[-1]]}],
-                "next_step": [{"text": "Continue collecting the remaining pages.", "source_ids": [ids[-1]]}],
-            })
+            ids = request_aliases(raw)
+            assert ids, "Every summarizer request must provide evidence source aliases"
+            content = checkpoint(requirements=[("Collect evidence and preserve progress.", [ids[0]])],
+                                 operation_evidence_refs=[("Completed pages and their results remain in the source archive.", [ids[-1]])],
+                                 next_step=[("Continue collecting the remaining pages.", [ids[-1]])])
             return _completion("chat_completions", body.get("stream", False), usage=_usage("chat_completions"), content=content)
         if previous_messages is not None and observed_compactions == summaries:
             assert messages[:len(previous_messages)] == previous_messages
@@ -165,16 +160,14 @@ def _outage_agent_endpoint(outage, steps_before_done):
         body = json.loads(request.content)
         messages = body.get("messages", [])
         raw = "\n".join(str(message.get("content", "")) for message in messages)
-        if "Eligible source IDs:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
+        if "Sources to summarize:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
             state["summaries"] += 1
             if outage[0]:
                 state["first_failure_requests"] = state["summaries"]
                 return httpx.Response(503, json={"error": {"message": "summarizer overloaded"}})
-            match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
-            ids = (json.loads(match.group(1)) if match else re.findall(r"\[Source ([^;]+);", raw)
-                   or re.findall(r'"source_ids": \["([^"]+)"', raw))
-            content = json.dumps({"requirements": [{"text": "Collect evidence.", "source_ids": [ids[0]]}],
-                                  "next_step": [{"text": "Continue collecting.", "source_ids": [ids[-1]]}]})
+            ids = request_aliases(raw)
+            content = checkpoint(requirements=[("Collect evidence.", [ids[0]])],
+                                 next_step=[("Continue collecting.", [ids[-1]])])
             return _completion("chat_completions", body.get("stream", False), usage=_usage("chat_completions"), content=content)
         state["steps"] += 1
         done = state["steps"] >= steps_before_done
@@ -241,7 +234,6 @@ async def test_conversation_failed_during_summarizer_outage_continues_after_reco
 @pytest.mark.parametrize("copies_inner_ids", [False, True])
 async def test_accumulating_summaries_follow_the_stated_budget_over_a_long_run(tmp_path, copies_inner_ids):
     steps = 0
-    entries = []
 
     @dagent.tool
     def query(index: int) -> str:
@@ -253,25 +245,25 @@ async def test_accumulating_summaries_follow_the_stated_budget_over_a_long_run(t
         body = json.loads(request.content)
         messages = body.get("messages", [])
         raw = "\n".join(str(message.get("content", "")) for message in messages)
-        if "Eligible source IDs:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
+        if "Sources to summarize:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
             # A faithful model keeps earlier completed work, as instructed,
             # and only compresses it when it knows the size limit.
-            match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
-            ids = (json.loads(match.group(1)) if match else re.findall(r"\[Source ([^;]+);", raw)
-                   or re.findall(r'"source_ids": \["([^"]+)"', raw))
-            previous = [value for value in ids if value.lstrip("_") == "previous_summary"]
+            ids = request_aliases(raw)
+            entries = [{"text": text, "source_ids": refs.split(", ")}
+                       for text, refs in re.findall(
+                           r"^- (Collected page from [^\n]+) \[([^\[\]]+)\]\s*$", raw, re.MULTILINE)]
             if not copies_inner_ids:
                 for entry in entries:
-                    entry["source_ids"] = previous[:1] or entry["source_ids"]
+                    entry["source_ids"] = ["S0"]
             entries.extend({"text": f"Collected page from {value}; verified=true; evidence archived.",
-                            "source_ids": [value]} for value in ids if value not in previous)
+                            "source_ids": [value]} for value in ids if value != "S0")
             limit = re.search(r"must stay under (\d+) tokens", raw)
             kept = list(entries)
             while limit and kept and len(json.dumps(kept)) > 3 * int(limit.group(1)):
                 kept.pop(0)
-            content = json.dumps({"requirements": [{"text": "Collect evidence.", "source_ids": [ids[0]]}],
-                                  "completed_work": kept,
-                                  "next_step": [{"text": "Continue collecting.", "source_ids": [ids[-1]]}]})
+            content = checkpoint(requirements=[("Collect evidence.", [ids[0]])],
+                                 completed_work=[(entry["text"], entry["source_ids"]) for entry in kept],
+                                 next_step=[("Continue collecting.", [ids[-1]])])
             return _completion("chat_completions", body.get("stream", False), usage=_usage("chat_completions"), content=content)
         steps += 1
         done = steps > 120
@@ -307,13 +299,11 @@ async def test_cache_aware_switches_to_chunks_after_a_cold_warm_prefix(tmp_path,
         body = json.loads(request.content)
         messages = body.get("messages", [])
         raw = "\n".join(str(message.get("content", "")) for message in messages)
-        if "Eligible source IDs:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
-            prefix = "Eligible source IDs:" in raw
+        if "Sources to summarize:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
+            prefix = "Sources to summarize:" in raw
             kinds.append("prefix" if prefix else "chunk")
-            match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
-            ids = (json.loads(match.group(1)) if match else re.findall(r"\[Source ([^;]+);", raw)
-                   or re.findall(r'"source_ids": \["([^"]+)"', raw))
-            content = json.dumps({"next_step": [{"text": "Continue collecting.", "source_ids": [ids[-1]]}]})
+            ids = request_aliases(raw)
+            content = checkpoint(next_step=[("Continue collecting.", [ids[-1]])])
             # A template that renders history differently after the summary
             # instruction reports few cached prompt tokens for the warm prefix.
             usage = _usage("chat_completions", cached=prefix_cached if prefix else 0)

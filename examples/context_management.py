@@ -43,16 +43,22 @@ class OfflineEndpoint:
         payload = json.loads(request.content)
         messages = payload["messages"]
         data = "\n".join(str(message.get("content", "")) for message in messages)
-        summary = "Eligible source IDs:" in data or messages[0]["content"].startswith("Produce a task checkpoint")
+        summary = "Sources to summarize:" in data or messages[0]["content"].startswith("Produce a task checkpoint")
         calls = []
         if summary:
             self.summaries += 1
-            match = re.search(r"Eligible source IDs: (\[[^\n]+\])", data)
-            ids = json.loads(match.group(1)) if match else re.findall(r"\[Source ([^;]+);", data)
-            content = json.dumps({"completed_work": [{
-                "text": "Earlier observations were received; use their source index for exact details.",
-                "source_ids": [ids[-1]],
-            }], "next_step": [{"text": "Continue from the latest retained tool result.", "source_ids": [ids[-1]]}]})
+            match = re.search(r"Sources to summarize: ([^\n]+)", data)
+            ids = ([token.strip() for token in match.group(1).split(",")] if match
+                   else re.findall(r"\[Source (S\d+);", data))
+            if not ids:
+                ids = re.findall(r"\[(S\d+)(?:, S\d+)*\]", data)
+            content = (
+                "### Completed Work\n"
+                "- Earlier observations were received; use their source index for exact details. "
+                f"[{ids[-1]}]\n\n"
+                "### Next Step\n"
+                f"- Continue from the latest retained tool result. [{ids[-1]}]"
+            )
         else:
             self.step += 1
             content = "Finished all synthetic observations." if self.step > 24 else ""
