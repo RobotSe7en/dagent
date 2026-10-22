@@ -333,3 +333,29 @@ async def test_cache_aware_switches_to_chunks_after_a_cold_warm_prefix(tmp_path,
         assert set(kinds) == {"prefix"}
     else:
         assert kinds.count("prefix") == expected_prefix_requests and kinds[0] == "prefix"
+
+
+@pytest.mark.asyncio
+async def test_runs_of_one_runner_share_the_verified_resource_store(tmp_path, monkeypatch):
+    from dagent.harness_runtime.conversation_resources import ConversationResourceStore
+
+    stores = []
+    original = ConversationResourceStore.persist
+
+    def persist(self, conversation, *, workspace_path):
+        stores.append(self)
+        return original(self, conversation, workspace_path=workspace_path)
+
+    monkeypatch.setattr(ConversationResourceStore, "persist", persist)
+
+    def respond(request):
+        body = json.loads(request.content)
+        return _completion("chat_completions", body.get("stream", False), usage=_usage("chat_completions"), content="done")
+
+    async with _endpoint(protocol="chat_completions", token_counting="heuristic", responder=respond) as (provider, _posts):
+        with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+            agent = dagent.ToolAgent(profile="conversation", context=dagent.ContextPolicy(compaction_strategy="chunked"))
+            first = await runner.run(agent, input="First.")
+            await runner.run(agent, input="Second.", conversation=first.conversation)
+    # Per-run runtimes keep one store, so its verified-file cache survives runs.
+    assert len(stores) == 2 and stores[0] is stores[1]

@@ -12,9 +12,10 @@ remains `0.10.1`.
 
 ### Context maintenance fixes for `chunked` and `cache_aware`
 
-These fixes apply only to the opt-in `chunked` and `cache_aware` ToolAgent
-strategies. The default `legacy` strategy, public exports, and persisted record
-schemas are unchanged. No source or configuration migration is required.
+Except where noted, these fixes apply only to the opt-in `chunked` and
+`cache_aware` ToolAgent strategies; `legacy` context behavior is unchanged.
+Public exports and persisted record schemas are unchanged. No source,
+configuration, or record migration is required.
 
 - A summarizer transport failure that remains after request retries (connection
   error, timeout, HTTP 408/409/425/429 or 5xx), with no completed chunk, no
@@ -57,6 +58,13 @@ schemas are unchanged. No source or configuration migration is required.
   reasoning once the summary instruction follows it. With such templates, use
   `reasoning_replay="none"` or `chunked`; see
   [Chat templates that drop earlier reasoning](model-context-and-reasoning.md#chat-templates-that-drop-earlier-reasoning).
+- Saving and restoring conversation resources at Run boundaries no longer
+  rereads unchanged history. Before, every continued Run reread and rehashed all
+  retained results twice when saving and twice when restoring. In an offline
+  benchmark, 60.8 MiB of retained results caused 121.7 MiB of reads per save or
+  restore; repeats now read nothing. Runs of one `Runner` share the store and its
+  verified file identities. Changed, missing, or corrupt files still fail
+  verification. This applies to every strategy.
 
 ## 0.10.2a0
 

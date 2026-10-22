@@ -81,6 +81,29 @@ class ConversationResourceStore:
             self.root.relative_to(root)
         except ValueError as exc:
             raise ValueError("runtime_directory escapes the runner workspace.") from exc
+        # File identities whose content this store verified. An unchanged opaque
+        # file is not reread at later run boundaries; a changed one is verified
+        # again. This is runtime state, never a persisted trust assertion.
+        self._verified: dict[tuple[str, int, str], tuple[int, ...]] = {}
+
+    def _known(self, path: Path, reference: ContentReference) -> bool:
+        try:
+            return self._verified.get((str(path), reference.byte_length, reference.sha256)) == _file_identity(path)
+        except OSError:
+            return False
+
+    def _read(self, path: Path, reference: ContentReference, *, label: str) -> bytes:
+        try:
+            before = _file_identity(path)
+        except OSError as exc:
+            raise ConversationResourceError(f"Conversation resource cannot be read: {label}.") from exc
+        data = _read_verified(path, byte_length=reference.byte_length, sha256=reference.sha256, label=label)
+        if _file_identity(path) == before:
+            self._verified[(str(path), reference.byte_length, reference.sha256)] = before
+        return data
+
+    def _remember(self, path: Path, reference: ContentReference) -> None:
+        self._verified[(str(path), reference.byte_length, reference.sha256)] = _file_identity(path)
 
     def persist(
         self,
@@ -93,17 +116,18 @@ class ConversationResourceStore:
         workspace = Path(workspace_path).expanduser().resolve()
         def retain(reference: ContentReference) -> bytes:
             source = _resolve_workspace_resource(workspace, reference.path)
-            data = _read_verified(
-                source,
-                byte_length=reference.byte_length,
-                sha256=reference.sha256,
-                label=reference.path,
-            )
-            self._write_object(conversation.id, reference.sha256, data)
+            data = self._read(source, reference, label=reference.path)
+            self._write_object(conversation.id, reference, data)
             return data
 
+        def retain_opaque(reference: ContentReference) -> None:
+            source = _resolve_workspace_resource(workspace, reference.path)
+            if not (self._known(source, reference)
+                    and self._known(self._object_path(conversation.id, reference.sha256), reference)):
+                retain(reference)
+
         roots = ((ref, kind) for ref, _, kind in _resource_roots(conversation))
-        for _ in iter_resource_closure(roots, retain):
+        for _ in iter_resource_closure(roots, retain, visit_opaque=retain_opaque):
             pass
 
     def materialize(
@@ -123,15 +147,25 @@ class ConversationResourceStore:
         # Restore their declared closure without rewriting opaque source text.
         def restore(reference: ContentReference) -> bytes:
             destination = _resolve_workspace_resource(workspace, reference.path)
-            source = destination if destination.is_file() else self._object_path(conversation.id, reference.sha256)
-            data = _read_verified(source, byte_length=reference.byte_length,
-                                  sha256=reference.sha256, label=reference.path)
-            _write_verified_file(destination, data)
+            if destination.is_file():
+                data = self._read(destination, reference, label=reference.path)
+            else:
+                data = self._read(self._object_path(conversation.id, reference.sha256), reference,
+                                  label=reference.path)
+                _write_verified_file(destination, data)
+                self._remember(destination, reference)
             materialized.setdefault(reference.sha256, reference.path)
             return data
 
+        def restore_opaque(reference: ContentReference) -> None:
+            destination = _resolve_workspace_resource(workspace, reference.path)
+            if self._known(destination, reference):
+                materialized.setdefault(reference.sha256, reference.path)
+            else:
+                restore(reference)
+
         roots = ((ref, kind) for ref, preserve, kind in _resource_roots(conversation) if preserve)
-        for _ in iter_resource_closure(roots, restore):
+        for _ in iter_resource_closure(roots, restore, visit_opaque=restore_opaque):
             pass
 
         def rebase(
@@ -233,19 +267,15 @@ class ConversationResourceStore:
     def _write_object(
         self,
         conversation_id: str,
-        sha256: str,
+        reference: ContentReference,
         data: bytes,
     ) -> None:
-        target = self._object_path(conversation_id, sha256)
+        target = self._object_path(conversation_id, reference.sha256)
         if target.is_file():
-            _read_verified(
-                target,
-                byte_length=len(data),
-                sha256=sha256,
-                label=sha256,
-            )
+            self._read(target, reference, label=reference.sha256)
             return
         _write_verified_file(target, data)
+        self._remember(target, reference)
 
 
 def _rebase_reference(
@@ -322,8 +352,12 @@ def iter_resource_closure(
     read_reference: Callable[[ContentReference], bytes],
     *,
     index: ConversationResourceIndex | None = None,
+    visit_opaque: Callable[[ContentReference], None] | None = None,
 ) -> Iterator[ContentReference]:
-    """Read schema-owned recovery edges, keeping ordinary result data opaque."""
+    """Read schema-owned recovery edges, keeping ordinary result data opaque.
+
+    ``visit_opaque`` handles leaf results whose bytes are not needed for edges.
+    """
 
     pending = list(roots)
     seen: set[tuple[str, str, str]] = set()
@@ -333,6 +367,10 @@ def iter_resource_closure(
         if identity in seen:
             continue
         seen.add(identity)
+        if kind == "opaque" and visit_opaque is not None:
+            visit_opaque(reference)
+            yield reference
+            continue
         edges = (index.edges(reference, kind, read_reference) if index is not None
                  else _resource_edges(read_reference(reference), kind))
         yield reference
@@ -380,6 +418,11 @@ def _resource_edges(data: bytes, kind: str) -> tuple[tuple[ContentReference, str
 
 def _has_conversation_resources(conversation: ConversationState) -> bool:
     return next(_conversation_resource_records(conversation), None) is not None
+
+
+def _file_identity(path: Path) -> tuple[int, ...]:
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
 def _resolve_workspace_resource(workspace: Path, relative: str) -> Path:

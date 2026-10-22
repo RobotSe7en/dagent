@@ -356,6 +356,40 @@ def test_frozen_paths_and_old_display_restore_into_a_new_run(tmp_path):
     assert (destination / display.previous_display.path).is_file()
 
 
+def test_repeated_run_boundaries_reread_only_changed_history(tmp_path, monkeypatch):
+    import pathlib
+
+    workspace = tmp_path / "first"
+    result_store = ResultStore(workspace, ".runtime")
+    frozen = _freeze(_conversation("source " * 1000, "other " * 1000), result_store)
+    recovery = frozen.items[1].model_display.recovery
+    reads = []
+    original = pathlib.Path.read_bytes
+
+    def counted(self):
+        reads.append(self.name)
+        return original(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", counted)
+    resources = ConversationResourceStore(tmp_path, ".runtime")
+    destination = tmp_path / "next"
+    resources.persist(frozen, workspace_path=workspace)
+    resources.materialize(frozen, workspace_path=destination)
+    first = len(reads)
+    assert first
+    reads.clear()
+    resources.persist(frozen, workspace_path=workspace)
+    resources.materialize(frozen, workspace_path=destination)
+    assert reads == []  # Unchanged, already verified history is not reread.
+    # A changed file is verified again, so corruption is still detected.
+    (destination / recovery.path).write_text("broken")
+    with pytest.raises(ConversationResourceError, match="size mismatch"):
+        resources.materialize(frozen, workspace_path=destination)
+    (workspace / recovery.path).write_text("broken")
+    with pytest.raises(ConversationResourceError, match="size mismatch"):
+        resources.persist(frozen, workspace_path=workspace)
+
+
 def test_result_json_is_not_interpreted_as_a_resource_manifest(tmp_path):
     store = ResultStore(tmp_path / "first", ".runtime")
     source = json.dumps({"type": "dagent_compaction_source", "refs": [{"path": "must-not-read"}]})
