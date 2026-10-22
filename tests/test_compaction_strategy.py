@@ -315,7 +315,7 @@ async def test_summary_requests_state_the_visible_budget(tmp_path, strategy, kin
 
 
 @pytest.mark.asyncio
-async def test_carried_forward_citations_resolve_to_the_previous_checkpoint(tmp_path):
+async def test_carried_forward_citations_resolve_to_the_previous_checkpoint(tmp_path, caplog):
     previous = ContextSummary(content="### Completed Work\n- Read the config [msg_old1, msg_old2]",
                               source_item_count=2)
     item = UserMessage(id="source", content="Now update the config.")
@@ -338,6 +338,8 @@ async def test_carried_forward_citations_resolve_to_the_previous_checkpoint(tmp_
 
     with pytest.raises(CompactionError, match="unknown source"):
         await compactor(tmp_path, invented).compact(previous, (item,), 256)
+    # Dropping an unknown ID is reported, never silent.
+    assert "cited 1 unknown source IDs; they were removed" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -358,10 +360,52 @@ async def test_oversized_summary_is_retried_once_with_its_measured_size(tmp_path
         assert [call.error is not None for call in calls] == [True, False]
         assert "Short checkpoint." in summary.content
     else:
-        with pytest.raises(CompactionError, match="visible output budget"):
+        with pytest.raises(CompactionError, match="visible output budget") as failed:
             await engine.compact(None, (item,), 256)
+        assert type(failed.value) is CompactionError and failed.value.oversized_tokens == 1007
     assert len(requests) == 2
-    assert "Your previous checkpoint was about 1007 tokens; the limit is 256." in requests[1].items[-1].content
+    # The note is an instruction; the summarized source data is unchanged.
+    assert "Your previous checkpoint was about 1007 tokens; the limit is 256." in requests[1].instructions
+    assert requests[1].items == requests[0].items
+
+
+@pytest.mark.asyncio
+async def test_oversized_warm_prefix_retry_extends_only_its_control_turn(tmp_path):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        text = "Short checkpoint." if len(requests) > 1 else "x" * 4000
+        return ModelResponse(content=json.dumps({"next_step": [{"text": text, "source_ids": ["a"]}]}))
+
+    engine = compactor(tmp_path, chat, strategy="cache_aware")
+    engine.source_request = ModelRequest(instructions="Original system.", items=(
+        ModelUserInput(source_id="u", content="Requirement"), ModelAssistantTurn(source_id="a", content="Done")))
+    await engine.compact(None, (UserMessage(id="u", content="Requirement"), AssistantMessage(id="a", content="Done")), 256)
+    assert [request.items[-1].source_id for request in requests] == ["compaction_control"] * 2
+    assert requests[1].items[:-1] == requests[0].items[:-1]
+    assert requests[1].instructions == requests[0].instructions
+    assert "Your previous checkpoint was about" in requests[1].items[-1].content
+
+
+@pytest.mark.asyncio
+async def test_oversized_retry_is_skipped_when_the_shorter_request_cannot_fit(tmp_path):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        return ModelResponse(content=json.dumps({"next_step": [{"text": "x" * 4000, "source_ids": ["source"]}]}))
+
+    engine = compactor(tmp_path, chat)
+    fits = engine._fits
+
+    async def no_room_for_note(request):
+        return "Your previous checkpoint" not in request.instructions and await fits(request)
+
+    engine._fits = no_room_for_note
+    with pytest.raises(CompactionError, match="visible output budget"):
+        await engine.compact(None, (UserMessage(id="source", content="Original"),), 256)
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio

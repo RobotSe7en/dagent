@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import re
 from collections.abc import Awaitable, Callable, Sequence
@@ -38,6 +39,8 @@ from dagent.schemas.conversation import (
 if TYPE_CHECKING:
     from dagent.harness_runtime.context import ContextAssembler
 
+logger = logging.getLogger(__name__)
+
 
 class CompactionError(RuntimeError):
     """No valid replacement was produced; the caller must retain source items."""
@@ -47,6 +50,8 @@ class CompactionError(RuntimeError):
     # The summarizer was unreachable after request retries; the selected source
     # itself was not judged.
     transient: bool = False
+    # A valid checkpoint rendered to this many tokens, above its visible budget.
+    oversized_tokens: int | None = None
 
 
 class CompactionBudgetExceeded(CompactionError):
@@ -55,14 +60,6 @@ class CompactionBudgetExceeded(CompactionError):
 
 class CompactionArchiveError(CompactionError):
     """An immutable source or required recovery reference is unavailable."""
-
-
-class _OversizedSummary(CompactionError):
-    """A valid checkpoint rendered above its visible budget."""
-
-    def __init__(self, tokens: int) -> None:
-        self.tokens = tokens
-        super().__init__("Compactor summary exceeds its visible output budget.")
 
 
 class _Record(BaseModel):
@@ -667,15 +664,21 @@ class HistoryCompactor:
             summary = self._parse_summary(response, sources, max_tokens, previous_id=previous_id)
         except CompactionError as exc:
             self.calls[-1] = self.calls[-1].model_copy(update={"error": str(exc)})
-            if isinstance(exc, _OversizedSummary) and retry_oversized and self.logical_calls < 8 and self.http_attempts < 12:
-                # One shorter attempt within the same episode budget; the same
-                # request plus a note keeps any warm prefix.
-                note = (f"Your previous checkpoint was about {exc.tokens} tokens; the limit is {max_tokens}. "
-                        "Return a shorter checkpoint within the size limit.")
-                last = request.items[-1]
-                shorter = replace(request, items=(*request.items[:-1], replace(last, content=last.content + "\n" + note)))
-                return await self._request(shorter, sources, kind, max_tokens,
-                                           previous_id=previous_id, retry_oversized=False)
+            if (exc.oversized_tokens is not None and retry_oversized
+                    and self.logical_calls < 8 and self.http_attempts < 12):
+                # One shorter attempt within the same episode budget. The note is
+                # an instruction, never part of the summarized source data; the
+                # warm prefix keeps its history and extends only its control turn.
+                note = (f"Your previous checkpoint was about {exc.oversized_tokens} tokens; the limit is "
+                        f"{max_tokens}. Return a shorter checkpoint within the size limit.")
+                if kind == "prefix":
+                    last = request.items[-1]
+                    shorter = replace(request, items=(*request.items[:-1], replace(last, content=last.content + "\n" + note)))
+                else:
+                    shorter = replace(request, instructions=request.instructions + "\n" + note)
+                if await self._fits(shorter):
+                    return await self._request(shorter, sources, kind, max_tokens,
+                                               previous_id=previous_id, retry_oversized=False)
             raise
         return summary, response
 
@@ -694,7 +697,9 @@ class HistoryCompactor:
         summary = _normalize_citations(summary, sources, previous_id)
         tokens = self.assembler.token_counter.count_text(summary.render())
         if tokens > max_tokens:
-            raise _OversizedSummary(tokens)
+            error = CompactionError("Compactor summary exceeds its visible output budget.")
+            error.oversized_tokens = tokens
+            raise error
         return summary
 
     async def _reduce(
@@ -986,6 +991,7 @@ def _normalize_citations(summary: TaskSummary, sources: dict[str, str],
             if match:
                 inherited.update(part.strip() for part in match.group(1).split(","))
     updates = {}
+    dropped = 0
     for name in TaskSummary.model_fields:
         entries = []
         for entry in getattr(summary, name):
@@ -993,6 +999,7 @@ def _normalize_citations(summary: TaskSummary, sources: dict[str, str],
             for source_id in entry.source_ids:
                 if source_id not in sources:
                     if source_id not in inherited:
+                        dropped += 1
                         continue
                     source_id = previous_id
                 if source_id not in ids:
@@ -1001,6 +1008,8 @@ def _normalize_citations(summary: TaskSummary, sources: dict[str, str],
                 raise CompactionError("Compactor cited an unknown source.")
             entries.append(entry if tuple(ids) == entry.source_ids else entry.model_copy(update={"source_ids": tuple(ids)}))
         updates[name] = tuple(entries)
+    if dropped:
+        logger.warning("Compaction summary cited %d unknown source IDs; they were removed.", dropped)
     return summary.model_copy(update=updates)
 
 

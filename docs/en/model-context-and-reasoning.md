@@ -586,11 +586,13 @@ Every summary request states its size limit. The limit is 80% of the visible
 summary budget, expressed in tokens and in approximate English and CJK
 characters, so the model can merge or shorten earlier entries. A checkpoint that
 still renders above the budget is retried once in the same episode with its
-measured size; that retry counts toward the episode's call budget. A second
-oversized checkpoint fails as before. Entries must cite supplied source IDs.
-IDs copied from inside the previous checkpoint resolve to that checkpoint's
-source ID, and other unknown IDs are dropped. An entry left without a supplied
-ID still rejects the summary.
+measured size, as an added instruction rather than as source data. That retry
+counts toward the episode's call budget, and it is skipped when the longer
+request would no longer fit. A second oversized checkpoint fails as before.
+Entries must cite supplied source IDs. IDs copied from inside the previous
+checkpoint resolve to that checkpoint's source ID. Other unknown IDs are dropped
+and logged as a warning with their count. An entry left without a supplied ID
+still rejects the summary.
 
 Each compaction episode permits at most eight logical model calls and twelve
 model request attempts, including retries. These limits do not cap normal agent
