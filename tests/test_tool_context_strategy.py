@@ -363,6 +363,34 @@ async def test_only_prefixes_with_the_sent_root_summary_measure_the_cache():
 
 
 @pytest.mark.asyncio
+async def test_small_first_span_does_not_block_soft_compaction_of_later_history():
+    from dagent.harness_runtime.context import HeuristicTokenCounter
+    from dagent.providers.model_io import model_request_to_chat
+
+    async def count(request, _field):
+        tokens = HeuristicTokenCounter().count_request(model_request_to_chat(request, reasoning_field="omit"), request.tools)
+        return ModelTokenCount(count=tokens, max_model_len=8192, exact=True)
+
+    # A live steer splits eligible history into a small span and a large one.
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="small", run_id="run", content="s" * 300),
+        dagent.UserMessage(id="steer", run_id="run", content="Also check the archive."),
+        dagent.AssistantMessage(id="large", run_id="run", content="l" * 26000),
+        dagent.AssistantMessage(id="latest", run_id="run", content="Latest protected step."),
+    ))
+    compactor = _Compactor()
+    prepared = await ContextAssembler(context_window_tokens=8192, max_output_tokens=512,
+                                      request_token_counter=count).prepare(
+        system_message={"content": "instructions"}, conversation=conversation,
+        policy=dagent.ContextPolicy(compaction_strategy="chunked"), enable_new_strategy=True,
+        history_compactor=compactor,
+    )
+    assert [[item.id for item in items] for items in compactor.calls] == [["small"], ["large"]]
+    assert [item.id for item in prepared.conversation.items] == ["task", "steer", "latest"]
+
+
+@pytest.mark.asyncio
 async def test_failed_soft_compaction_keeps_source_and_does_not_retry_unchanged_span():
     source = _history("evidence " * 950)
     assembler = ContextAssembler(context_window_tokens=4096,max_output_tokens=512)

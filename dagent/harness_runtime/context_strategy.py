@@ -441,12 +441,14 @@ async def _prepare_context(
         source_tokens = assembler.token_counter.count_request(
             model_request_to_chat(ModelRequest(instructions="", items=selected_view), reasoning_field="reasoning"), ())
         if not hard and cached_summary is None:
-            # Under soft pressure, wait until the selected history is worth a
+            # Under soft pressure, wait until the eligible history is worth a
             # paid summary and a prefix break. Otherwise mandatory input that
             # stays above the trigger would compact one small group per step.
             # Its share of the local estimate scales the counted request size.
+            eligible_ids = {item.id for range_start, range_end in ranges for item in working.items[range_start:range_end]
+                            if source_key(item) not in failed and source_key(item) not in unavailable}
             history_tokens = assembler.token_counter.count_request(model_request_to_chat(ModelRequest(
-                instructions="", items=tuple(item for item in selected_view if item.source_id != "context_summary"),
+                instructions="", items=tuple(item for item in state.request.items if item.source_id in eligible_ids),
             ), reasoning_field="reasoning"), ())
             request_tokens = assembler.token_counter.count_request(
                 model_request_to_chat(state.request, reasoning_field="reasoning"), state.request.tools)
@@ -507,8 +509,8 @@ async def _prepare_context(
         active_compacted += sum(item.run_id == active_run_id for item in source_items)
         method, reason = summary.method, summary.fallback_reason
         prefix_break = "compaction"
-        if state.estimate <= state.input_budget and progress < minimum_progress:
-            break
+        # Under soft pressure the worth-it check above decides whether the
+        # remaining eligible history justifies another summary.
 
     # Tighten only the current root once; never re-send raw source just because
     # wrappers or the final rendered token count made its first goal too large.

@@ -510,8 +510,9 @@ tries to leave space near `floor(0.65 * H)` but accepts a legal request above th
 target when mandatory input prevents further reduction. At the soft trigger,
 `compaction_retain_ratio` keeps recent complete groups near its 16% default,
 including at least the latest group. Under soft pressure, compaction also waits
-until the selected older history is worth summarizing: about 10% of `H`, measured
-as its share of the counted request. Otherwise mandatory input that stays above
+until the eligible older history is worth summarizing: about 10% of `H`, measured
+as its share of the counted request, across all spans that live user steers
+separate. Otherwise mandatory input that stays above
 the trigger would cost a paid summary and a prefix break on every step. Hard
 pressure still compacts at once, and may compact this recent tail up to the
 protected latest group. Every candidate is checked against `H` again before
