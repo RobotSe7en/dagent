@@ -548,6 +548,16 @@ timeouts. Set it explicitly to bound the entire episode, including retries;
 increase the provider timeout separately for slow self-hosted models. Cancellation
 still propagates. Repeated unchanged failed sources are not resummarized every
 turn, and nonconverging replacements cannot create an unlimited summary loop.
+A source is recorded as failed only when the summarizer was reached: an invalid
+or oversized summary, an exhausted episode budget or deadline, or a terminal
+re-preparation signal. A transport failure that persists after request retries
+(connection error, timeout, HTTP 408/409/425/429 or 5xx) with no completed chunk
+is not a verdict on the source. That episode stops calling the summarizer and
+records nothing; a later preparation or continuation retries the same source.
+Conversations saved by `0.10.0` through `0.10.2a0` may already mark such a
+source as failed. To retry it, continue from
+`conversation.model_copy(update={"compaction_state": None})`, or enable
+`allow_reference_fallback=True`.
 If the final count still exceeds the hard budget, the same episode can tighten
 only its current root summary once, without resending the original history.
 

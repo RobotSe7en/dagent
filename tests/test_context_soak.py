@@ -4,12 +4,14 @@ from contextlib import closing
 import json
 import re
 
+import httpx
 import pytest
 
 import dagent
 from dagent.harness_runtime.compaction import CompactionRecordV1
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.harness_runtime.context import ContextAssembler
+from dagent.harness_runtime.llm_retry import LLMRetryPolicy
 from dagent.providers import ToolCall
 from dagent.providers.model_io import ModelTokenCount, ModelToolResultInput
 from dagent.schemas.conversation import inline_content
@@ -147,3 +149,85 @@ async def test_two_hundred_tool_steps_preserve_prefix_between_compactions_and_co
             assert continued.status == "completed"
             assert (second_workspace / result.conversation.summary.compaction_record.path).is_file()
             assert executions == list(range(1, 201))
+
+
+def _outage_agent_endpoint(outage, steps_before_done):
+    """A synthetic deployment whose summarizer fails while ``outage[0]`` is set."""
+
+    state = {"steps": 0, "summaries": 0}
+
+    @dagent.tool
+    def query(index: int) -> str:
+        """Collect one page of evidence."""
+        return f"step={index}; verified=true; next={index + 1}; " + "evidence " * 180
+
+    def respond(request):
+        body = json.loads(request.content)
+        messages = body.get("messages", [])
+        raw = "\n".join(str(message.get("content", "")) for message in messages)
+        if "Eligible source IDs:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
+            state["summaries"] += 1
+            if outage[0]:
+                return httpx.Response(503, json={"error": {"message": "summarizer overloaded"}})
+            match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
+            ids = (json.loads(match.group(1)) if match else re.findall(r"\[Source ([^;]+);", raw)
+                   or re.findall(r'"source_ids": \["([^"]+)"', raw))
+            content = json.dumps({"requirements": [{"text": "Collect evidence.", "source_ids": [ids[0]]}],
+                                  "next_step": [{"text": "Continue collecting.", "source_ids": [ids[-1]]}]})
+            return _completion("chat_completions", body.get("stream", False), usage=_usage("chat_completions"), content=content)
+        state["steps"] += 1
+        done = state["steps"] >= steps_before_done
+        return _completion("chat_completions", body.get("stream", False), usage=_usage("chat_completions"),
+                           content="done" if done else "",
+                           calls=() if done else (ToolCall(id=f"call_{state['steps']}", name="tool_query",
+                                                           arguments={"index": state["steps"]}),))
+
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[query], max_steps=90,
+                             context=dagent.ContextPolicy(compaction_strategy="cache_aware", summary_max_tokens=512))
+    return agent, respond, state
+
+
+@pytest.mark.asyncio
+async def test_summarizer_outage_does_not_permanently_block_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(LLMRetryPolicy, "delay_for_retry", lambda self, index: 0.0)
+    outage = [True]
+    agent, respond, state = _outage_agent_endpoint(outage, steps_before_done=40)
+    async with _endpoint(protocol="chat_completions", token_counting="heuristic", context_window_tokens=8192,
+                         max_output_tokens=512, responder=respond) as (provider, _posts):
+        with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+            original_prepare = provider.prepare_call
+
+            async def prepare(request, *, stream):
+                # The outage ends after the first failed maintenance episode.
+                if request.purpose != "compaction" and state["summaries"] >= 12:
+                    outage[0] = False
+                return await original_prepare(request, stream=stream)
+
+            provider.prepare_call = prepare
+            result = await runner.run(agent, input="Collect evidence and preserve progress.")
+    assert result.status == "completed"
+    reasons = [usage.compaction_reason or "" for usage in result.state.context_usage]
+    assert any(reason.startswith("CompactionTransportError") for reason in reasons)
+    # The span that failed during the outage was summarized after recovery.
+    assert result.conversation.compaction_state is None
+    assert len(result.conversation.items) < 12
+    assert all(usage.estimated_input_tokens <= usage.input_budget_tokens for usage in result.state.context_usage)
+
+
+@pytest.mark.asyncio
+async def test_conversation_failed_during_summarizer_outage_continues_after_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(LLMRetryPolicy, "delay_for_retry", lambda self, index: 0.0)
+    outage = [True]
+    agent, respond, state = _outage_agent_endpoint(outage, steps_before_done=10**9)
+    async with _endpoint(protocol="chat_completions", token_counting="heuristic", context_window_tokens=8192,
+                         max_output_tokens=512, responder=respond) as (provider, _posts):
+        with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+            with pytest.raises(dagent.ContextWindowExceeded) as failed:
+                await runner.run(agent, input="Collect evidence and preserve progress.")
+            conversation = failed.value.result.conversation
+            assert conversation.compaction_state is None
+            outage[0] = False
+            state["steps"] = 10**9  # The model now finishes on its next generation.
+            continued = await runner.run(agent, input="Continue from the saved progress.", conversation=conversation)
+    assert continued.output_text == "done"
+    assert continued.conversation.summary is not None

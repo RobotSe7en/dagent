@@ -9,7 +9,7 @@ import pytest
 
 from dagent.harness_runtime.compaction import (
     CompactionArchiveError, CompactionBudgetExceeded, CompactionError,
-    CompactionRecordV1, CompactionSourceV1, HistoryCompactor,
+    CompactionRecordV1, CompactionSourceV1, CompactionTransportError, HistoryCompactor,
     load_compaction_references,
 )
 from dagent.harness_runtime.context import ContextAssembler
@@ -249,6 +249,24 @@ async def test_http_and_deadline_budgets_cover_whole_episode(tmp_path):
     engine.deadline = 0
     with pytest.raises(CompactionBudgetExceeded, match="deadline"):
         await engine.compact(None, (item,), 256)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error,transport", [
+    (ConnectionError("connection reset"), True),
+    (TimeoutError("read timed out"), True),
+    (ValueError("request rejected"), False),
+])
+async def test_summary_transport_failures_are_typed_separately(tmp_path, error, transport):
+    async def chat(request):
+        raise error
+
+    engine = compactor(tmp_path, chat)
+    with pytest.raises(CompactionError) as failed:
+        await engine.compact(None, (UserMessage(id="source", content="Original"),), 256)
+    assert isinstance(failed.value, CompactionTransportError) is transport
+    assert failed.value.completed_chunks == 0
+    assert record_for(engine, failed.value).status == "reference_only"
 
 
 @pytest.mark.asyncio

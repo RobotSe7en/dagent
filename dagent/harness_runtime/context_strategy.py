@@ -17,7 +17,7 @@ from dagent.harness_runtime.context import (
     ContextAssembler, PreparedModelContext, _atomic_groups, _context_results,
     _latest_run_id, _should_replay_reasoning, _ProjectionUsage, user_content_for_model,
 )
-from dagent.harness_runtime.compaction import CompactionError
+from dagent.harness_runtime.compaction import CompactionError, CompactionTransportError
 from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.frozen_results import (
     RecoveryAccess, freeze_result_displays, reference_frozen_result_displays,
@@ -71,6 +71,11 @@ class _CompactionProgress:
         return self.conversation.model_copy(update={
             "compaction_state": state, "revision": self.conversation.revision + 1,
         })
+
+
+def _unavailable(exc: BaseException) -> bool:
+    # Only an unavailable summarizer with no paid chunk leaves nothing to keep.
+    return isinstance(exc, CompactionTransportError) and not exc.completed_chunks
 
 
 def _source_key(item: Any, policy: ContextPolicy, namespace: str = "") -> str:
@@ -364,6 +369,7 @@ async def _prepare_context(
     # One episode shares the compactor's eight-call budget. Selection always
     # moves forward, and failed identical sources are not retried on every turn.
     attempts = 0
+    summarizer_unavailable = False
     considered_records: set[tuple[str, str | None]] = set()
     while compactor is not None and state.estimate > math.floor(state.input_budget * policy.compaction_trigger_ratio) and attempts < 8:
         hard = state.estimate > state.input_budget
@@ -444,6 +450,12 @@ async def _prepare_context(
         except (CompactionError, ProviderReprepareRequired) as exc:
             # Failure preserves the original range. Cancellation is a
             # BaseException and deliberately bypasses this handler.
+            reason = f"{type(exc).__name__}: {exc}"[:1000]
+            if _unavailable(exc):
+                # Not a verdict on this source: keep it eligible for a later
+                # preparation and stop calling the summarizer in this episode.
+                summarizer_unavailable = True
+                break
             failed_keys = tuple(source_key(item) for item in source_items)
             failed.update(failed_keys)
             record = getattr(exc, "compaction_record", None)
@@ -451,7 +463,6 @@ async def _prepare_context(
                 failed_records.append(FailedCompaction(source_keys=failed_keys, record=record))
             if isinstance(exc, ProviderReprepareRequired):
                 raise
-            reason = f"{type(exc).__name__}: {exc}"[:1000]
             if fallback_only:
                 break
             continue
@@ -497,7 +508,8 @@ async def _prepare_context(
                     root_key = summary_key()
                 else:
                     working, state = before, before_state
-    if callable(tighten) and working.summary is not None and root_key not in failed and state.estimate > state.input_budget:
+    if (callable(tighten) and not summarizer_unavailable and working.summary is not None
+            and root_key not in failed and state.estimate > state.input_budget):
         current_tokens = assembler.token_counter.count_text(working.summary.content)
         goal = current_tokens - math.ceil((state.estimate - state.input_budget) / (1 + policy.token_safety_margin)) - 64
         if 64 <= goal < current_tokens:
@@ -506,13 +518,14 @@ async def _prepare_context(
                 summary = await tighten(working.summary, min(goal, policy.summary_max_tokens),
                                         allow_fallback=policy.allow_reference_fallback)
             except (CompactionError, ProviderReprepareRequired) as exc:
-                failed.add(root_key)
-                record = getattr(exc, "compaction_record", None)
-                if record is not None:
-                    failed_records.append(FailedCompaction(source_keys=(root_key,), record=record))
+                reason = f"{type(exc).__name__}: {exc}"[:1000]
+                if not _unavailable(exc):
+                    failed.add(root_key)
+                    record = getattr(exc, "compaction_record", None)
+                    if record is not None:
+                        failed_records.append(FailedCompaction(source_keys=(root_key,), record=record))
                 if isinstance(exc, ProviderReprepareRequired):
                     raise
-                reason = f"{type(exc).__name__}: {exc}"[:1000]
             else:
                 working = working.model_copy(update={"summary": summary, "revision": working.revision + 1})
                 if summary.compaction_record is not None:

@@ -8,6 +8,23 @@ that may require action when upgrading.
 The current package version is `0.10.2a0`; the stable release
 remains `0.10.1`.
 
+## Unreleased
+
+### Context maintenance fixes for `chunked` and `cache_aware`
+
+These fixes apply only to the opt-in `chunked` and `cache_aware` ToolAgent
+strategies. The default `legacy` strategy, public exports, and persisted record
+schemas are unchanged. No source or configuration migration is required.
+
+- A summarizer transport failure that remains after request retries (connection
+  error, timeout, HTTP 408/409/425/429 or 5xx), with no completed chunk, no
+  longer marks the selected history as permanently failed. The episode stops
+  calling the summarizer; a later preparation or continuation retries the same
+  source. Invalid or oversized summaries, exhausted budgets or deadlines, and
+  terminal re-preparation signals are still recorded. Conversations saved by
+  `0.10.0` through `0.10.2a0` can retry a span that an outage blocked by
+  continuing from `conversation.model_copy(update={"compaction_state": None})`.
+
 ## 0.10.2a0
 
 This prerelease supersedes `0.10.1a0` so its version follows stable `0.10.1`.

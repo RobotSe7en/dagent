@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from dagent.capabilities.tools.boundary import enforce_path_allowed
+from dagent.harness_runtime.llm_retry import is_transient_llm_error
 from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.result_projection import result_references
 from dagent.harness_runtime.result_storage import ResultStore
@@ -42,6 +43,11 @@ class CompactionError(RuntimeError):
 
     compaction_record: ContentReference | None = None
     source_reference: ContentReference | None = None
+    completed_chunks: int = 0
+
+
+class CompactionTransportError(CompactionError):
+    """The summarizer was unavailable; the selected source was not judged."""
 
 
 class CompactionBudgetExceeded(CompactionError):
@@ -291,6 +297,7 @@ class HistoryCompactor:
                 status="partial" if chunks else "reference_only", reason=str(exc))
             exc.compaction_record = failed_record
             exc.source_reference = source
+            exc.completed_chunks = len(chunks)
             if isinstance(exc, ProviderReprepareRequired):
                 raise
             if allow_fallback and self.policy.allow_reference_fallback:
@@ -384,6 +391,7 @@ class HistoryCompactor:
                 summary, source, sources, chunks,
                 status="partial" if chunks else "reference_only", reason=str(exc))
             exc.source_reference = source
+            exc.completed_chunks = len(chunks)
             if isinstance(exc, ProviderReprepareRequired):
                 raise
             if allow_fallback and self.policy.allow_reference_fallback:
@@ -568,7 +576,10 @@ class HistoryCompactor:
                                              model_call=metadata, error=f"{type(exc).__name__}: {exc}"))
             if isinstance(exc, CompactionBudgetExceeded):
                 raise
-            raise CompactionError(f"Summary request failed: {type(exc).__name__}: {exc}") from exc
+            # Transport failures say nothing about the source; callers may retry
+            # it later instead of recording it as an unsummarizable span.
+            error_type = CompactionTransportError if is_transient_llm_error(exc) else CompactionError
+            raise error_type(f"Summary request failed: {type(exc).__name__}: {exc}") from exc
         response = normalize_model_response(model_response_from_chat(raw) if isinstance(raw, ChatResponse) else raw)
         attempts = max(1, len(response.metadata.attempts) if response.metadata else 0)
         if self.http_attempts == attempts_before:

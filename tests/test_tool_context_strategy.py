@@ -15,6 +15,7 @@ from dagent.providers import ToolCall
 from dagent.providers import ProviderCapabilityError
 from dagent.providers.model_io import ModelTokenCount
 from dagent.providers.openai_compatible import ProviderTokenCountError
+from dagent.schemas.context import ContextWindowExceeded
 from dagent.schemas.conversation import stored_content_text
 from tests.test_cache_usage import _completion, _usage
 from tests.test_reasoning_mapping import _endpoint
@@ -138,6 +139,60 @@ async def test_compacts_middle_but_keeps_user_and_latest_step():
     assert prepared.conversation.items == (source.items[0],source.items[2])
     assert prepared.usage.compacted_active_run_items == 1
     assert prepared.usage.estimated_input_tokens <= prepared.usage.input_budget_tokens
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hard", [False, True])
+async def test_unavailable_summarizer_leaves_the_source_retryable(tmp_path, hard):
+    available = False
+    summaries = 0
+
+    async def chat(request):
+        nonlocal summaries
+        summaries += 1
+        if not available:
+            raise ConnectionError("connection reset by the summarizer")
+        return summary_response(request)
+
+    async def count(request, _field):
+        if request.purpose == "compaction":
+            return ModelTokenCount(count=100, max_model_len=8192, exact=True)
+        old = any(item.source_id == "old" for item in request.items)
+        return ModelTokenCount(count=(9000 if hard else 7000) if old else 100, max_model_len=8192, exact=True)
+
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="old", run_id="run", content="Old evidence."),
+        dagent.AssistantMessage(id="tail", run_id="run", content="Latest protected step."),
+    ))
+    policy = dagent.ContextPolicy(compaction_strategy="chunked", compaction_retain_ratio=.0001)
+    assembler = ContextAssembler(context_window_tokens=8192, max_output_tokens=512, request_token_counter=count)
+    store = ResultStore(tmp_path, ".runtime")
+
+    async def prepare(source):
+        return await assembler.prepare(
+            system_message={"content": "Task"}, conversation=source, policy=policy,
+            result_store=store, enable_new_strategy=True,
+            history_compactor=HistoryCompactor(policy=policy, assembler=assembler, result_store=store,
+                                               system_message={"content": "Task"}, chat=chat),
+        )
+
+    if hard:
+        with pytest.raises(ContextWindowExceeded) as failed:
+            await prepare(conversation)
+        saved = failed.value._conversation
+    else:
+        first = await prepare(conversation)
+        assert first.usage.compaction_reason.startswith("CompactionTransportError")
+        saved = first.conversation
+    # An outage is not a verdict on the source: nothing blocks a later attempt.
+    assert saved.items == conversation.items
+    assert saved.compaction_state is None
+    assert summaries == 1
+    available = True
+    restored = await prepare(saved)
+    assert summaries == 2
+    assert [item.id for item in restored.conversation.items] == ["task", "tail"]
 
 
 @pytest.mark.asyncio
