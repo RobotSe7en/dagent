@@ -401,6 +401,24 @@ system 和 tools；放不下或不兼容时改用独立分块。不会仅为复�
 这两种策略只作用于 SDK ToolAgent；DAG 和默认 `legacy` 保持已发布行为。
 自定义 provider 需要实现内部 prepared-call 契约才能使用新策略。
 
+### 会丢弃较早推理的聊天模板
+
+有些聊天模板只渲染最后一条 user 消息之后的 assistant 推理，例如 Qwen3、QwQ 的模板。
+在默认 `reasoning_replay="active_run"` 下（且服务端把回放的推理传给模板时），
+generation prompt 包含本次 Run 的推理；`cache_aware` 摘要请求却在末尾追加一条 user
+指令，模板随即丢弃这些推理，两个 prompt 从本次 Run 的第一个 assistant 轮次开始分叉。
+用官方 Qwen3-8B 模板渲染一个五步 Run，前缀摘要请求与之前的 generation prompt 只共享
+13%。使用这类模板时可以：
+
+- 在 `cache_aware` 下配合 `reasoning_replay="none"`，两个请求渲染相同的历史，但模型
+  在本次 Run 中不再看到自己之前的推理；或
+- 改用 `chunked`，其独立摘要请求不依赖前缀。
+
+开启 `capture_cache_usage=True` 后（摘要请求是流式的，Chat 端点还需
+`stream_include_usage=True`），`cache_aware` 会检查每次前缀摘要由 provider 报告的缓存
+命中；缓存的输入 token 不到一半时，本次 Run 剩余部分改用独立分块摘要，新的 Run 会再次
+尝试前缀。缓存用量未知时不会改变路径。压缩记录的 `calls[].kind` 显示每次摘要走的路径。
+
 ### 同一请求计数与三条预算线
 
 Provider 按额外参数优先级构造最终请求后将其冻结，计数与发送共用同一份不可变

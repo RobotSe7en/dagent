@@ -805,6 +805,11 @@ class ToolAgentLoop:
                 )
 
         result_store = None
+        prefix_cache = None
+        if context_policy.compaction_strategy == "cache_aware":
+            from dagent.harness_runtime.compaction import PrefixCacheMonitor
+
+            prefix_cache = PrefixCacheMonitor()
         for step in range(1, max_steps + 1):
             tool_definitions = self._llm_tool_definitions(capability_ids=capability_ids)
             while True:
@@ -834,6 +839,7 @@ class ToolAgentLoop:
                         result_store=result_store, system_message=system_message,
                         tools=tool_definitions, chat=summarize, read_available=access.can_read,
                         observer=ContextObserver(self.context_observability, on_event, resolved_run_id),
+                        prefix_cache=prefix_cache,
                     )
                 try:
                     prepared = await context_assembler.prepare(

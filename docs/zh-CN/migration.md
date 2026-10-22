@@ -34,6 +34,11 @@
   未知引用会被去掉，不含任何有效 ID 的条目仍会失败。此前长时间运行中的累积摘要最终会
   超过模型并不知道的上限，从上一份摘要抄来的引用也会使整份已付费摘要被拒绝，最终都以
   `ContextWindowExceeded` 结束运行。
+- `capture_cache_usage=True` 时（Chat 流式还需 `stream_include_usage=True`），
+  `cache_aware` 会检查每次前缀摘要由 provider 报告的缓存命中，低于 50% 时本次 Run
+  剩余部分改用分块摘要；用量未知时不改变行为。Qwen3 等模板在摘要指令之后会丢弃较早
+  推理，使用这类模板时请配合 `reasoning_replay="none"` 或改用 `chunked`，参见
+  [会丢弃较早推理的聊天模板](model-context-and-reasoning.md#会丢弃较早推理的聊天模板)。
 
 ## 0.10.2a0
 

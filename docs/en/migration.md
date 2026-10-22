@@ -50,6 +50,13 @@ schemas are unchanged. No source or configuration migration is required.
   fails. Before, cumulative summaries in long runs eventually exceeded an
   unstated limit, and a citation copied from the previous checkpoint rejected
   the whole paid summary. Both cases ended the run with `ContextWindowExceeded`.
+- `cache_aware` now checks the provider-reported cache hit of each warm-prefix
+  summary when `capture_cache_usage=True` (Chat streaming also needs
+  `stream_include_usage=True`). Below 50%, the rest of the Run uses chunk
+  summaries. Unknown usage changes nothing. Templates such as Qwen3 drop earlier
+  reasoning once the summary instruction follows it. With such templates, use
+  `reasoning_replay="none"` or `chunked`; see
+  [Chat templates that drop earlier reasoning](model-context-and-reasoning.md#chat-templates-that-drop-earlier-reasoning).
 
 ## 0.10.2a0
 

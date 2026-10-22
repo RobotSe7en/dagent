@@ -10,7 +10,7 @@ import pytest
 from dagent.harness_runtime.compaction import (
     CompactionArchiveError, CompactionBudgetExceeded, CompactionChunk, CompactionError,
     CompactionRecordV1, CompactionSourceV1, CompactionTransportError, HistoryCompactor,
-    SummaryEntry, TaskSummary, load_compaction_references,
+    PrefixCacheMonitor, SummaryEntry, TaskSummary, load_compaction_references,
 )
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import ResultStore
@@ -20,7 +20,7 @@ from dagent.providers.model_io import (
     ModelTokenCount,
 )
 from dagent.providers import ProviderReprepareRequired
-from dagent.schemas.context import ContextPolicy, ModelCallMetadata
+from dagent.schemas.context import ContextPolicy, ModelCallMetadata, ModelTokenUsage
 from dagent.schemas.conversation import (
     AssistantMessage, ContextSummary, FrozenResultDisplay, ToolCallItem,
     ToolResultMessage, UserMessage, inline_content,
@@ -344,6 +344,31 @@ async def test_oversized_summary_is_retried_once_with_its_measured_size(tmp_path
             await engine.compact(None, (item,), 256)
     assert len(requests) == 2
     assert "Your previous checkpoint was about 1007 tokens; the limit is 256." in requests[1].items[-1].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached,switches", [(100, True), (900, False), (None, False)])
+async def test_low_prefix_cache_hits_switch_the_run_to_chunk_summaries(tmp_path, cached, switches):
+    from dataclasses import replace
+
+    async def chat(request):
+        usage = ModelTokenUsage(input_tokens=1000, cached_input_tokens=cached)
+        return replace(summary_response(request), usage=usage)
+
+    monitor = PrefixCacheMonitor()
+    kinds = []
+    for index in range(2):
+        items = (UserMessage(id=f"u{index}", content="Requirement"), AssistantMessage(id=f"a{index}", content="Done"))
+        engine = compactor(tmp_path, chat, strategy="cache_aware")
+        engine.prefix_cache = monitor
+        engine.source_request = ModelRequest(instructions="Original system.", items=(
+            ModelUserInput(source_id=f"u{index}", content="Requirement"),
+            ModelAssistantTurn(source_id=f"a{index}", content="Done")))
+        summary = await engine.compact(None, items, 256)
+        kinds.append([call.kind for call in record_for(engine, summary).calls])
+    # Unknown cache usage never disables the warm prefix.
+    assert monitor.disabled is switches
+    assert kinds == [["prefix"], ["chunk"] if switches else ["prefix"]]
 
 
 @pytest.mark.asyncio

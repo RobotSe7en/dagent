@@ -285,3 +285,51 @@ async def test_accumulating_summaries_follow_the_stated_budget_over_a_long_run(t
     assert steps == 121
     assert result.conversation.compaction_state is None
     assert all(usage.estimated_input_tokens <= usage.input_budget_tokens for usage in result.state.context_usage)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix_cached,expected_prefix_requests", [(50, 1), (900, None)])
+async def test_cache_aware_switches_to_chunks_after_a_cold_warm_prefix(tmp_path, prefix_cached, expected_prefix_requests):
+    steps = 0
+    kinds = []
+
+    @dagent.tool
+    def query(index: int) -> str:
+        """Collect one page of evidence."""
+        return f"step={index}; verified=true; " + "evidence " * 180
+
+    def respond(request):
+        nonlocal steps
+        body = json.loads(request.content)
+        messages = body.get("messages", [])
+        raw = "\n".join(str(message.get("content", "")) for message in messages)
+        if "Eligible source IDs:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
+            prefix = "Eligible source IDs:" in raw
+            kinds.append("prefix" if prefix else "chunk")
+            match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
+            ids = (json.loads(match.group(1)) if match else re.findall(r"\[Source ([^;]+);", raw)
+                   or re.findall(r'"source_ids": \["([^"]+)"', raw))
+            content = json.dumps({"next_step": [{"text": "Continue collecting.", "source_ids": [ids[-1]]}]})
+            # A template that renders history differently after the summary
+            # instruction reports few cached prompt tokens for the warm prefix.
+            usage = _usage("chat_completions", cached=prefix_cached if prefix else 0)
+            return _completion("chat_completions", body.get("stream", False), usage=usage, content=content)
+        steps += 1
+        done = steps > 60
+        return _completion("chat_completions", body.get("stream", False), usage=_usage("chat_completions"),
+                           content="done" if done else "",
+                           calls=() if done else (ToolCall(id=f"call_{steps}", name="tool_query", arguments={"index": steps}),))
+
+    async with _endpoint(protocol="chat_completions", token_counting="heuristic", context_window_tokens=8192,
+                         max_output_tokens=512, capture_cache_usage=True, stream_include_usage=True,
+                         responder=respond) as (provider, _posts):
+        with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+            agent = dagent.ToolAgent(profile="conversation", capabilities=[query], max_steps=70,
+                                     context=dagent.ContextPolicy(compaction_strategy="cache_aware", summary_max_tokens=512))
+            result = await runner.run(agent, input="Collect evidence and preserve progress.")
+    assert result.status == "completed"
+    assert len(kinds) >= 3
+    if expected_prefix_requests is None:
+        assert set(kinds) == {"prefix"}
+    else:
+        assert kinds.count("prefix") == expected_prefix_requests and kinds[0] == "prefix"

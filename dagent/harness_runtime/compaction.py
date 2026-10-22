@@ -12,7 +12,7 @@ import json
 import math
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -220,6 +220,26 @@ def _summary_rules(max_tokens: int) -> str:
     )
 
 
+@dataclass
+class PrefixCacheMonitor:
+    """Run-scoped check that cache_aware warm-prefix summaries reuse the cache.
+
+    Some chat templates render history differently once a summary instruction
+    follows it (for example by dropping earlier reasoning). A provider-reported
+    hit ratio below ``min_cached_ratio`` switches the rest of the run to
+    dedicated chunk summaries. Unknown cache usage never decides.
+    """
+
+    min_cached_ratio: float = 0.5
+    disabled: bool = False
+
+    def observe(self, usage: ModelTokenUsage | None) -> None:
+        if usage is None or usage.cached_input_tokens is None or not usage.input_tokens:
+            return
+        if usage.cached_input_tokens < self.min_cached_ratio * usage.input_tokens:
+            self.disabled = True
+
+
 class HistoryCompactor:
     """One bounded compaction episode, shared by all slices of one prepare call.
 
@@ -236,8 +256,10 @@ class HistoryCompactor:
         read_available: bool | Callable[[ContentReference], bool] = False,
         source_request: ModelRequest | None = None,
         observer: Any = None,
+        prefix_cache: PrefixCacheMonitor | None = None,
     ) -> None:
         self.observer = observer
+        self.prefix_cache = prefix_cache
         self.policy = policy
         self.assembler = assembler
         self.result_store = result_store
@@ -279,9 +301,12 @@ class HistoryCompactor:
         chunks: list[CompactionChunk] = []
         final_response: ModelResponse | None = None
         try:
-            prefix = self._prefix_request(previous, items, max_tokens)
-            if self.policy.compaction_strategy == "cache_aware" and prefix is not None:
+            warm = (self.policy.compaction_strategy == "cache_aware"
+                    and not (self.prefix_cache is not None and self.prefix_cache.disabled))
+            prefix = self._prefix_request(previous, items, max_tokens) if warm else None
+            if prefix is not None:
                 if await self._fits(prefix):
+                    calls = len(self.calls)
                     try:
                         summary, final_response = await self._request(
                             prefix, sources, "prefix", max_tokens, previous_id=previous_id)
@@ -293,6 +318,10 @@ class HistoryCompactor:
                         chunks.append(CompactionChunk(ranges=_all_ranges(sources), summary=summary))
                         return self._finish(previous, items, source, sources, chunks,
                                             summary, final_response, max_tokens)
+                    finally:
+                        if self.prefix_cache is not None:
+                            for call in self.calls[calls:]:
+                                self.prefix_cache.observe(call.usage)
 
             queue: list[tuple[SourceRange, ...]] = [_all_ranges(sources)]
             while queue:

@@ -465,6 +465,28 @@ These strategies apply to SDK ToolAgent execution. DAG execution and the default
 `legacy` strategy keep their released behavior. Custom providers must implement
 the internal prepared-call contract to use the new strategies.
 
+### Chat templates that drop earlier reasoning
+
+Some chat templates render an assistant turn's reasoning only after the latest
+user message. Qwen3 and QwQ templates are examples. With the default
+`reasoning_replay="active_run"`, a generation prompt contains the current Run's
+reasoning, if the server passes replayed reasoning to the template. The
+`cache_aware` summary request then appends a user instruction, so the template
+drops that reasoning and the prompt diverges at the Run's first assistant turn.
+With the official Qwen3-8B template, a five-step Run's warm-prefix request shared
+only 13% of the preceding generation prompt. For such templates, either:
+
+- use `reasoning_replay="none"` with `cache_aware`, so both prompts render the
+  same history but the model no longer sees its earlier reasoning in the Run; or
+- use `chunked`, whose dedicated summary requests do not depend on the prefix.
+
+With `capture_cache_usage=True`, `cache_aware` checks the provider-reported cache
+hit of each warm-prefix summary. Chat endpoints also need `stream_include_usage=True`,
+because summary requests are streamed. When fewer than half of the input tokens
+were cached, the rest of the Run uses dedicated chunk summaries. A new Run tries
+the warm prefix again. Unknown cache usage never changes the path. The compaction
+record's `calls[].kind` shows which path each summary used.
+
 ### One counted request and three budget thresholds
 
 The provider freezes its actual request after applying extra-parameter precedence.
