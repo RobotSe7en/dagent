@@ -633,12 +633,23 @@ Operation Evidence Refs. Empty sections are omitted. Each entry is a line such a
 used by current or inherited real source IDs, including lowercase and zero-padded
 variants; use the aliases supplied in the request. Records keep real source IDs,
 and the checkpoint rendered into context keeps its existing format and real IDs.
-The parser tolerates code fences, extra commentary, multiline entries, and heading
-variants. An entry ends at its trailing recognized citation, so following commentary
-cannot invalidate it. Literal `</think>` text in entries is preserved; reasoning
-normalization runs before checkpoint parsing. Skipped content is reported through
-warning counts without logging its text. Output with no valid entries gets one
-format correction retry in the same compaction episode.
+Parsing is lenient, so format drift does not discard content or fail compaction.
+Headings match regardless of Markdown marks, case, numbering, `_` or `-` separators,
+trailing colons, singular or plural forms, and common Chinese names such as `下一步`.
+A heading line may carry an inline entry, as in `Next Step: run the tests [S1]`.
+Every other line is an entry, with or without a bullet; a line without a bullet
+continues a bulleted entry that has no citation yet. Citations may use full-width
+brackets or commas, `、`, `;` or spaces as separators, and trailing punctuation or
+emphasis. An entry ends at its trailing recognized citation, so following commentary
+becomes a separate entry. Lines before the first known heading join Completed Work,
+and lines after an unknown heading stay in the current section. An entry without a
+citation naming a supplied source cites the first and last sources of its own request;
+unknown IDs in a recognized citation are dropped. Code fences and separator lines are
+skipped, so commentary such as `Here is the checkpoint:` is kept as an entry. Literal
+`</think>` text in entries is preserved; reasoning normalization runs before
+checkpoint parsing. Recovered content is reported through warning counts without
+logging its text. Only output without any entry, such as an empty response or
+headings alone, gets one format correction retry in the same compaction episode.
 
 Every summary request states its size limit: 80% of the visible summary budget,
 in tokens and approximate English and CJK characters. Each cited alias counts as

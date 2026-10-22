@@ -360,7 +360,8 @@ class HistoryCompactor:
                     calls = len(self.calls)
                     try:
                         summary, final_response = await self._request(
-                            prefix, sources, "prefix", previous_id=previous_id, aliases=aliases)
+                            prefix, sources, "prefix", previous_id=previous_id, aliases=aliases,
+                            cite=tuple(sources))
                     except CompactionError as exc:
                         if exc.transient:
                             # An unreachable summarizer is not retried through
@@ -388,8 +389,9 @@ class HistoryCompactor:
                         self._no_capacity("Compactor instructions leave no source capacity.")
                     queue[0:0] = [left, right]
                     continue
-                summary, response = await self._request(request, sources, "chunk",
-                                                        previous_id=previous_id, aliases=aliases)
+                summary, response = await self._request(
+                    request, sources, "chunk", previous_id=previous_id, aliases=aliases,
+                    cite=tuple(dict.fromkeys(span.source_id for span in ranges)))
                 chunks.append(CompactionChunk(ranges=ranges, summary=summary))
                 final_response = response
 
@@ -500,7 +502,8 @@ class HistoryCompactor:
             if request is None:
                 self._no_capacity("Current root does not fit its tightening request.")
             checkpoint, response = await self._request(request, sources, "reduce",
-                                                       previous_id=previous_id, aliases=aliases)
+                                                       previous_id=previous_id, aliases=aliases,
+                                                       cite=tuple(sources))
             chunks.append(CompactionChunk(ranges=_all_ranges(sources), summary=checkpoint))
             return self._finish(summary, (), source, sources, chunks,
                                 checkpoint, response, max_tokens)
@@ -770,7 +773,8 @@ class HistoryCompactor:
     async def _request(
         self, prepared: _PreparedSummary, sources: dict[str, str],
         kind: Literal["prefix", "chunk", "reduce"], *,
-        previous_id: str | None = None, aliases: _SourceAliases, retry_once: bool = True,
+        previous_id: str | None = None, aliases: _SourceAliases, cite: tuple[str, ...],
+        retry_once: bool = True,
     ) -> tuple[TaskSummary, ModelResponse]:
         self._check_budget()
         request = prepared.request
@@ -811,7 +815,8 @@ class HistoryCompactor:
         if self.http_attempts > 12:
             raise CompactionBudgetExceeded("Compaction exceeded 12 HTTP attempts.")
         try:
-            summary = self._parse_summary(response, sources, max_tokens, previous_id=previous_id, aliases=aliases)
+            summary = self._parse_summary(response, sources, max_tokens, previous_id=previous_id,
+                                          aliases=aliases, cite=cite)
         except CompactionError as exc:
             self.calls[-1] = self.calls[-1].model_copy(update={"error": str(exc)})
             note = None
@@ -835,14 +840,14 @@ class HistoryCompactor:
 
                 shorter = await self._prepare_summary(correction, max_tokens, prefix=kind == "prefix")
                 if shorter is not None:
-                    return await self._request(shorter, sources, kind,
-                                               previous_id=previous_id, aliases=aliases, retry_once=False)
+                    return await self._request(shorter, sources, kind, previous_id=previous_id,
+                                               aliases=aliases, cite=cite, retry_once=False)
             raise
         return summary, response
 
     def _parse_summary(self, response: ModelResponse, sources: dict[str, str],
                        max_tokens: int, *, previous_id: str | None = None,
-                       aliases: _SourceAliases) -> TaskSummary:
+                       aliases: _SourceAliases, cite: tuple[str, ...]) -> TaskSummary:
         if response.status != "completed" or response.refusal or response.tool_calls:
             raise CompactionError("Compactor must return completed text without refusal or tool calls.")
         if response.metadata and (response.metadata.finish_reason in {
@@ -850,12 +855,13 @@ class HistoryCompactor:
         } or response.metadata.response_status in {"incomplete", "failed", "cancelled"}):
             raise CompactionError("Compactor output was truncated or incomplete.")
         inherited = _inherited_ids(sources.get(previous_id) if previous_id else None)
-        summary, report = _parse_checkpoint(response.content, aliases, inherited)
+        # An uncited entry cites the span this request summarized.
+        fallback = tuple(dict.fromkeys((cite[0], cite[-1])))
+        summary, report = _parse_checkpoint(response.content, aliases, inherited, fallback)
         if any(report.values()):
-            logger.warning("Compaction checkpoint skipped %d unknown headings, %d lines outside sections, "
-                           "%d uncited entries and %d other lines.",
-                           report["unknown_headings"], report["outside_sections"],
-                           report["uncited"], report["ignored_lines"])
+            logger.warning("Compaction checkpoint parsed leniently: %d unknown headings, %d entries before "
+                           "a known heading and %d entries without a known citation.",
+                           report["unknown_headings"], report["outside_sections"], report["uncited"])
         summary = _normalize_citations(summary, sources, previous_id)
         tokens = self.assembler.token_counter.count_text(summary.render())
         if tokens > max_tokens:
@@ -891,9 +897,11 @@ class HistoryCompactor:
                     lambda limit: self._reduce_request(group, limit, aliases), max_tokens)
                 if request is None:
                     raise CompactionBudgetExceeded("Reducer request no longer fits its budget.")
+                cited = {key for part in group for name in TaskSummary.model_fields
+                         for entry in getattr(part, name) for key in entry.source_ids}
                 summary, last_response = await self._request(
-                    request, sources, "reduce",
-                    previous_id=previous_id, aliases=aliases)
+                    request, sources, "reduce", previous_id=previous_id, aliases=aliases,
+                    cite=tuple(key for key in sources if key in cited))
                 reduced.append(summary)
             if len(reduced) >= len(layer):
                 raise CompactionBudgetExceeded("No two chunk summaries fit the reducer request.")
@@ -1175,62 +1183,103 @@ def _inherited_ids(previous_text: str | None) -> set[str]:
     return inherited
 
 
-def _parse_checkpoint(text: str, aliases: _SourceAliases,
-                      inherited: set[str]) -> tuple[TaskSummary, dict[str, int]]:
-    """Recover cited Markdown entries without retaining skipped model content."""
+_SECTION_NAMES = {
+    key: name
+    for name, synonyms in {
+        "requirements": ("requirement", "需求", "要求", "用户需求", "用户要求"),
+        "confirmed_decisions": ("confirmed decision", "decisions", "已确认决策", "确认的决策", "决策"),
+        "completed_work": ("completed", "已完成工作", "已完成的工作", "已完成"),
+        "failed_approaches": ("failed approach", "failed attempts", "失败尝试", "失败的尝试", "失败方法", "失败的方法"),
+        "open_work": ("remaining work", "未完成工作", "未完成的工作", "待办", "待办事项"),
+        "next_step": ("next steps", "下一步", "后续步骤"),
+        "operation_evidence_refs": ("operation evidence", "operation evidence ref", "操作证据", "操作证据引用"),
+    }.items()
+    for key in (name.replace("_", " "), *synonyms)
+}
+_CITATION = re.compile(r"[\[【［]([^\[\]【】［］]+)[\]】］][\s*_`.。;；,，]*$")
+
+
+def _section_name(text: str) -> str | None:
+    """Section for a heading, ignoring Markdown marks, numbering, case and separators."""
+
+    key = re.sub(r"[\s_-]+", " ", text.lstrip("#").replace("*", "")).strip().rstrip(":：").strip()
+    key = re.sub(r"^(?:\d+[.)、]?|[一二三四五六七八九十]+、)\s*", "", key).lower()
+    return _SECTION_NAMES.get(key)
+
+
+def _split_citation(text: str, aliases: _SourceAliases,
+                    inherited: set[str]) -> tuple[str, tuple[str, ...]]:
+    """Entry text and its trailing citation when that citation names a known source."""
+
+    match = _CITATION.search(text)
+    if match:
+        tokens = [token.strip("`'\"") for token in re.split(r"[,，、;；\s]+", match.group(1))]
+        tokens = [token for token in tokens if token]
+        if any(aliases.resolve(token) in aliases.by_id or token in inherited for token in tokens):
+            body = re.sub(r"\s+[*_]+$", "", text[:match.start()]).strip()
+            return body, tuple(dict.fromkeys(aliases.resolve(token) for token in tokens))
+    return text.strip(), ()
+
+
+def _parse_checkpoint(text: str, aliases: _SourceAliases, inherited: set[str],
+                      fallback: tuple[str, ...]) -> tuple[TaskSummary, dict[str, int]]:
+    """Recover checkpoint entries from loosely formatted Markdown.
+
+    Every line of text is kept as an entry or a section heading. Unknown
+    headings keep the current section, entries before any known heading join
+    Completed Work, and an entry without a recognizable citation cites
+    ``fallback``. Only output without any entry is malformed.
+    """
 
     sections: dict[str, list[SummaryEntry]] = {name: [] for name in TaskSummary.model_fields}
-    headings = {name.replace("_", " ") for name in sections}
-    report = {"unknown_headings": 0, "outside_sections": 0, "uncited": 0, "ignored_lines": 0}
+    report = {"unknown_headings": 0, "outside_sections": 0, "uncited": 0}
     section: str | None = None
     entry: str | None = None
+    bullet = False
 
     def finish_entry(*, cited_only: bool = False) -> None:
         nonlocal entry
         if entry is None:
             return
-        body = entry.strip()
-        match = re.search(r"\[([^\[\]]+)\]\s*$", body)
-        tokens = [token.strip() for token in match.group(1).split(",")] if match else []
-        cited = any(aliases.resolve(token) in aliases.by_id or token in inherited for token in tokens)
-        if cited_only and not cited:
+        body, source_ids = _split_citation(entry, aliases, inherited)
+        if cited_only and not source_ids:
             return
         entry = None
-        if not cited:
-            report["uncited"] += 1
-            return
-        if section is None:
-            report["outside_sections"] += 1
-            return
-        body = body[:match.start()].strip()
         if not body:
             return
-        source_ids = tuple(dict.fromkeys(aliases.resolve(token) for token in tokens))
-        try:
-            sections[section].append(SummaryEntry(text=body, source_ids=source_ids))
-        except ValidationError:
-            pass
+        if not source_ids:
+            report["uncited"] += 1
+            source_ids = fallback
+        if section is None:
+            report["outside_sections"] += 1
+        sections[section or "completed_work"].append(SummaryEntry(text=body, source_ids=source_ids))
 
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.startswith("```"):
+        if not line or line.startswith("```") or not re.search(r"\w", line):
             finish_entry()
             continue
-        heading = line.lstrip("#").replace("*", "").replace("_", "").strip().rstrip(":").strip().lower()
-        if line.startswith("#") or heading in headings:
+        marker = re.match(r"(?:[-*•+]|\d+[.)])\s+|\d+、\s*", line)
+        content = line[marker.end():] if marker else line
+        name, inline = _section_name(content), None
+        if name is None and marker is None and (parts := re.split(r"[:：]", content, maxsplit=1))[1:]:
+            # A heading with inline content, such as "Next Step: run the tests [S1]".
+            name, inline = _section_name(parts[0]), re.sub(r"^[*_]+", "", parts[1]).strip() or None
+        if name is not None:
             finish_entry()
-            name = heading.replace(" ", "_").replace("-", "_")
-            section = name if name in sections else None
-            if section is None:
-                report["unknown_headings"] += 1
-        elif match := re.match(r"^(?:[-*•]|\d+[.)])\s+(.*)$", line):
+            section, entry, bullet = name, inline, False
+        elif re.match(r"#{1,6}\s", line):
             finish_entry()
-            entry = match.group(1)
-        elif entry is not None:
+            report["unknown_headings"] += 1
+        elif marker is not None:
+            finish_entry()
+            entry, bullet = content, True
+        elif entry is not None and bullet:
             entry += " " + line
         else:
-            report["ignored_lines"] += 1
-        # A cited entry is complete; subsequent commentary is a separate line.
+            finish_entry()
+            entry, bullet = line, False
+        # A cited entry is complete; a following line starts another entry.
         finish_entry(cited_only=True)
     finish_entry()
     if not any(sections.values()):
