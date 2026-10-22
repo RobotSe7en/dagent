@@ -231,3 +231,57 @@ async def test_conversation_failed_during_summarizer_outage_continues_after_reco
             continued = await runner.run(agent, input="Continue from the saved progress.", conversation=conversation)
     assert continued.output_text == "done"
     assert continued.conversation.summary is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("copies_inner_ids", [False, True])
+async def test_accumulating_summaries_follow_the_stated_budget_over_a_long_run(tmp_path, copies_inner_ids):
+    steps = 0
+    entries = []
+
+    @dagent.tool
+    def query(index: int) -> str:
+        """Collect one page of evidence."""
+        return f"step={index}; verified=true; next={index + 1}; " + "evidence " * 180
+
+    def respond(request):
+        nonlocal steps
+        body = json.loads(request.content)
+        messages = body.get("messages", [])
+        raw = "\n".join(str(message.get("content", "")) for message in messages)
+        if "Eligible source IDs:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
+            # A faithful model keeps earlier completed work, as instructed,
+            # and only compresses it when it knows the size limit.
+            match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
+            ids = (json.loads(match.group(1)) if match else re.findall(r"\[Source ([^;]+);", raw)
+                   or re.findall(r'"source_ids": \["([^"]+)"', raw))
+            previous = [value for value in ids if value.lstrip("_") == "previous_summary"]
+            if not copies_inner_ids:
+                for entry in entries:
+                    entry["source_ids"] = previous[:1] or entry["source_ids"]
+            entries.extend({"text": f"Collected page from {value}; verified=true; evidence archived.",
+                            "source_ids": [value]} for value in ids if value not in previous)
+            limit = re.search(r"must stay under (\d+) tokens", raw)
+            kept = list(entries)
+            while limit and kept and len(json.dumps(kept)) > 3 * int(limit.group(1)):
+                kept.pop(0)
+            content = json.dumps({"requirements": [{"text": "Collect evidence.", "source_ids": [ids[0]]}],
+                                  "completed_work": kept,
+                                  "next_step": [{"text": "Continue collecting.", "source_ids": [ids[-1]]}]})
+            return _completion("chat_completions", body.get("stream", False), usage=_usage("chat_completions"), content=content)
+        steps += 1
+        done = steps > 120
+        return _completion("chat_completions", body.get("stream", False), usage=_usage("chat_completions"),
+                           content="done" if done else "",
+                           calls=() if done else (ToolCall(id=f"call_{steps}", name="tool_query", arguments={"index": steps}),))
+
+    async with _endpoint(protocol="chat_completions", token_counting="heuristic", context_window_tokens=8192,
+                         max_output_tokens=512, responder=respond) as (provider, _posts):
+        with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+            agent = dagent.ToolAgent(profile="conversation", capabilities=[query], max_steps=130,
+                                     context=dagent.ContextPolicy(compaction_strategy="cache_aware", summary_max_tokens=1024))
+            result = await runner.run(agent, input="Collect evidence and preserve progress.")
+    assert result.status == "completed"
+    assert steps == 121
+    assert result.conversation.compaction_state is None
+    assert all(usage.estimated_input_tokens <= usage.input_budget_tokens for usage in result.state.context_usage)

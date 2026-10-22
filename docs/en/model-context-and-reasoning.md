@@ -560,6 +560,16 @@ observations, with pending work and source references. This helps the model avoi
 forgetting completed steps; it does not deduplicate or suppress tool calls.
 Raw received sources, summary coverage, and model-call usage are archived.
 
+Every summary request states its size limit. The limit is 80% of the visible
+summary budget, expressed in tokens and in approximate English and CJK
+characters, so the model can merge or shorten earlier entries. A checkpoint that
+still renders above the budget is retried once in the same episode with its
+measured size; that retry counts toward the episode's call budget. A second
+oversized checkpoint fails as before. Entries must cite supplied source IDs.
+IDs copied from inside the previous checkpoint resolve to that checkpoint's
+source ID, and other unknown IDs are dropped. An entry left without a supplied
+ID still rejects the summary.
+
 Each compaction episode permits at most eight logical model calls and twelve
 model request attempts, including retries. These limits do not cap normal agent
 generation or the total task duration. Summary text is collected internally from

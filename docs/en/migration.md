@@ -41,6 +41,15 @@ schemas are unchanged. No source or configuration migration is required.
   system prompt, summaries dropped from 57 to 19, and generation requests that
   kept the previous prefix rose from 3 to 41. Hard pressure still compacts
   immediately.
+- Summary requests now state their size limit, in tokens and approximate
+  characters, and ask the model to cite a previous checkpoint by its own source
+  ID. This changes the instruction text sent in opt-in compaction requests. An
+  oversized checkpoint is retried once, within the episode's call budget, before
+  it fails. Citations copied from inside the previous checkpoint resolve to it.
+  Other unknown citations are dropped, and an entry with no supplied ID still
+  fails. Before, cumulative summaries in long runs eventually exceeded an
+  unstated limit, and a citation copied from the previous checkpoint rejected
+  the whole paid summary. Both cases ended the run with `ContextWindowExceeded`.
 
 ## 0.10.2a0
 

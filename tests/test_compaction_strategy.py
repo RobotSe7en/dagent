@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from dagent.harness_runtime.compaction import (
-    CompactionArchiveError, CompactionBudgetExceeded, CompactionError,
+    CompactionArchiveError, CompactionBudgetExceeded, CompactionChunk, CompactionError,
     CompactionRecordV1, CompactionSourceV1, CompactionTransportError, HistoryCompactor,
-    load_compaction_references,
+    SummaryEntry, TaskSummary, load_compaction_references,
 )
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import ResultStore
@@ -267,6 +267,83 @@ async def test_summary_transport_failures_are_typed_separately(tmp_path, error, 
     assert isinstance(failed.value, CompactionTransportError) is transport
     assert failed.value.completed_chunks == 0
     assert record_for(engine, failed.value).status == "reference_only"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy,kind", [("cache_aware", "prefix"), ("chunked", "chunk"), ("chunked", "reduce")])
+async def test_summary_requests_state_the_visible_budget(tmp_path, strategy, kind):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        return summary_response(request)
+
+    items = (UserMessage(id="u", content="Requirement"), AssistantMessage(id="a", content="Done"))
+    engine = compactor(tmp_path, chat, strategy=strategy)
+    if kind == "prefix":
+        engine.source_request = ModelRequest(instructions="Original system.", items=(
+            ModelUserInput(source_id="u", content="Requirement"),
+            ModelAssistantTurn(source_id="a", content="Done")))
+        await engine.compact(None, items, 500)
+    elif kind == "chunk":
+        await engine.compact(None, items, 500)
+    else:
+        chunks = [CompactionChunk(ranges=(), summary=TaskSummary(next_step=(SummaryEntry(text=text, source_ids=("u",)),)))
+                  for text in ("First", "Second")]
+        await engine._reduce(chunks, {"u": "Requirement"}, 500, None)
+    text = requests[0].instructions + "".join(getattr(item, "content", "") for item in requests[0].items)
+    assert "must stay under 400 tokens (about 1600 English characters or 400 CJK characters)" in text
+    assert "cite that checkpoint's source ID instead of IDs shown inside it" in text
+
+
+@pytest.mark.asyncio
+async def test_carried_forward_citations_resolve_to_the_previous_checkpoint(tmp_path):
+    previous = ContextSummary(content="### Completed Work\n- Read the config [msg_old1, msg_old2]",
+                              source_item_count=2)
+    item = UserMessage(id="source", content="Now update the config.")
+
+    async def chat(request):
+        return ModelResponse(content=json.dumps({
+            "completed_work": [{"text": "Read the config.", "source_ids": ["msg_old1", "msg_old2"]}],
+            "next_step": [{"text": "Update it.", "source_ids": ["source", "msg_typo"]}],
+        }))
+
+    engine = compactor(tmp_path, chat)
+    summary = await engine.compact(previous, (item,), 256)
+    checkpoint = record_for(engine, summary).task_summary
+    assert checkpoint.completed_work[0].source_ids == ("previous_summary",)
+    assert checkpoint.next_step[0].source_ids == ("source",)
+    assert "[previous_summary]" in summary.content and "msg_typo" not in summary.content
+
+    async def invented(request):
+        return ModelResponse(content=json.dumps({"next_step": [{"text": "Update it.", "source_ids": ["msg_typo"]}]}))
+
+    with pytest.raises(CompactionError, match="unknown source"):
+        await compactor(tmp_path, invented).compact(previous, (item,), 256)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovers", [True, False])
+async def test_oversized_summary_is_retried_once_with_its_measured_size(tmp_path, recovers):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        text = "Short checkpoint." if recovers and len(requests) > 1 else "x" * 4000
+        return ModelResponse(content=json.dumps({"next_step": [{"text": text, "source_ids": ["source"]}]}))
+
+    engine = compactor(tmp_path, chat)
+    item = UserMessage(id="source", content="Original")
+    if recovers:
+        summary = await engine.compact(None, (item,), 256)
+        calls = record_for(engine, summary).calls
+        assert [call.error is not None for call in calls] == [True, False]
+        assert "Short checkpoint." in summary.content
+    else:
+        with pytest.raises(CompactionError, match="visible output budget"):
+            await engine.compact(None, (item,), 256)
+    assert len(requests) == 2
+    assert "Your previous checkpoint was about 1007 tokens; the limit is 256." in requests[1].items[-1].content
 
 
 @pytest.mark.asyncio
