@@ -542,11 +542,15 @@ supported server counting path is available. `ContextUsage.count_precision`
 distinguishes `rendered`, `tokenized_estimate`, and `estimated`, independently of
 `estimator`. `request_fingerprint` identifies the frozen body, not a cache key.
 
-The local estimate never replaces an available server count. It can overcount
-by more than its margin; CJK text is a common case. Generation candidates and
-compaction requests, including the `cache_aware` warm-prefix request, are
-therefore counted before the SDK compacts or splits them. A discovered server
-window only lowers the effective window.
+The local estimate can overcount by more than its margin; CJK text is a common
+case. Generation candidates and compaction requests, including the `cache_aware`
+warm-prefix request, are therefore counted before the SDK compacts or splits
+them. The only exception is a candidate whose local estimate exceeds twice its
+available input, which no supported tokenizer brings within budget; such a
+candidate is compacted or split without a server call. A final candidate that
+still exceeds the budget is counted once before `ContextWindowExceeded`, because
+highly compressible input can overcount further. A discovered server window only
+lowers the effective window.
 
 Strict budgets reject explicit `truncation=null` as well as automatic server
 truncation; omit the field or use `"disabled"`. If rendering rejects an automatic
@@ -573,7 +577,8 @@ counting it. Such a rejection raises
 estimate already places that candidate over budget, the rejection is treated as
 overflow. The SDK compacts the generation input, or splits the compaction
 request, without sending the rejected request. A rejection of a candidate
-estimated to fit remains a diagnostic failure. When the tokenizer then counts the
+estimated to fit, or one the tokenizer then counts within the input budget,
+remains a diagnostic `ProviderTokenCountError`. When the tokenizer counts the
 rejected request above the input budget, the count is reported as a
 `tokenized_estimate`, also when tools make it approximate.
 

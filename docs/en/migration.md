@@ -27,16 +27,17 @@ configuration, or record migration is required.
   terminal re-preparation signals are still recorded. Conversations saved by
   `0.10.0` through `0.10.2a0` can retry a span that an outage blocked by
   continuing from `conversation.model_copy(update={"compaction_state": None})`.
-- The local token estimate no longer skips an available server count. Before,
-  CJK-heavy input could be estimated over the hard budget while rendering only
-  about 60% of it, which forced a hard compaction of almost all history. Generation
-  candidates and compaction requests are now counted first. A render rejection
-  of a candidate already estimated over budget raises the new
-  `ProviderRenderRejected` subclass of `ProviderTokenCountError`. The SDK treats
-  it as overflow and compacts or splits instead of failing. A tokenizer count
-  above the budget for a rejected request is reported as an estimate even with
+- Generation candidates and compaction requests are now counted by the server
+  unless their local estimate exceeds twice the available input. Before, CJK-heavy
+  input could be estimated over the hard budget while rendering only about 60% of
+  it, which forced a hard compaction of almost all history. A render rejection of
+  a candidate already estimated over budget raises the new
+  `ProviderRenderRejected` subclass of `ProviderTokenCountError`, and the SDK
+  compacts or splits instead of failing. A rejection that the tokenizer counts
+  within budget remains a diagnostic `ProviderTokenCountError`. A tokenizer count
+  above the budget for a rejected request is reported as an estimate, even with
   tools. A count that reports a larger `max_model_len` no longer enlarges a
-  smaller window discovered earlier.
+  smaller window discovered earlier in the Run.
 - Under soft pressure (above the trigger but within the hard budget), compaction
   now waits until the eligible older history is about 10% of the hard input budget.
   Before, mandatory input that stayed above the trigger caused one small paid

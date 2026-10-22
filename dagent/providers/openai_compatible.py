@@ -621,7 +621,9 @@ class OpenAICompatibleProvider:
                 self._check_discovered_output_window(call, token_count.max_model_len)
                 input_budget = self.context_window_tokens - (call.effective_max_output_tokens or 1)
                 if token_count.count <= input_budget:
-                    raise render_error
+                    # The tokenizer places the request within budget, so this
+                    # rejection is not evidence of overflow; keep it diagnostic.
+                    raise ProviderTokenCountError(str(render_error)) from render_error.__cause__
                 # Even an approximate tokenizer count (for example with tools)
                 # independently places the rejected request over budget. It is
                 # reported as an estimate, never as the exact rendered count.

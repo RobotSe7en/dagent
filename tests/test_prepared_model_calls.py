@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 
 import httpx
 import pytest
@@ -1044,3 +1045,90 @@ async def test_cache_aware_prefix_is_counted_before_falling_back_to_chunks(tmp_p
     record = CompactionRecordV1.model_validate_json(store.read_reference(summary.compaction_record))
     # The local estimate rejects this warm-prefix request; the rendered count fits.
     assert [call.kind for call in record.calls] == ["prefix"]
+
+
+@pytest.mark.asyncio
+async def test_render_400_that_the_tokenizer_fits_is_not_an_overflow_signal(tmp_path):
+    from dagent.harness_runtime.context import ContextAssembler
+    from dagent.harness_runtime.result_storage import ResultStore
+    from dagent.providers.openai_compatible import ProviderRenderRejected
+    from dagent.schemas import ContextPolicy
+
+    class RejectingClient(_CjkRenderClient):
+        async def post(self, path, *, body, **kwargs):
+            if path.endswith("/render"):
+                self.raw_posts.append((path, body))
+                response = httpx.Response(400, request=httpx.Request("POST", "http://localhost" + path))
+                raise BadRequestError("invalid tool schema", response=response, body={})
+            return await super().post(path, body=body, **kwargs)
+
+    client = RejectingClient()
+    configured = provider(client, context_window_tokens=32768, max_output_tokens=4096)
+    assembler = ContextAssembler(context_window_tokens=32768, max_output_tokens=4096,
+                                 request_preparer=configured.prepare_call,
+                                 prepared_token_counter=configured.count_prepared)
+    compactor = _RecordingCompactor()
+    # The local estimate is over budget, but the tokenizer counts the request
+    # within it, so the rejection is diagnostic and history is not compacted.
+    with pytest.raises(ProviderTokenCountError, match="invalid tool schema") as failed:
+        await assembler.prepare(
+            system_message={"content": "系统指令"}, conversation=_cjk_history(70),
+            policy=ContextPolicy(compaction_strategy="chunked"), result_store=ResultStore(tmp_path, ".runtime"),
+            enable_new_strategy=True, history_compactor=compactor,
+        )
+    assert not isinstance(failed.value, ProviderRenderRejected)
+    assert compactor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_candidates_far_beyond_the_local_overcount_are_not_sent_to_the_counter(tmp_path):
+    from dagent.harness_runtime.context import ContextAssembler, HeuristicTokenCounter
+    from dagent.harness_runtime.result_storage import ResultStore
+    from dagent.schemas import ContextPolicy
+
+    client = _CjkRenderClient()
+    configured = provider(client, context_window_tokens=32768, max_output_tokens=4096)
+    assembler = ContextAssembler(context_window_tokens=32768, max_output_tokens=4096,
+                                 request_preparer=configured.prepare_call,
+                                 prepared_token_counter=configured.count_prepared)
+    compactor = _RecordingCompactor()
+    prepared = await assembler.prepare(
+        system_message={"content": "系统指令"}, conversation=_cjk_history(200),
+        policy=ContextPolicy(compaction_strategy="chunked"), result_store=ResultStore(tmp_path, ".runtime"),
+        enable_new_strategy=True, history_compactor=compactor,
+    )
+    assert compactor.calls
+    assert prepared.usage.count_precision == "rendered"
+    # Only the compacted request was counted; the original is ~4x the budget.
+    assert [path for path, _ in client.raw_posts] == ["/v1/chat/completions/render"]
+    counter = HeuristicTokenCounter()
+    assert counter.count_text(json.dumps(client.raw_posts[0][1], ensure_ascii=False)) < 2 * (32768 - 4096)
+
+
+@pytest.mark.asyncio
+async def test_summary_split_tree_counts_only_plausible_chunks(tmp_path):
+    from dagent.harness_runtime.compaction import HistoryCompactor
+    from dagent.harness_runtime.context import ContextAssembler, HeuristicTokenCounter
+    from dagent.harness_runtime.result_storage import ResultStore
+    from dagent.schemas import AssistantMessage, ContextPolicy
+    from tests.test_compaction_strategy import summary_response
+
+    client = _CjkRenderClient()
+    configured = provider(client, context_window_tokens=32768, max_output_tokens=4096)
+    assembler = ContextAssembler(context_window_tokens=32768, max_output_tokens=4096,
+                                 request_preparer=configured.prepare_call,
+                                 prepared_token_counter=configured.count_prepared)
+
+    async def chat(request):
+        return summary_response(request)
+
+    engine = HistoryCompactor(policy=ContextPolicy(compaction_strategy="chunked"), assembler=assembler,
+                              result_store=ResultStore(tmp_path, ".runtime"), system_message={"content": "系统指令"},
+                              chat=chat)
+    await engine.compact(None, (AssistantMessage(id="source", content="中文内容" * 20000),), 4096)
+    counter = HeuristicTokenCounter()
+    rendered = [body for path, body in client.raw_posts if path.endswith("/render")]
+    assert rendered
+    for body in rendered:
+        available = 32768 - body["max_completion_tokens"]
+        assert counter.count_text(json.dumps(body, ensure_ascii=False)) <= 2 * available

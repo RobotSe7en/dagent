@@ -19,12 +19,12 @@
   或续跑也会重试。`compaction_reason` 保持 `CompactionError:` 前缀。摘要无效或超长、预算或时限耗尽、终止性
   re-preparation 信号仍会记录。`0.10.0` 至 `0.10.2a0` 保存的对话若因服务中断被阻塞，
   可从 `conversation.model_copy(update={"compaction_state": None})` 继续以重试。
-- 本地 token 估算不再跳过可用的服务端计数。此前中文为主的输入可能被估算为超过硬预算，
-  实际渲染只占约 60%，却被迫硬压缩几乎全部历史。现在 generation 候选和压缩请求都先
-  计数；本地估算已超预算的候选被 render 拒绝时抛出新的 `ProviderTokenCountError`
-  子类 `ProviderRenderRejected`，SDK 按超限处理并压缩或拆分，而不是失败；被拒请求的
-  tokenizer 计数超过预算时即使带工具也作为估算返回。计数返回更大的 `max_model_len`
-  时不再放大之前探测到的较小窗口。
+- 除本地估算超过可用输入两倍的情况外，generation 候选和压缩请求现在都由服务端计数。
+  此前中文为主的输入可能被估算为超过硬预算，实际渲染只占约 60%，却被迫硬压缩几乎全部
+  历史。本地估算已超预算的候选被 render 拒绝时抛出新的 `ProviderTokenCountError` 子类
+  `ProviderRenderRejected`，SDK 压缩或拆分而不是失败；tokenizer 计数在预算内的拒绝仍是
+  诊断性 `ProviderTokenCountError`。被拒请求的 tokenizer 计数超过预算时即使带工具也作为
+  估算返回。计数返回更大的 `max_model_len` 时，不再放大本次 Run 之前探测到的较小窗口。
 - 软压力下（超过触发线但未超过硬预算），压缩会等到可压缩的较早历史约达硬输入预算的
   10% 再进行。此前必要输入持续高于触发线时，每一步都会做一次小规模付费摘要并打断前缀。
   在带大 system prompt 的 61 步离线运行中，摘要次数从 57 降到 19，保持前缀的 generation

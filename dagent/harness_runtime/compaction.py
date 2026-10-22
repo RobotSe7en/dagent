@@ -41,6 +41,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The local estimate overcounts dense scripts such as CJK text by up to about
+# 1.6x. A candidate beyond this multiple of its available input is over budget
+# for any supported tokenizer, so it is not sent to the server counter.
+HEURISTIC_OVERCOUNT_LIMIT = 2
+
 
 class CompactionError(RuntimeError):
     """No valid replacement was produced; the caller must retain source items."""
@@ -505,12 +510,13 @@ class HistoryCompactor:
             if self._prepared_estimate is not None:
                 return (self._prepared_estimate + prepared.effective_max_output_tokens
                         <= self.assembler.context_window_tokens)
-            heuristic = math.ceil(self.assembler.token_counter.count_text(
-                json.dumps(prepared.payload, ensure_ascii=False))
-                * (1 + self.policy.token_safety_margin))
+            raw = self.assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
+            heuristic = math.ceil(raw * (1 + self.policy.token_safety_margin))
             output = prepared.effective_max_output_tokens
             if output is None:
                 raise CompactionError("Prepared compaction request has no bounded output limit.")
+            if raw > HEURISTIC_OVERCOUNT_LIMIT * max(1, self.assembler.context_window_tokens - output):
+                return False
             locally_over = heuristic + output > self.assembler.context_window_tokens
             initial = prepared
             count = None
@@ -548,15 +554,9 @@ class HistoryCompactor:
         heuristic = math.ceil(self.assembler.token_counter.count_request(
             model_request_to_chat(request, reasoning_field="omit"), request.tools)
             * (1 + self.policy.token_safety_margin))
-        locally_over = heuristic + (request.max_output_tokens or 0) > self.assembler.context_window_tokens
-        if locally_over and self.assembler.request_token_counter is None:
+        if heuristic + (request.max_output_tokens or 0) > self.assembler.context_window_tokens:
             return False
-        try:
-            estimate, count = await self._bounded(self.assembler._safe_estimate(request, self.policy, stream=False))
-        except ProviderRenderRejected:
-            if not locally_over:
-                raise
-            return False
+        estimate, count = await self._bounded(self.assembler._safe_estimate(request, self.policy, stream=False))
         if count is not None:
             self._learn_window(count.max_model_len)
         return estimate + (request.max_output_tokens or 0) <= self.assembler.context_window_tokens

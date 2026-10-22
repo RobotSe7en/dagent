@@ -465,9 +465,11 @@ Responses 链。摘要请求还会拒绝与任务摘要不兼容的固定额外�
 `tokenized_estimate` 和 `estimated`，独立于 `estimator`。
 `request_fingerprint` 标识被冻结的请求体，不是服务端缓存键。
 
-本地估算不会取代可用的服务端计数：它的高估可能超过安全余量，中文文本就是常见情况。
-因此 generation 候选和压缩请求（包括 `cache_aware` 前缀请求）都会先计数，再决定
-是否压缩或拆分。探测到的服务端窗口只会缩小有效窗口。
+本地估算的高估可能超过安全余量，中文文本就是常见情况。因此 generation 候选和压缩请求
+（包括 `cache_aware` 前缀请求）都会先计数，再决定是否压缩或拆分。唯一例外是本地估算
+超过可用输入两倍的候选：任何受支持的 tokenizer 都不会使其落入预算，这类候选直接本地
+压缩或拆分，不调用服务端。最终候选若仍超出预算，抛出 `ContextWindowExceeded` 前还会
+计数一次，因为高度可压缩的输入可能被高估得更多。探测到的服务端窗口只会缩小有效窗口。
 
 Render 能力取决于版本与部署方式。[已核对的 vLLM 源码](https://github.com/vllm-project/vllm/blob/428cd0cb4a42750f5339d08bb67d534cf8051429/vllm/entrypoints/scale_out/render/api_router.py)
 使用完整 generation 请求 schema；普通服务需要 `--enable-scale-out` 才开放可用的
@@ -480,8 +482,9 @@ render 会校验输入长度，超窗口的请求体会被拒绝而不是计数�
 `dagent.providers.openai_compatible.ProviderRenderRejected`，它是
 `ProviderTokenCountError` 的子类，现有异常处理不受影响。若本地估算已判定该候选超预算，
 此拒绝按超限处理：SDK 压缩 generation 输入或拆分压缩请求，不会发送被拒绝的请求；
-本地估算认为能放下的候选被拒绝时，仍作为诊断错误失败。tokenizer 对被拒请求的计数
-超过输入预算时（包括带工具而不精确的情况），以 `tokenized_estimate` 报告。
+本地估算认为能放下的候选，或 tokenizer 随后计数在预算内的请求被拒绝时，仍作为诊断性
+`ProviderTokenCountError` 失败。tokenizer 对被拒请求的计数超过输入预算时（包括带工具
+而不精确的情况），以 `tokenized_estimate` 报告。
 
 ### 完整来源覆盖与稳定结果展示
 
