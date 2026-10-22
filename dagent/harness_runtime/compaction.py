@@ -27,7 +27,7 @@ from dagent.providers.model_io import (
     ModelRequest, ModelResponse, ModelUserInput, model_request_to_chat,
     model_response_from_chat, normalize_model_response,
 )
-from dagent.providers.openai_compatible import ProviderReprepareRequired
+from dagent.providers.openai_compatible import ProviderRenderRejected, ProviderReprepareRequired
 from dagent.schemas.context import ContextPolicy, ModelCallMetadata, ModelTokenUsage
 from dagent.schemas.conversation import (
     AssistantMessage, ContentReference, ContextSummary, ConversationItem,
@@ -447,18 +447,23 @@ class HistoryCompactor:
             output = prepared.effective_max_output_tokens
             if output is None:
                 raise CompactionError("Prepared compaction request has no bounded output limit.")
-            # Render endpoints may reject an already over-window body instead
-            # of returning its count.  Reject these planning candidates locally;
-            # every candidate actually dispatched still receives a final count.
-            if heuristic + output > self.assembler.context_window_tokens:
-                return False
+            locally_over = heuristic + output > self.assembler.context_window_tokens
             initial = prepared
             count = None
             if self.assembler.prepared_token_counter is not None:
-                prepared, count = await self._bounded(count_prepared_call(
-                    prepared, counter=self.assembler.prepared_token_counter,
-                    reprepare=lambda: self.assembler.request_preparer(request, stream=True),
-                ))
+                # The local estimate can overcount by more than its margin, so
+                # an available count decides. Render rejects an over-window body
+                # instead of counting it; for a candidate already estimated over
+                # budget that rejection means it does not fit.
+                try:
+                    prepared, count = await self._bounded(count_prepared_call(
+                        prepared, counter=self.assembler.prepared_token_counter,
+                        reprepare=lambda: self.assembler.request_preparer(request, stream=True),
+                    ))
+                except ProviderRenderRejected:
+                    if not locally_over:
+                        raise
+                    return False
                 self.prepared_call = prepared
                 output = prepared.effective_max_output_tokens
                 if output is None:
@@ -468,6 +473,8 @@ class HistoryCompactor:
                 if getattr(count, "exact", None) is not True:
                     estimate = math.ceil(estimate * (1 + self.policy.token_safety_margin))
                 self._learn_window(count.max_model_len)
+            elif locally_over:
+                return False
             else:
                 estimate = heuristic if prepared is initial else math.ceil(self.assembler.token_counter.count_text(
                     json.dumps(prepared.payload, ensure_ascii=False))
@@ -477,9 +484,15 @@ class HistoryCompactor:
         heuristic = math.ceil(self.assembler.token_counter.count_request(
             model_request_to_chat(request, reasoning_field="omit"), request.tools)
             * (1 + self.policy.token_safety_margin))
-        if heuristic + (request.max_output_tokens or 0) > self.assembler.context_window_tokens:
+        locally_over = heuristic + (request.max_output_tokens or 0) > self.assembler.context_window_tokens
+        if locally_over and self.assembler.request_token_counter is None:
             return False
-        estimate, count = await self._bounded(self.assembler._safe_estimate(request, self.policy, stream=False))
+        try:
+            estimate, count = await self._bounded(self.assembler._safe_estimate(request, self.policy, stream=False))
+        except ProviderRenderRejected:
+            if not locally_over:
+                raise
+            return False
         if count is not None:
             self._learn_window(count.max_model_len)
         return estimate + (request.max_output_tokens or 0) <= self.assembler.context_window_tokens

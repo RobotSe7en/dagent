@@ -443,12 +443,23 @@ Responses 链。摘要请求还会拒绝与任务摘要不兼容的固定额外�
 `tokenized_estimate` 和 `estimated`，独立于 `estimator`。
 `request_fingerprint` 标识被冻结的请求体，不是服务端缓存键。
 
+本地估算不会取代可用的服务端计数：它的高估可能超过安全余量，中文文本就是常见情况。
+因此 generation 候选和压缩请求（包括 `cache_aware` 前缀请求）都会先计数，再决定
+是否压缩或拆分。探测到的服务端窗口只会缩小有效窗口。
+
 Render 能力取决于版本与部署方式。[已核对的 vLLM 源码](https://github.com/vllm-project/vllm/blob/428cd0cb4a42750f5339d08bb67d534cf8051429/vllm/entrypoints/scale_out/render/api_router.py)
 使用完整 generation 请求 schema；普通服务需要 `--enable-scale-out` 才开放可用的
 render handler。dagent 会探测，不假设部署一定支持。`/tokenize` 不能通用替代包含
 所有 generation 选项的渲染。已知超预算请求会在生成前缩减或拒绝；未知计数、服务端
 配置不一致或部署变化仍可能造成服务端上下文错误。SDK 不把任意 HTTP 400 归类为
 上下文超限，也不依据错误文本猜测后重放 generation。
+
+render 会校验输入长度，超窗口的请求体会被拒绝而不是计数。此时抛出
+`dagent.providers.openai_compatible.ProviderRenderRejected`，它是
+`ProviderTokenCountError` 的子类，现有异常处理不受影响。若本地估算已判定该候选超预算，
+此拒绝按超限处理：SDK 压缩 generation 输入或拆分压缩请求，不会发送被拒绝的请求；
+本地估算认为能放下的候选被拒绝时，仍作为诊断错误失败。tokenizer 对被拒请求的计数
+超过输入预算时（包括带工具而不精确的情况），以 `tokenized_estimate` 报告。
 
 ### 完整来源覆盖与稳定结果展示
 

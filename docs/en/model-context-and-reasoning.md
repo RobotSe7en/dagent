@@ -512,6 +512,12 @@ supported server counting path is available. `ContextUsage.count_precision`
 distinguishes `rendered`, `tokenized_estimate`, and `estimated`, independently of
 `estimator`. `request_fingerprint` identifies the frozen body, not a cache key.
 
+The local estimate never replaces an available server count. It can overcount
+by more than its margin; CJK text is a common case. Generation candidates and
+compaction requests, including the `cache_aware` warm-prefix request, are
+therefore counted before the SDK compacts or splits them. A discovered server
+window only lowers the effective window.
+
 Strict budgets reject explicit `truncation=null` as well as automatic server
 truncation; omit the field or use `"disabled"`. If rendering rejects an automatic
 output reservation before returning a count, a supported tokenizer endpoint can
@@ -529,6 +535,17 @@ are reduced or rejected before generation. Unknown counts, incompatible server
 settings, or a changed deployment can still produce a server context error.
 dagent does not classify arbitrary HTTP 400 responses as context overflow or
 automatically replay generation based on error-message text.
+
+Render validates input length and rejects an over-window body instead of
+counting it. Such a rejection raises
+`dagent.providers.openai_compatible.ProviderRenderRejected`, a subclass of
+`ProviderTokenCountError`; existing handlers are unaffected. When the local
+estimate already places that candidate over budget, the rejection is treated as
+overflow. The SDK compacts the generation input, or splits the compaction
+request, without sending the rejected request. A rejection of a candidate
+estimated to fit remains a diagnostic failure. When the tokenizer then counts the
+rejected request above the input budget, the count is reported as a
+`tokenized_estimate`, also when tools make it approximate.
 
 ### Complete source coverage and stable result displays
 

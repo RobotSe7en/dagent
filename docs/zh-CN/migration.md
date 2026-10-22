@@ -18,6 +18,12 @@
   之后的上下文准备或续跑会重试同一来源。摘要无效或超长、预算或时限耗尽、终止性
   re-preparation 信号仍会记录。`0.10.0` 至 `0.10.2a0` 保存的对话若因服务中断被阻塞，
   可从 `conversation.model_copy(update={"compaction_state": None})` 继续以重试。
+- 本地 token 估算不再跳过可用的服务端计数。此前中文为主的输入可能被估算为超过硬预算，
+  实际渲染只占约 60%，却被迫硬压缩几乎全部历史。现在 generation 候选和压缩请求都先
+  计数；本地估算已超预算的候选被 render 拒绝时抛出新的 `ProviderTokenCountError`
+  子类 `ProviderRenderRejected`，SDK 按超限处理并压缩或拆分，而不是失败；被拒请求的
+  tokenizer 计数超过预算时即使带工具也作为估算返回。计数返回更大的 `max_model_len`
+  时不再放大之前探测到的较小窗口。
 
 ## 0.10.2a0
 

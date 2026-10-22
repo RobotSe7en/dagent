@@ -24,6 +24,16 @@ schemas are unchanged. No source or configuration migration is required.
   terminal re-preparation signals are still recorded. Conversations saved by
   `0.10.0` through `0.10.2a0` can retry a span that an outage blocked by
   continuing from `conversation.model_copy(update={"compaction_state": None})`.
+- The local token estimate no longer skips an available server count. Before,
+  CJK-heavy input could be estimated over the hard budget while rendering only
+  about 60% of it, which forced a hard compaction of almost all history. Generation
+  candidates and compaction requests are now counted first. A render rejection
+  of a candidate already estimated over budget raises the new
+  `ProviderRenderRejected` subclass of `ProviderTokenCountError`. The SDK treats
+  it as overflow and compacts or splits instead of failing. A tokenizer count
+  above the budget for a rejected request is reported as an estimate even with
+  tools. A count that reports a larger `max_model_len` no longer enlarges a
+  smaller window discovered earlier.
 
 ## 0.10.2a0
 

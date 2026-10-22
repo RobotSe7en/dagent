@@ -28,7 +28,7 @@ from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import StructuredOutputFormat
 from dagent.providers.model_io import ModelRequest, ModelTokenCount, PreparedModelCall, model_request_to_chat
 from dagent.providers.openai_compatible import (
-    ProviderCapabilityError, ProviderContextWindowError, ProviderReprepareRequired,
+    ProviderCapabilityError, ProviderContextWindowError, ProviderRenderRejected, ProviderReprepareRequired,
 )
 from dagent.schemas.context import ContextPolicy, ContextUsage, ContextWindowExceeded, ReasoningEffort
 from dagent.schemas.conversation import (
@@ -223,7 +223,7 @@ async def _prepare_context(
             total_budget_tokens=2**60,
         )
 
-    async def project(*, force_count: bool = False, frozen_call: PreparedModelCall | None = None):
+    async def project():
         nonlocal requested_output
         readable = frozenset(item.id for item in _context_results(working.items)
                              if access and (access.can_read(item.model_display.recovery)
@@ -238,7 +238,7 @@ async def _prepare_context(
         prepared = None
         count = None
         if assembler.request_preparer is not None:
-            prepared = frozen_call or await assembler.request_preparer(request, stream=stream)
+            prepared = await assembler.request_preparer(request, stream=stream)
             output = prepared.effective_max_output_tokens
             if output is None:
                 raise ProviderCapabilityError("The new context strategy requires an enforced output-token limit.")
@@ -247,15 +247,21 @@ async def _prepare_context(
             known_window = min(known_limits) if known_limits else assembler.context_window_tokens
             rough = assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
             rough += 4 * len(request.items) + 8 * len(request.tools)
-            # Render endpoints also validate length. An obviously oversized
-            # planning candidate must be compacted before asking the renderer;
-            # every sendable candidate still passes the final count below.
-            if (force_count or math.ceil(rough * (1 + policy.token_safety_margin)) <= known_window - output) and assembler.prepared_token_counter is not None:
+            # The local estimate can overcount (for example CJK text) by more
+            # than its safety margin, so it never replaces an available count.
+            if assembler.prepared_token_counter is not None:
                 try:
                     prepared, count = await count_prepared_call(
                         prepared, counter=assembler.prepared_token_counter,
                         reprepare=lambda: assembler.request_preparer(request, stream=stream),
                     )
+                except ProviderRenderRejected:
+                    # Render validates length before counting. Its rejection of
+                    # a candidate already estimated over budget is the expected
+                    # overflow signal; keep that estimate and compact. Any other
+                    # rejection remains a diagnostic failure.
+                    if math.ceil(rough * (1 + policy.token_safety_margin)) <= known_window - output:
+                        raise
                 except ProviderContextWindowError as exc:
                     assembler.server_max_model_len = exc.max_model_len
                     window = min(value for value in (
@@ -266,7 +272,7 @@ async def _prepare_context(
                     inferred_output = min(8192, max(1, window // 8))
                     if automatic_output and requested_output != inferred_output:
                         requested_output = inferred_output
-                        return await project(force_count=force_count)
+                        return await project()
                     raise
             # A wrapper may change the wire output limit during counting.
             output = prepared.effective_max_output_tokens
@@ -278,14 +284,16 @@ async def _prepare_context(
             if assembler.request_token_counter is not None:
                 count = await assembler.request_token_counter(request, field)
         if count is not None and count.max_model_len is not None:
-            assembler.server_max_model_len = count.max_model_len
+            # A discovered server window only shrinks the budget, as in summary counts.
+            known = assembler.server_max_model_len
+            assembler.server_max_model_len = min(known, count.max_model_len) if known is not None else count.max_model_len
         limits = [value for value in (assembler.configured_context_window_tokens,
                   assembler.server_max_model_len, assembler.model_context_window_tokens) if value is not None]
         window = min(limits) if limits else assembler.context_window_tokens
         inferred_output = min(8192, max(1, window // 8))
         if automatic_output and requested_output != inferred_output:
             requested_output = inferred_output
-            return await project(force_count=force_count)
+            return await project()
         if output is None or output >= window:
             error = ProviderCapabilityError(
                 f"The effective output limit ({output}) must be smaller than the context window ({window}).")
@@ -593,12 +601,6 @@ async def _prepare_context(
                 prefix_break = "emergency_result_reference"
             except ResultBudgetExceeded:
                 pass
-
-    # A local estimate can overcount highly compressible protected input. Ask
-    # the available renderer once before declaring that final candidate too big,
-    # using the exact same frozen call that will be dispatched if it fits.
-    if state.estimate > state.input_budget and state.count is None and state.call is not None and assembler.prepared_token_counter is not None:
-        state = await project(force_count=True, frozen_call=state.call)
 
     # Persist only markers that still refer to retained source items.
     retained_failed = tuple(source_key(item) for item in working.items if source_key(item) in failed)

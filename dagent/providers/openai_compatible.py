@@ -97,6 +97,15 @@ class ProviderTokenCountError(ProviderCapabilityError):
     """Exact token counting was unavailable or returned invalid data."""
 
 
+class ProviderRenderRejected(ProviderTokenCountError):
+    """vLLM render rejected a prepared request before returning its count.
+
+    Rendering validates input length, so an over-window request is rejected
+    rather than counted. Budget owners may treat the rejection of a candidate
+    they already estimate to be over budget as an overflow signal.
+    """
+
+
 class ProviderContextWindowError(ProviderCapabilityError):
     """A discovered server window invalidates the frozen output reservation."""
 
@@ -589,9 +598,7 @@ class OpenAICompatibleProvider:
         if advertised and path not in self._render_unavailable:
             try:
                 result = await self._prepared_counter_post(path, call.payload, call)
-            except ProviderTokenCountError as exc:
-                if not isinstance(exc.__cause__, APIStatusError) or exc.__cause__.status_code != 400:
-                    raise
+            except ProviderRenderRejected as exc:
                 # Rendering validates length before returning token ids. A
                 # second, non-generating tokenizer call may prove that input
                 # needs compaction without classifying the generic HTTP 400.
@@ -613,8 +620,11 @@ class OpenAICompatibleProvider:
             if render_error is not None:
                 self._check_discovered_output_window(call, token_count.max_model_len)
                 input_budget = self.context_window_tokens - (call.effective_max_output_tokens or 1)
-                if token_count.exact is not True or token_count.count <= input_budget:
+                if token_count.count <= input_budget:
                     raise render_error
+                # Even an approximate tokenizer count (for example with tools)
+                # independently places the rejected request over budget. It is
+                # reported as an estimate, never as the exact rendered count.
                 return replace(token_count, exact=False)
             return token_count
         if render_error is not None:
@@ -699,7 +709,9 @@ class OpenAICompatibleProvider:
             # A rendering validation failure may itself be a context overflow.
             # Keep its diagnostic instead of guessing from a generic HTTP 400.
             if exc.status_code < 500 and exc.status_code not in {408, 429}:
-                raise ProviderTokenCountError(f"vLLM {path} rejected the prepared request: {exc}") from exc
+                error_type = (ProviderRenderRejected if path.endswith("/render") and exc.status_code == 400
+                              else ProviderTokenCountError)
+                raise error_type(f"vLLM {path} rejected the prepared request: {exc}") from exc
             if call.token_counting == "vllm":
                 raise ProviderTokenCountError(f"vLLM {path} failed: {exc}") from exc
             self._warn_once("prepared-count-" + path, f"vLLM {path} is unavailable; using the next counting method.")
