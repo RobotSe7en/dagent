@@ -34,6 +34,13 @@ schemas are unchanged. No source or configuration migration is required.
   above the budget for a rejected request is reported as an estimate even with
   tools. A count that reports a larger `max_model_len` no longer enlarges a
   smaller window discovered earlier.
+- Under soft pressure (above the trigger but within the hard budget), compaction
+  now waits until the selected older history is about 10% of the hard input budget.
+  Before, mandatory input that stayed above the trigger caused one small paid
+  summary and one prefix break per step. In an offline 61-step run with a large
+  system prompt, summaries dropped from 57 to 19, and generation requests that
+  kept the previous prefix rose from 3 to 41. Hard pressure still compacts
+  immediately.
 
 ## 0.10.2a0
 

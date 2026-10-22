@@ -440,6 +440,18 @@ async def _prepare_context(
                               if item.source_id in selected_ids or item.source_id == "context_summary")
         source_tokens = assembler.token_counter.count_request(
             model_request_to_chat(ModelRequest(instructions="", items=selected_view), reasoning_field="reasoning"), ())
+        if not hard and cached_summary is None:
+            # Under soft pressure, wait until the selected history is worth a
+            # paid summary and a prefix break. Otherwise mandatory input that
+            # stays above the trigger would compact one small group per step.
+            # Its share of the local estimate scales the counted request size.
+            history_tokens = assembler.token_counter.count_request(model_request_to_chat(ModelRequest(
+                instructions="", items=tuple(item for item in selected_view if item.source_id != "context_summary"),
+            ), reasoning_field="reasoning"), ())
+            request_tokens = assembler.token_counter.count_request(
+                model_request_to_chat(state.request, reasoning_field="reasoning"), state.request.tools)
+            if history_tokens * state.estimate < math.ceil(state.input_budget * 0.1) * max(1, request_tokens):
+                break
         target = math.floor(state.input_budget * 0.65)
         room = target - max(0, state.estimate - source_tokens)
         summary_goal = min(policy.summary_max_tokens, max(256, room))

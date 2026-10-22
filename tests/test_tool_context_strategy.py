@@ -196,6 +196,41 @@ async def test_unavailable_summarizer_leaves_the_source_retryable(tmp_path, hard
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("old_chars,compacts", [(1200, False), (3600, True)])
+async def test_soft_compaction_waits_for_history_worth_a_summary(old_chars, compacts):
+    from dagent.harness_runtime.context import HeuristicTokenCounter
+    from dagent.providers.model_io import model_request_to_chat
+
+    async def count(request, _field):
+        tokens = HeuristicTokenCounter().count_request(model_request_to_chat(request, reasoning_field="omit"), request.tools)
+        return ModelTokenCount(count=tokens, max_model_len=8192, exact=True)
+
+    # Large mandatory instructions keep the request above the soft trigger even
+    # after compaction; only the older groups outside the retained tail are eligible.
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="old", run_id="run", content="o" * old_chars),
+        dagent.AssistantMessage(id="middle", run_id="run", content="m" * 1200),
+        dagent.AssistantMessage(id="latest", run_id="run", content="l" * 5200),
+    ))
+    compactor = _Compactor()
+    prepared = await ContextAssembler(context_window_tokens=8192, max_output_tokens=512,
+                                      request_token_counter=count).prepare(
+        system_message={"content": "s" * 19200}, conversation=conversation,
+        policy=dagent.ContextPolicy(compaction_strategy="chunked"), enable_new_strategy=True,
+        history_compactor=compactor,
+    )
+    usage = prepared.usage
+    assert usage.compaction_trigger_tokens < usage.estimated_input_tokens <= usage.input_budget_tokens
+    assert bool(compactor.calls) is compacts
+    if compacts:
+        assert [item.id for item in prepared.conversation.items] == ["task", "latest"]
+    else:
+        # Waiting avoids a paid summary and a prefix break for ~600 tokens.
+        assert prepared.conversation == conversation
+
+
+@pytest.mark.asyncio
 async def test_failed_soft_compaction_keeps_source_and_does_not_retry_unchanged_span():
     source = _history("evidence " * 950)
     assembler = ContextAssembler(context_window_tokens=4096,max_output_tokens=512)
