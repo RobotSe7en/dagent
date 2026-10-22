@@ -292,7 +292,7 @@ async def test_accumulating_summaries_follow_the_stated_budget_over_a_long_run(t
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("prefix_cached,expected_prefix_requests", [(50, 1), (900, None)])
+@pytest.mark.parametrize("prefix_cached,expected_prefix_requests", [(50, 2), (900, None)])
 async def test_cache_aware_switches_to_chunks_after_a_cold_warm_prefix(tmp_path, prefix_cached, expected_prefix_requests):
     steps = 0
     kinds = []
@@ -336,7 +336,7 @@ async def test_cache_aware_switches_to_chunks_after_a_cold_warm_prefix(tmp_path,
     if expected_prefix_requests is None:
         assert set(kinds) == {"prefix"}
     else:
-        assert kinds.count("prefix") == expected_prefix_requests and kinds[0] == "prefix"
+        assert kinds.count("prefix") == expected_prefix_requests and kinds[:2] == ["prefix", "prefix"]
 
 
 @pytest.mark.asyncio

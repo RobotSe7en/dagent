@@ -222,20 +222,25 @@ class CompactionRunState:
     Sources whose summary failed in transport are not retried under soft
     pressure for the rest of the Run, so an outage does not add retry delays to
     every step. Some chat templates render history differently once a summary
-    instruction follows it (for example by dropping earlier reasoning); a
-    provider-reported warm-prefix cache hit below ``min_cached_ratio`` switches
-    the rest of the Run to dedicated chunk summaries. Unknown usage never decides.
+    instruction follows it (for example by dropping earlier reasoning). Two
+    consecutive warm-prefix summaries with a provider-reported cache hit below
+    ``min_cached_ratio`` switch the rest of the Run to dedicated chunk
+    summaries; one eviction does not. Unknown usage never decides.
     """
 
     min_cached_ratio: float = 0.5
     unavailable_sources: set[str] = field(default_factory=set)
     prefix_disabled: bool = False
+    low_prefix_hits: int = 0
 
     def observe_prefix(self, usage: ModelTokenUsage | None) -> None:
         if usage is None or usage.cached_input_tokens is None or not usage.input_tokens:
             return
-        if usage.cached_input_tokens < self.min_cached_ratio * usage.input_tokens:
-            self.prefix_disabled = True
+        if usage.cached_input_tokens >= self.min_cached_ratio * usage.input_tokens:
+            self.low_prefix_hits = 0
+            return
+        self.low_prefix_hits += 1
+        self.prefix_disabled = self.low_prefix_hits >= 2
 
 
 class HistoryCompactor:
@@ -258,6 +263,9 @@ class HistoryCompactor:
     ) -> None:
         self.observer = observer
         self.run_state = run_state
+        # Only a prefix the server already received can measure template
+        # stability; the caller clears this after replacing the root summary.
+        self.prefix_sample = True
         self.policy = policy
         self.assembler = assembler
         self.result_store = result_store
@@ -320,7 +328,7 @@ class HistoryCompactor:
                         return self._finish(previous, items, source, sources, chunks,
                                             summary, final_response, max_tokens)
                     finally:
-                        if self.run_state is not None:
+                        if self.run_state is not None and self.prefix_sample:
                             for call in self.calls[calls:]:
                                 self.run_state.observe_prefix(call.usage)
 

@@ -456,6 +456,8 @@ async def _prepare_context(
         room = target - max(0, state.estimate - source_tokens)
         summary_goal = min(policy.summary_max_tokens, max(256, room))
         compactor.source_request = state.request
+        # A replaced root summary was never sent, so its prefix cannot hit.
+        compactor.prefix_sample = working.summary is unprojected.summary
         attempts += 1
         try:
             if cached_summary is not None:

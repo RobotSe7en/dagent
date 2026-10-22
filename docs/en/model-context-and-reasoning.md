@@ -482,10 +482,13 @@ only 13% of the preceding generation prompt. For such templates, either:
 
 With `capture_cache_usage=True`, `cache_aware` checks the provider-reported cache
 hit of each warm-prefix summary. Chat endpoints also need `stream_include_usage=True`,
-because summary requests are streamed. When fewer than half of the input tokens
-were cached, the rest of the Run uses dedicated chunk summaries. A new Run tries
-the warm prefix again. Unknown cache usage never changes the path. The compaction
-record's `calls[].kind` shows which path each summary used.
+because summary requests are streamed. After two consecutive warm-prefix
+summaries with fewer than half of their input tokens cached, the rest of the Run
+uses dedicated chunk summaries, so a single cache eviction does not switch. Only
+prefixes whose summary the server already received are measured; a prefix that
+begins with a summary created earlier in the same episode is expected to miss.
+A new Run tries the warm prefix again. Unknown cache usage never changes the
+path. The compaction record's `calls[].kind` shows which path each summary used.
 
 ### One counted request and three budget thresholds
 

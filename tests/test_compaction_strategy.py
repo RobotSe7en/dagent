@@ -419,7 +419,7 @@ async def test_low_prefix_cache_hits_switch_the_run_to_chunk_summaries(tmp_path,
 
     monitor = CompactionRunState()
     kinds = []
-    for index in range(2):
+    for index in range(3):
         items = (UserMessage(id=f"u{index}", content="Requirement"), AssistantMessage(id=f"a{index}", content="Done"))
         engine = compactor(tmp_path, chat, strategy="cache_aware")
         engine.run_state = monitor
@@ -428,9 +428,39 @@ async def test_low_prefix_cache_hits_switch_the_run_to_chunk_summaries(tmp_path,
             ModelAssistantTurn(source_id=f"a{index}", content="Done")))
         summary = await engine.compact(None, items, 256)
         kinds.append([call.kind for call in record_for(engine, summary).calls])
-    # Unknown cache usage never disables the warm prefix.
+    # Two consecutive low hits switch; unknown cache usage never decides.
     assert monitor.prefix_disabled is switches
-    assert kinds == [["prefix"], ["chunk"] if switches else ["prefix"]]
+    assert kinds == [["prefix"], ["prefix"], ["chunk"] if switches else ["prefix"]]
+
+
+def test_one_low_prefix_hit_or_an_unsent_root_does_not_switch():
+    monitor = CompactionRunState()
+    low, high = (ModelTokenUsage(input_tokens=1000, cached_input_tokens=value) for value in (100, 900))
+    for usage in (low, high, low, None, high, low):
+        monitor.observe_prefix(usage)
+    # A single eviction between good hits never disables the warm prefix.
+    assert not monitor.prefix_disabled
+
+
+@pytest.mark.asyncio
+async def test_prefix_after_a_new_root_summary_is_not_sampled(tmp_path):
+    from dataclasses import replace
+
+    async def chat(request):
+        return replace(summary_response(request), usage=ModelTokenUsage(input_tokens=1000, cached_input_tokens=0))
+
+    monitor = CompactionRunState()
+    for index in range(3):
+        engine = compactor(tmp_path, chat, strategy="cache_aware")
+        engine.run_state = monitor
+        # The caller marks prefixes whose root summary was replaced in this episode.
+        engine.prefix_sample = False
+        engine.source_request = ModelRequest(instructions="Original system.", items=(
+            ModelUserInput(source_id=f"u{index}", content="Requirement"),
+            ModelAssistantTurn(source_id=f"a{index}", content="Done")))
+        await engine.compact(None, (UserMessage(id=f"u{index}", content="Requirement"),
+                                    AssistantMessage(id=f"a{index}", content="Done")), 256)
+    assert monitor.low_prefix_hits == 0 and not monitor.prefix_disabled
 
 
 @pytest.mark.asyncio

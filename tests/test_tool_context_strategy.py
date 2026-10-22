@@ -329,6 +329,40 @@ async def test_soft_compaction_waits_for_history_worth_a_summary(old_chars, comp
 
 
 @pytest.mark.asyncio
+async def test_only_prefixes_with_the_sent_root_summary_measure_the_cache():
+    samples = []
+
+    class Recording(_Compactor):
+        async def compact(self, previous, items, max_tokens, *, allow_fallback=False):
+            samples.append(self.prefix_sample)
+            return await super().compact(previous, items, max_tokens, allow_fallback=allow_fallback)
+
+    async def count(request, _field):
+        ids = {item.source_id for item in request.items}
+        return ModelTokenCount(count=100 + 3500 * ("first" in ids) + 3500 * ("second" in ids),
+                               max_model_len=8192, exact=True)
+
+    # A live steer separates two eligible spans, so one episode compacts twice.
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="first", run_id="run", content="first " * 900),
+        dagent.UserMessage(id="steer", run_id="run", content="Also check the second source."),
+        dagent.AssistantMessage(id="second", run_id="run", content="second " * 900),
+        dagent.AssistantMessage(id="latest", run_id="run", content="Latest protected step."),
+    ))
+    prepared = await ContextAssembler(context_window_tokens=8192, max_output_tokens=512,
+                                      request_token_counter=count).prepare(
+        system_message={"content": "instructions"}, conversation=conversation,
+        policy=dagent.ContextPolicy(compaction_strategy="cache_aware", compaction_trigger_ratio=.3,
+                                    compaction_retain_ratio=.0001),
+        enable_new_strategy=True, history_compactor=Recording(),
+    )
+    assert [item.id for item in prepared.conversation.items] == ["task", "steer", "latest"]
+    # The second prefix starts with a summary created in this episode.
+    assert samples == [True, False]
+
+
+@pytest.mark.asyncio
 async def test_failed_soft_compaction_keeps_source_and_does_not_retry_unchanged_span():
     source = _history("evidence " * 950)
     assembler = ContextAssembler(context_window_tokens=4096,max_output_tokens=512)
