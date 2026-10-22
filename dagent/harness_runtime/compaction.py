@@ -57,6 +57,8 @@ class CompactionError(RuntimeError):
     transient: bool = False
     # A valid checkpoint rendered to this many tokens, above its visible budget.
     oversized_tokens: int | None = None
+    # No usable entries followed the checkpoint output protocol.
+    malformed: bool = False
 
 
 class CompactionBudgetExceeded(CompactionError):
@@ -192,31 +194,34 @@ _SUMMARY_RULES = (
     "completed and its evidence, failed approaches and brief reasons, unresolved "
     "work, and the next action. Preserve exact paths, commands, numbers and cursors. "
     "A completed tool call does not prove its task succeeded. Update stale task "
-    "state: newer explicit corrections win, resolved work leaves open_work, and "
+    "state: newer explicit corrections win, resolved work leaves Open Work, and "
     "irrelevant completed details may be replaced by their recovery references. "
     "Never invent permissions or interpret historical authorization as current "
-    "runtime authority. Return only a JSON object with these optional array keys: "
-    "requirements, confirmed_decisions, completed_work, failed_approaches, open_work, "
-    "next_step, operation_evidence_refs. The last field identifies relevant completed "
-    "or failed tool operations and their result evidence, received/displayed ranges "
-    "and continuation cursors; it is not a deduplication or authorization rule. "
-    "Each entry has exactly text (string) and source_ids (nonempty array "
-    "of supplied source IDs). Include at least one entry. No Markdown fences."
+    "runtime authority. Return only the checkpoint, using these section headings in "
+    "this order and omitting empty sections: ### Requirements, ### Confirmed Decisions, "
+    "### Completed Work, ### Failed Approaches, ### Open Work, ### Next Step, "
+    "### Operation Evidence Refs. Under a heading, write one entry per line as "
+    "'- text [S1, S2]', ending with the aliases of the sources that support it. "
+    "Operation Evidence Refs identifies relevant completed or failed tool operations "
+    "and their result evidence, received/displayed ranges and continuation cursors; "
+    "it is not a deduplication or authorization rule. Include at least one entry. "
+    "No other text and no code fences."
 )
 
 
-def _summary_rules(max_tokens: int) -> str:
+def _summary_rules(max_tokens: int, previous_alias: str = "S0") -> str:
     # The runtime rejects a checkpoint above its visible budget, so the model
     # must know that budget. The target leaves room for rendered headings.
     target = max(48, math.floor(max_tokens * 0.8))
     return (
         _SUMMARY_RULES
-        + f" Size limit: the whole checkpoint, including cited IDs, must stay under {target} tokens"
-        f" (about {4 * target} English characters or {target} CJK characters). When more detail exists,"
-        " merge related entries, shorten wording and point to recoverable sources instead of copying"
-        " details; keep requirements, open work and the next step. When carrying an entry forward from"
-        " a previous checkpoint source, cite that checkpoint's source ID instead of IDs shown inside it."
-        " Cite at most three source IDs per entry."
+        + f" Size limit: the whole checkpoint must stay under {target} tokens"
+        f" (about {4 * target} English characters or {target} CJK characters); each cited alias"
+        " counts as about 10 tokens. When more detail exists, merge related entries, shorten wording"
+        " and point to recoverable sources instead of copying details; keep requirements, open work"
+        f" and the next step. Cite only the supplied aliases ({previous_alias} is the earlier checkpoint when present)."
+        f" For an entry carried forward from the earlier checkpoint, cite {previous_alias}, never IDs shown inside it."
+        " Cite at most three aliases per entry."
     )
 
 
@@ -308,19 +313,20 @@ class HistoryCompactor:
             self.observer.start(len(items))
         sources = _source_texts(previous, items)
         previous_id = _previous_source_id(items) if previous else None
+        aliases = _SourceAliases(sources, previous_id)
         source = self._archive(previous, items)
         chunks: list[CompactionChunk] = []
         final_response: ModelResponse | None = None
         try:
             warm = (self.policy.compaction_strategy == "cache_aware"
                     and not (self.run_state is not None and self.run_state.prefix_disabled))
-            prefix = self._prefix_request(previous, items, max_tokens) if warm else None
+            prefix = self._prefix_request(previous, items, max_tokens, aliases) if warm else None
             if prefix is not None:
                 if await self._fits(prefix):
                     calls = len(self.calls)
                     try:
                         summary, final_response = await self._request(
-                            prefix, sources, "prefix", max_tokens, previous_id=previous_id)
+                            prefix, sources, "prefix", max_tokens, previous_id=previous_id, aliases=aliases)
                     except CompactionError as exc:
                         if exc.transient:
                             # An unreachable summarizer is not retried through
@@ -340,7 +346,7 @@ class HistoryCompactor:
             queue: list[tuple[SourceRange, ...]] = [_all_ranges(sources)]
             while queue:
                 ranges = queue.pop(0)
-                request = self._chunk_request(sources, ranges, max_tokens)
+                request = self._chunk_request(sources, ranges, max_tokens, aliases)
                 if not await self._fits(request):
                     left, right = _split_ranges(ranges)
                     if not left or not right:
@@ -348,7 +354,7 @@ class HistoryCompactor:
                     queue[0:0] = [left, right]
                     continue
                 summary, response = await self._request(request, sources, "chunk", max_tokens,
-                                                        previous_id=previous_id)
+                                                        previous_id=previous_id, aliases=aliases)
                 chunks.append(CompactionChunk(ranges=ranges, summary=summary))
                 final_response = response
 
@@ -356,7 +362,7 @@ class HistoryCompactor:
                 summary = chunks[0].summary
                 assert summary is not None
             else:
-                summary, final_response = await self._reduce(chunks, sources, max_tokens, previous_id)
+                summary, final_response = await self._reduce(chunks, sources, max_tokens, previous_id, aliases)
             return self._finish(previous, items, source, sources, chunks, summary,
                                 final_response, max_tokens)
         except (CompactionError, ProviderReprepareRequired) as exc:
@@ -443,14 +449,16 @@ class HistoryCompactor:
             self.observer.start(0)
         self._call_offset = len(self.calls)
         sources = _source_texts(summary, ())
+        previous_id = _previous_source_id(())
+        aliases = _SourceAliases(sources, previous_id)
         source = self._archive(summary, ())
         chunks: list[CompactionChunk] = []
         try:
-            request = self._chunk_request(sources, _all_ranges(sources), max_tokens)
+            request = self._chunk_request(sources, _all_ranges(sources), max_tokens, aliases)
             if not await self._fits(request):
                 raise CompactionBudgetExceeded("Current root does not fit its tightening request.")
             checkpoint, response = await self._request(request, sources, "reduce", max_tokens,
-                                                       previous_id=_previous_source_id(()))
+                                                       previous_id=previous_id, aliases=aliases)
             chunks.append(CompactionChunk(ranges=_all_ranges(sources), summary=checkpoint))
             return self._finish(summary, (), source, sources, chunks,
                                 checkpoint, response, max_tokens)
@@ -584,7 +592,7 @@ class HistoryCompactor:
 
     def _prefix_request(
         self, previous: ContextSummary | None, items: tuple[ConversationItem, ...],
-        max_tokens: int,
+        max_tokens: int, aliases: _SourceAliases,
     ) -> ModelRequest | None:
         request = self.source_request
         if request is None or request.response_format is not None:
@@ -602,20 +610,25 @@ class HistoryCompactor:
         last = next(index for index, item in enumerate(request.items)
                     if item.source_id == target_ids[-1])
         prefix = request.items[:last + 1]
-        previous_id = _previous_source_id(items)
-        ids = ((previous_id,) if previous else ()) + target_ids
-        positions = [{"source_id": previous_id if item.source_id == "context_summary" else item.source_id,
-                      "kind": type(item).__name__,
-                      "eligible": item.source_id == "context_summary" or item.source_id in target_ids}
-                     for item in prefix]
-        instruction = (_summary_rules(max_tokens) + "\nEligible source IDs: " + json.dumps(ids)
-                       + "\nHistory positions in order: " + json.dumps(positions)
-                       + "\nPreceding ineligible messages are background only; summarize and cite only eligible sources.")
+        positions = []
+        kinds = {"ModelUserInput": "user", "ModelAssistantTurn": "assistant", "ModelToolResultInput": "tool"}
+        for index, item in enumerate(prefix, start=1):
+            if item.source_id == "context_summary":
+                position = f"checkpoint {aliases.previous_alias}"
+            else:
+                source = aliases.by_id.get(item.source_id, "background")
+                position = f"{kinds[type(item).__name__]} {source}"
+            positions.append(f"{index} {position}")
+        instruction = (_summary_rules(max_tokens, aliases.previous_alias)
+                       + "\nSources to summarize: " + ", ".join(aliases.by_alias)
+                       + "\nHistory messages in order:\n" + "\n".join(positions)
+                       + "\nBackground messages give context only; summarize and cite only the listed sources.")
         return replace(request, items=(*prefix, ModelUserInput(source_id="compaction_control", content=instruction)),
                        response_format=None, **self._request_options(max_tokens))
 
     def _chunk_request(
         self, sources: dict[str, str], ranges: tuple[SourceRange, ...], max_tokens: int,
+        aliases: _SourceAliases,
     ) -> ModelRequest:
         blocks = []
         for span in ranges:
@@ -623,19 +636,19 @@ class HistoryCompactor:
             # Continuous coverage is mandatory; a small context overlap also
             # prevents a word or constraint at a chunk edge losing its meaning.
             start, end = max(0, span.start - 128), min(len(source), span.end + 128)
-            block = (f"[Source {span.source_id}; Unicode chars [{span.start},{span.end}); "
+            block = (f"[Source {aliases.alias(span.source_id)}; Unicode chars [{span.start},{span.end}); "
                      f"including boundary context [{start},{end})]\n")
             block += source[start:end]
             blocks.append(block)
         text = "\n\n".join(blocks)
-        return ModelRequest(instructions=_summary_rules(max_tokens),
+        return ModelRequest(instructions=_summary_rules(max_tokens, aliases.previous_alias),
                             items=(ModelUserInput(source_id="compaction_sources", content=text),),
                             **self._request_options(max_tokens))
 
     async def _request(
         self, request: ModelRequest, sources: dict[str, str],
         kind: Literal["prefix", "chunk", "reduce"], max_tokens: int, *,
-        previous_id: str | None = None, retry_oversized: bool = True,
+        previous_id: str | None = None, aliases: _SourceAliases, retry_once: bool = True,
     ) -> tuple[TaskSummary, ModelResponse]:
         self._check_budget()
         if not await self._fits(request):
@@ -669,16 +682,20 @@ class HistoryCompactor:
         if self.http_attempts > 12:
             raise CompactionBudgetExceeded("Compaction exceeded 12 HTTP attempts.")
         try:
-            summary = self._parse_summary(response, sources, max_tokens, previous_id=previous_id)
+            summary = self._parse_summary(response, sources, max_tokens, previous_id=previous_id, aliases=aliases)
         except CompactionError as exc:
             self.calls[-1] = self.calls[-1].model_copy(update={"error": str(exc)})
-            if (exc.oversized_tokens is not None and retry_oversized
-                    and self.logical_calls < 8 and self.http_attempts < 12):
-                # One shorter attempt within the same episode budget. The note is
-                # an instruction, never part of the summarized source data; the
-                # warm prefix keeps its history and extends only its control turn.
+            note = None
+            if exc.oversized_tokens is not None:
                 note = (f"Your previous checkpoint was about {exc.oversized_tokens} tokens; the limit is "
                         f"{max_tokens}. Return a shorter checkpoint within the size limit.")
+            elif exc.malformed:
+                note = ("Your previous output did not follow the checkpoint format. Return only the section "
+                        "headings and '- text [S1]' entries described above.")
+            if note is not None and retry_once and self.logical_calls < 8 and self.http_attempts < 12:
+                # One content retry within the same episode budget. The note is
+                # an instruction, never part of the summarized source data; the
+                # warm prefix keeps its history and extends only its control turn.
                 if kind == "prefix":
                     last = request.items[-1]
                     shorter = replace(request, items=(*request.items[:-1], replace(last, content=last.content + "\n" + note)))
@@ -686,22 +703,26 @@ class HistoryCompactor:
                     shorter = replace(request, instructions=request.instructions + "\n" + note)
                 if await self._fits(shorter):
                     return await self._request(shorter, sources, kind, max_tokens,
-                                               previous_id=previous_id, retry_oversized=False)
+                                               previous_id=previous_id, aliases=aliases, retry_once=False)
             raise
         return summary, response
 
     def _parse_summary(self, response: ModelResponse, sources: dict[str, str],
-                       max_tokens: int, *, previous_id: str | None = None) -> TaskSummary:
+                       max_tokens: int, *, previous_id: str | None = None,
+                       aliases: _SourceAliases) -> TaskSummary:
         if response.status != "completed" or response.refusal or response.tool_calls:
             raise CompactionError("Compactor must return completed text without refusal or tool calls.")
         if response.metadata and (response.metadata.finish_reason in {
             "length", "max_tokens", "max_output_tokens",
         } or response.metadata.response_status in {"incomplete", "failed", "cancelled"}):
             raise CompactionError("Compactor output was truncated or incomplete.")
-        try:
-            summary = TaskSummary.model_validate_json(response.content)
-        except ValidationError as exc:
-            raise CompactionError("Compactor returned an invalid task summary.") from exc
+        inherited = _inherited_ids(sources.get(previous_id) if previous_id else None)
+        summary, report = _parse_checkpoint(response.content, aliases, inherited)
+        if any(report.values()):
+            logger.warning("Compaction checkpoint skipped %d unknown headings, %d lines outside sections, "
+                           "%d uncited entries and %d other lines.",
+                           report["unknown_headings"], report["outside_sections"],
+                           report["uncited"], report["ignored_lines"])
         summary = _normalize_citations(summary, sources, previous_id)
         tokens = self.assembler.token_counter.count_text(summary.render())
         if tokens > max_tokens:
@@ -712,7 +733,7 @@ class HistoryCompactor:
 
     async def _reduce(
         self, chunks: list[CompactionChunk], sources: dict[str, str], max_tokens: int,
-        previous_id: str | None,
+        previous_id: str | None, aliases: _SourceAliases,
     ) -> tuple[TaskSummary, ModelResponse]:
         layer = [chunk.summary for chunk in chunks if chunk.summary is not None]
         last_response: ModelResponse | None = None
@@ -723,7 +744,7 @@ class HistoryCompactor:
                 group = [layer[index]]
                 index += 1
                 while index < len(layer):
-                    candidate = self._reduce_request([*group, layer[index]], max_tokens)
+                    candidate = self._reduce_request([*group, layer[index]], max_tokens, aliases)
                     if not await self._fits(candidate):
                         break
                     group.append(layer[index])
@@ -732,8 +753,8 @@ class HistoryCompactor:
                     reduced.append(group[0])
                     continue
                 summary, last_response = await self._request(
-                    self._reduce_request(group, max_tokens), sources, "reduce", max_tokens,
-                    previous_id=previous_id)
+                    self._reduce_request(group, max_tokens, aliases), sources, "reduce", max_tokens,
+                    previous_id=previous_id, aliases=aliases)
                 reduced.append(summary)
             if len(reduced) >= len(layer):
                 raise CompactionBudgetExceeded("No two chunk summaries fit the reducer request.")
@@ -741,10 +762,12 @@ class HistoryCompactor:
         assert last_response is not None
         return layer[0], last_response
 
-    def _reduce_request(self, summaries: list[TaskSummary], max_tokens: int) -> ModelRequest:
-        text = "Consolidate these data checkpoints in chronological order.\n" + json.dumps(
-            [summary.model_dump(mode="json") for summary in summaries], ensure_ascii=False)
-        return ModelRequest(instructions=_summary_rules(max_tokens),
+    def _reduce_request(self, summaries: list[TaskSummary], max_tokens: int,
+                        aliases: _SourceAliases) -> ModelRequest:
+        text = "Consolidate these checkpoints in chronological order into one checkpoint.\n\n" + "\n\n".join(
+            f"#### Checkpoint {index}\n{_render_with_aliases(summary, aliases)}"
+            for index, summary in enumerate(summaries, start=1))
+        return ModelRequest(instructions=_summary_rules(max_tokens, aliases.previous_alias),
                             items=(ModelUserInput(source_id="compaction_chunks", content=text),),
                             **self._request_options(max_tokens))
 
@@ -959,6 +982,125 @@ class HistoryCompactor:
         return data
 
 
+class _SourceAliases:
+    """Short per-episode source names; records always keep the real IDs."""
+
+    def __init__(self, sources: dict[str, str], previous_id: str | None) -> None:
+        names = [key for key in sources if key != previous_id]
+        index = 1
+        if previous_id is not None and previous_id in sources:
+            names.insert(0, previous_id)
+            index = 0
+        real_ids = set(sources) | _inherited_ids(sources.get(previous_id) if previous_id is not None else None)
+        # Resolution also accepts lowercase and zero-padded aliases, so reserve
+        # the canonical spelling of every real ID that looks like an alias.
+        reserved = {f"S{int(match.group(1))}" for source_id in real_ids
+                    if (match := re.fullmatch(r"[Ss]0*(\d+)", source_id.strip()))}
+        self.by_id: dict[str, str] = {}
+        for key in names:
+            while f"S{index}" in reserved:
+                index += 1
+            self.by_id[key] = f"S{index}"
+            index += 1
+        self.by_alias = {alias: key for key, alias in self.by_id.items()}
+        self.previous_alias = self.by_id.get(previous_id, "S0") if previous_id is not None else "S0"
+
+    def alias(self, source_id: str) -> str:
+        return self.by_id[source_id]
+
+    def resolve(self, token: str) -> str:
+        """Alias -> real ID; any other token is returned unchanged for normalization."""
+        match = re.fullmatch(r"[Ss]0*(\d+)", token.strip())
+        if match:
+            return self.by_alias.get(f"S{int(match.group(1))}", token.strip())
+        return token.strip()
+
+
+def _render_with_aliases(summary: TaskSummary, aliases: _SourceAliases) -> str:
+    return "\n\n".join(
+        "### " + name.replace("_", " ").title() + "\n"
+        + "\n".join(f"- {entry.text} [{', '.join(aliases.by_id.get(key, key) for key in entry.source_ids)}]"
+                    for entry in entries)
+        for name in TaskSummary.model_fields
+        if (entries := getattr(summary, name))
+    )
+
+
+def _inherited_ids(previous_text: str | None) -> set[str]:
+    inherited: set[str] = set()
+    if previous_text is not None:
+        for line in previous_text.splitlines():
+            match = re.search(r"\[([^\[\]]+)\]\s*$", line)
+            if match:
+                inherited.update(part.strip() for part in match.group(1).split(","))
+    return inherited
+
+
+def _parse_checkpoint(text: str, aliases: _SourceAliases,
+                      inherited: set[str]) -> tuple[TaskSummary, dict[str, int]]:
+    """Recover cited Markdown entries without retaining skipped model content."""
+
+    sections: dict[str, list[SummaryEntry]] = {name: [] for name in TaskSummary.model_fields}
+    headings = {name.replace("_", " ") for name in sections}
+    report = {"unknown_headings": 0, "outside_sections": 0, "uncited": 0, "ignored_lines": 0}
+    section: str | None = None
+    entry: str | None = None
+
+    def finish_entry(*, cited_only: bool = False) -> None:
+        nonlocal entry
+        if entry is None:
+            return
+        body = entry.strip()
+        match = re.search(r"\[([^\[\]]+)\]\s*$", body)
+        tokens = [token.strip() for token in match.group(1).split(",")] if match else []
+        cited = any(aliases.resolve(token) in aliases.by_id or token in inherited for token in tokens)
+        if cited_only and not cited:
+            return
+        entry = None
+        if not cited:
+            report["uncited"] += 1
+            return
+        if section is None:
+            report["outside_sections"] += 1
+            return
+        body = body[:match.start()].strip()
+        if not body:
+            return
+        source_ids = tuple(dict.fromkeys(aliases.resolve(token) for token in tokens))
+        try:
+            sections[section].append(SummaryEntry(text=body, source_ids=source_ids))
+        except ValidationError:
+            pass
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("```"):
+            finish_entry()
+            continue
+        heading = line.lstrip("#").replace("*", "").replace("_", "").strip().rstrip(":").strip().lower()
+        if line.startswith("#") or heading in headings:
+            finish_entry()
+            name = heading.replace(" ", "_").replace("-", "_")
+            section = name if name in sections else None
+            if section is None:
+                report["unknown_headings"] += 1
+        elif match := re.match(r"^(?:[-*•]|\d+[.)])\s+(.*)$", line):
+            finish_entry()
+            entry = match.group(1)
+        elif entry is not None:
+            entry += " " + line
+        else:
+            report["ignored_lines"] += 1
+        # A cited entry is complete; subsequent commentary is a separate line.
+        finish_entry(cited_only=True)
+    finish_entry()
+    if not any(sections.values()):
+        error = CompactionError("Compactor returned an invalid task summary.")
+        error.malformed = True
+        raise error
+    return TaskSummary(**{name: tuple(entries) for name, entries in sections.items()}), report
+
+
 def _source_texts(previous: ContextSummary | None,
                   items: tuple[ConversationItem, ...]) -> dict[str, str]:
     from dagent.harness_runtime.context import user_content_for_model
@@ -992,12 +1134,7 @@ def _normalize_citations(summary: TaskSummary, sources: dict[str, str],
     IDs are dropped, and an entry left without a supplied ID is rejected.
     """
 
-    inherited: set[str] = set()
-    if previous_id is not None and previous_id in sources:
-        for line in sources[previous_id].splitlines():
-            match = re.search(r"\[([^\[\]]+)\]\s*$", line)
-            if match:
-                inherited.update(part.strip() for part in match.group(1).split(","))
+    inherited = _inherited_ids(sources.get(previous_id) if previous_id is not None else None)
     updates = {}
     dropped = 0
     for name in TaskSummary.model_fields:

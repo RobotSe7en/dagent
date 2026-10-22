@@ -591,17 +591,36 @@ observations, with pending work and source references. This helps the model avoi
 forgetting completed steps; it does not deduplicate or suppress tool calls.
 Raw received sources, summary coverage, and model-call usage are archived.
 
-Every summary request states its size limit. The limit is 80% of the visible
-summary budget, expressed in tokens and in approximate English and CJK
-characters, so the model can merge or shorten earlier entries. A checkpoint that
-still renders above the budget is retried once in the same episode with its
-measured size, as an added instruction rather than as source data. That retry
-counts toward the episode's call budget, and it is skipped when the longer
-request would no longer fit. A second oversized checkpoint fails as before.
-Entries must cite supplied source IDs. IDs copied from inside the previous
-checkpoint resolve to that checkpoint's source ID. Other unknown IDs are dropped
-and logged as a warning with their count. An entry left without a supplied ID
-still rejects the summary.
+The summarizer returns Markdown with fixed headings, in this order: Requirements,
+Confirmed Decisions, Completed Work, Failed Approaches, Open Work, Next Step, and
+Operation Evidence Refs. Empty sections are omitted. Each entry is a line such as
+`- Read config.yaml [S1, S2]`. Source aliases are assigned for each compaction;
+`S0` normally identifies the earlier checkpoint when present. Aliases skip names
+used by current or inherited real source IDs, including lowercase and zero-padded
+variants; use the aliases supplied in the request. Records keep real source IDs,
+and the checkpoint rendered into context keeps its existing format and real IDs.
+The parser tolerates code fences, extra commentary, multiline entries, and heading
+variants. An entry ends at its trailing recognized citation, so following commentary
+cannot invalidate it. Literal `</think>` text in entries is preserved; reasoning
+normalization runs before checkpoint parsing. Skipped content is reported through
+warning counts without logging its text. Output with no valid entries gets one
+format correction retry in the same compaction episode.
+
+Every summary request states its size limit: 80% of the visible summary budget,
+in tokens and approximate English and CJK characters. Each cited alias counts as
+about 10 tokens because the enforced limit counts `TaskSummary.render()` after
+expansion to real IDs. A checkpoint that renders above the budget gets one retry
+with its measured size. Format and size errors share a single content retry;
+the correction is an instruction, never source data. It counts toward the
+episode's call budget and is skipped when the extended request no longer fits.
+A second invalid or oversized checkpoint fails.
+
+Entries must cite supplied sources. Real source IDs are also accepted. IDs copied
+from inside the previous checkpoint resolve to that checkpoint's source ID.
+Other unknown IDs are dropped and logged with their count when an entry also
+contains a recognized citation. Entries without any recognized citation are
+skipped. Citation normalization still rejects a summary if an entry is left
+without a supplied ID.
 
 Each compaction episode permits at most eight logical model calls and twelve
 model request attempts, including retries. These limits do not cap normal agent

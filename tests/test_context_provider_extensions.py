@@ -282,7 +282,7 @@ async def test_summary_reprepare_is_counted_and_bounded(tmp_path):
         nonlocal rejected
         body = json.loads(request.content)
         source = "\n".join(str(item.get("content", "")) for item in body["messages"])
-        summary = "Eligible source IDs:" in source or source.startswith("Produce a task checkpoint")
+        summary = "Sources to summarize:" in source or source.startswith("Produce a task checkpoint")
         if summary and not rejected:
             rejected = True
             return httpx.Response(400, json={"error": {"param": "reasoning_effort",

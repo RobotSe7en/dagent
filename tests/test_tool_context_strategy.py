@@ -3,7 +3,6 @@
 from contextlib import closing
 import json
 from pathlib import Path
-import re
 
 import pytest
 
@@ -19,7 +18,7 @@ from dagent.schemas.context import ContextWindowExceeded
 from dagent.schemas.conversation import stored_content_text
 from tests.test_cache_usage import _completion, _usage
 from tests.test_reasoning_mapping import _endpoint
-from tests.test_compaction_strategy import summary_response
+from tests.test_compaction_strategy import checkpoint, request_aliases, summary_response
 
 
 @pytest.mark.asyncio
@@ -504,10 +503,9 @@ async def test_server_shrink_discovered_by_summary_keeps_original_tools_and_paid
         nonlocal steps
         body = json.loads(request.content)
         raw = "\n".join(message.get("content", "") for message in body["messages"])
-        match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
-        if match:
-            ids = json.loads(match.group(1))
-            summary = json.dumps({"completed_work": [{"text": "Evidence received.", "source_ids": [ids[-1]]}]})
+        if "Sources to summarize:" in raw:
+            ids = request_aliases(raw)
+            summary = checkpoint(completed_work=[("Evidence received.", [ids[-1]])])
             return _completion("chat_completions", True, usage=_usage("chat_completions"), content=summary)
         steps += 1
         return _completion("chat_completions", False, usage=_usage("chat_completions"), content="",
@@ -555,11 +553,10 @@ async def test_paid_summary_survives_later_provider_failure_and_is_reused_on_new
         nonlocal steps, summaries
         body = json.loads(request.content)
         raw = "\n".join(message.get("content", "") for message in body["messages"])
-        match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
-        if match:
+        if "Sources to summarize:" in raw:
             summaries += 1
-            ids = json.loads(match.group(1))
-            content = json.dumps({"completed_work": [{"text": "Evidence verified.", "source_ids": [ids[-1]]}]})
+            ids = request_aliases(raw)
+            content = checkpoint(completed_work=[("Evidence verified.", [ids[-1]])])
             return _completion("chat_completions", True, usage=_usage("chat_completions"), content=content)
         steps += 1
         calls = (ToolCall(id=f"call_{steps}", name="tool_evidence", arguments={"index": steps}),) if steps <= 2 else ()
@@ -635,16 +632,14 @@ async def test_long_run_multiple_compactions_and_portable_resources(tmp_path,pro
         nonlocal steps,summaries
         body=json.loads(request.content)
         text=json.dumps(body,ensure_ascii=False)
-        if "Eligible source IDs:" in text or body.get("instructions","").startswith("Produce a task checkpoint") or (
+        if "Sources to summarize:" in text or body.get("instructions","").startswith("Produce a task checkpoint") or (
             protocol=="chat_completions" and body.get("messages",[{}])[0].get("content","").startswith("Produce a task checkpoint")):
             summaries+=1
-            # Source IDs are carried both in appended instructions and in
-            # isolated source labels. Prefer exact archive ids over inventions.
+            # Both prefix controls and isolated source labels offer aliases.
             history=body.get("messages",body.get("input",[]))
             raw="\n".join(str(item.get("content","")) for item in history)
-            match=re.search(r"Eligible source IDs: (\[[^\n]+\])",raw)
-            ids=json.loads(match.group(1)) if match else re.findall(r"\[Source ([^;]+);",raw)
-            content=json.dumps({"requirements":[{"text":"Continue collecting evidence; preserve task progress.","source_ids":[ids[0]]}]})
+            ids=request_aliases(raw)
+            content=checkpoint(requirements=[("Continue collecting evidence; preserve task progress.", [ids[0]])])
             return _completion(protocol,body.get("stream",False),usage=_usage(protocol),content=content)
         steps+=1
         return _completion(protocol,body.get("stream",False),usage=_usage(protocol),content="done" if steps>30 else "",
