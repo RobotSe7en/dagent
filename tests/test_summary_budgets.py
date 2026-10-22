@@ -9,11 +9,14 @@ from types import SimpleNamespace
 import pytest
 
 import dagent
-from dagent.harness_runtime.compaction import CompactionError, HistoryCompactor
+from dagent.harness_runtime.compaction import (
+    CompactionArchiveError, CompactionError, CompactionSourceV1, HistoryCompactor,
+    _CompactionCapacityUnavailable,
+)
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.model_io import ModelRequest, ModelTokenCount, ModelUserInput
-from tests.test_compaction_strategy import summary_response
+from tests.test_compaction_strategy import record_for, summary_response
 
 
 class RecordingCompactor:
@@ -198,6 +201,86 @@ async def test_small_effective_override_rebuilds_the_prompt_and_validation_budge
     with pytest.raises(CompactionError, match="visible output budget"):
         await engine.compact(None, (dagent.UserMessage(id="source", content="Requirement."),), 2048)
     assert all("visible output budget" in call.error for call in engine.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["compact", "tighten"])
+@pytest.mark.parametrize("enabled,allow_fallback,readable", [
+    (False, True, True), (True, False, True), (True, True, False),
+])
+async def test_preflight_capacity_fallback_requires_authorization_and_recovery(
+    tmp_path, operation, enabled, allow_fallback, readable,
+):
+    engine, sent, _ = prepared_engine(tmp_path, override=64)
+    engine.policy = engine.policy.model_copy(update={"allow_reference_fallback": enabled})
+    engine.read_available = readable
+    original = dagent.ContextSummary(content="Preserve the current checkpoint.", source_item_count=1)
+    error = CompactionArchiveError if enabled and allow_fallback else _CompactionCapacityUnavailable
+    with pytest.raises(error) as failure:
+        if operation == "compact":
+            await engine.compact(None, (dagent.UserMessage(id="source", content="Requirement."),),
+                                 256, allow_fallback=allow_fallback)
+        else:
+            await engine.tighten(original, 256, allow_fallback=allow_fallback)
+    assert failure.value.compaction_record is None
+    assert not sent and engine.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["chunked", "cache_aware"])
+@pytest.mark.parametrize("root_only", [False, True])
+@pytest.mark.parametrize("fallback", [False, True])
+async def test_preflight_output_override_preserves_reference_continuation(
+    tmp_path, strategy, root_only, fallback,
+):
+    from tests.test_context_soak import READ_TOOL
+    from tests.test_reasoning_mapping import _endpoint
+
+    async def chat(_request):
+        pytest.fail("A 64-token output override must skip model summarization.")
+
+    source = history()
+    if root_only:
+        source = source.model_copy(update={
+            "summary": dagent.ContextSummary(content="Earlier evidence. " * 1000, source_item_count=1),
+            "items": (source.items[0], source.items[-1]),
+        })
+    policy = dagent.ContextPolicy(compaction_strategy=strategy, allow_reference_fallback=fallback)
+    store = ResultStore(tmp_path, ".runtime")
+    async with _endpoint(protocol="chat_completions", token_counting="heuristic",
+                         context_window_tokens=4096,
+                         extra_request_args={"extra_body": {"max_completion_tokens": 64}}) as (provider, posts):
+        assembler = ContextAssembler(context_window_tokens=4096, request_preparer=provider.prepare_call,
+                                     prepared_token_counter=provider.count_prepared)
+        engine = HistoryCompactor(policy=policy, assembler=assembler, result_store=store,
+                                  system_message={"content": "Task"}, chat=chat, read_available=True)
+        arguments = dict(system_message=engine.system_message, conversation=source, tools=[READ_TOOL],
+                         policy=policy, result_store=store, history_compactor=engine, enable_new_strategy=True)
+        if not fallback:
+            with pytest.raises(dagent.ContextWindowExceeded) as failure:
+                await assembler.prepare(**arguments)
+            assert failure.value._conversation.compaction_state is None
+            assert failure.value._conversation.items == source.items
+            assert failure.value._conversation.summary == source.summary
+        else:
+            prepared = await assembler.prepare(**arguments)
+            summary = prepared.conversation.summary
+            assert summary.method == "reference_fallback"
+            assert "[DEGRADED_CONTEXT]" in summary.content
+            assert summary.source_item_count == 1
+            assert prepared.conversation.compaction_state is None
+            assert prepared.conversation.items == (source.items[0], source.items[-1])
+            assert prepared.usage.estimated_input_tokens <= prepared.usage.input_budget_tokens
+            assert prepared.prepared_call.effective_max_output_tokens == 64
+            record = record_for(engine, summary)
+            assert record.status == "reference_only"
+            assert record.calls == () and record.reused_from is None
+            assert record.unresolved_ranges == record.source_ranges
+            archive = CompactionSourceV1.model_validate_json(store.read_reference(record.source))
+            assert archive.previous_summary == (source.summary.content if root_only else None)
+            assert archive.items == (() if root_only else (source.items[1],))
+        assert posts == []
+        assert engine.calls == []
 
 
 @pytest.mark.asyncio

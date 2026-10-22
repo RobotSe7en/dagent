@@ -31,6 +31,9 @@ output cap remains a quarter of the window. `summary_max_tokens` still defaults
 to 8192 and accepts values down to 64. A small root can still tighten once.
 Pure preflight capacity skips do not permanently fail a source; changed
 projections can be reconsidered within the same bounded episode.
+Under hard pressure, `allow_reference_fallback=True` still permits recoverable
+reference continuation when preflight cannot fit a summary, for both history
+compaction and root tightening. No additional configuration is required.
 
 This changes summary prompts, requested output limits and possibly prefix/chunk
 selection, latency and cost. Planning usually adds one count per candidate, or a

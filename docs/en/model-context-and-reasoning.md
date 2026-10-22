@@ -723,6 +723,10 @@ recoverable source is replaced, unresolved coverage stays explicit, and the fina
 hard check still applies. `ContextSummary.method="reference_fallback"` and the
 archived record's `partial` or `reference_only` status distinguish this from a
 complete summary. Neither mode promises lossless semantics or zero context errors.
+This opt-in fallback also applies when history compaction or root tightening
+cannot fit a summary request during preflight, including an output override too
+small for a usable checkpoint. A preflight capacity skip creates no failed-summary
+record; a successful reference continuation still saves its recovery record.
 
 Old partial summaries are reused only for matching input. If another compaction
 changed the root, enabled reference fallback retains the current source and

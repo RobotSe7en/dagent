@@ -400,8 +400,14 @@ class HistoryCompactor:
                 summary, final_response = await self._reduce(chunks, sources, max_tokens, previous_id, aliases)
             return self._finish(previous, items, source, sources, chunks, summary,
                                 final_response, max_tokens)
+        except _CompactionCapacityUnavailable as exc:
+            # No model judged this source, so do not persist a failed attempt.
+            if allow_fallback and self.policy.allow_reference_fallback:
+                return self._fallback(previous, items, source, sources, chunks,
+                                      max_tokens, reason=str(exc))
+            raise
         except (CompactionError, ProviderReprepareRequired) as exc:
-            if isinstance(exc, (CompactionArchiveError, _CompactionCapacityUnavailable)):
+            if isinstance(exc, CompactionArchiveError):
                 raise
             failed_record = self._save_record(
                 previous, source, sources, chunks,
@@ -498,8 +504,13 @@ class HistoryCompactor:
             chunks.append(CompactionChunk(ranges=_all_ranges(sources), summary=checkpoint))
             return self._finish(summary, (), source, sources, chunks,
                                 checkpoint, response, max_tokens)
+        except _CompactionCapacityUnavailable as exc:
+            if allow_fallback and self.policy.allow_reference_fallback:
+                return self._fallback(summary, (), source, sources, chunks,
+                                      max_tokens, reason=str(exc))
+            raise
         except (CompactionError, ProviderReprepareRequired) as exc:
-            if isinstance(exc, (CompactionArchiveError, _CompactionCapacityUnavailable)):
+            if isinstance(exc, CompactionArchiveError):
                 raise
             exc.compaction_record = self._save_record(
                 summary, source, sources, chunks,
