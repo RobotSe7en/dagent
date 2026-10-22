@@ -390,6 +390,65 @@ def test_repeated_run_boundaries_reread_only_changed_history(tmp_path, monkeypat
         resources.persist(frozen, workspace_path=workspace)
 
 
+def test_repeated_boundaries_reuse_verified_records_and_legacy_results(tmp_path, monkeypatch):
+    import pathlib
+    from dagent.harness_runtime.compaction import CompactionRecordV1, CompactionSourceV1
+    from dagent.schemas.conversation import ContextSummary, ToolResultMessage
+
+    workspace = tmp_path / "first"
+    store = ResultStore(workspace, ".runtime")
+    frozen = _freeze(_conversation("first " * 1000), store)
+    recovery = frozen.items[1].model_display.recovery
+    source = store.snapshot_text(CompactionSourceV1(items=frozen.items, refs=(recovery,)).model_dump_json())
+    record = store.snapshot_text(CompactionRecordV1(
+        status="complete", source=source, source_digest=source.sha256, source_ranges=(), chunks=(),
+    ).model_dump_json())
+    legacy = ToolResultMessage(call_id="legacy", name="tool_legacy", status="completed",
+                               content=store.save_text("legacy", "legacy result body"))
+    conversation = ConversationState(id=frozen.id, items=(*frozen.items, legacy), summary=ContextSummary(
+        content="summary", source_item_count=2, compaction_record=record))
+    resources = ConversationResourceStore(tmp_path, ".runtime")
+    resources.persist(conversation, workspace_path=workspace)
+    destination = tmp_path / "next"
+    restored = resources.materialize(conversation, workspace_path=destination)
+    reads = []
+    original = pathlib.Path.read_bytes
+
+    def counted(self):
+        reads.append(self.name)
+        return original(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", counted)
+    resources.persist(restored, workspace_path=destination)
+    assert resources.materialize(restored, workspace_path=destination) == restored
+    # Records, archived sources and rebased legacy results are all unchanged.
+    assert reads == []
+
+
+def test_persist_rewrites_a_deleted_object_for_unchanged_history(tmp_path):
+    workspace = tmp_path / "first"
+    frozen = _freeze(_conversation("source " * 1000), ResultStore(workspace, ".runtime"))
+    recovery = frozen.items[1].model_display.recovery
+    resources = ConversationResourceStore(tmp_path, ".runtime")
+    resources.persist(frozen, workspace_path=workspace)
+    stored = resources._object_path(frozen.id, recovery.sha256)
+    stored.unlink()
+    resources.persist(frozen, workspace_path=workspace)
+    assert hashlib.sha256(stored.read_bytes()).hexdigest() == recovery.sha256
+
+
+def test_verified_resource_caches_are_bounded(tmp_path, monkeypatch):
+    from dagent.harness_runtime import conversation_resources
+
+    monkeypatch.setattr(conversation_resources, "_CACHE_LIMIT", 3)
+    workspace = tmp_path / "first"
+    frozen = _freeze(_conversation(*(f"result {index} " * 200 for index in range(6))), ResultStore(workspace, ".runtime"))
+    resources = ConversationResourceStore(tmp_path, ".runtime")
+    resources.persist(frozen, workspace_path=workspace)
+    resources.materialize(frozen, workspace_path=tmp_path / "next")
+    assert len(resources._verified) <= 3 and len(resources._edges) <= 3
+
+
 def test_result_json_is_not_interpreted_as_a_resource_manifest(tmp_path):
     store = ResultStore(tmp_path / "first", ".runtime")
     source = json.dumps({"type": "dagent_compaction_source", "refs": [{"path": "must-not-read"}]})

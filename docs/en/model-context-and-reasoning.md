@@ -683,10 +683,12 @@ retains links and file identities, not all historical bodies.
 
 At Run boundaries, every Run of one `Runner` uses the same conversation resource
 store, which saves retained results after a Run and restores them before the next.
-It records the file identities it has verified. Unchanged retained results are not
-reread when a continued conversation is persisted or restored again; changed files
-are verified again, and missing or corrupt files still fail. Restoring into a new
-workspace still copies, and therefore reads, each retained result once. A new
+It records, in bounded memory, the file identities it has verified and the links
+of verified compaction records. Unchanged retained results, compaction records and
+archived sources are not reread when a continued conversation is persisted or
+restored again. Changed files are verified again, a deleted stored copy is
+rewritten, and missing or corrupt files still fail. Restoring into a new
+workspace still copies, and therefore reads, each retained resource once. A new
 `Runner` or process verifies its history afresh.
 
 ### Failure snapshots and cache verification

@@ -67,8 +67,9 @@ configuration, or record migration is required.
   retained results twice when saving and twice when restoring. In an offline
   benchmark, 60.8 MiB of retained results caused 121.7 MiB of reads per save or
   restore; repeats now read nothing. Runs of one `Runner` share the store and its
-  verified file identities. Changed, missing, or corrupt files still fail
-  verification. This applies to every strategy.
+  bounded cache of verified file identities and compaction record links. Changed,
+  missing, or corrupt files still fail verification. This applies to every
+  strategy.
 
 ## 0.10.2a0
 
