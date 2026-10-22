@@ -927,7 +927,8 @@ def test_parse_checkpoint_all_sections_use_real_source_ids():
 @pytest.mark.parametrize("prefix,suffix,ignored", [
     ("```markdown\n", "\n```", 0),
     ("Here is the checkpoint:\n", "\n\nEnd of checkpoint.", 2),
-    ("<think>discard this</think>discard more</think>\n", "", 0),
+    ("<think>discard this</think>discard more</think>\n", "", 1),
+    ("", "\nEnd of checkpoint.", 1),
 ])
 def test_parse_checkpoint_tolerates_wrappers(prefix, suffix, ignored):
     aliases = compaction._SourceAliases({"msg_a": "First"}, None)
@@ -949,6 +950,57 @@ def test_parse_checkpoint_joins_continuation_lines():
                                         compaction._SourceAliases({"msg_a": "First"}, None), set())
     assert summary.completed_work[0].text == "Read config.yaml and confirmed timeout=30s"
     assert not any(report.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["chunked", "cache_aware"])
+@pytest.mark.parametrize("continuation", ["Continue.", "Continue\n  pending work.", "Use list[int]\n  to continue."])
+async def test_compaction_preserves_cited_entries_before_trailing_commentary(tmp_path, strategy, continuation):
+    async def chat(_request):
+        return ModelResponse(content=("### Requirements\n- Keep this requirement. [S1]\n"
+                                      f"### Next Step\n- {continuation} [S1]\nEnd of checkpoint."))
+
+    item = UserMessage(id="source", content="Keep this requirement and continue pending work.")
+    engine = compactor(tmp_path, chat, strategy=strategy)
+    engine.source_request = ModelRequest(instructions="Original system.", items=(
+        ModelUserInput(source_id=item.id, content=item.content),))
+    summary = await engine.compact(None, (item,), 256)
+    record = record_for(engine, summary)
+    expected = TaskSummary(
+        requirements=(SummaryEntry(text="Keep this requirement.", source_ids=(item.id,)),),
+        next_step=(SummaryEntry(text=" ".join(continuation.split()), source_ids=(item.id,)),),
+    )
+    assert record.status == "complete"
+    assert record.task_summary == expected
+    assert summary.content == expected.render()
+    assert len(record.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["chunked", "cache_aware"])
+async def test_compaction_preserves_literal_closing_think_tags_after_reasoning_normalization(tmp_path, strategy):
+    command = "grep '</think>' app.log"
+
+    async def chat(_request):
+        return ModelResponse(content="<think>Private reasoning.</think>\n" + checkpoint(
+            requirements=[(f"Run `{command}` exactly.", ["S1"])],
+            next_step=[("Inspect the matches.", ["S1"])],
+        ))
+
+    item = UserMessage(id="source", content=f"Run `{command}` exactly and inspect the matches.")
+    engine = compactor(tmp_path, chat, strategy=strategy)
+    engine.source_request = ModelRequest(instructions="Original system.", items=(
+        ModelUserInput(source_id=item.id, content=item.content),))
+    summary = await engine.compact(None, (item,), 256)
+    record = record_for(engine, summary)
+    expected = TaskSummary(
+        requirements=(SummaryEntry(text=f"Run `{command}` exactly.", source_ids=(item.id,)),),
+        next_step=(SummaryEntry(text="Inspect the matches.", source_ids=(item.id,)),),
+    )
+    assert record.status == "complete"
+    assert record.task_summary == expected
+    assert summary.content == expected.render()
+    assert len(record.calls) == 1
 
 
 @pytest.mark.parametrize("heading,field", [
@@ -991,6 +1043,60 @@ def test_parse_checkpoint_resolves_alias_variants_and_preserves_real_and_inherit
     normalized = compaction._normalize_citations(summary, sources, "previous_summary")
     assert normalized.next_step[0].source_ids == ("msg_a", "msg_b", "previous_summary")
     assert not any(report.values())
+
+
+@pytest.mark.parametrize("source_id", ["S1", "s01", "S0", "s00"])
+@pytest.mark.parametrize("inherited", [False, True])
+def test_checkpoint_aliases_do_not_shadow_real_or_inherited_ids(source_id, inherited):
+    sources = {"msg_first": "First"}
+    previous_id = "previous_summary" if inherited else None
+    if inherited:
+        sources = {previous_id: checkpoint(completed_work=[("Earlier.", [source_id])]), **sources}
+    else:
+        sources[source_id] = "Second"
+    aliases = compaction._SourceAliases(sources, previous_id)
+    summary, report = compaction._parse_checkpoint(
+        checkpoint(next_step=[("Continue.", [source_id])]), aliases,
+        compaction._inherited_ids(sources.get(previous_id)),
+    )
+    assert summary.next_step[0].source_ids == (source_id,)
+    normalized = compaction._normalize_citations(summary, sources, previous_id)
+    assert normalized.next_step[0].source_ids == (previous_id if inherited else source_id,)
+    assert all(aliases.resolve(aliases.alias(key)) == key for key in sources)
+    assert not any(report.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["chunked", "cache_aware"])
+@pytest.mark.parametrize("inherited", [False, True])
+async def test_compaction_records_alias_like_real_citations_without_reassigning_sources(tmp_path, strategy, inherited):
+    async def chat(_request):
+        return ModelResponse(content=checkpoint(
+            requirements=[("Keep the first requirement.", ["msg_first"])],
+            next_step=[("Continue the cited task.", ["S1"])],
+        ))
+
+    previous = ContextSummary(content=checkpoint(completed_work=[("Earlier.", ["S1"])]),
+                              source_item_count=1) if inherited else None
+    items = (UserMessage(id="msg_first", content="Keep the first requirement."),)
+    if not inherited:
+        items += (UserMessage(id="S1", content="Continue the cited task."),)
+    engine = compactor(tmp_path, chat, strategy=strategy)
+    prefix = (ModelUserInput(source_id="context_summary", content=previous.content),) if previous else ()
+    engine.source_request = ModelRequest(instructions="Original system.", items=(
+        *prefix, *(ModelUserInput(source_id=item.id, content=item.content) for item in items)))
+    summary = await engine.compact(previous, items, 256)
+    record = record_for(engine, summary)
+    expected = TaskSummary(
+        requirements=(SummaryEntry(text="Keep the first requirement.", source_ids=("msg_first",)),),
+        next_step=(SummaryEntry(text="Continue the cited task.",
+                               source_ids=("previous_summary" if inherited else "S1",)),),
+    )
+    assert record.status == "complete"
+    assert record.task_summary == expected
+    for entry in (*expected.requirements, *expected.next_step):
+        assert f"{entry.text} [{', '.join(entry.source_ids)}]" in summary.content
+    assert len(record.calls) == 1
 
 
 def test_parse_checkpoint_leaves_unknown_tokens_for_normalization(caplog):
@@ -1082,7 +1188,13 @@ async def test_malformed_checkpoint_fails_after_one_retry_and_keeps_reason_prefi
 
 
 @pytest.mark.asyncio
-async def test_one_episode_reuses_aliases_across_prefix_chunks_and_reducer(tmp_path):
+@pytest.mark.parametrize("inherited_id,first_id,expected_aliases", [
+    ("msg_old", "msg_first", ["S0", "S1", "S2"]),
+    ("S0", "S1", ["S2", "S3", "S4"]),
+])
+async def test_one_episode_reuses_aliases_across_prefix_chunks_and_reducer(
+    tmp_path, inherited_id, first_id, expected_aliases,
+):
     requests = []
 
     async def chat(request):
@@ -1091,8 +1203,8 @@ async def test_one_episode_reuses_aliases_across_prefix_chunks_and_reducer(tmp_p
             return ModelResponse(content="garbled")
         return summary_response(request)
 
-    items = (UserMessage(id="msg_first", content="First"), UserMessage(id="msg_second", content="Second"))
-    previous = ContextSummary(content="### Completed Work\n- Earlier. [msg_old]", source_item_count=1)
+    items = (UserMessage(id=first_id, content="First"), UserMessage(id="msg_second", content="Second"))
+    previous = ContextSummary(content=f"### Completed Work\n- Earlier. [{inherited_id}]", source_item_count=1)
     engine = compactor(tmp_path, chat, strategy="cache_aware")
     engine.source_request = ModelRequest(instructions="Original system.", items=(
         ModelUserInput(source_id="context_summary", content=previous.content),
@@ -1106,16 +1218,20 @@ async def test_one_episode_reuses_aliases_across_prefix_chunks_and_reducer(tmp_p
 
     engine._fits = one_source_per_chunk
     summary = await engine.compact(previous, items, 256)
-    assert request_aliases(requests[0].items[-1].content) == ["S0", "S1", "S2"]
+    assert request_aliases(requests[0].items[-1].content) == expected_aliases
+    assert f"1 checkpoint {expected_aliases[0]}\n" in requests[0].items[-1].content
+    for request in requests:
+        rules = request.items[-1].content if request.items[-1].source_id == "compaction_control" else request.instructions
+        assert f"cite {expected_aliases[0]}, never IDs shown inside it" in rules
     chunks = [request for request in requests if request.items[0].source_id == "compaction_sources"]
     reducers = [request for request in requests if request.items[0].source_id == "compaction_chunks"]
-    assert [request_aliases(request.items[0].content) for request in chunks] == [["S0"], ["S1"], ["S2"]]
+    assert [request_aliases(request.items[0].content) for request in chunks] == [[alias] for alias in expected_aliases]
     assert len(reducers) == 1
-    assert request_aliases(reducers[0].items[0].content) == ["S0", "S1", "S2"]
+    assert request_aliases(reducers[0].items[0].content) == expected_aliases
     assert "msg_" not in reducers[0].items[0].content
     record = record_for(engine, summary)
     for task_summary in (record.task_summary, *(chunk.summary for chunk in record.chunks)):
-        assert all(not re.fullmatch(r"S\d+", source_id) for name in TaskSummary.model_fields
+        assert all(source_id in {"previous_summary", first_id, "msg_second"} for name in TaskSummary.model_fields
                    for entry in getattr(task_summary, name) for source_id in entry.source_ids)
     assert record.task_summary.requirements[0].source_ids == ("previous_summary",)
     assert record.task_summary.next_step[0].source_ids == ("msg_second",)

@@ -209,7 +209,7 @@ _SUMMARY_RULES = (
 )
 
 
-def _summary_rules(max_tokens: int) -> str:
+def _summary_rules(max_tokens: int, previous_alias: str = "S0") -> str:
     # The runtime rejects a checkpoint above its visible budget, so the model
     # must know that budget. The target leaves room for rendered headings.
     target = max(48, math.floor(max_tokens * 0.8))
@@ -219,8 +219,8 @@ def _summary_rules(max_tokens: int) -> str:
         f" (about {4 * target} English characters or {target} CJK characters); each cited alias"
         " counts as about 10 tokens. When more detail exists, merge related entries, shorten wording"
         " and point to recoverable sources instead of copying details; keep requirements, open work"
-        " and the next step. Cite only the supplied aliases (S0 is the earlier checkpoint when present)."
-        " For an entry carried forward from the earlier checkpoint, cite S0, never IDs shown inside it."
+        f" and the next step. Cite only the supplied aliases ({previous_alias} is the earlier checkpoint when present)."
+        f" For an entry carried forward from the earlier checkpoint, cite {previous_alias}, never IDs shown inside it."
         " Cite at most three aliases per entry."
     )
 
@@ -614,12 +614,12 @@ class HistoryCompactor:
         kinds = {"ModelUserInput": "user", "ModelAssistantTurn": "assistant", "ModelToolResultInput": "tool"}
         for index, item in enumerate(prefix, start=1):
             if item.source_id == "context_summary":
-                position = "checkpoint S0"
+                position = f"checkpoint {aliases.previous_alias}"
             else:
                 source = aliases.by_id.get(item.source_id, "background")
                 position = f"{kinds[type(item).__name__]} {source}"
             positions.append(f"{index} {position}")
-        instruction = (_summary_rules(max_tokens)
+        instruction = (_summary_rules(max_tokens, aliases.previous_alias)
                        + "\nSources to summarize: " + ", ".join(aliases.by_alias)
                        + "\nHistory messages in order:\n" + "\n".join(positions)
                        + "\nBackground messages give context only; summarize and cite only the listed sources.")
@@ -641,7 +641,7 @@ class HistoryCompactor:
             block += source[start:end]
             blocks.append(block)
         text = "\n\n".join(blocks)
-        return ModelRequest(instructions=_summary_rules(max_tokens),
+        return ModelRequest(instructions=_summary_rules(max_tokens, aliases.previous_alias),
                             items=(ModelUserInput(source_id="compaction_sources", content=text),),
                             **self._request_options(max_tokens))
 
@@ -767,7 +767,7 @@ class HistoryCompactor:
         text = "Consolidate these checkpoints in chronological order into one checkpoint.\n\n" + "\n\n".join(
             f"#### Checkpoint {index}\n{_render_with_aliases(summary, aliases)}"
             for index, summary in enumerate(summaries, start=1))
-        return ModelRequest(instructions=_summary_rules(max_tokens),
+        return ModelRequest(instructions=_summary_rules(max_tokens, aliases.previous_alias),
                             items=(ModelUserInput(source_id="compaction_chunks", content=text),),
                             **self._request_options(max_tokens))
 
@@ -987,9 +987,23 @@ class _SourceAliases:
 
     def __init__(self, sources: dict[str, str], previous_id: str | None) -> None:
         names = [key for key in sources if key != previous_id]
-        self.by_id = ({previous_id: "S0"} if previous_id is not None and previous_id in sources else {})
-        self.by_id.update({key: f"S{index}" for index, key in enumerate(names, start=1)})
+        index = 1
+        if previous_id is not None and previous_id in sources:
+            names.insert(0, previous_id)
+            index = 0
+        real_ids = set(sources) | _inherited_ids(sources.get(previous_id) if previous_id is not None else None)
+        # Resolution also accepts lowercase and zero-padded aliases, so reserve
+        # the canonical spelling of every real ID that looks like an alias.
+        reserved = {f"S{int(match.group(1))}" for source_id in real_ids
+                    if (match := re.fullmatch(r"[Ss]0*(\d+)", source_id.strip()))}
+        self.by_id: dict[str, str] = {}
+        for key in names:
+            while f"S{index}" in reserved:
+                index += 1
+            self.by_id[key] = f"S{index}"
+            index += 1
         self.by_alias = {alias: key for key, alias in self.by_id.items()}
+        self.previous_alias = self.by_id.get(previous_id, "S0") if previous_id is not None else "S0"
 
     def alias(self, source_id: str) -> str:
         return self.by_id[source_id]
@@ -1026,21 +1040,24 @@ def _parse_checkpoint(text: str, aliases: _SourceAliases,
                       inherited: set[str]) -> tuple[TaskSummary, dict[str, int]]:
     """Recover cited Markdown entries without retaining skipped model content."""
 
-    text = text.rsplit("</think>", 1)[-1]
     sections: dict[str, list[SummaryEntry]] = {name: [] for name in TaskSummary.model_fields}
     headings = {name.replace("_", " ") for name in sections}
     report = {"unknown_headings": 0, "outside_sections": 0, "uncited": 0, "ignored_lines": 0}
     section: str | None = None
     entry: str | None = None
 
-    def finish_entry() -> None:
+    def finish_entry(*, cited_only: bool = False) -> None:
         nonlocal entry
         if entry is None:
             return
-        body, entry = entry.strip(), None
+        body = entry.strip()
         match = re.search(r"\[([^\[\]]+)\]\s*$", body)
         tokens = [token.strip() for token in match.group(1).split(",")] if match else []
-        if not any(aliases.resolve(token) in aliases.by_id or token in inherited for token in tokens):
+        cited = any(aliases.resolve(token) in aliases.by_id or token in inherited for token in tokens)
+        if cited_only and not cited:
+            return
+        entry = None
+        if not cited:
             report["uncited"] += 1
             return
         if section is None:
@@ -1074,6 +1091,8 @@ def _parse_checkpoint(text: str, aliases: _SourceAliases,
             entry += " " + line
         else:
             report["ignored_lines"] += 1
+        # A cited entry is complete; subsequent commentary is a separate line.
+        finish_entry(cited_only=True)
     finish_entry()
     if not any(sections.values()):
         error = CompactionError("Compactor returned an invalid task summary.")

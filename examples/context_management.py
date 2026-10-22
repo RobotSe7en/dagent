@@ -47,6 +47,7 @@ class OfflineEndpoint:
         calls = []
         if summary:
             self.summaries += 1
+            # Use supplied aliases; real or inherited source IDs may reserve S0/S1.
             match = re.search(r"Sources to summarize: ([^\n]+)", data)
             ids = ([token.strip() for token in match.group(1).split(",")] if match
                    else re.findall(r"\[Source (S\d+);", data))

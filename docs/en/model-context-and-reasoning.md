@@ -595,12 +595,16 @@ The summarizer returns Markdown with fixed headings, in this order: Requirements
 Confirmed Decisions, Completed Work, Failed Approaches, Open Work, Next Step, and
 Operation Evidence Refs. Empty sections are omitted. Each entry is a line such as
 `- Read config.yaml [S1, S2]`. Source aliases are assigned for each compaction;
-`S0` identifies the earlier checkpoint when present. Records keep real source
-IDs, and the checkpoint rendered into context keeps its existing format and real
-IDs. The parser tolerates code fences, extra commentary, multiline entries, and
-heading variants. Skipped content is reported through warning counts without
-logging its text. Output with no valid entries gets one format correction retry
-in the same compaction episode.
+`S0` normally identifies the earlier checkpoint when present. Aliases skip names
+used by current or inherited real source IDs, including lowercase and zero-padded
+variants; use the aliases supplied in the request. Records keep real source IDs,
+and the checkpoint rendered into context keeps its existing format and real IDs.
+The parser tolerates code fences, extra commentary, multiline entries, and heading
+variants. An entry ends at its trailing recognized citation, so following commentary
+cannot invalidate it. Literal `</think>` text in entries is preserved; reasoning
+normalization runs before checkpoint parsing. Skipped content is reported through
+warning counts without logging its text. Output with no valid entries gets one
+format correction retry in the same compaction episode.
 
 Every summary request states its size limit: 80% of the visible summary budget,
 in tokens and approximate English and CJK characters. Each cited alias counts as
