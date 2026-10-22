@@ -558,7 +558,10 @@ async def test_count_reprepare_failure_preserves_paid_chunks_and_typed_signal(tm
     async def count(call):
         nonlocal failed_counts
         if call.request.purpose == "generation":
-            return ModelTokenCount(count=6000, exact=True)
+            # Planning also counts the retained request before paying for a
+            # summary; only the large source makes generation exceed budget.
+            has_source = any(item.source_id == "source" for item in call.request.items)
+            return ModelTokenCount(count=6000 if has_source else 100, exact=True)
         if calls:
             failed_counts += 1
             raise error

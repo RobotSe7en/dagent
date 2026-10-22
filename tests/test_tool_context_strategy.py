@@ -31,7 +31,7 @@ async def test_failed_preparation_reuses_a_chain_of_paid_summaries_in_order(tmp_
             tokens = 100
         else:
             remaining = len({item.source_id for item in request.items} & {"A", "B"})
-            if remaining == 0 and fail:
+            if remaining == 0 and fail and paid == 2:
                 raise ProviderTokenCountError("Counting failed after the second paid summary.")
             tokens = {2: 11000, 1: 9000, 0: 100}[remaining]
         return ModelTokenCount(count=tokens, max_model_len=8192, exact=True, source="render")
@@ -113,7 +113,10 @@ def test_released_checkpoint_loads_with_identical_fingerprint_and_record_shape()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("window,output,trigger", [(131072,8192,98304),(262144,8192,203161)])
+@pytest.mark.parametrize("window,output,trigger", [
+    (8192,1024,5734), (32768,4096,22937), (65536,8192,45875),
+    (131072,16384,91750), (262144,16384,196608),
+])
 async def test_new_strategy_reserves_actual_output(window, output, trigger):
     prepared = await ContextAssembler(context_window_tokens=window).prepare(
         system_message={"content":"instructions"}, conversation=_history("small"),

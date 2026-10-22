@@ -22,6 +22,12 @@ from dagent.schemas.context import (
 )
 
 
+def _automatic_output_limit(window: int) -> int:
+    """Bound automatic strict requests while leaving room in small windows."""
+
+    return min(16384, max(1, window // 8))
+
+
 @dataclass(frozen=True)
 class ModelUserInput:
     source_id: str

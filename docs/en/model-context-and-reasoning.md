@@ -520,17 +520,51 @@ generation; cache hits do not increase `H`.
 
 | Verified total window | Output allowance | Hard input budget | Default soft trigger |
 | --- | --- | --- | --- |
-| 131,072 (128K) | 8,192 | 122,880 | 98,304 |
-| 262,144 (256K) | 8,192 | 253,952 | 203,161 |
+| 8,192 (8K) | 1,024 | 7,168 | 5,734 |
+| 32,768 (32K) | 4,096 | 28,672 | 22,937 |
+| 131,072 (128K) | 16,384 | 114,688 | 91,750 |
+| 262,144 (256K) | 16,384 | 245,760 | 196,608 |
 
 Unlike `legacy`, an unset normal output limit in the new strategies becomes an
-explicit wire limit of `min(8192, W // 8)`. An explicit final extra output limit
-retains its precedence and is included in the budget. `summary_max_tokens`
-limits visible summary text; each summary request independently reserves at most
-`min(2 * requested_summary_tokens, W // 4)` total output tokens, including any
-reasoning. It does not inherit a smaller normal-generation limit. This allowance
-does not guarantee that all requested visible summary text will be generated.
-The requested summary size is reduced to fit the mandatory final generation input.
+explicit wire limit of `min(16384, max(1, W // 8))`. An explicit final extra output
+limit retains its precedence and is included in the budget. This change follows
+`0.10.2a0`; see [migration notes](migration.md). `ProviderConfig.max_output_tokens`
+still defaults to `None`, and ordinary non-strict and `legacy` calls retain their
+existing behavior. For example, omitting `max_output_tokens` with a 128K provider
+and `ContextPolicy(compaction_strategy="cache_aware")` reserves 16K for generation;
+explicitly setting `max_output_tokens=8192` reserves 8K instead.
+
+`summary_max_tokens` still defaults to 8192 and limits the rendered visible
+checkpoint, including expanded citations. Summary calls do not inherit a smaller
+normal-generation limit. For a window `W`, the SDK uses an automatic summary
+output cap `C = max(1, W // 4)` and a reserve `r = min(1024, max(1, C // 4))`.
+The visible goal `G` cannot exceed either `summary_max_tokens` or `C - r`; the
+preferred total output is `min(C, max(2 * G, G + r))`, including reasoning.
+At 8K this permits at most 1536 visible tokens plus at least 512 reserve within
+2048 total output. At 32K, a visible goal of 1792 receives 3584 total output.
+The reserve is a planning allowance, not a guarantee of enough reasoning tokens.
+Explicit extra output overrides retain their precedence; smaller effective caps
+also reduce the visible goal and its prompt before dispatch.
+
+The SDK counts a planning request with the selected history and old checkpoint
+removed, keeping the actual instructions, tools and protected messages. Exact
+counts receive no safety margin; estimates receive it once. The new checkpoint's
+text and source-index wrapper are estimated with the configured margin. This
+usually adds one counting request per candidate, and another when separated
+history spans require a final-feasibility check; it does not call the generation
+model. A preferred minimum of `min(summary_max_tokens, max(512, H // 16))` avoids
+collapsing to 256 merely because protected input exceeds the 65% soft target.
+Smaller goals down to 64 remain allowed when actual capacity requires them.
+Separated spans can make progress through intermediate over-budget candidates,
+but only the final counted request may be sent for generation.
+
+When a warm prefix cannot fit the preferred output, `cache_aware` can reduce only
+the output allowance, retaining the visible goal and at least `G + r` total
+output. If that cannot fit, it uses chunks. A capacity skip before any model call
+does not mark the source as failed. After reasoning omission or result shortening
+changes the request, the episode can reconsider skipped history once, sharing
+the same call limits and deadline. Large batches may still require compaction on
+every step when two batches cannot fit together.
 
 Counting prefers a detected vLLM `/v1/chat/completions/render` or
 `/v1/responses/render` endpoint using the complete final payload. The returned
@@ -650,6 +684,8 @@ source as failed. To retry it, continue from
 `allow_reference_fallback=True`.
 If the final count still exceeds the hard budget, the same episode can tighten
 only its current root summary once, without resending the original history.
+The root uses the counted retained request to determine its new goal; there is
+no window-proportional minimum that prevents an already small root shrinking.
 
 New tool results share the remaining batch budget before their first generation
 display. In these strategies, `max_tool_result_tokens` caps each result's normal

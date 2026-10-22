@@ -39,6 +39,7 @@ from dagent.providers.model_io import (
     ModelStreamEvent,
     ModelTokenCount,
     PreparedModelCall,
+    _automatic_output_limit,
     chat_messages_to_model_request,
     chat_response_from_model,
     model_request_to_chat,
@@ -329,7 +330,7 @@ class OpenAICompatibleProvider:
         if request.strict_context_budget and self._effective_max_output_tokens(request) is None:
             request = replace(
                 request,
-                max_output_tokens=min(8192, max(1, self.context_window_tokens // 8)),
+                max_output_tokens=_automatic_output_limit(self.context_window_tokens),
                 inherit_provider_max_output_tokens=False,
             )
         request = deepcopy(request)

@@ -69,6 +69,34 @@ class CompactionArchiveError(CompactionError):
     """An immutable source or required recovery reference is unavailable."""
 
 
+class _CompactionCapacityUnavailable(CompactionError):
+    """A preflight cannot fit; no model call has judged this source."""
+
+
+@dataclass(frozen=True)
+class _SummaryBudget:
+    visible_tokens: int
+    output_tokens: int
+    minimum_output_tokens: int
+
+    @classmethod
+    def plan(cls, visible: int, window: int, effective_cap: int | None = None) -> _SummaryBudget:
+        cap = max(1, window // 4)
+        if effective_cap is not None:
+            cap = min(cap, effective_cap)
+        reserve = min(1024, max(1, cap // 4))
+        visible = min(visible, cap - reserve)
+        return cls(visible, min(cap, max(2 * visible, visible + reserve)), visible + reserve)
+
+
+@dataclass(frozen=True)
+class _PreparedSummary:
+    request: ModelRequest
+    budget: _SummaryBudget
+    build: Callable[[int], ModelRequest | None]
+    prefix: bool = False
+
+
 class _Record(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -297,6 +325,10 @@ class HistoryCompactor:
         self.calls: list[CompactionCall] = []
         self._call_offset = 0
         self._tightened = False
+        self._active_summary: _PreparedSummary | None = None
+        self.prepared_request = None
+        self.prepared_call = None
+        self._prepared_estimate = None
 
     @property
     def remaining_http_attempts(self) -> int:
@@ -320,13 +352,15 @@ class HistoryCompactor:
         try:
             warm = (self.policy.compaction_strategy == "cache_aware"
                     and not (self.run_state is not None and self.run_state.prefix_disabled))
-            prefix = self._prefix_request(previous, items, max_tokens, aliases) if warm else None
+            prefix = (await self._prepare_summary(
+                lambda limit: self._prefix_request(previous, items, limit, aliases), max_tokens, prefix=True)
+                if warm else None)
             if prefix is not None:
-                if await self._fits(prefix):
+                if await self._fits(prefix.request):
                     calls = len(self.calls)
                     try:
                         summary, final_response = await self._request(
-                            prefix, sources, "prefix", max_tokens, previous_id=previous_id, aliases=aliases)
+                            prefix, sources, "prefix", previous_id=previous_id, aliases=aliases)
                     except CompactionError as exc:
                         if exc.transient:
                             # An unreachable summarizer is not retried through
@@ -346,14 +380,15 @@ class HistoryCompactor:
             queue: list[tuple[SourceRange, ...]] = [_all_ranges(sources)]
             while queue:
                 ranges = queue.pop(0)
-                request = self._chunk_request(sources, ranges, max_tokens, aliases)
-                if not await self._fits(request):
+                request = await self._prepare_summary(
+                    lambda limit: self._chunk_request(sources, ranges, limit, aliases), max_tokens)
+                if request is None:
                     left, right = _split_ranges(ranges)
                     if not left or not right:
-                        raise CompactionBudgetExceeded("Compactor instructions leave no source capacity.")
+                        self._no_capacity("Compactor instructions leave no source capacity.")
                     queue[0:0] = [left, right]
                     continue
-                summary, response = await self._request(request, sources, "chunk", max_tokens,
+                summary, response = await self._request(request, sources, "chunk",
                                                         previous_id=previous_id, aliases=aliases)
                 chunks.append(CompactionChunk(ranges=ranges, summary=summary))
                 final_response = response
@@ -366,7 +401,7 @@ class HistoryCompactor:
             return self._finish(previous, items, source, sources, chunks, summary,
                                 final_response, max_tokens)
         except (CompactionError, ProviderReprepareRequired) as exc:
-            if isinstance(exc, CompactionArchiveError):
+            if isinstance(exc, (CompactionArchiveError, _CompactionCapacityUnavailable)):
                 raise
             failed_record = self._save_record(
                 previous, source, sources, chunks,
@@ -454,16 +489,17 @@ class HistoryCompactor:
         source = self._archive(summary, ())
         chunks: list[CompactionChunk] = []
         try:
-            request = self._chunk_request(sources, _all_ranges(sources), max_tokens, aliases)
-            if not await self._fits(request):
-                raise CompactionBudgetExceeded("Current root does not fit its tightening request.")
-            checkpoint, response = await self._request(request, sources, "reduce", max_tokens,
+            request = await self._prepare_summary(
+                lambda limit: self._chunk_request(sources, _all_ranges(sources), limit, aliases), max_tokens)
+            if request is None:
+                self._no_capacity("Current root does not fit its tightening request.")
+            checkpoint, response = await self._request(request, sources, "reduce",
                                                        previous_id=previous_id, aliases=aliases)
             chunks.append(CompactionChunk(ranges=_all_ranges(sources), summary=checkpoint))
             return self._finish(summary, (), source, sources, chunks,
                                 checkpoint, response, max_tokens)
         except (CompactionError, ProviderReprepareRequired) as exc:
-            if isinstance(exc, CompactionArchiveError):
+            if isinstance(exc, (CompactionArchiveError, _CompactionCapacityUnavailable)):
                 raise
             exc.compaction_record = self._save_record(
                 summary, source, sources, chunks,
@@ -499,21 +535,86 @@ class HistoryCompactor:
         self.http_attempts += 1
 
     async def reprepare(self):
+        active = self._active_summary
         request = self.prepared_request
         self.prepared_request = None
         self.prepared_call = None
         self._prepared_estimate = None
-        if request is None or not await self._fits(request):
+        # Standalone callers may count and dispatch a bounded ModelRequest
+        # directly; there is no checkpoint builder or visible goal to adjust.
+        if active is None:
+            if request is None or not await self._fits(request):
+                raise CompactionBudgetExceeded("Replacement compaction request exceeds its budget.")
+            return self.prepared_call
+        replacement = await self._prepare_summary(active.build, active.budget.visible_tokens, prefix=active.prefix)
+        if replacement is None:
             raise CompactionBudgetExceeded("Replacement compaction request exceeds its budget.")
+        self._active_summary = replacement
         return self.prepared_call
+
+    def _no_capacity(self, message: str) -> None:
+        if len(self.calls) == self._call_offset:
+            raise _CompactionCapacityUnavailable(message)
+        raise CompactionBudgetExceeded(message)
+
+    async def _prepare_summary(
+        self, build: Callable[[int], ModelRequest | None], max_tokens: int, *, prefix: bool = False,
+    ) -> _PreparedSummary | None:
+        """Bind the visible goal to the counted wire allowance before dispatch."""
+
+        effective_cap = None
+        budget = _SummaryBudget.plan(max_tokens, self.assembler.context_window_tokens)
+        for _ in range(5):
+            if budget.visible_tokens < min(64, max_tokens):
+                self._no_capacity("The effective output allowance leaves no summary capacity.")
+            request = build(budget.visible_tokens)
+            if request is None:
+                return None
+            request = replace(request, max_output_tokens=budget.output_tokens)
+            fits = await self._fits(request)
+            output = (self.prepared_call.effective_max_output_tokens
+                      if self.prepared_call is not None else request.max_output_tokens)
+            if output is not None and output < budget.output_tokens:
+                effective_cap = min(effective_cap, output) if effective_cap is not None else output
+            updated = _SummaryBudget.plan(max_tokens, self.assembler.context_window_tokens, effective_cap)
+            if updated != budget:
+                budget = updated
+                continue
+            if fits:
+                return _PreparedSummary(request, budget, build, prefix)
+            if not prefix:
+                return None
+            available = (self.assembler.context_window_tokens - self._prepared_estimate
+                         if self._prepared_estimate is not None else budget.minimum_output_tokens)
+            reduced = min(budget.output_tokens, available)
+            if reduced < budget.minimum_output_tokens or reduced >= budget.output_tokens:
+                return None
+            reduced_request = replace(request, max_output_tokens=reduced)
+            reduced_fits = await self._fits(reduced_request)
+            actual = (self.prepared_call.effective_max_output_tokens
+                      if self.prepared_call is not None else reduced)
+            if actual is not None and actual < reduced:
+                effective_cap = min(effective_cap, actual) if effective_cap is not None else actual
+            updated = _SummaryBudget.plan(max_tokens, self.assembler.context_window_tokens, effective_cap)
+            if updated != budget:
+                budget = updated
+                continue
+            if reduced_fits:
+                return _PreparedSummary(reduced_request, replace(budget, output_tokens=reduced), build, prefix)
+            return None
+        raise CompactionBudgetExceeded("Summary budget preparation did not stabilize.")
 
     async def _fits(self, request: ModelRequest) -> bool:
         self._check_budget(check_calls=False)
         if self.assembler.request_preparer is not None:
             if self.prepared_request is not request:
+                previous, estimate = self.prepared_call, self._prepared_estimate
+                fingerprint = getattr(previous, "fingerprint", None)
                 self.prepared_call = await self._bounded(self.assembler.request_preparer(request, stream=True))
                 self.prepared_request = request
-                self._prepared_estimate = None
+                self._prepared_estimate = (estimate if fingerprint is not None
+                    and fingerprint == getattr(self.prepared_call, "fingerprint", None)
+                    and previous.effective_max_output_tokens == self.prepared_call.effective_max_output_tokens else None)
             prepared = self.prepared_call
             if self._prepared_estimate is not None:
                 return (self._prepared_estimate + prepared.effective_max_output_tokens
@@ -559,14 +660,24 @@ class HistoryCompactor:
                     * (1 + self.policy.token_safety_margin))
             self._prepared_estimate = estimate
             return estimate + output <= self.assembler.context_window_tokens
+        if self.prepared_request is request and self._prepared_estimate is not None:
+            return self._prepared_estimate + (request.max_output_tokens or 0) <= self.assembler.context_window_tokens
+        self.prepared_request = request
+        self.prepared_call = None
+        self._prepared_estimate = None
         heuristic = math.ceil(self.assembler.token_counter.count_request(
             model_request_to_chat(request, reasoning_field="omit"), request.tools)
             * (1 + self.policy.token_safety_margin))
-        if heuristic + (request.max_output_tokens or 0) > self.assembler.context_window_tokens:
+        if (self.assembler.request_token_counter is None
+                and heuristic + (request.max_output_tokens or 0) > self.assembler.context_window_tokens):
+            self._prepared_estimate = heuristic
             return False
         estimate, count = await self._bounded(self.assembler._safe_estimate(request, self.policy, stream=False))
         if count is not None:
             self._learn_window(count.max_model_len)
+            if count.exact is not True:
+                estimate = math.ceil(estimate * (1 + self.policy.token_safety_margin))
+        self._prepared_estimate = estimate
         return estimate + (request.max_output_tokens or 0) <= self.assembler.context_window_tokens
 
     def _learn_window(self, discovered: int | None) -> None:
@@ -582,7 +693,7 @@ class HistoryCompactor:
         self.assembler.context_window_tokens = min(limits)
 
     def _output_budget(self, max_tokens: int) -> int:
-        return max(1, min(2 * max_tokens, self.assembler.context_window_tokens // 4))
+        return _SummaryBudget.plan(max_tokens, self.assembler.context_window_tokens).output_tokens
 
     def _request_options(self, max_tokens: int) -> dict[str, Any]:
         return dict(max_output_tokens=self._output_budget(max_tokens),
@@ -646,13 +757,15 @@ class HistoryCompactor:
                             **self._request_options(max_tokens))
 
     async def _request(
-        self, request: ModelRequest, sources: dict[str, str],
-        kind: Literal["prefix", "chunk", "reduce"], max_tokens: int, *,
+        self, prepared: _PreparedSummary, sources: dict[str, str],
+        kind: Literal["prefix", "chunk", "reduce"], *,
         previous_id: str | None = None, aliases: _SourceAliases, retry_once: bool = True,
     ) -> tuple[TaskSummary, ModelResponse]:
         self._check_budget()
+        request = prepared.request
         if not await self._fits(request):
             raise CompactionBudgetExceeded("Final compactor request exceeds its input budget.")
+        self._active_summary = prepared
         self.logical_calls += 1
         attempts_before = self.http_attempts
         try:
@@ -673,6 +786,11 @@ class HistoryCompactor:
             error.transient = is_transient_llm_error(exc)
             raise error from exc
         response = normalize_model_response(model_response_from_chat(raw) if isinstance(raw, ChatResponse) else raw)
+        # A provider wrapper can reprepare before dispatch. Validate against
+        # that request's goal, not the limit from the abandoned snapshot.
+        prepared = self._active_summary
+        request = prepared.request
+        max_tokens = prepared.budget.visible_tokens
         attempts = max(1, len(response.metadata.attempts) if response.metadata else 0)
         if self.http_attempts == attempts_before:
             self.http_attempts += attempts
@@ -696,13 +814,17 @@ class HistoryCompactor:
                 # One content retry within the same episode budget. The note is
                 # an instruction, never part of the summarized source data; the
                 # warm prefix keeps its history and extends only its control turn.
-                if kind == "prefix":
-                    last = request.items[-1]
-                    shorter = replace(request, items=(*request.items[:-1], replace(last, content=last.content + "\n" + note)))
-                else:
-                    shorter = replace(request, instructions=request.instructions + "\n" + note)
-                if await self._fits(shorter):
-                    return await self._request(shorter, sources, kind, max_tokens,
+                def correction(limit: int) -> ModelRequest:
+                    retry = prepared.build(limit)
+                    assert retry is not None
+                    if kind == "prefix":
+                        last = retry.items[-1]
+                        return replace(retry, items=(*retry.items[:-1], replace(last, content=last.content + "\n" + note)))
+                    return replace(retry, instructions=retry.instructions + "\n" + note)
+
+                shorter = await self._prepare_summary(correction, max_tokens, prefix=kind == "prefix")
+                if shorter is not None:
+                    return await self._request(shorter, sources, kind,
                                                previous_id=previous_id, aliases=aliases, retry_once=False)
             raise
         return summary, response
@@ -744,16 +866,22 @@ class HistoryCompactor:
                 group = [layer[index]]
                 index += 1
                 while index < len(layer):
-                    candidate = self._reduce_request([*group, layer[index]], max_tokens, aliases)
-                    if not await self._fits(candidate):
+                    candidate_group = [*group, layer[index]]
+                    candidate = await self._prepare_summary(
+                        lambda limit: self._reduce_request(candidate_group, limit, aliases), max_tokens)
+                    if candidate is None:
                         break
                     group.append(layer[index])
                     index += 1
                 if len(group) == 1:
                     reduced.append(group[0])
                     continue
+                request = await self._prepare_summary(
+                    lambda limit: self._reduce_request(group, limit, aliases), max_tokens)
+                if request is None:
+                    raise CompactionBudgetExceeded("Reducer request no longer fits its budget.")
                 summary, last_response = await self._request(
-                    self._reduce_request(group, max_tokens, aliases), sources, "reduce", max_tokens,
+                    request, sources, "reduce",
                     previous_id=previous_id, aliases=aliases)
                 reduced.append(summary)
             if len(reduced) >= len(layer):
