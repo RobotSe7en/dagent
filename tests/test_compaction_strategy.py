@@ -9,8 +9,8 @@ import pytest
 
 from dagent.harness_runtime.compaction import (
     CompactionArchiveError, CompactionBudgetExceeded, CompactionChunk, CompactionError,
-    CompactionRecordV1, CompactionSourceV1, CompactionTransportError, HistoryCompactor,
-    PrefixCacheMonitor, SummaryEntry, TaskSummary, load_compaction_references,
+    CompactionRecordV1, CompactionRunState, CompactionSourceV1, HistoryCompactor,
+    SummaryEntry, TaskSummary, load_compaction_references,
 )
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import ResultStore
@@ -257,16 +257,34 @@ async def test_http_and_deadline_budgets_cover_whole_episode(tmp_path):
     (TimeoutError("read timed out"), True),
     (ValueError("request rejected"), False),
 ])
-async def test_summary_transport_failures_are_typed_separately(tmp_path, error, transport):
+async def test_summary_transport_failures_are_marked_transient(tmp_path, error, transport):
     async def chat(request):
         raise error
 
     engine = compactor(tmp_path, chat)
     with pytest.raises(CompactionError) as failed:
         await engine.compact(None, (UserMessage(id="source", content="Original"),), 256)
-    assert isinstance(failed.value, CompactionTransportError) is transport
-    assert failed.value.completed_chunks == 0
+    # The released error type and reason prefix stay unchanged.
+    assert type(failed.value) is CompactionError
+    assert failed.value.transient is transport
     assert record_for(engine, failed.value).status == "reference_only"
+
+
+@pytest.mark.asyncio
+async def test_unreachable_warm_prefix_does_not_retry_through_chunks(tmp_path):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        raise ConnectionError("connection refused")
+
+    engine = compactor(tmp_path, chat, strategy="cache_aware")
+    engine.source_request = ModelRequest(instructions="Original system.", items=(
+        ModelUserInput(source_id="u", content="Requirement"), ModelAssistantTurn(source_id="a", content="Done")))
+    with pytest.raises(CompactionError) as failed:
+        await engine.compact(None, (UserMessage(id="u", content="Requirement"), AssistantMessage(id="a", content="Done")), 256)
+    assert failed.value.transient
+    assert len(requests) == 1 and requests[0].items[-1].source_id == "compaction_control"
 
 
 @pytest.mark.asyncio
@@ -355,19 +373,19 @@ async def test_low_prefix_cache_hits_switch_the_run_to_chunk_summaries(tmp_path,
         usage = ModelTokenUsage(input_tokens=1000, cached_input_tokens=cached)
         return replace(summary_response(request), usage=usage)
 
-    monitor = PrefixCacheMonitor()
+    monitor = CompactionRunState()
     kinds = []
     for index in range(2):
         items = (UserMessage(id=f"u{index}", content="Requirement"), AssistantMessage(id=f"a{index}", content="Done"))
         engine = compactor(tmp_path, chat, strategy="cache_aware")
-        engine.prefix_cache = monitor
+        engine.run_state = monitor
         engine.source_request = ModelRequest(instructions="Original system.", items=(
             ModelUserInput(source_id=f"u{index}", content="Requirement"),
             ModelAssistantTurn(source_id=f"a{index}", content="Done")))
         summary = await engine.compact(None, items, 256)
         kinds.append([call.kind for call in record_for(engine, summary).calls])
     # Unknown cache usage never disables the warm prefix.
-    assert monitor.disabled is switches
+    assert monitor.prefix_disabled is switches
     assert kinds == [["prefix"], ["chunk"] if switches else ["prefix"]]
 
 

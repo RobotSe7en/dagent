@@ -154,7 +154,7 @@ async def test_two_hundred_tool_steps_preserve_prefix_between_compactions_and_co
 def _outage_agent_endpoint(outage, steps_before_done):
     """A synthetic deployment whose summarizer fails while ``outage[0]`` is set."""
 
-    state = {"steps": 0, "summaries": 0}
+    state = {"steps": 0, "summaries": 0, "first_failure_requests": 0}
 
     @dagent.tool
     def query(index: int) -> str:
@@ -168,6 +168,7 @@ def _outage_agent_endpoint(outage, steps_before_done):
         if "Eligible source IDs:" in raw or messages[0].get("content", "").startswith("Produce a task checkpoint"):
             state["summaries"] += 1
             if outage[0]:
+                state["first_failure_requests"] = state["summaries"]
                 return httpx.Response(503, json={"error": {"message": "summarizer overloaded"}})
             match = re.search(r"Eligible source IDs: (\[[^\n]+\])", raw)
             ids = (json.loads(match.group(1)) if match else re.findall(r"\[Source ([^;]+);", raw)
@@ -199,7 +200,7 @@ async def test_summarizer_outage_does_not_permanently_block_history(tmp_path, mo
 
             async def prepare(request, *, stream):
                 # The outage ends after the first failed maintenance episode.
-                if request.purpose != "compaction" and state["summaries"] >= 12:
+                if request.purpose != "compaction" and state["summaries"]:
                     outage[0] = False
                 return await original_prepare(request, stream=stream)
 
@@ -207,10 +208,13 @@ async def test_summarizer_outage_does_not_permanently_block_history(tmp_path, mo
             result = await runner.run(agent, input="Collect evidence and preserve progress.")
     assert result.status == "completed"
     reasons = [usage.compaction_reason or "" for usage in result.state.context_usage]
-    assert any(reason.startswith("CompactionTransportError") for reason in reasons)
+    assert any(reason.startswith("CompactionError: Summary request failed") for reason in reasons)
+    # One failed episode: the unreachable warm prefix is not retried through chunks.
+    assert state["summaries"] >= 6 and state["first_failure_requests"] == 6
     # The span that failed during the outage was summarized after recovery.
     assert result.conversation.compaction_state is None
-    assert len(result.conversation.items) < 12
+    remaining = {item.call_id for item in result.conversation.items if isinstance(item, dagent.ToolResultMessage)}
+    assert not remaining & {f"call_{index}" for index in range(1, 11)}
     assert all(usage.estimated_input_tokens <= usage.input_budget_tokens for usage in result.state.context_usage)
 
 

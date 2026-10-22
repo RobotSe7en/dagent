@@ -12,7 +12,7 @@ import json
 import math
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -44,11 +44,9 @@ class CompactionError(RuntimeError):
 
     compaction_record: ContentReference | None = None
     source_reference: ContentReference | None = None
-    completed_chunks: int = 0
-
-
-class CompactionTransportError(CompactionError):
-    """The summarizer was unavailable; the selected source was not judged."""
+    # The summarizer was unreachable after request retries; the selected source
+    # itself was not judged.
+    transient: bool = False
 
 
 class CompactionBudgetExceeded(CompactionError):
@@ -221,23 +219,26 @@ def _summary_rules(max_tokens: int) -> str:
 
 
 @dataclass
-class PrefixCacheMonitor:
-    """Run-scoped check that cache_aware warm-prefix summaries reuse the cache.
+class CompactionRunState:
+    """Run-scoped compaction memory; never persisted with the conversation.
 
-    Some chat templates render history differently once a summary instruction
-    follows it (for example by dropping earlier reasoning). A provider-reported
-    hit ratio below ``min_cached_ratio`` switches the rest of the run to
-    dedicated chunk summaries. Unknown cache usage never decides.
+    Sources whose summary failed in transport are not retried under soft
+    pressure for the rest of the Run, so an outage does not add retry delays to
+    every step. Some chat templates render history differently once a summary
+    instruction follows it (for example by dropping earlier reasoning); a
+    provider-reported warm-prefix cache hit below ``min_cached_ratio`` switches
+    the rest of the Run to dedicated chunk summaries. Unknown usage never decides.
     """
 
     min_cached_ratio: float = 0.5
-    disabled: bool = False
+    unavailable_sources: set[str] = field(default_factory=set)
+    prefix_disabled: bool = False
 
-    def observe(self, usage: ModelTokenUsage | None) -> None:
+    def observe_prefix(self, usage: ModelTokenUsage | None) -> None:
         if usage is None or usage.cached_input_tokens is None or not usage.input_tokens:
             return
         if usage.cached_input_tokens < self.min_cached_ratio * usage.input_tokens:
-            self.disabled = True
+            self.prefix_disabled = True
 
 
 class HistoryCompactor:
@@ -256,10 +257,10 @@ class HistoryCompactor:
         read_available: bool | Callable[[ContentReference], bool] = False,
         source_request: ModelRequest | None = None,
         observer: Any = None,
-        prefix_cache: PrefixCacheMonitor | None = None,
+        run_state: CompactionRunState | None = None,
     ) -> None:
         self.observer = observer
-        self.prefix_cache = prefix_cache
+        self.run_state = run_state
         self.policy = policy
         self.assembler = assembler
         self.result_store = result_store
@@ -302,7 +303,7 @@ class HistoryCompactor:
         final_response: ModelResponse | None = None
         try:
             warm = (self.policy.compaction_strategy == "cache_aware"
-                    and not (self.prefix_cache is not None and self.prefix_cache.disabled))
+                    and not (self.run_state is not None and self.run_state.prefix_disabled))
             prefix = self._prefix_request(previous, items, max_tokens) if warm else None
             if prefix is not None:
                 if await self._fits(prefix):
@@ -310,18 +311,21 @@ class HistoryCompactor:
                     try:
                         summary, final_response = await self._request(
                             prefix, sources, "prefix", max_tokens, previous_id=previous_id)
-                    except CompactionError:
+                    except CompactionError as exc:
+                        if exc.transient:
+                            # An unreachable summarizer is not retried through
+                            # the isolated compactor in the same episode.
+                            raise
                         # A failed warm-prefix attempt may use the isolated
                         # compactor, but never repeats the same prompt in a loop.
-                        pass
                     else:
                         chunks.append(CompactionChunk(ranges=_all_ranges(sources), summary=summary))
                         return self._finish(previous, items, source, sources, chunks,
                                             summary, final_response, max_tokens)
                     finally:
-                        if self.prefix_cache is not None:
+                        if self.run_state is not None:
                             for call in self.calls[calls:]:
-                                self.prefix_cache.observe(call.usage)
+                                self.run_state.observe_prefix(call.usage)
 
             queue: list[tuple[SourceRange, ...]] = [_all_ranges(sources)]
             while queue:
@@ -353,7 +357,6 @@ class HistoryCompactor:
                 status="partial" if chunks else "reference_only", reason=str(exc))
             exc.compaction_record = failed_record
             exc.source_reference = source
-            exc.completed_chunks = len(chunks)
             if isinstance(exc, ProviderReprepareRequired):
                 raise
             if allow_fallback and self.policy.allow_reference_fallback:
@@ -448,7 +451,6 @@ class HistoryCompactor:
                 summary, source, sources, chunks,
                 status="partial" if chunks else "reference_only", reason=str(exc))
             exc.source_reference = source
-            exc.completed_chunks = len(chunks)
             if isinstance(exc, ProviderReprepareRequired):
                 raise
             if allow_fallback and self.policy.allow_reference_fallback:
@@ -647,10 +649,11 @@ class HistoryCompactor:
                                              model_call=metadata, error=f"{type(exc).__name__}: {exc}"))
             if isinstance(exc, CompactionBudgetExceeded):
                 raise
+            error = CompactionError(f"Summary request failed: {type(exc).__name__}: {exc}")
             # Transport failures say nothing about the source; callers may retry
             # it later instead of recording it as an unsummarizable span.
-            error_type = CompactionTransportError if is_transient_llm_error(exc) else CompactionError
-            raise error_type(f"Summary request failed: {type(exc).__name__}: {exc}") from exc
+            error.transient = is_transient_llm_error(exc)
+            raise error from exc
         response = normalize_model_response(model_response_from_chat(raw) if isinstance(raw, ChatResponse) else raw)
         attempts = max(1, len(response.metadata.attempts) if response.metadata else 0)
         if self.http_attempts == attempts_before:

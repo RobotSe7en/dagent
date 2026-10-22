@@ -604,9 +604,16 @@ turn, and nonconverging replacements cannot create an unlimited summary loop.
 A source is recorded as failed only when the summarizer was reached: an invalid
 or oversized summary, an exhausted episode budget or deadline, or a terminal
 re-preparation signal. A transport failure that persists after request retries
-(connection error, timeout, HTTP 408/409/425/429 or 5xx) with no completed chunk
-is not a verdict on the source. That episode stops calling the summarizer and
-records nothing; a later preparation or continuation retries the same source.
+(connection error, timeout, HTTP 408/409/425/429 or 5xx) is not a verdict on the
+source, even after some chunks completed. The episode stops calling the
+summarizer; a failed warm prefix is not retried through chunks. Nothing is
+recorded in the conversation, and chunks paid in that episode are not reused.
+For the rest of that Run, soft pressure does not retry the same source, so an
+outage does not add retry delays to every step. Hard pressure, which would
+otherwise end the Run with `ContextWindowExceeded`, retries it; a new Run or a
+continuation retries it as well. Under hard pressure with
+`allow_reference_fallback=True`, the reference continuation described below still
+applies to a failed summary.
 Conversations saved by `0.10.0` through `0.10.2a0` may already mark such a
 source as failed. To retry it, continue from
 `conversation.model_copy(update={"compaction_state": None})`, or enable

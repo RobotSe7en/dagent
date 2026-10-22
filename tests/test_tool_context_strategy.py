@@ -183,7 +183,7 @@ async def test_unavailable_summarizer_leaves_the_source_retryable(tmp_path, hard
         saved = failed.value._conversation
     else:
         first = await prepare(conversation)
-        assert first.usage.compaction_reason.startswith("CompactionTransportError")
+        assert first.usage.compaction_reason.startswith("CompactionError: Summary request failed")
         saved = first.conversation
     # An outage is not a verdict on the source: nothing blocks a later attempt.
     assert saved.items == conversation.items
@@ -193,6 +193,104 @@ async def test_unavailable_summarizer_leaves_the_source_retryable(tmp_path, hard
     restored = await prepare(saved)
     assert summaries == 2
     assert [item.id for item in restored.conversation.items] == ["task", "tail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hard", [False, True])
+async def test_unreachable_summarizer_is_retried_only_when_needed_in_the_same_run(tmp_path, hard):
+    from dagent.harness_runtime.compaction import CompactionRunState
+
+    available = False
+    summaries = 0
+
+    async def chat(request):
+        nonlocal summaries
+        summaries += 1
+        if not available:
+            raise ConnectionError("connection reset by the summarizer")
+        return summary_response(request)
+
+    async def count(request, _field):
+        if request.purpose == "compaction":
+            return ModelTokenCount(count=100, max_model_len=8192, exact=True)
+        old = any(item.source_id == "old" for item in request.items)
+        return ModelTokenCount(count=(9000 if hard else 7000) if old else 100, max_model_len=8192, exact=True)
+
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="old", run_id="run", content="Old evidence."),
+        dagent.AssistantMessage(id="tail", run_id="run", content="Latest protected step."),
+    ))
+    policy = dagent.ContextPolicy(compaction_strategy="chunked", compaction_retain_ratio=.0001)
+    assembler = ContextAssembler(context_window_tokens=8192, max_output_tokens=512, request_token_counter=count)
+    store = ResultStore(tmp_path, ".runtime")
+
+    async def prepare(source, run_state):
+        return await assembler.prepare(
+            system_message={"content": "Task"}, conversation=source, policy=policy,
+            result_store=store, enable_new_strategy=True,
+            history_compactor=HistoryCompactor(policy=policy, assembler=assembler, result_store=store,
+                                               system_message={"content": "Task"}, chat=chat, run_state=run_state),
+        )
+
+    run_state = CompactionRunState()
+    if hard:
+        with pytest.raises(ContextWindowExceeded) as failed:
+            await prepare(conversation, run_state)
+        saved = failed.value._conversation
+    else:
+        saved = (await prepare(conversation, run_state)).conversation
+    assert saved.compaction_state is None and summaries == 1
+    available = True
+    same_run = await prepare(saved, run_state)
+    if hard:
+        # Without compaction the Run would fail, so the source is retried.
+        assert summaries == 2
+        assert [item.id for item in same_run.conversation.items] == ["task", "tail"]
+    else:
+        # Soft pressure does not pay another outage delay in the same Run.
+        assert summaries == 1
+        assert same_run.conversation == saved
+        next_run = await prepare(saved, CompactionRunState())
+        assert summaries == 2
+        assert [item.id for item in next_run.conversation.items] == ["task", "tail"]
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_after_a_paid_chunk_leaves_the_source_retryable(tmp_path):
+    calls = 0
+
+    async def chat(request):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ConnectionError("connection reset by the summarizer")
+        return summary_response(request)
+
+    async def count(request, _field):
+        if request.purpose == "compaction":
+            return None
+        old = any(item.source_id == "old" for item in request.items)
+        return ModelTokenCount(count=7000 if old else 100, max_model_len=8192, exact=True)
+
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="old", run_id="run", content="evidence " * 3500),
+        dagent.AssistantMessage(id="tail", run_id="run", content="Latest protected step."),
+    ))
+    policy = dagent.ContextPolicy(compaction_strategy="chunked", compaction_retain_ratio=.0001)
+    assembler = ContextAssembler(context_window_tokens=8192, max_output_tokens=512, request_token_counter=count)
+    store = ResultStore(tmp_path, ".runtime")
+    prepared = await assembler.prepare(
+        system_message={"content": "Task"}, conversation=conversation, policy=policy,
+        result_store=store, enable_new_strategy=True,
+        history_compactor=HistoryCompactor(policy=policy, assembler=assembler, result_store=store,
+                                           system_message={"content": "Task"}, chat=chat),
+    )
+    # The first chunk was paid, the second could not reach the summarizer.
+    assert calls == 2
+    assert prepared.conversation.items == conversation.items
+    assert prepared.conversation.compaction_state is None
 
 
 @pytest.mark.asyncio

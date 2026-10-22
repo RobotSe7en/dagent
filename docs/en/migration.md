@@ -18,10 +18,12 @@ Public exports and persisted record schemas are unchanged. No source,
 configuration, or record migration is required.
 
 - A summarizer transport failure that remains after request retries (connection
-  error, timeout, HTTP 408/409/425/429 or 5xx), with no completed chunk, no
-  longer marks the selected history as permanently failed. The episode stops
-  calling the summarizer; a later preparation or continuation retries the same
-  source. Invalid or oversized summaries, exhausted budgets or deadlines, and
+  error, timeout, HTTP 408/409/425/429 or 5xx) no longer marks the selected
+  history as permanently failed, even after some chunks completed. The episode
+  stops calling the summarizer, and a failed warm prefix is not retried through
+  chunks. Within the Run, only hard pressure retries that source; a later Run or
+  continuation retries it too. `compaction_reason` keeps its `CompactionError:`
+  prefix. Invalid or oversized summaries, exhausted budgets or deadlines, and
   terminal re-preparation signals are still recorded. Conversations saved by
   `0.10.0` through `0.10.2a0` can retry a span that an outage blocked by
   continuing from `conversation.model_copy(update={"compaction_state": None})`.

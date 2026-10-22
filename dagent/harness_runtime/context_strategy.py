@@ -17,7 +17,7 @@ from dagent.harness_runtime.context import (
     ContextAssembler, PreparedModelContext, _atomic_groups, _context_results,
     _latest_run_id, _should_replay_reasoning, _ProjectionUsage, user_content_for_model,
 )
-from dagent.harness_runtime.compaction import CompactionError, CompactionTransportError
+from dagent.harness_runtime.compaction import CompactionError
 from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.frozen_results import (
     RecoveryAccess, freeze_result_displays, reference_frozen_result_displays,
@@ -71,11 +71,6 @@ class _CompactionProgress:
         return self.conversation.model_copy(update={
             "compaction_state": state, "revision": self.conversation.revision + 1,
         })
-
-
-def _unavailable(exc: BaseException) -> bool:
-    # Only an unavailable summarizer with no paid chunk leaves nothing to keep.
-    return isinstance(exc, CompactionTransportError) and not exc.completed_chunks
 
 
 def _source_key(item: Any, policy: ContextPolicy, namespace: str = "") -> str:
@@ -378,6 +373,10 @@ async def _prepare_context(
     # moves forward, and failed identical sources are not retried on every turn.
     attempts = 0
     summarizer_unavailable = False
+    # Run-scoped and never persisted: an unreachable summarizer is not retried
+    # for the same source under soft pressure in this Run.
+    run_state = getattr(compactor, "run_state", None)
+    unavailable: set[str] = run_state.unavailable_sources if run_state is not None else set()
     considered_records: set[tuple[str, str | None]] = set()
     while compactor is not None and state.estimate > math.floor(state.input_budget * policy.compaction_trigger_ratio) and attempts < 8:
         hard = state.estimate > state.input_budget
@@ -417,7 +416,8 @@ async def _prepare_context(
             # Split only between complete atomic exchanges. New work can be
             # summarized without repeatedly sending a failed unchanged span.
             for group_start, group_end in _atomic_groups(working.items, start=start, end=end):
-                blocked = any(source_key(item) in failed for item in working.items[group_start:group_end])
+                blocked = any(source_key(item) in failed or (not hard and source_key(item) in unavailable)
+                              for item in working.items[group_start:group_end])
                 if blocked and selected is not None:
                     break
                 if not blocked:
@@ -471,9 +471,10 @@ async def _prepare_context(
             # Failure preserves the original range. Cancellation is a
             # BaseException and deliberately bypasses this handler.
             reason = f"{type(exc).__name__}: {exc}"[:1000]
-            if _unavailable(exc):
-                # Not a verdict on this source: keep it eligible for a later
-                # preparation and stop calling the summarizer in this episode.
+            if getattr(exc, "transient", False):
+                # Not a verdict on this source: record nothing in the
+                # conversation and stop calling the summarizer in this episode.
+                unavailable.update(source_key(item) for item in source_items)
                 summarizer_unavailable = True
                 break
             failed_keys = tuple(source_key(item) for item in source_items)
@@ -539,7 +540,7 @@ async def _prepare_context(
                                         allow_fallback=policy.allow_reference_fallback)
             except (CompactionError, ProviderReprepareRequired) as exc:
                 reason = f"{type(exc).__name__}: {exc}"[:1000]
-                if not _unavailable(exc):
+                if not getattr(exc, "transient", False):
                     failed.add(root_key)
                     record = getattr(exc, "compaction_record", None)
                     if record is not None:
