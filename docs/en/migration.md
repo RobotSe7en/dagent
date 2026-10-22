@@ -59,8 +59,9 @@ Markdown with per-compaction aliases (`S0` normally identifies the previous
 checkpoint). The maintainer approved this provider wire payload change. Custom
 summary services and test doubles that depend on the old JSON protocol must return
 entries such as `### Next Step\n- Continue the task. [S1]` using the supplied aliases.
-JSON output is no longer accepted; invalid format gets one correction retry within
-the existing episode budget.
+JSON output is no longer parsed into structured entries; its lines are kept as entry
+text. Only output without any entry gets one correction retry within the existing
+episode budget.
 
 Cited entries now finish before trailing commentary, and literal `</think>` text
 inside checkpoint data is preserved. Aliases avoid current and inherited real
@@ -68,6 +69,16 @@ source IDs, including lowercase and zero-padded variants, so accepted real-ID
 citations retain their source attribution. The previous-checkpoint alias in the
 instructions and source positions follows the assigned name when `S0` is reserved.
 Custom summary services should use the aliases supplied in each request.
+
+Checkpoint parsing is lenient. Heading variants (case, numbering, separators,
+singular or plural forms, and common Chinese names), headings with inline entries,
+lines without bullets, and citation variants (full-width brackets or commas, `、`,
+`;` or space separators, trailing punctuation) are accepted. Entries are no longer
+discarded for lacking a known heading or citation: entries before the first known
+heading join Completed Work, entries after an unknown heading stay in the current
+section, and an uncited entry cites the first and last sources of its own request.
+Commentary lines are kept as entries. This avoids correction retries and
+failed-source markers caused by format drift; the retry budget is unchanged.
 
 Compaction record schemas, `task_summary` fields and real source IDs, and summaries
 rendered into context are unchanged. Existing records remain readable. No record
