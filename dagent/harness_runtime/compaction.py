@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
+import re
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from dagent.capabilities.tools.boundary import enforce_path_allowed
+from dagent.harness_runtime.llm_retry import is_transient_llm_error
 from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.result_projection import result_references
 from dagent.harness_runtime.result_storage import ResultStore
@@ -26,7 +29,7 @@ from dagent.providers.model_io import (
     ModelRequest, ModelResponse, ModelUserInput, model_request_to_chat,
     model_response_from_chat, normalize_model_response,
 )
-from dagent.providers.openai_compatible import ProviderReprepareRequired
+from dagent.providers.openai_compatible import ProviderRenderRejected, ProviderReprepareRequired
 from dagent.schemas.context import ContextPolicy, ModelCallMetadata, ModelTokenUsage
 from dagent.schemas.conversation import (
     AssistantMessage, ContentReference, ContextSummary, ConversationItem,
@@ -36,12 +39,24 @@ from dagent.schemas.conversation import (
 if TYPE_CHECKING:
     from dagent.harness_runtime.context import ContextAssembler
 
+logger = logging.getLogger(__name__)
+
+# The local estimate overcounts dense scripts such as CJK text by up to about
+# 1.6x. A candidate beyond this multiple of its available input is over budget
+# for any supported tokenizer, so it is not sent to the server counter.
+HEURISTIC_OVERCOUNT_LIMIT = 2
+
 
 class CompactionError(RuntimeError):
     """No valid replacement was produced; the caller must retain source items."""
 
     compaction_record: ContentReference | None = None
     source_reference: ContentReference | None = None
+    # The summarizer was unreachable after request retries; the selected source
+    # itself was not judged.
+    transient: bool = False
+    # A valid checkpoint rendered to this many tokens, above its visible budget.
+    oversized_tokens: int | None = None
 
 
 class CompactionBudgetExceeded(CompactionError):
@@ -190,6 +205,49 @@ _SUMMARY_RULES = (
 )
 
 
+def _summary_rules(max_tokens: int) -> str:
+    # The runtime rejects a checkpoint above its visible budget, so the model
+    # must know that budget. The target leaves room for rendered headings.
+    target = max(48, math.floor(max_tokens * 0.8))
+    return (
+        _SUMMARY_RULES
+        + f" Size limit: the whole checkpoint, including cited IDs, must stay under {target} tokens"
+        f" (about {4 * target} English characters or {target} CJK characters). When more detail exists,"
+        " merge related entries, shorten wording and point to recoverable sources instead of copying"
+        " details; keep requirements, open work and the next step. When carrying an entry forward from"
+        " a previous checkpoint source, cite that checkpoint's source ID instead of IDs shown inside it."
+        " Cite at most three source IDs per entry."
+    )
+
+
+@dataclass
+class CompactionRunState:
+    """Run-scoped compaction memory; never persisted with the conversation.
+
+    Sources whose summary failed in transport are not retried under soft
+    pressure for the rest of the Run, so an outage does not add retry delays to
+    every step. Some chat templates render history differently once a summary
+    instruction follows it (for example by dropping earlier reasoning). Two
+    consecutive warm-prefix summaries with a provider-reported cache hit below
+    ``min_cached_ratio`` switch the rest of the Run to dedicated chunk
+    summaries; one eviction does not. Unknown usage never decides.
+    """
+
+    min_cached_ratio: float = 0.5
+    unavailable_sources: set[str] = field(default_factory=set)
+    prefix_disabled: bool = False
+    low_prefix_hits: int = 0
+
+    def observe_prefix(self, usage: ModelTokenUsage | None) -> None:
+        if usage is None or usage.cached_input_tokens is None or not usage.input_tokens:
+            return
+        if usage.cached_input_tokens >= self.min_cached_ratio * usage.input_tokens:
+            self.low_prefix_hits = 0
+            return
+        self.low_prefix_hits += 1
+        self.prefix_disabled = self.low_prefix_hits >= 2
+
+
 class HistoryCompactor:
     """One bounded compaction episode, shared by all slices of one prepare call.
 
@@ -206,8 +264,13 @@ class HistoryCompactor:
         read_available: bool | Callable[[ContentReference], bool] = False,
         source_request: ModelRequest | None = None,
         observer: Any = None,
+        run_state: CompactionRunState | None = None,
     ) -> None:
         self.observer = observer
+        self.run_state = run_state
+        # Only a prefix the server already received can measure template
+        # stability; the caller clears this after replacing the root summary.
+        self.prefix_sample = True
         self.policy = policy
         self.assembler = assembler
         self.result_store = result_store
@@ -244,23 +307,35 @@ class HistoryCompactor:
         if self.observer is not None:
             self.observer.start(len(items))
         sources = _source_texts(previous, items)
+        previous_id = _previous_source_id(items) if previous else None
         source = self._archive(previous, items)
         chunks: list[CompactionChunk] = []
         final_response: ModelResponse | None = None
         try:
-            prefix = self._prefix_request(previous, items, max_tokens)
-            if self.policy.compaction_strategy == "cache_aware" and prefix is not None:
+            warm = (self.policy.compaction_strategy == "cache_aware"
+                    and not (self.run_state is not None and self.run_state.prefix_disabled))
+            prefix = self._prefix_request(previous, items, max_tokens) if warm else None
+            if prefix is not None:
                 if await self._fits(prefix):
+                    calls = len(self.calls)
                     try:
-                        summary, final_response = await self._request(prefix, sources, "prefix", max_tokens)
-                    except CompactionError:
+                        summary, final_response = await self._request(
+                            prefix, sources, "prefix", max_tokens, previous_id=previous_id)
+                    except CompactionError as exc:
+                        if exc.transient:
+                            # An unreachable summarizer is not retried through
+                            # the isolated compactor in the same episode.
+                            raise
                         # A failed warm-prefix attempt may use the isolated
                         # compactor, but never repeats the same prompt in a loop.
-                        pass
                     else:
                         chunks.append(CompactionChunk(ranges=_all_ranges(sources), summary=summary))
                         return self._finish(previous, items, source, sources, chunks,
                                             summary, final_response, max_tokens)
+                    finally:
+                        if self.run_state is not None and self.prefix_sample:
+                            for call in self.calls[calls:]:
+                                self.run_state.observe_prefix(call.usage)
 
             queue: list[tuple[SourceRange, ...]] = [_all_ranges(sources)]
             while queue:
@@ -272,7 +347,8 @@ class HistoryCompactor:
                         raise CompactionBudgetExceeded("Compactor instructions leave no source capacity.")
                     queue[0:0] = [left, right]
                     continue
-                summary, response = await self._request(request, sources, "chunk", max_tokens)
+                summary, response = await self._request(request, sources, "chunk", max_tokens,
+                                                        previous_id=previous_id)
                 chunks.append(CompactionChunk(ranges=ranges, summary=summary))
                 final_response = response
 
@@ -280,7 +356,7 @@ class HistoryCompactor:
                 summary = chunks[0].summary
                 assert summary is not None
             else:
-                summary, final_response = await self._reduce(chunks, sources, max_tokens)
+                summary, final_response = await self._reduce(chunks, sources, max_tokens, previous_id)
             return self._finish(previous, items, source, sources, chunks, summary,
                                 final_response, max_tokens)
         except (CompactionError, ProviderReprepareRequired) as exc:
@@ -373,7 +449,8 @@ class HistoryCompactor:
             request = self._chunk_request(sources, _all_ranges(sources), max_tokens)
             if not await self._fits(request):
                 raise CompactionBudgetExceeded("Current root does not fit its tightening request.")
-            checkpoint, response = await self._request(request, sources, "reduce", max_tokens)
+            checkpoint, response = await self._request(request, sources, "reduce", max_tokens,
+                                                       previous_id=_previous_source_id(()))
             chunks.append(CompactionChunk(ranges=_all_ranges(sources), summary=checkpoint))
             return self._finish(summary, (), source, sources, chunks,
                                 checkpoint, response, max_tokens)
@@ -433,24 +510,30 @@ class HistoryCompactor:
             if self._prepared_estimate is not None:
                 return (self._prepared_estimate + prepared.effective_max_output_tokens
                         <= self.assembler.context_window_tokens)
-            heuristic = math.ceil(self.assembler.token_counter.count_text(
-                json.dumps(prepared.payload, ensure_ascii=False))
-                * (1 + self.policy.token_safety_margin))
+            raw = self.assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
+            heuristic = math.ceil(raw * (1 + self.policy.token_safety_margin))
             output = prepared.effective_max_output_tokens
             if output is None:
                 raise CompactionError("Prepared compaction request has no bounded output limit.")
-            # Render endpoints may reject an already over-window body instead
-            # of returning its count.  Reject these planning candidates locally;
-            # every candidate actually dispatched still receives a final count.
-            if heuristic + output > self.assembler.context_window_tokens:
+            if raw > HEURISTIC_OVERCOUNT_LIMIT * max(1, self.assembler.context_window_tokens - output):
                 return False
+            locally_over = heuristic + output > self.assembler.context_window_tokens
             initial = prepared
             count = None
             if self.assembler.prepared_token_counter is not None:
-                prepared, count = await self._bounded(count_prepared_call(
-                    prepared, counter=self.assembler.prepared_token_counter,
-                    reprepare=lambda: self.assembler.request_preparer(request, stream=True),
-                ))
+                # The local estimate can overcount by more than its margin, so
+                # an available count decides. Render rejects an over-window body
+                # instead of counting it; for a candidate already estimated over
+                # budget that rejection means it does not fit.
+                try:
+                    prepared, count = await self._bounded(count_prepared_call(
+                        prepared, counter=self.assembler.prepared_token_counter,
+                        reprepare=lambda: self.assembler.request_preparer(request, stream=True),
+                    ))
+                except ProviderRenderRejected:
+                    if not locally_over:
+                        raise
+                    return False
                 self.prepared_call = prepared
                 output = prepared.effective_max_output_tokens
                 if output is None:
@@ -460,6 +543,8 @@ class HistoryCompactor:
                 if getattr(count, "exact", None) is not True:
                     estimate = math.ceil(estimate * (1 + self.policy.token_safety_margin))
                 self._learn_window(count.max_model_len)
+            elif locally_over:
+                return False
             else:
                 estimate = heuristic if prepared is initial else math.ceil(self.assembler.token_counter.count_text(
                     json.dumps(prepared.payload, ensure_ascii=False))
@@ -523,7 +608,7 @@ class HistoryCompactor:
                       "kind": type(item).__name__,
                       "eligible": item.source_id == "context_summary" or item.source_id in target_ids}
                      for item in prefix]
-        instruction = (_SUMMARY_RULES + "\nEligible source IDs: " + json.dumps(ids)
+        instruction = (_summary_rules(max_tokens) + "\nEligible source IDs: " + json.dumps(ids)
                        + "\nHistory positions in order: " + json.dumps(positions)
                        + "\nPreceding ineligible messages are background only; summarize and cite only eligible sources.")
         return replace(request, items=(*prefix, ModelUserInput(source_id="compaction_control", content=instruction)),
@@ -543,13 +628,14 @@ class HistoryCompactor:
             block += source[start:end]
             blocks.append(block)
         text = "\n\n".join(blocks)
-        return ModelRequest(instructions=_SUMMARY_RULES,
+        return ModelRequest(instructions=_summary_rules(max_tokens),
                             items=(ModelUserInput(source_id="compaction_sources", content=text),),
                             **self._request_options(max_tokens))
 
     async def _request(
         self, request: ModelRequest, sources: dict[str, str],
-        kind: Literal["prefix", "chunk", "reduce"], max_tokens: int,
+        kind: Literal["prefix", "chunk", "reduce"], max_tokens: int, *,
+        previous_id: str | None = None, retry_oversized: bool = True,
     ) -> tuple[TaskSummary, ModelResponse]:
         self._check_budget()
         if not await self._fits(request):
@@ -568,7 +654,11 @@ class HistoryCompactor:
                                              model_call=metadata, error=f"{type(exc).__name__}: {exc}"))
             if isinstance(exc, CompactionBudgetExceeded):
                 raise
-            raise CompactionError(f"Summary request failed: {type(exc).__name__}: {exc}") from exc
+            error = CompactionError(f"Summary request failed: {type(exc).__name__}: {exc}")
+            # Transport failures say nothing about the source; callers may retry
+            # it later instead of recording it as an unsummarizable span.
+            error.transient = is_transient_llm_error(exc)
+            raise error from exc
         response = normalize_model_response(model_response_from_chat(raw) if isinstance(raw, ChatResponse) else raw)
         attempts = max(1, len(response.metadata.attempts) if response.metadata else 0)
         if self.http_attempts == attempts_before:
@@ -579,14 +669,29 @@ class HistoryCompactor:
         if self.http_attempts > 12:
             raise CompactionBudgetExceeded("Compaction exceeded 12 HTTP attempts.")
         try:
-            summary = self._parse_summary(response, sources, max_tokens)
+            summary = self._parse_summary(response, sources, max_tokens, previous_id=previous_id)
         except CompactionError as exc:
             self.calls[-1] = self.calls[-1].model_copy(update={"error": str(exc)})
+            if (exc.oversized_tokens is not None and retry_oversized
+                    and self.logical_calls < 8 and self.http_attempts < 12):
+                # One shorter attempt within the same episode budget. The note is
+                # an instruction, never part of the summarized source data; the
+                # warm prefix keeps its history and extends only its control turn.
+                note = (f"Your previous checkpoint was about {exc.oversized_tokens} tokens; the limit is "
+                        f"{max_tokens}. Return a shorter checkpoint within the size limit.")
+                if kind == "prefix":
+                    last = request.items[-1]
+                    shorter = replace(request, items=(*request.items[:-1], replace(last, content=last.content + "\n" + note)))
+                else:
+                    shorter = replace(request, instructions=request.instructions + "\n" + note)
+                if await self._fits(shorter):
+                    return await self._request(shorter, sources, kind, max_tokens,
+                                               previous_id=previous_id, retry_oversized=False)
             raise
         return summary, response
 
     def _parse_summary(self, response: ModelResponse, sources: dict[str, str],
-                       max_tokens: int) -> TaskSummary:
+                       max_tokens: int, *, previous_id: str | None = None) -> TaskSummary:
         if response.status != "completed" or response.refusal or response.tool_calls:
             raise CompactionError("Compactor must return completed text without refusal or tool calls.")
         if response.metadata and (response.metadata.finish_reason in {
@@ -597,16 +702,17 @@ class HistoryCompactor:
             summary = TaskSummary.model_validate_json(response.content)
         except ValidationError as exc:
             raise CompactionError("Compactor returned an invalid task summary.") from exc
-        for name in TaskSummary.model_fields:
-            for entry in getattr(summary, name):
-                if not set(entry.source_ids).issubset(sources):
-                    raise CompactionError("Compactor cited an unknown source.")
-        if self.assembler.token_counter.count_text(summary.render()) > max_tokens:
-            raise CompactionError("Compactor summary exceeds its visible output budget.")
+        summary = _normalize_citations(summary, sources, previous_id)
+        tokens = self.assembler.token_counter.count_text(summary.render())
+        if tokens > max_tokens:
+            error = CompactionError("Compactor summary exceeds its visible output budget.")
+            error.oversized_tokens = tokens
+            raise error
         return summary
 
     async def _reduce(
         self, chunks: list[CompactionChunk], sources: dict[str, str], max_tokens: int,
+        previous_id: str | None,
     ) -> tuple[TaskSummary, ModelResponse]:
         layer = [chunk.summary for chunk in chunks if chunk.summary is not None]
         last_response: ModelResponse | None = None
@@ -626,7 +732,8 @@ class HistoryCompactor:
                     reduced.append(group[0])
                     continue
                 summary, last_response = await self._request(
-                    self._reduce_request(group, max_tokens), sources, "reduce", max_tokens)
+                    self._reduce_request(group, max_tokens), sources, "reduce", max_tokens,
+                    previous_id=previous_id)
                 reduced.append(summary)
             if len(reduced) >= len(layer):
                 raise CompactionBudgetExceeded("No two chunk summaries fit the reducer request.")
@@ -637,7 +744,7 @@ class HistoryCompactor:
     def _reduce_request(self, summaries: list[TaskSummary], max_tokens: int) -> ModelRequest:
         text = "Consolidate these data checkpoints in chronological order.\n" + json.dumps(
             [summary.model_dump(mode="json") for summary in summaries], ensure_ascii=False)
-        return ModelRequest(instructions=_SUMMARY_RULES,
+        return ModelRequest(instructions=_summary_rules(max_tokens),
                             items=(ModelUserInput(source_id="compaction_chunks", content=text),),
                             **self._request_options(max_tokens))
 
@@ -874,6 +981,44 @@ def _source_texts(previous: ContextSummary | None,
                 text += "\nReviewer feedback: " + item.reviewer_feedback
         sources[item.id] = text
     return sources
+
+
+def _normalize_citations(summary: TaskSummary, sources: dict[str, str],
+                         previous_id: str | None) -> TaskSummary:
+    """Keep supplied evidence links; never accept an entry without one.
+
+    A carried-forward entry may copy the IDs rendered inside the previous
+    checkpoint. Those resolve to that checkpoint's own source ID. Other unknown
+    IDs are dropped, and an entry left without a supplied ID is rejected.
+    """
+
+    inherited: set[str] = set()
+    if previous_id is not None and previous_id in sources:
+        for line in sources[previous_id].splitlines():
+            match = re.search(r"\[([^\[\]]+)\]\s*$", line)
+            if match:
+                inherited.update(part.strip() for part in match.group(1).split(","))
+    updates = {}
+    dropped = 0
+    for name in TaskSummary.model_fields:
+        entries = []
+        for entry in getattr(summary, name):
+            ids: list[str] = []
+            for source_id in entry.source_ids:
+                if source_id not in sources:
+                    if source_id not in inherited:
+                        dropped += 1
+                        continue
+                    source_id = previous_id
+                if source_id not in ids:
+                    ids.append(source_id)
+            if not ids:
+                raise CompactionError("Compactor cited an unknown source.")
+            entries.append(entry if tuple(ids) == entry.source_ids else entry.model_copy(update={"source_ids": tuple(ids)}))
+        updates[name] = tuple(entries)
+    if dropped:
+        logger.warning("Compaction summary cited %d unknown source IDs; they were removed.", dropped)
+    return summary.model_copy(update=updates)
 
 
 def _all_ranges(sources: dict[str, str]) -> tuple[SourceRange, ...]:

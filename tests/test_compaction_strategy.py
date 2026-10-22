@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from dagent.harness_runtime.compaction import (
-    CompactionArchiveError, CompactionBudgetExceeded, CompactionError,
-    CompactionRecordV1, CompactionSourceV1, HistoryCompactor,
-    load_compaction_references,
+    CompactionArchiveError, CompactionBudgetExceeded, CompactionChunk, CompactionError,
+    CompactionRecordV1, CompactionRunState, CompactionSourceV1, HistoryCompactor,
+    SummaryEntry, TaskSummary, load_compaction_references,
 )
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import ResultStore
@@ -20,7 +20,7 @@ from dagent.providers.model_io import (
     ModelTokenCount,
 )
 from dagent.providers import ProviderReprepareRequired
-from dagent.schemas.context import ContextPolicy, ModelCallMetadata
+from dagent.schemas.context import ContextPolicy, ModelCallMetadata, ModelTokenUsage
 from dagent.schemas.conversation import (
     AssistantMessage, ContextSummary, FrozenResultDisplay, ToolCallItem,
     ToolResultMessage, UserMessage, inline_content,
@@ -249,6 +249,218 @@ async def test_http_and_deadline_budgets_cover_whole_episode(tmp_path):
     engine.deadline = 0
     with pytest.raises(CompactionBudgetExceeded, match="deadline"):
         await engine.compact(None, (item,), 256)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error,transport", [
+    (ConnectionError("connection reset"), True),
+    (TimeoutError("read timed out"), True),
+    (ValueError("request rejected"), False),
+])
+async def test_summary_transport_failures_are_marked_transient(tmp_path, error, transport):
+    async def chat(request):
+        raise error
+
+    engine = compactor(tmp_path, chat)
+    with pytest.raises(CompactionError) as failed:
+        await engine.compact(None, (UserMessage(id="source", content="Original"),), 256)
+    # The released error type and reason prefix stay unchanged.
+    assert type(failed.value) is CompactionError
+    assert failed.value.transient is transport
+    assert record_for(engine, failed.value).status == "reference_only"
+
+
+@pytest.mark.asyncio
+async def test_unreachable_warm_prefix_does_not_retry_through_chunks(tmp_path):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        raise ConnectionError("connection refused")
+
+    engine = compactor(tmp_path, chat, strategy="cache_aware")
+    engine.source_request = ModelRequest(instructions="Original system.", items=(
+        ModelUserInput(source_id="u", content="Requirement"), ModelAssistantTurn(source_id="a", content="Done")))
+    with pytest.raises(CompactionError) as failed:
+        await engine.compact(None, (UserMessage(id="u", content="Requirement"), AssistantMessage(id="a", content="Done")), 256)
+    assert failed.value.transient
+    assert len(requests) == 1 and requests[0].items[-1].source_id == "compaction_control"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy,kind", [("cache_aware", "prefix"), ("chunked", "chunk"), ("chunked", "reduce")])
+async def test_summary_requests_state_the_visible_budget(tmp_path, strategy, kind):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        return summary_response(request)
+
+    items = (UserMessage(id="u", content="Requirement"), AssistantMessage(id="a", content="Done"))
+    engine = compactor(tmp_path, chat, strategy=strategy)
+    if kind == "prefix":
+        engine.source_request = ModelRequest(instructions="Original system.", items=(
+            ModelUserInput(source_id="u", content="Requirement"),
+            ModelAssistantTurn(source_id="a", content="Done")))
+        await engine.compact(None, items, 500)
+    elif kind == "chunk":
+        await engine.compact(None, items, 500)
+    else:
+        chunks = [CompactionChunk(ranges=(), summary=TaskSummary(next_step=(SummaryEntry(text=text, source_ids=("u",)),)))
+                  for text in ("First", "Second")]
+        await engine._reduce(chunks, {"u": "Requirement"}, 500, None)
+    text = requests[0].instructions + "".join(getattr(item, "content", "") for item in requests[0].items)
+    assert "must stay under 400 tokens (about 1600 English characters or 400 CJK characters)" in text
+    assert "cite that checkpoint's source ID instead of IDs shown inside it" in text
+
+
+@pytest.mark.asyncio
+async def test_carried_forward_citations_resolve_to_the_previous_checkpoint(tmp_path, caplog):
+    previous = ContextSummary(content="### Completed Work\n- Read the config [msg_old1, msg_old2]",
+                              source_item_count=2)
+    item = UserMessage(id="source", content="Now update the config.")
+
+    async def chat(request):
+        return ModelResponse(content=json.dumps({
+            "completed_work": [{"text": "Read the config.", "source_ids": ["msg_old1", "msg_old2"]}],
+            "next_step": [{"text": "Update it.", "source_ids": ["source", "msg_typo"]}],
+        }))
+
+    engine = compactor(tmp_path, chat)
+    summary = await engine.compact(previous, (item,), 256)
+    checkpoint = record_for(engine, summary).task_summary
+    assert checkpoint.completed_work[0].source_ids == ("previous_summary",)
+    assert checkpoint.next_step[0].source_ids == ("source",)
+    assert "[previous_summary]" in summary.content and "msg_typo" not in summary.content
+
+    async def invented(request):
+        return ModelResponse(content=json.dumps({"next_step": [{"text": "Update it.", "source_ids": ["msg_typo"]}]}))
+
+    with pytest.raises(CompactionError, match="unknown source"):
+        await compactor(tmp_path, invented).compact(previous, (item,), 256)
+    # Dropping an unknown ID is reported, never silent.
+    assert "cited 1 unknown source IDs; they were removed" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovers", [True, False])
+async def test_oversized_summary_is_retried_once_with_its_measured_size(tmp_path, recovers):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        text = "Short checkpoint." if recovers and len(requests) > 1 else "x" * 4000
+        return ModelResponse(content=json.dumps({"next_step": [{"text": text, "source_ids": ["source"]}]}))
+
+    engine = compactor(tmp_path, chat)
+    item = UserMessage(id="source", content="Original")
+    if recovers:
+        summary = await engine.compact(None, (item,), 256)
+        calls = record_for(engine, summary).calls
+        assert [call.error is not None for call in calls] == [True, False]
+        assert "Short checkpoint." in summary.content
+    else:
+        with pytest.raises(CompactionError, match="visible output budget") as failed:
+            await engine.compact(None, (item,), 256)
+        assert type(failed.value) is CompactionError and failed.value.oversized_tokens == 1007
+    assert len(requests) == 2
+    # The note is an instruction; the summarized source data is unchanged.
+    assert "Your previous checkpoint was about 1007 tokens; the limit is 256." in requests[1].instructions
+    assert requests[1].items == requests[0].items
+
+
+@pytest.mark.asyncio
+async def test_oversized_warm_prefix_retry_extends_only_its_control_turn(tmp_path):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        text = "Short checkpoint." if len(requests) > 1 else "x" * 4000
+        return ModelResponse(content=json.dumps({"next_step": [{"text": text, "source_ids": ["a"]}]}))
+
+    engine = compactor(tmp_path, chat, strategy="cache_aware")
+    engine.source_request = ModelRequest(instructions="Original system.", items=(
+        ModelUserInput(source_id="u", content="Requirement"), ModelAssistantTurn(source_id="a", content="Done")))
+    await engine.compact(None, (UserMessage(id="u", content="Requirement"), AssistantMessage(id="a", content="Done")), 256)
+    assert [request.items[-1].source_id for request in requests] == ["compaction_control"] * 2
+    assert requests[1].items[:-1] == requests[0].items[:-1]
+    assert requests[1].instructions == requests[0].instructions
+    assert "Your previous checkpoint was about" in requests[1].items[-1].content
+
+
+@pytest.mark.asyncio
+async def test_oversized_retry_is_skipped_when_the_shorter_request_cannot_fit(tmp_path):
+    requests = []
+
+    async def chat(request):
+        requests.append(request)
+        return ModelResponse(content=json.dumps({"next_step": [{"text": "x" * 4000, "source_ids": ["source"]}]}))
+
+    engine = compactor(tmp_path, chat)
+    fits = engine._fits
+
+    async def no_room_for_note(request):
+        return "Your previous checkpoint" not in request.instructions and await fits(request)
+
+    engine._fits = no_room_for_note
+    with pytest.raises(CompactionError, match="visible output budget"):
+        await engine.compact(None, (UserMessage(id="source", content="Original"),), 256)
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached,switches", [(100, True), (900, False), (None, False)])
+async def test_low_prefix_cache_hits_switch_the_run_to_chunk_summaries(tmp_path, cached, switches):
+    from dataclasses import replace
+
+    async def chat(request):
+        usage = ModelTokenUsage(input_tokens=1000, cached_input_tokens=cached)
+        return replace(summary_response(request), usage=usage)
+
+    monitor = CompactionRunState()
+    kinds = []
+    for index in range(3):
+        items = (UserMessage(id=f"u{index}", content="Requirement"), AssistantMessage(id=f"a{index}", content="Done"))
+        engine = compactor(tmp_path, chat, strategy="cache_aware")
+        engine.run_state = monitor
+        engine.source_request = ModelRequest(instructions="Original system.", items=(
+            ModelUserInput(source_id=f"u{index}", content="Requirement"),
+            ModelAssistantTurn(source_id=f"a{index}", content="Done")))
+        summary = await engine.compact(None, items, 256)
+        kinds.append([call.kind for call in record_for(engine, summary).calls])
+    # Two consecutive low hits switch; unknown cache usage never decides.
+    assert monitor.prefix_disabled is switches
+    assert kinds == [["prefix"], ["prefix"], ["chunk"] if switches else ["prefix"]]
+
+
+def test_one_low_prefix_hit_or_an_unsent_root_does_not_switch():
+    monitor = CompactionRunState()
+    low, high = (ModelTokenUsage(input_tokens=1000, cached_input_tokens=value) for value in (100, 900))
+    for usage in (low, high, low, None, high, low):
+        monitor.observe_prefix(usage)
+    # A single eviction between good hits never disables the warm prefix.
+    assert not monitor.prefix_disabled
+
+
+@pytest.mark.asyncio
+async def test_prefix_after_a_new_root_summary_is_not_sampled(tmp_path):
+    from dataclasses import replace
+
+    async def chat(request):
+        return replace(summary_response(request), usage=ModelTokenUsage(input_tokens=1000, cached_input_tokens=0))
+
+    monitor = CompactionRunState()
+    for index in range(3):
+        engine = compactor(tmp_path, chat, strategy="cache_aware")
+        engine.run_state = monitor
+        # The caller marks prefixes whose root summary was replaced in this episode.
+        engine.prefix_sample = False
+        engine.source_request = ModelRequest(instructions="Original system.", items=(
+            ModelUserInput(source_id=f"u{index}", content="Requirement"),
+            ModelAssistantTurn(source_id=f"a{index}", content="Done")))
+        await engine.compact(None, (UserMessage(id=f"u{index}", content="Requirement"),
+                                    AssistantMessage(id=f"a{index}", content="Done")), 256)
+    assert monitor.low_prefix_hits == 0 and not monitor.prefix_disabled
 
 
 @pytest.mark.asyncio

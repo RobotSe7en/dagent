@@ -2142,6 +2142,7 @@ class Runner:
         )
         runtime.session = self._runtime.session
         runtime.runs = self._runtime.runs
+        _share_conversation_resources(runtime, self._runtime)
         return runtime
 
     def _runtime_for_auto_agent(self, agent: AutoAgent) -> _ResolvedRuntime:
@@ -2649,7 +2650,15 @@ def _runtime_from_existing(
     )
     runtime.session = base.session
     runtime.runs = base.runs
+    _share_conversation_resources(runtime, base)
     return runtime
+
+
+def _share_conversation_resources(runtime: HarnessRuntime, base: HarnessRuntime) -> None:
+    # Per-run runtimes over the same store keep its verified-file cache, so
+    # unchanged history is not reread at every run boundary.
+    if runtime.conversation_resources.root == base.conversation_resources.root:
+        runtime.conversation_resources = base.conversation_resources
 
 
 def _tool_adapter(catalog, capability_ids: tuple[str, ...]) -> CapabilityToolAdapter:

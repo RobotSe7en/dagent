@@ -465,6 +465,31 @@ These strategies apply to SDK ToolAgent execution. DAG execution and the default
 `legacy` strategy keep their released behavior. Custom providers must implement
 the internal prepared-call contract to use the new strategies.
 
+### Chat templates that drop earlier reasoning
+
+Some chat templates render an assistant turn's reasoning only after the latest
+user message. Qwen3 and QwQ templates are examples. With the default
+`reasoning_replay="active_run"`, a generation prompt contains the current Run's
+reasoning, if the server passes replayed reasoning to the template. The
+`cache_aware` summary request then appends a user instruction, so the template
+drops that reasoning and the prompt diverges at the Run's first assistant turn.
+With the official Qwen3-8B template, a five-step Run's warm-prefix request shared
+only 13% of the preceding generation prompt. For such templates, either:
+
+- use `reasoning_replay="none"` with `cache_aware`, so both prompts render the
+  same history but the model no longer sees its earlier reasoning in the Run; or
+- use `chunked`, whose dedicated summary requests do not depend on the prefix.
+
+With `capture_cache_usage=True`, `cache_aware` checks the provider-reported cache
+hit of each warm-prefix summary. Chat endpoints also need `stream_include_usage=True`,
+because summary requests are streamed. After two consecutive warm-prefix
+summaries with fewer than half of their input tokens cached, the rest of the Run
+uses dedicated chunk summaries, so a single cache eviction does not switch. Only
+prefixes whose summary the server already received are measured; a prefix that
+begins with a summary created earlier in the same episode is expected to miss.
+A new Run tries the warm prefix again. Unknown cache usage never changes the
+path. The compaction record's `calls[].kind` shows which path each summary used.
+
 ### One counted request and three budget thresholds
 
 The provider freezes its actual request after applying extra-parameter precedence.
@@ -484,9 +509,14 @@ budget is `H = W - O`. The default soft trigger is `floor(0.8 * H)`. Compaction
 tries to leave space near `floor(0.65 * H)` but accepts a legal request above that
 target when mandatory input prevents further reduction. At the soft trigger,
 `compaction_retain_ratio` keeps recent complete groups near its 16% default,
-including at least the latest group. Hard pressure may compact this recent tail
-up to the protected latest group. Every candidate is checked against `H` again
-before generation; cache hits do not increase `H`.
+including at least the latest group. Under soft pressure, compaction also waits
+until the eligible older history is worth summarizing: about 10% of `H`, measured
+as its share of the counted request, across all spans that live user steers
+separate. Otherwise mandatory input that stays above
+the trigger would cost a paid summary and a prefix break on every step. Hard
+pressure still compacts at once, and may compact this recent tail up to the
+protected latest group. Every candidate is checked against `H` again before
+generation; cache hits do not increase `H`.
 
 | Verified total window | Output allowance | Hard input budget | Default soft trigger |
 | --- | --- | --- | --- |
@@ -512,6 +542,16 @@ supported server counting path is available. `ContextUsage.count_precision`
 distinguishes `rendered`, `tokenized_estimate`, and `estimated`, independently of
 `estimator`. `request_fingerprint` identifies the frozen body, not a cache key.
 
+The local estimate can overcount by more than its margin; CJK text is a common
+case. Generation candidates and compaction requests, including the `cache_aware`
+warm-prefix request, are therefore counted before the SDK compacts or splits
+them. The only exception is a candidate whose local estimate exceeds twice its
+available input, which no supported tokenizer brings within budget; such a
+candidate is compacted or split without a server call. A final candidate that
+still exceeds the budget is counted once before `ContextWindowExceeded`, because
+highly compressible input can overcount further. A discovered server window only
+lowers the effective window.
+
 Strict budgets reject explicit `truncation=null` as well as automatic server
 truncation; omit the field or use `"disabled"`. If rendering rejects an automatic
 output reservation before returning a count, a supported tokenizer endpoint can
@@ -530,6 +570,18 @@ settings, or a changed deployment can still produce a server context error.
 dagent does not classify arbitrary HTTP 400 responses as context overflow or
 automatically replay generation based on error-message text.
 
+Render validates input length and rejects an over-window body instead of
+counting it. Such a rejection raises
+`dagent.providers.openai_compatible.ProviderRenderRejected`, a subclass of
+`ProviderTokenCountError`; existing handlers are unaffected. When the local
+estimate already places that candidate over budget, the rejection is treated as
+overflow. The SDK compacts the generation input, or splits the compaction
+request, without sending the rejected request. A rejection of a candidate
+estimated to fit, or one the tokenizer then counts within the input budget,
+remains a diagnostic `ProviderTokenCountError`. When the tokenizer counts the
+rejected request above the input budget, the count is reported as a
+`tokenized_estimate`, also when tools make it approximate.
+
 ### Complete source coverage and stable result displays
 
 Summary requests cover the selected source continuously, splitting oversized
@@ -538,6 +590,18 @@ summaries retain goals, constraints, decisions, completed work and relevant tool
 observations, with pending work and source references. This helps the model avoid
 forgetting completed steps; it does not deduplicate or suppress tool calls.
 Raw received sources, summary coverage, and model-call usage are archived.
+
+Every summary request states its size limit. The limit is 80% of the visible
+summary budget, expressed in tokens and in approximate English and CJK
+characters, so the model can merge or shorten earlier entries. A checkpoint that
+still renders above the budget is retried once in the same episode with its
+measured size, as an added instruction rather than as source data. That retry
+counts toward the episode's call budget, and it is skipped when the longer
+request would no longer fit. A second oversized checkpoint fails as before.
+Entries must cite supplied source IDs. IDs copied from inside the previous
+checkpoint resolve to that checkpoint's source ID. Other unknown IDs are dropped
+and logged as a warning with their count. An entry left without a supplied ID
+still rejects the summary.
 
 Each compaction episode permits at most eight logical model calls and twelve
 model request attempts, including retries. These limits do not cap normal agent
@@ -548,6 +612,23 @@ timeouts. Set it explicitly to bound the entire episode, including retries;
 increase the provider timeout separately for slow self-hosted models. Cancellation
 still propagates. Repeated unchanged failed sources are not resummarized every
 turn, and nonconverging replacements cannot create an unlimited summary loop.
+A source is recorded as failed only when the summarizer was reached: an invalid
+or oversized summary, an exhausted episode budget or deadline, or a terminal
+re-preparation signal. A transport failure that persists after request retries
+(connection error, timeout, HTTP 408/409/425/429 or 5xx) is not a verdict on the
+source, even after some chunks completed. The episode stops calling the
+summarizer; a failed warm prefix is not retried through chunks. Nothing is
+recorded in the conversation, and chunks paid in that episode are not reused.
+For the rest of that Run, soft pressure does not retry the same source, so an
+outage does not add retry delays to every step. Hard pressure, which would
+otherwise end the Run with `ContextWindowExceeded`, retries it; a new Run or a
+continuation retries it as well. Under hard pressure with
+`allow_reference_fallback=True`, the reference continuation described below still
+applies to a failed summary.
+Conversations saved by `0.10.0` through `0.10.2a0` may already mark such a
+source as failed. To retry it, continue from
+`conversation.model_copy(update={"compaction_state": None})`, or enable
+`allow_reference_fallback=True`.
 If the final count still exceeds the hard budget, the same episode can tighten
 only its current root summary once, without resending the original history.
 
@@ -599,6 +680,16 @@ files still fail verification. A new runtime or workspace verifies its history
 afresh. Body I/O is reduced,
 while file-state traversal remains proportional to retained history. The index
 retains links and file identities, not all historical bodies.
+
+At Run boundaries, every Run of one `Runner` uses the same conversation resource
+store, which saves retained results after a Run and restores them before the next.
+It records, in bounded memory, the file identities it has verified and the links
+of verified compaction records. Unchanged retained results, compaction records and
+archived sources are not reread when a continued conversation is persisted or
+restored again. Changed files are verified again, a deleted stored copy is
+rewritten, and missing or corrupt files still fail. Restoring into a new
+workspace still copies, and therefore reads, each retained resource once. A new
+`Runner` or process verifies its history afresh.
 
 ### Failure snapshots and cache verification
 

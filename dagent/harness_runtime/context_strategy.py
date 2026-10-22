@@ -17,7 +17,7 @@ from dagent.harness_runtime.context import (
     ContextAssembler, PreparedModelContext, _atomic_groups, _context_results,
     _latest_run_id, _should_replay_reasoning, _ProjectionUsage, user_content_for_model,
 )
-from dagent.harness_runtime.compaction import CompactionError
+from dagent.harness_runtime.compaction import HEURISTIC_OVERCOUNT_LIMIT, CompactionError
 from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.frozen_results import (
     RecoveryAccess, freeze_result_displays, reference_frozen_result_displays,
@@ -28,7 +28,7 @@ from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import StructuredOutputFormat
 from dagent.providers.model_io import ModelRequest, ModelTokenCount, PreparedModelCall, model_request_to_chat
 from dagent.providers.openai_compatible import (
-    ProviderCapabilityError, ProviderContextWindowError, ProviderReprepareRequired,
+    ProviderCapabilityError, ProviderContextWindowError, ProviderRenderRejected, ProviderReprepareRequired,
 )
 from dagent.schemas.context import ContextPolicy, ContextUsage, ContextWindowExceeded, ReasoningEffort
 from dagent.schemas.conversation import (
@@ -47,6 +47,7 @@ class _Candidate:
     window: int
     input_budget: int
     output: int
+    render_rejected: bool = False
 
 
 @dataclass
@@ -232,6 +233,7 @@ async def _prepare_context(
         )
         prepared = None
         count = None
+        rejected = False
         if assembler.request_preparer is not None:
             prepared = frozen_call or await assembler.request_preparer(request, stream=stream)
             output = prepared.effective_max_output_tokens
@@ -242,15 +244,25 @@ async def _prepare_context(
             known_window = min(known_limits) if known_limits else assembler.context_window_tokens
             rough = assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
             rough += 4 * len(request.items) + 8 * len(request.tools)
-            # Render endpoints also validate length. An obviously oversized
-            # planning candidate must be compacted before asking the renderer;
-            # every sendable candidate still passes the final count below.
-            if (force_count or math.ceil(rough * (1 + policy.token_safety_margin)) <= known_window - output) and assembler.prepared_token_counter is not None:
+            # The local estimate can overcount (for example CJK text) by more
+            # than its safety margin, so it replaces an available count only
+            # for a planning candidate far beyond any such overcount. The
+            # final candidate is still counted once below before it fails.
+            if assembler.prepared_token_counter is not None and (
+                    force_count or rough <= HEURISTIC_OVERCOUNT_LIMIT * max(1, known_window - output)):
                 try:
                     prepared, count = await count_prepared_call(
                         prepared, counter=assembler.prepared_token_counter,
                         reprepare=lambda: assembler.request_preparer(request, stream=stream),
                     )
+                except ProviderRenderRejected:
+                    # Render validates length before counting. Its rejection of
+                    # a candidate already estimated over budget is the expected
+                    # overflow signal; keep that estimate and compact. Any other
+                    # rejection remains a diagnostic failure.
+                    if force_count or math.ceil(rough * (1 + policy.token_safety_margin)) <= known_window - output:
+                        raise
+                    rejected = True
                 except ProviderContextWindowError as exc:
                     assembler.server_max_model_len = exc.max_model_len
                     window = min(value for value in (
@@ -273,7 +285,9 @@ async def _prepare_context(
             if assembler.request_token_counter is not None:
                 count = await assembler.request_token_counter(request, field)
         if count is not None and count.max_model_len is not None:
-            assembler.server_max_model_len = count.max_model_len
+            # A discovered server window only shrinks the budget, as in summary counts.
+            known = assembler.server_max_model_len
+            assembler.server_max_model_len = min(known, count.max_model_len) if known is not None else count.max_model_len
         limits = [value for value in (assembler.configured_context_window_tokens,
                   assembler.server_max_model_len, assembler.model_context_window_tokens) if value is not None]
         window = min(limits) if limits else assembler.context_window_tokens
@@ -302,7 +316,7 @@ async def _prepare_context(
             else:
                 raw = assembler.token_counter.count_request(model_request_to_chat(request, reasoning_field="reasoning"), request.tools)
             estimate = math.ceil(raw * (1 + policy.token_safety_margin))
-        return _Candidate(request, projection, estimate, count, prepared, window, window - output, output)
+        return _Candidate(request, projection, estimate, count, prepared, window, window - output, output, rejected)
 
     state = await project()
     call = state.call
@@ -364,6 +378,11 @@ async def _prepare_context(
     # One episode shares the compactor's eight-call budget. Selection always
     # moves forward, and failed identical sources are not retried on every turn.
     attempts = 0
+    summarizer_unavailable = False
+    # Run-scoped and never persisted: an unreachable summarizer is not retried
+    # for the same source under soft pressure in this Run.
+    run_state = getattr(compactor, "run_state", None)
+    unavailable: set[str] = run_state.unavailable_sources if run_state is not None else set()
     considered_records: set[tuple[str, str | None]] = set()
     while compactor is not None and state.estimate > math.floor(state.input_budget * policy.compaction_trigger_ratio) and attempts < 8:
         hard = state.estimate > state.input_budget
@@ -403,7 +422,8 @@ async def _prepare_context(
             # Split only between complete atomic exchanges. New work can be
             # summarized without repeatedly sending a failed unchanged span.
             for group_start, group_end in _atomic_groups(working.items, start=start, end=end):
-                blocked = any(source_key(item) in failed for item in working.items[group_start:group_end])
+                blocked = any(source_key(item) in failed or (not hard and source_key(item) in unavailable)
+                              for item in working.items[group_start:group_end])
                 if blocked and selected is not None:
                     break
                 if not blocked:
@@ -426,10 +446,26 @@ async def _prepare_context(
                               if item.source_id in selected_ids or item.source_id == "context_summary")
         source_tokens = assembler.token_counter.count_request(
             model_request_to_chat(ModelRequest(instructions="", items=selected_view), reasoning_field="reasoning"), ())
+        if not hard and cached_summary is None:
+            # Under soft pressure, wait until the eligible history is worth a
+            # paid summary and a prefix break. Otherwise mandatory input that
+            # stays above the trigger would compact one small group per step.
+            # Its share of the local estimate scales the counted request size.
+            eligible_ids = {item.id for range_start, range_end in ranges for item in working.items[range_start:range_end]
+                            if source_key(item) not in failed and source_key(item) not in unavailable}
+            history_tokens = assembler.token_counter.count_request(model_request_to_chat(ModelRequest(
+                instructions="", items=tuple(item for item in state.request.items if item.source_id in eligible_ids),
+            ), reasoning_field="reasoning"), ())
+            request_tokens = assembler.token_counter.count_request(
+                model_request_to_chat(state.request, reasoning_field="reasoning"), state.request.tools)
+            if history_tokens * state.estimate < math.ceil(state.input_budget * 0.1) * max(1, request_tokens):
+                break
         target = math.floor(state.input_budget * 0.65)
         room = target - max(0, state.estimate - source_tokens)
         summary_goal = min(policy.summary_max_tokens, max(256, room))
         compactor.source_request = state.request
+        # A replaced root summary was never sent, so its prefix cannot hit.
+        compactor.prefix_sample = working.summary is unprojected.summary
         attempts += 1
         try:
             if cached_summary is not None:
@@ -444,6 +480,13 @@ async def _prepare_context(
         except (CompactionError, ProviderReprepareRequired) as exc:
             # Failure preserves the original range. Cancellation is a
             # BaseException and deliberately bypasses this handler.
+            reason = f"{type(exc).__name__}: {exc}"[:1000]
+            if getattr(exc, "transient", False):
+                # Not a verdict on this source: record nothing in the
+                # conversation and stop calling the summarizer in this episode.
+                unavailable.update(source_key(item) for item in source_items)
+                summarizer_unavailable = True
+                break
             failed_keys = tuple(source_key(item) for item in source_items)
             failed.update(failed_keys)
             record = getattr(exc, "compaction_record", None)
@@ -451,7 +494,6 @@ async def _prepare_context(
                 failed_records.append(FailedCompaction(source_keys=failed_keys, record=record))
             if isinstance(exc, ProviderReprepareRequired):
                 raise
-            reason = f"{type(exc).__name__}: {exc}"[:1000]
             if fallback_only:
                 break
             continue
@@ -473,8 +515,8 @@ async def _prepare_context(
         active_compacted += sum(item.run_id == active_run_id for item in source_items)
         method, reason = summary.method, summary.fallback_reason
         prefix_break = "compaction"
-        if state.estimate <= state.input_budget and progress < minimum_progress:
-            break
+        # Under soft pressure the worth-it check above decides whether the
+        # remaining eligible history justifies another summary.
 
     # Tighten only the current root once; never re-send raw source just because
     # wrappers or the final rendered token count made its first goal too large.
@@ -497,7 +539,8 @@ async def _prepare_context(
                     root_key = summary_key()
                 else:
                     working, state = before, before_state
-    if callable(tighten) and working.summary is not None and root_key not in failed and state.estimate > state.input_budget:
+    if (callable(tighten) and not summarizer_unavailable and working.summary is not None
+            and root_key not in failed and state.estimate > state.input_budget):
         current_tokens = assembler.token_counter.count_text(working.summary.content)
         goal = current_tokens - math.ceil((state.estimate - state.input_budget) / (1 + policy.token_safety_margin)) - 64
         if 64 <= goal < current_tokens:
@@ -506,13 +549,14 @@ async def _prepare_context(
                 summary = await tighten(working.summary, min(goal, policy.summary_max_tokens),
                                         allow_fallback=policy.allow_reference_fallback)
             except (CompactionError, ProviderReprepareRequired) as exc:
-                failed.add(root_key)
-                record = getattr(exc, "compaction_record", None)
-                if record is not None:
-                    failed_records.append(FailedCompaction(source_keys=(root_key,), record=record))
+                reason = f"{type(exc).__name__}: {exc}"[:1000]
+                if not getattr(exc, "transient", False):
+                    failed.add(root_key)
+                    record = getattr(exc, "compaction_record", None)
+                    if record is not None:
+                        failed_records.append(FailedCompaction(source_keys=(root_key,), record=record))
                 if isinstance(exc, ProviderReprepareRequired):
                     raise
-                reason = f"{type(exc).__name__}: {exc}"[:1000]
             else:
                 working = working.model_copy(update={"summary": summary, "revision": working.revision + 1})
                 if summary.compaction_record is not None:
@@ -582,9 +626,11 @@ async def _prepare_context(
                 pass
 
     # A local estimate can overcount highly compressible protected input. Ask
-    # the available renderer once before declaring that final candidate too big,
-    # using the exact same frozen call that will be dispatched if it fits.
-    if state.estimate > state.input_budget and state.count is None and state.call is not None and assembler.prepared_token_counter is not None:
+    # the available counter once before declaring that final candidate too big,
+    # using the exact same frozen call that will be dispatched if it fits. A
+    # renderer that already rejected this candidate is not asked again.
+    if (state.estimate > state.input_budget and state.count is None and state.call is not None
+            and not state.render_rejected and assembler.prepared_token_counter is not None):
         state = await project(force_count=True, frozen_call=state.call)
 
     # Persist only markers that still refer to retained source items.

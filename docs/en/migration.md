@@ -8,6 +8,69 @@ that may require action when upgrading.
 The current package version is `0.10.2a0`; the stable release
 remains `0.10.1`.
 
+## Unreleased
+
+### Context maintenance fixes for `chunked` and `cache_aware`
+
+Except where noted, these fixes apply only to the opt-in `chunked` and
+`cache_aware` ToolAgent strategies; `legacy` context behavior is unchanged.
+Public exports and persisted record schemas are unchanged. No source,
+configuration, or record migration is required.
+
+- A summarizer transport failure that remains after request retries (connection
+  error, timeout, HTTP 408/409/425/429 or 5xx) no longer marks the selected
+  history as permanently failed, even after some chunks completed. The episode
+  stops calling the summarizer, and a failed warm prefix is not retried through
+  chunks. Within the Run, only hard pressure retries that source; a later Run or
+  continuation retries it too. `compaction_reason` keeps its `CompactionError:`
+  prefix. Invalid or oversized summaries, exhausted budgets or deadlines, and
+  terminal re-preparation signals are still recorded. Conversations saved by
+  `0.10.0` through `0.10.2a0` can retry a span that an outage blocked by
+  continuing from `conversation.model_copy(update={"compaction_state": None})`.
+- Generation candidates and compaction requests are now counted by the server
+  unless their local estimate exceeds twice the available input. Before, CJK-heavy
+  input could be estimated over the hard budget while rendering only about 60% of
+  it, which forced a hard compaction of almost all history. A render rejection of
+  a candidate already estimated over budget raises the new
+  `ProviderRenderRejected` subclass of `ProviderTokenCountError`, and the SDK
+  compacts or splits instead of failing. A rejection that the tokenizer counts
+  within budget remains a diagnostic `ProviderTokenCountError`. A tokenizer count
+  above the budget for a rejected request is reported as an estimate, even with
+  tools. A count that reports a larger `max_model_len` no longer enlarges a
+  smaller window discovered earlier in the Run.
+- Under soft pressure (above the trigger but within the hard budget), compaction
+  now waits until the eligible older history is about 10% of the hard input budget.
+  Before, mandatory input that stayed above the trigger caused one small paid
+  summary and one prefix break per step. In an offline 61-step run with a large
+  system prompt, summaries dropped from 57 to 19, and generation requests that
+  kept the previous prefix rose from 3 to 41. Hard pressure still compacts
+  immediately.
+- Summary requests now state their size limit, in tokens and approximate
+  characters, and ask the model to cite a previous checkpoint by its own source
+  ID. This changes the instruction text sent in opt-in compaction requests. An
+  oversized checkpoint is retried once, within the episode's call budget, before
+  it fails. Citations copied from inside the previous checkpoint resolve to it.
+  Other unknown citations are dropped, and an entry with no supplied ID still
+  fails. Before, cumulative summaries in long runs eventually exceeded an
+  unstated limit, and a citation copied from the previous checkpoint rejected
+  the whole paid summary. Both cases ended the run with `ContextWindowExceeded`.
+- `cache_aware` now checks the provider-reported cache hit of each warm-prefix
+  summary when `capture_cache_usage=True` (Chat streaming also needs
+  `stream_include_usage=True`). After two consecutive hits below 50%, the rest
+  of the Run uses chunk summaries. Prefixes that begin with a summary created in
+  the same episode are not measured. Unknown usage changes nothing. Templates such as Qwen3 drop earlier
+  reasoning once the summary instruction follows it. With such templates, use
+  `reasoning_replay="none"` or `chunked`; see
+  [Chat templates that drop earlier reasoning](model-context-and-reasoning.md#chat-templates-that-drop-earlier-reasoning).
+- Saving and restoring conversation resources at Run boundaries no longer
+  rereads unchanged history. Before, every continued Run reread and rehashed all
+  retained results twice when saving and twice when restoring. In an offline
+  benchmark, 60.8 MiB of retained results caused 121.7 MiB of reads per save or
+  restore; repeats now read nothing. Runs of one `Runner` share the store and its
+  bounded cache of verified file identities and compaction record links. Changed,
+  missing, or corrupt files still fail verification. This applies to every
+  strategy.
+
 ## 0.10.2a0
 
 This prerelease supersedes `0.10.1a0` so its version follows stable `0.10.1`.

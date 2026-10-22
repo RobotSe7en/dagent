@@ -15,6 +15,7 @@ from dagent.providers import ToolCall
 from dagent.providers import ProviderCapabilityError
 from dagent.providers.model_io import ModelTokenCount
 from dagent.providers.openai_compatible import ProviderTokenCountError
+from dagent.schemas.context import ContextWindowExceeded
 from dagent.schemas.conversation import stored_content_text
 from tests.test_cache_usage import _completion, _usage
 from tests.test_reasoning_mapping import _endpoint
@@ -138,6 +139,255 @@ async def test_compacts_middle_but_keeps_user_and_latest_step():
     assert prepared.conversation.items == (source.items[0],source.items[2])
     assert prepared.usage.compacted_active_run_items == 1
     assert prepared.usage.estimated_input_tokens <= prepared.usage.input_budget_tokens
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hard", [False, True])
+async def test_unavailable_summarizer_leaves_the_source_retryable(tmp_path, hard):
+    available = False
+    summaries = 0
+
+    async def chat(request):
+        nonlocal summaries
+        summaries += 1
+        if not available:
+            raise ConnectionError("connection reset by the summarizer")
+        return summary_response(request)
+
+    async def count(request, _field):
+        if request.purpose == "compaction":
+            return ModelTokenCount(count=100, max_model_len=8192, exact=True)
+        old = any(item.source_id == "old" for item in request.items)
+        return ModelTokenCount(count=(9000 if hard else 7000) if old else 100, max_model_len=8192, exact=True)
+
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="old", run_id="run", content="Old evidence."),
+        dagent.AssistantMessage(id="tail", run_id="run", content="Latest protected step."),
+    ))
+    policy = dagent.ContextPolicy(compaction_strategy="chunked", compaction_retain_ratio=.0001)
+    assembler = ContextAssembler(context_window_tokens=8192, max_output_tokens=512, request_token_counter=count)
+    store = ResultStore(tmp_path, ".runtime")
+
+    async def prepare(source):
+        return await assembler.prepare(
+            system_message={"content": "Task"}, conversation=source, policy=policy,
+            result_store=store, enable_new_strategy=True,
+            history_compactor=HistoryCompactor(policy=policy, assembler=assembler, result_store=store,
+                                               system_message={"content": "Task"}, chat=chat),
+        )
+
+    if hard:
+        with pytest.raises(ContextWindowExceeded) as failed:
+            await prepare(conversation)
+        saved = failed.value._conversation
+    else:
+        first = await prepare(conversation)
+        assert first.usage.compaction_reason.startswith("CompactionError: Summary request failed")
+        saved = first.conversation
+    # An outage is not a verdict on the source: nothing blocks a later attempt.
+    assert saved.items == conversation.items
+    assert saved.compaction_state is None
+    assert summaries == 1
+    available = True
+    restored = await prepare(saved)
+    assert summaries == 2
+    assert [item.id for item in restored.conversation.items] == ["task", "tail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hard", [False, True])
+async def test_unreachable_summarizer_is_retried_only_when_needed_in_the_same_run(tmp_path, hard):
+    from dagent.harness_runtime.compaction import CompactionRunState
+
+    available = False
+    summaries = 0
+
+    async def chat(request):
+        nonlocal summaries
+        summaries += 1
+        if not available:
+            raise ConnectionError("connection reset by the summarizer")
+        return summary_response(request)
+
+    async def count(request, _field):
+        if request.purpose == "compaction":
+            return ModelTokenCount(count=100, max_model_len=8192, exact=True)
+        old = any(item.source_id == "old" for item in request.items)
+        return ModelTokenCount(count=(9000 if hard else 7000) if old else 100, max_model_len=8192, exact=True)
+
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="old", run_id="run", content="Old evidence."),
+        dagent.AssistantMessage(id="tail", run_id="run", content="Latest protected step."),
+    ))
+    policy = dagent.ContextPolicy(compaction_strategy="chunked", compaction_retain_ratio=.0001)
+    assembler = ContextAssembler(context_window_tokens=8192, max_output_tokens=512, request_token_counter=count)
+    store = ResultStore(tmp_path, ".runtime")
+
+    async def prepare(source, run_state):
+        return await assembler.prepare(
+            system_message={"content": "Task"}, conversation=source, policy=policy,
+            result_store=store, enable_new_strategy=True,
+            history_compactor=HistoryCompactor(policy=policy, assembler=assembler, result_store=store,
+                                               system_message={"content": "Task"}, chat=chat, run_state=run_state),
+        )
+
+    run_state = CompactionRunState()
+    if hard:
+        with pytest.raises(ContextWindowExceeded) as failed:
+            await prepare(conversation, run_state)
+        saved = failed.value._conversation
+    else:
+        saved = (await prepare(conversation, run_state)).conversation
+    assert saved.compaction_state is None and summaries == 1
+    available = True
+    same_run = await prepare(saved, run_state)
+    if hard:
+        # Without compaction the Run would fail, so the source is retried.
+        assert summaries == 2
+        assert [item.id for item in same_run.conversation.items] == ["task", "tail"]
+    else:
+        # Soft pressure does not pay another outage delay in the same Run.
+        assert summaries == 1
+        assert same_run.conversation == saved
+        next_run = await prepare(saved, CompactionRunState())
+        assert summaries == 2
+        assert [item.id for item in next_run.conversation.items] == ["task", "tail"]
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_after_a_paid_chunk_leaves_the_source_retryable(tmp_path):
+    calls = 0
+
+    async def chat(request):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ConnectionError("connection reset by the summarizer")
+        return summary_response(request)
+
+    async def count(request, _field):
+        if request.purpose == "compaction":
+            return None
+        old = any(item.source_id == "old" for item in request.items)
+        return ModelTokenCount(count=7000 if old else 100, max_model_len=8192, exact=True)
+
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="old", run_id="run", content="evidence " * 3500),
+        dagent.AssistantMessage(id="tail", run_id="run", content="Latest protected step."),
+    ))
+    policy = dagent.ContextPolicy(compaction_strategy="chunked", compaction_retain_ratio=.0001)
+    assembler = ContextAssembler(context_window_tokens=8192, max_output_tokens=512, request_token_counter=count)
+    store = ResultStore(tmp_path, ".runtime")
+    prepared = await assembler.prepare(
+        system_message={"content": "Task"}, conversation=conversation, policy=policy,
+        result_store=store, enable_new_strategy=True,
+        history_compactor=HistoryCompactor(policy=policy, assembler=assembler, result_store=store,
+                                           system_message={"content": "Task"}, chat=chat),
+    )
+    # The first chunk was paid, the second could not reach the summarizer.
+    assert calls == 2
+    assert prepared.conversation.items == conversation.items
+    assert prepared.conversation.compaction_state is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old_chars,compacts", [(1200, False), (3600, True)])
+async def test_soft_compaction_waits_for_history_worth_a_summary(old_chars, compacts):
+    from dagent.harness_runtime.context import HeuristicTokenCounter
+    from dagent.providers.model_io import model_request_to_chat
+
+    async def count(request, _field):
+        tokens = HeuristicTokenCounter().count_request(model_request_to_chat(request, reasoning_field="omit"), request.tools)
+        return ModelTokenCount(count=tokens, max_model_len=8192, exact=True)
+
+    # Large mandatory instructions keep the request above the soft trigger even
+    # after compaction; only the older groups outside the retained tail are eligible.
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="old", run_id="run", content="o" * old_chars),
+        dagent.AssistantMessage(id="middle", run_id="run", content="m" * 1200),
+        dagent.AssistantMessage(id="latest", run_id="run", content="l" * 5200),
+    ))
+    compactor = _Compactor()
+    prepared = await ContextAssembler(context_window_tokens=8192, max_output_tokens=512,
+                                      request_token_counter=count).prepare(
+        system_message={"content": "s" * 19200}, conversation=conversation,
+        policy=dagent.ContextPolicy(compaction_strategy="chunked"), enable_new_strategy=True,
+        history_compactor=compactor,
+    )
+    usage = prepared.usage
+    assert usage.compaction_trigger_tokens < usage.estimated_input_tokens <= usage.input_budget_tokens
+    assert bool(compactor.calls) is compacts
+    if compacts:
+        assert [item.id for item in prepared.conversation.items] == ["task", "latest"]
+    else:
+        # Waiting avoids a paid summary and a prefix break for ~600 tokens.
+        assert prepared.conversation == conversation
+
+
+@pytest.mark.asyncio
+async def test_only_prefixes_with_the_sent_root_summary_measure_the_cache():
+    samples = []
+
+    class Recording(_Compactor):
+        async def compact(self, previous, items, max_tokens, *, allow_fallback=False):
+            samples.append(self.prefix_sample)
+            return await super().compact(previous, items, max_tokens, allow_fallback=allow_fallback)
+
+    async def count(request, _field):
+        ids = {item.source_id for item in request.items}
+        return ModelTokenCount(count=100 + 3500 * ("first" in ids) + 3500 * ("second" in ids),
+                               max_model_len=8192, exact=True)
+
+    # A live steer separates two eligible spans, so one episode compacts twice.
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="first", run_id="run", content="first " * 900),
+        dagent.UserMessage(id="steer", run_id="run", content="Also check the second source."),
+        dagent.AssistantMessage(id="second", run_id="run", content="second " * 900),
+        dagent.AssistantMessage(id="latest", run_id="run", content="Latest protected step."),
+    ))
+    prepared = await ContextAssembler(context_window_tokens=8192, max_output_tokens=512,
+                                      request_token_counter=count).prepare(
+        system_message={"content": "instructions"}, conversation=conversation,
+        policy=dagent.ContextPolicy(compaction_strategy="cache_aware", compaction_trigger_ratio=.3,
+                                    compaction_retain_ratio=.0001),
+        enable_new_strategy=True, history_compactor=Recording(),
+    )
+    assert [item.id for item in prepared.conversation.items] == ["task", "steer", "latest"]
+    # The second prefix starts with a summary created in this episode.
+    assert samples == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_small_first_span_does_not_block_soft_compaction_of_later_history():
+    from dagent.harness_runtime.context import HeuristicTokenCounter
+    from dagent.providers.model_io import model_request_to_chat
+
+    async def count(request, _field):
+        tokens = HeuristicTokenCounter().count_request(model_request_to_chat(request, reasoning_field="omit"), request.tools)
+        return ModelTokenCount(count=tokens, max_model_len=8192, exact=True)
+
+    # A live steer splits eligible history into a small span and a large one.
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="task", run_id="run", content="Inspect evidence."),
+        dagent.AssistantMessage(id="small", run_id="run", content="s" * 300),
+        dagent.UserMessage(id="steer", run_id="run", content="Also check the archive."),
+        dagent.AssistantMessage(id="large", run_id="run", content="l" * 26000),
+        dagent.AssistantMessage(id="latest", run_id="run", content="Latest protected step."),
+    ))
+    compactor = _Compactor()
+    prepared = await ContextAssembler(context_window_tokens=8192, max_output_tokens=512,
+                                      request_token_counter=count).prepare(
+        system_message={"content": "instructions"}, conversation=conversation,
+        policy=dagent.ContextPolicy(compaction_strategy="chunked"), enable_new_strategy=True,
+        history_compactor=compactor,
+    )
+    assert [[item.id for item in items] for items in compactor.calls] == [["small"], ["large"]]
+    assert [item.id for item in prepared.conversation.items] == ["task", "steer", "latest"]
 
 
 @pytest.mark.asyncio
