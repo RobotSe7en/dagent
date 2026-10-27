@@ -304,6 +304,13 @@ async def test_mapping_does_not_bypass_other_capabilities(protocol, missing):
         properties.pop(field)
     if missing == "endpoint":
         spec["paths"].pop(path)
+    if missing == "reasoning" and protocol == "chat_completions":
+        # Replay is constrained by the message schema, independently of effort
+        # and the optional response switch removed by _schema_without_reasoning.
+        properties["messages"] = {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"role": {}, "content": {}, "tool_calls": {}},
+        }}
     request = _request() if missing in {"tools", "reasoning"} else _simple_request()
     if missing == "structured_output":
         from dagent.providers import StructuredOutputFormat

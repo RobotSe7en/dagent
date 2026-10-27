@@ -16,6 +16,8 @@ class ProtocolCapabilities(BaseModel):
     endpoint: CapabilitySupport = "unknown"
     reasoning: CapabilitySupport = "unknown"
     reasoning_effort: CapabilitySupport = "unknown"
+    replay_reasoning: CapabilitySupport = "unknown"
+    replay_reasoning_content: CapabilitySupport = "unknown"
     output_limit: CapabilitySupport = "unknown"
     output_limit_field: Literal[
         "max_tokens",

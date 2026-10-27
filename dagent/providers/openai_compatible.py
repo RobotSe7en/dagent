@@ -48,6 +48,7 @@ from dagent.providers.model_io import (
     responses_tools,
 )
 from dagent.providers.request_observation import observe_request_reasoning, reasoning_effort_at_path
+from dagent.providers.reasoning_capabilities import schema_field_support
 from dagent.schemas.context import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     ModelCallAttempt,
@@ -1199,6 +1200,19 @@ class OpenAICompatibleProvider:
         stream: bool = False,
     ) -> tuple[dict[str, Any], ModelCallMetadata]:
         reasoning_field = self._resolved_chat_reasoning_field(capabilities)
+        replay_capability = self._chat_replay_capability(request, capabilities)
+        if replay_capability is not None:
+            support = getattr(capabilities.chat_completions, replay_capability)
+            if support == "unsupported":
+                raise ProviderCapabilityError(
+                    "Chat Completions does not support required request capabilities: "
+                    + replay_capability + "."
+                )
+            if support == "unknown":
+                resolution_reason += (
+                    f" Assistant {reasoning_field} replay is unverified by OpenAPI; "
+                    "using the configured field or existing service adapter."
+                )
         kwargs: dict[str, Any] = {
             "model": self.config.model,
             "messages": model_request_to_chat(
@@ -1219,7 +1233,8 @@ class OpenAICompatibleProvider:
             extra_body = self._mapped_reasoning_body(mapping, reasoning_effort)
         elif reasoning_effort is not None:
             kwargs["reasoning_effort"] = reasoning_effort
-            extra_body["include_reasoning"] = True
+            if self._declares_include_reasoning("chat_completions"):
+                extra_body["include_reasoning"] = True
         max_output_tokens = self._effective_max_output_tokens(request)
         requested_max_output_tokens = self._requested_max_output_tokens(request)
         output_limit_field = None
@@ -1289,7 +1304,7 @@ class OpenAICompatibleProvider:
             extra_body = self._mapped_reasoning_body(mapping, reasoning_effort)
         elif reasoning_effort is not None:
             kwargs["reasoning"] = {"effort": reasoning_effort}
-            if capabilities.server_kind == "vllm":
+            if capabilities.server_kind == "vllm" and self._declares_include_reasoning("responses"):
                 extra_body["include_reasoning"] = True
         max_output_tokens = self._effective_max_output_tokens(request)
         requested_max_output_tokens = self._requested_max_output_tokens(request)
@@ -1424,6 +1439,22 @@ class OpenAICompatibleProvider:
             return "reasoning"
         return "omit"
 
+    def _chat_replay_capability(
+        self, request: ModelRequest | None, capabilities: ProviderCapabilities,
+    ) -> str | None:
+        if request is None or not any(getattr(item, "reasoning", "") for item in request.items):
+            return None
+        field = self._resolved_chat_reasoning_field(capabilities)
+        return None if field == "omit" else "replay_" + field
+
+    def _declares_include_reasoning(self, protocol: Literal["chat_completions", "responses"]) -> bool:
+        document = self._openapi_document or {}
+        paths = document.get("paths")
+        path = "/v1/chat/completions" if protocol == "chat_completions" else "/v1/responses"
+        operation = paths.get(path) if isinstance(paths, Mapping) else None
+        schema = _request_schema(operation) if isinstance(operation, Mapping) else None
+        return schema_field_support(document, schema, ("include_reasoning",), value_type="boolean") == "supported"
+
     def _resolve_protocol(
         self,
         capabilities: ProviderCapabilities,
@@ -1544,13 +1575,13 @@ class OpenAICompatibleProvider:
             request is not None
             and any(getattr(item, "reasoning", "") for item in request.items)
         )
-        sends_replayed_reasoning = replayed_reasoning and (
-            protocol == "responses"
-            or self._resolved_chat_reasoning_field(capabilities) != "omit"
-        )
         builtin_effort = reasoning_effort is not None and self._reasoning_mapping(protocol) is None
-        if builtin_effort or sends_replayed_reasoning:
+        if protocol == "responses" and replayed_reasoning:
             required.append("reasoning")
+        elif protocol == "chat_completions":
+            replay_capability = self._chat_replay_capability(request, capabilities)
+            if replay_capability is not None:
+                required.append(replay_capability)
         if builtin_effort:
             required.append("reasoning_effort")
         if request is not None and self._effective_max_output_tokens(request) is not None:
@@ -1749,12 +1780,16 @@ def _protocol_capabilities(
             endpoint="unsupported",
             reasoning="unsupported",
             reasoning_effort="unsupported",
+            replay_reasoning="unsupported",
+            replay_reasoning_content="unsupported",
             output_limit="unsupported",
             tools="unsupported",
             streaming="unsupported",
             structured_output="unsupported",
         )
     names = _request_property_names(openapi, operation)
+    is_chat = path.endswith("/chat/completions")
+    schema = _request_schema(operation)
     output_limit_field: Literal[
         "max_tokens", "max_completion_tokens", "max_output_tokens"
     ] | None = None
@@ -1767,8 +1802,12 @@ def _protocol_capabilities(
         output_limit_field = "max_output_tokens"
     return ProtocolCapabilities(
         endpoint="supported",
-        reasoning=_field_support(names, {"reasoning", "include_reasoning"}),
-        reasoning_effort=_field_support(names, {"reasoning_effort", "reasoning"}),
+        reasoning=_field_support(names, {"reasoning", "include_reasoning"} if is_chat else {"reasoning"}),
+        reasoning_effort=_field_support(names, {"reasoning_effort"} if is_chat else {"reasoning"}),
+        replay_reasoning=(schema_field_support(openapi, schema, ("messages", "[]", "reasoning"), assistant=True)
+                          if is_chat else "unknown"),
+        replay_reasoning_content=(schema_field_support(openapi, schema, ("messages", "[]", "reasoning_content"), assistant=True)
+                                  if is_chat else "unknown"),
         output_limit=("supported" if output_limit_field is not None else "unsupported"),
         output_limit_field=output_limit_field,
         tools=_field_support(names, {"tools"}),
@@ -1789,6 +1828,10 @@ def _missing_capabilities(
         name
         for name in required
         if getattr(capabilities, name) != "supported"
+        # A replay field is required only after explicit selection or an existing
+        # service adapter chose it. Open message schemas do not forbid that field.
+        and not (name in {"replay_reasoning", "replay_reasoning_content"}
+                 and getattr(capabilities, name) == "unknown")
     )
 
 
@@ -1796,20 +1839,23 @@ def _request_property_names(
     openapi: Mapping[str, Any],
     path_item: Mapping[str, Any],
 ) -> set[str]:
+    return _schema_property_names(openapi, _request_schema(path_item), seen=set())
+
+
+def _request_schema(path_item: Mapping[str, Any]) -> Any:
     operation = path_item.get("post")
     if not isinstance(operation, Mapping):
-        return set()
+        return None
     request_body = operation.get("requestBody")
     if not isinstance(request_body, Mapping):
-        return set()
+        return None
     content = request_body.get("content")
     if not isinstance(content, Mapping):
-        return set()
+        return None
     media = content.get("application/json")
     if not isinstance(media, Mapping):
-        return set()
-    schema = media.get("schema")
-    return _schema_property_names(openapi, schema, seen=set())
+        return None
+    return media.get("schema")
 
 
 def _schema_property_names(

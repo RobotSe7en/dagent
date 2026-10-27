@@ -103,6 +103,16 @@ provider = dagent.Provider(
 
 SDK 不提供 token 数形式的推理预算，只配置 effort。
 
+自 0.10.3 起，强度、历史思考回传和响应思考开关独立判断。Chat 设置
+`reasoning_effort` 只要求对应参数，不要求顶层 `reasoning` 或 `include_reasoning`。
+即使本次未设置强度或设为 `"none"`，已有历史思考仍可回传；发送内容由上下文回放策略
+和所选消息字段决定。
+
+对于原本会自动附加 `include_reasoning=True` 的请求，SDK 现在只在所选接口明确声明
+兼容的布尔字段时添加它；仅允许额外请求字段不构成明确声明。这个可选开关控制响应是否
+包含思考文本，不控制强度或历史输入是否被接受。显式额外参数保持原有优先级，映射控制
+不自动附加该开关。如果服务不返回思考内容，后续也就没有本轮新增的思考文本可供回传。
+
 `reasoning_capture="field_and_tags"` 合并专用 reasoning response 字段与 `<think>`
 内容；`reasoning_capture="field"` 只信任专用字段。两种情况下 thinking tag 都不会残留
 在可见正文中。capture 只控制响应解析，不会改变请求。
@@ -193,6 +203,24 @@ print(capabilities.model_dump())
 报告用 `supported`、`unsupported` 和 `unknown` 描述 Chat、Responses、reasoning、
 effort、输出限制、tools、streaming、structured output 与 `/tokenize`。探测只读取一次
 `/openapi.json` 和 `/version`，随后使用缓存。
+
+Chat 通过 assistant 消息 Schema 分别报告 `replay_reasoning` 和
+`replay_reasoning_content`，支持本地引用和组合定义。字段明确允许时为 `supported`，
+明确禁止时为 `unsupported`，允许扩展或定义不足时为 `unknown`。直接构造能力对象时，
+这两个可选字段默认为 `unknown`。原有 Chat `reasoning` 汇总字段继续描述顶层声明，
+不再作为强度或历史回传的门槛。Responses 保持其 `reasoning` 对象检查，单独声明
+`include_reasoning` 不代表支持该对象。
+
+网关允许消息扩展字段时，显式设置 `chat_reasoning_field="reasoning_content"`
+或 `"reasoning"` 即可尝试发送已有思考。报告仍保留未知状态，并在
+`ModelCallMetadata.fallback_reason` 标记未验证；服务端仍可能拒绝。明确禁止的字段会在
+生成请求发送前失败，兼容 Chat 入口也执行这一检查。已识别服务保留现有自动字段选择，
+未知网关使用 `auto` 时仍省略历史思考。响应出现某个思考字段，不能证明输入接受同名字段，
+也不会改变已配置的回传字段。
+
+运行 `uv run python -m examples.reasoning_gateway` 查看完全离线的
+[网关工具回合示例](../../examples/reasoning_gateway.py)，覆盖不声明顶层 `reasoning`、
+`include_reasoning` 的流式与非流式请求。
 
 自动模式仅在 Responses 支持当前请求所需的全部能力时才优先选择它，包括 tools、
 streaming、structured output 与 reasoning 控制；否则在 Chat 满足请求时选择 Chat，两个
