@@ -1200,8 +1200,7 @@ class OpenAICompatibleProvider:
         stream: bool = False,
     ) -> tuple[dict[str, Any], ModelCallMetadata]:
         reasoning_field = self._resolved_chat_reasoning_field(capabilities)
-        replay_capability = self._chat_replay_capability(request, capabilities)
-        if replay_capability is not None:
+        for replay_capability in self._chat_replay_capabilities(request, capabilities):
             support = getattr(capabilities.chat_completions, replay_capability)
             if support == "unsupported":
                 raise ProviderCapabilityError(
@@ -1209,8 +1208,9 @@ class OpenAICompatibleProvider:
                     + replay_capability + "."
                 )
             if support == "unknown":
+                replay_field = replay_capability.removeprefix("replay_")
                 resolution_reason += (
-                    f" Assistant {reasoning_field} replay is unverified by OpenAPI; "
+                    f" Assistant {replay_field} replay is unverified by OpenAPI; "
                     "using the configured field or existing service adapter."
                 )
         kwargs: dict[str, Any] = {
@@ -1439,13 +1439,28 @@ class OpenAICompatibleProvider:
             return "reasoning"
         return "omit"
 
-    def _chat_replay_capability(
+    def _chat_replay_capabilities(
         self, request: ModelRequest | None, capabilities: ProviderCapabilities,
-    ) -> str | None:
-        if request is None or not any(getattr(item, "reasoning", "") for item in request.items):
-            return None
-        field = self._resolved_chat_reasoning_field(capabilities)
-        return None if field == "omit" else "replay_" + field
+    ) -> tuple[str, ...]:
+        if request is None:
+            return ()
+        messages = self.config.extra_request_args.get("messages")
+        if "messages" not in self.config.extra_request_args:
+            messages = model_request_to_chat(
+                request, reasoning_field=self._resolved_chat_reasoning_field(capabilities),
+            )
+        # Match the client's final shallow JSON overlay, including an explicit
+        # extra_request_args.extra_body replacement of the configured body.
+        body = self.config.extra_request_args.get("extra_body", self.config.extra_body)
+        if isinstance(body, Mapping) and "messages" in body:
+            messages = body["messages"]
+        if not isinstance(messages, (list, tuple)):
+            return ()
+        return tuple(
+            "replay_" + field for field in ("reasoning", "reasoning_content")
+            if any(isinstance(message, Mapping) and message.get("role") == "assistant"
+                   and message.get(field) for message in messages)
+        )
 
     def _declares_include_reasoning(self, protocol: Literal["chat_completions", "responses"]) -> bool:
         document = self._openapi_document or {}
@@ -1579,9 +1594,7 @@ class OpenAICompatibleProvider:
         if protocol == "responses" and replayed_reasoning:
             required.append("reasoning")
         elif protocol == "chat_completions":
-            replay_capability = self._chat_replay_capability(request, capabilities)
-            if replay_capability is not None:
-                required.append(replay_capability)
+            required.extend(self._chat_replay_capabilities(request, capabilities))
         if builtin_effort:
             required.append("reasoning_effort")
         if request is not None and self._effective_max_output_tokens(request) is not None:
@@ -1828,8 +1841,8 @@ def _missing_capabilities(
         name
         for name in required
         if getattr(capabilities, name) != "supported"
-        # A replay field is required only after explicit selection or an existing
-        # service adapter chose it. Open message schemas do not forbid that field.
+        # Replay fields come from explicit selection/overrides or an existing
+        # service adapter. Open message schemas do not forbid those fields.
         and not (name in {"replay_reasoning", "replay_reasoning_content"}
                  and getattr(capabilities, name) == "unknown")
     )

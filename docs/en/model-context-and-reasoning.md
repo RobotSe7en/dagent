@@ -245,6 +245,10 @@ automatic field selection; an unknown gateway in `auto` mode still omits replay.
 Receiving a response field does not prove that the same input field is accepted,
 and does not change the configured replay field.
 
+Replay checks inspect the final assistant messages after configured extra-argument
+overlays. Replacing `messages` changes which replay fields need support; an
+overridden field is not validated against the discarded original history.
+
 Run `uv run python -m examples.reasoning_gateway` for an entirely offline
 [gateway tool exchange](../../examples/reasoning_gateway.py), covering streaming
 and non-streaming requests without top-level `reasoning` or `include_reasoning`.

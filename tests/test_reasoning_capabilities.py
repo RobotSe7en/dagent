@@ -258,7 +258,10 @@ async def test_request_composition_and_nested_refs_are_inspected():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("declared", [False, {"type": "string"}, {"$ref": "#/components/schemas/Missing"}])
+@pytest.mark.parametrize("declared", [
+    False, {"type": "string"}, {"$ref": "#/components/schemas/Missing"},
+    {"type": "boolean", "const": False}, {"type": "boolean", "enum": [False]},
+])
 async def test_include_switch_requires_a_supported_boolean_property(declared):
     spec = gateway_schema()
     spec["components"]["schemas"]["ChatRequest"]["properties"]["include_reasoning"] = declared
@@ -340,3 +343,34 @@ async def test_gateway_tool_exchange_replays_without_reexecuting_tool(tmp_path, 
     assert result["model_requests"] == 2
     assert result["tool_executions"] == 1
     assert result["output"] == "gateway-value-42"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", [
+    {"extra_body": {"messages": [{"role": "user", "content": "replacement"}]}},
+    {"extra_request_args": {"messages": [{"role": "user", "content": "replacement"}]}},
+    {"extra_body": {"messages": [{"role": "assistant", "reasoning_content": "discarded"}]},
+     "extra_request_args": {"extra_body": {"messages": [{"role": "user", "content": "replacement"}]}}},
+    {"extra_body": {"messages": [{"role": "user", "content": "replacement"}]},
+     "extra_request_args": {"messages": [{"role": "assistant", "reasoning_content": "discarded"}]}},
+])
+async def test_replay_validation_respects_final_message_overrides(extra):
+    spec = gateway_schema({"type": "object", "additionalProperties": False,
+                           "properties": {"role": {}, "content": {}, "tool_calls": {}}})
+    async with endpoint(spec=spec, chat_reasoning_field="reasoning_content", **extra) as (provider, posts):
+        response = await provider.complete(_request())
+    assert response.content == "done"
+    assert json.loads(posts[0].content)["messages"] == [{"role": "user", "content": "replacement"}]
+    assert response.metadata.request_reasoning.serialized_items == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_replay_validation_checks_actual_overridden_fields(stream):
+    spec = gateway_schema({"properties": {"reasoning": {}, "reasoning_content": False}})
+    async with endpoint(spec=spec, chat_reasoning_field="reasoning", extra_body={"messages": [
+        {"role": "assistant", "content": "previous", "reasoning_content": "forbidden"},
+    ]}) as (provider, posts):
+        with pytest.raises(ProviderCapabilityError, match="replay_reasoning_content"):
+            await invoke(provider, _simple_request(), stream)
+        assert posts == []

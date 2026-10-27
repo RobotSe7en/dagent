@@ -25,6 +25,7 @@ def schema_field_support(
 
     This is not a payload validator. Unsupported constraints and unresolved
     references remain unknown rather than establishing model capabilities.
+    Boolean switch inspection checks whether enabling the switch is allowed.
     """
     evidence = _inspect(document, schema, path, value_type, assistant, frozenset())
     if evidence is None:
@@ -130,6 +131,11 @@ def _local(
     if any(key in schema for key in ("not", "if", "then", "else", "unevaluatedProperties")):
         return _Evidence("unknown")
     if not path:
+        if value_type == "boolean":
+            if "const" in schema and schema["const"] is not True:
+                return _Evidence("unsupported")
+            if isinstance(schema.get("enum"), list) and not any(value is True for value in schema["enum"]):
+                return _Evidence("unsupported")
         return _Evidence("supported")
     head, *tail = path
     if head == "[]":

@@ -218,6 +218,9 @@ Chat 通过 assistant 消息 Schema 分别报告 `replay_reasoning` 和
 未知网关使用 `auto` 时仍省略历史思考。响应出现某个思考字段，不能证明输入接受同名字段，
 也不会改变已配置的回传字段。
 
+回传检查以额外参数覆盖后实际发送的 assistant 消息为准。替换 `messages` 后，按替换后的
+思考字段判断，不会继续依据已被覆盖的原始历史拒绝请求。
+
 运行 `uv run python -m examples.reasoning_gateway` 查看完全离线的
 [网关工具回合示例](../../examples/reasoning_gateway.py)，覆盖不声明顶层 `reasoning`、
 `include_reasoning` 的流式与非流式请求。
