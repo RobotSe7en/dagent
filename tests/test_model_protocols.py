@@ -31,6 +31,7 @@ def _openapi(*, responses_output: bool = True, tokenize: bool = True) -> dict:
         "tools": {},
         "stream": {},
         "reasoning": {},
+        "include_reasoning": {},
         "text": {},
     }
     if responses_output:

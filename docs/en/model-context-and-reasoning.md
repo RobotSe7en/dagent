@@ -108,6 +108,20 @@ or `max`. By default the SDK sends it as `reasoning_effort` to Chat or
 `reasoning.effort` to Responses. Model support is still determined by the model served by vLLM.
 Token-based reasoning budgets are not part of the SDK contract.
 
+Since 0.10.3, effort, assistant replay, and response inclusion are checked
+independently. Setting Chat `reasoning_effort` requires that parameter, not a
+top-level `reasoning` or `include_reasoning` field. Existing reasoning may be
+replayed even when effort is unset or is `"none"`; the context replay policy and
+selected message field determine what is sent.
+
+The SDK only adds `include_reasoning=True` to calls that previously generated
+it when the selected endpoint explicitly declares a compatible boolean field.
+An open request schema alone is not such a declaration. This optional switch
+controls whether the response contains reasoning text, not effort or acceptance
+of assistant history. Explicit extra parameters retain their precedence, and
+mapped controls do not automatically add the switch. If a service suppresses
+reasoning in its response, there is no new reasoning text to replay later.
+
 `reasoning_capture="field_and_tags"` combines the dedicated response reasoning
 field with `<think>` content. `reasoning_capture="field"` trusts only the
 dedicated field. In both cases thinking tags are removed from visible assistant
@@ -211,6 +225,33 @@ print(capabilities.model_dump())
 The report uses `supported`, `unsupported`, and `unknown` for Chat, Responses,
 reasoning, effort, output limits, tools, streaming, structured output, and `/tokenize`.
 Discovery reads `/openapi.json` and `/version` once and caches the result.
+
+Chat reports `replay_reasoning` and `replay_reasoning_content` separately by
+inspecting the assistant message schema, including local references and schema
+compositions. An explicitly allowed field is `supported`, a clearly forbidden
+field is `unsupported`, and open or incomplete definitions are `unknown`.
+These optional report fields default to `unknown` when constructing capabilities
+directly. The older Chat `reasoning` summary continues to describe top-level
+declarations; it is not the gate for effort or assistant replay. Responses retains
+its `reasoning` object check; `include_reasoning` alone does not establish it.
+
+For a gateway with an open assistant schema, explicitly set
+`chat_reasoning_field="reasoning_content"` (or `"reasoning"`) to send stored
+reasoning. Unknown support remains unknown in the report and is marked unverified
+in `ModelCallMetadata.fallback_reason`; the server may still reject it. A field
+that is explicitly forbidden fails before generation, including through the
+compatibility Chat entrypoints. Recognized service adapters retain their existing
+automatic field selection; an unknown gateway in `auto` mode still omits replay.
+Receiving a response field does not prove that the same input field is accepted,
+and does not change the configured replay field.
+
+Replay checks inspect the final assistant messages after configured extra-argument
+overlays. Replacing `messages` changes which replay fields need support; an
+overridden field is not validated against the discarded original history.
+
+Run `uv run python -m examples.reasoning_gateway` for an entirely offline
+[gateway tool exchange](../../examples/reasoning_gateway.py), covering streaming
+and non-streaming requests without top-level `reasoning` or `include_reasoning`.
 
 Auto selection prefers Responses only when it supports every capability needed
 by the current request, including tools, streaming, structured output, and

@@ -5,7 +5,50 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current stable package version is `0.10.2`.
+The current stable package version is `0.10.3`.
+
+## 0.10.3
+
+Install with `pip install --upgrade 'dagent-ai==0.10.3'`.
+
+### Reasoning capability discovery
+
+This release applies the maintainer-approved reasoning checks directly, without
+a new configuration switch. Chat effort depends on `reasoning_effort`, while
+history replay depends on the selected assistant message field. Gateways that
+declare effort but omit top-level `reasoning` and `include_reasoning` no longer
+fail the effort preflight. An explicitly configured replay field may be sent
+when an open or incomplete message schema leaves support unknown; the capability
+report stays unknown and call diagnostics mark it unverified. Explicitly forbidden
+fields still fail before generation, including compatibility Chat entrypoints.
+Removing effort or using `"none"` does not itself delete stored reasoning.
+
+`ProtocolCapabilities` adds optional `replay_reasoning` and
+`replay_reasoning_content` fields, both defaulting to `unknown`. Existing
+constructors remain valid. Consumers validating capability reports with their own
+closed schemas should accept these two fields. Existing conversation/checkpoint
+formats, replay policies and response parsing are unchanged; no persisted-record
+migration is needed.
+
+The SDK only auto-adds `include_reasoning=True` where the endpoint explicitly
+declares a compatible field. Previously it was generated for built-in Chat effort
+and vLLM Responses effort regardless of that declaration. Explicit extra
+parameters keep their precedence. A service that needs this switch but omits it
+from OpenAPI should declare it or configure `extra_body={"include_reasoning": True}`.
+Mapped controls continue not to generate it. Responses no longer treats this
+response switch alone as evidence for its `reasoning` object.
+
+These corrections can change protocol selection or turn a preflight rejection
+into a request that the service may reject. They do not add effort downgrades,
+history omission or cross-protocol retries. Existing recognized service field
+selection remains unchanged; unknown gateways should explicitly configure their
+replay field. See [Model Context and Reasoning](model-context-and-reasoning.md)
+and run `uv run python -m examples.reasoning_gateway` for an offline example.
+
+Verification covers wire-level reasoning controls, open/closed and composed
+message schemas, streaming, compaction and tool continuation, plus the complete
+SDK test suite. Actual model support and gateway forwarding still require
+deployment-specific verification; no live model requests are part of this release.
 
 ## 0.10.2
 

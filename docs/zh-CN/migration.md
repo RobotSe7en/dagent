@@ -4,7 +4,38 @@
 
 ## 当前发布线
 
-当前稳定包版本为 `0.10.2`。
+当前稳定包版本为 `0.10.3`。
+
+## 0.10.3
+
+使用 `pip install --upgrade 'dagent-ai==0.10.3'` 安装。
+
+### 推理能力探测
+
+本版本直接应用维护者确认的能力判断修复，不新增配置开关。Chat 强度只取决于
+`reasoning_effort`，历史回传取决于所选 assistant 消息字段。网关已声明强度却没有顶层
+`reasoning`、`include_reasoning` 时，不再因缺少这些字段而拒绝强度请求。消息 Schema
+开放或不完整、回传支持未知时，可以尝试发送显式配置的字段；能力报告仍为未知，调用诊断
+标记未验证。明确禁止的字段仍在生成前拒绝，包括兼容 Chat 入口。未设置强度或使用
+`"none"` 本身不会删除已有历史思考。
+
+`ProtocolCapabilities` 新增可选的 `replay_reasoning`、`replay_reasoning_content`，
+均默认为 `unknown`，旧构造方式保持有效。使用自有封闭 Schema 验证能力报告的调用方
+应允许这两个字段。会话和检查点格式、回放策略、响应解析保持不变，无需迁移持久化记录。
+
+SDK 仅在接口明确声明兼容字段时自动添加 `include_reasoning=True`；此前 Chat 内置
+强度请求和 vLLM Responses 强度请求不论是否声明都会添加。显式额外参数优先级不变。
+服务需要这个开关却没有在 OpenAPI 中声明时，应补齐声明，或显式设置
+`extra_body={"include_reasoning": True}`。映射控制仍不自动添加该开关。Responses
+也不再仅凭响应开关声明就认定支持其 `reasoning` 对象。
+
+这些修正可能改变协议选择，或把原本的预检拒绝变成由服务端接受或拒绝的请求；不会新增
+强度降档、删除历史或跨协议重发。已识别服务的字段选择保持不变，未知网关应显式配置
+回传字段。参阅[模型上下文与推理](model-context-and-reasoning.md)，可运行
+`uv run python -m examples.reasoning_gateway` 查看离线示例。
+
+验证覆盖实际请求参数、开放／封闭及组合消息 Schema、流式、压缩、工具续接和完整 SDK
+测试。具体模型支持及网关转发仍需部署联调；本版本发布验证不发送真实模型请求。
 
 ## 0.10.2
 

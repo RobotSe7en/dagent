@@ -17,6 +17,7 @@ credentials.
 | `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/en/agents.md), [Capabilities](../docs/en/capabilities.md) |
 | `model_failure.py` | Inspect retained tool errors and an inert reasoning-only final response. | [Model contracts](../docs/en/model-context-and-reasoning.md), [Results](../docs/en/results-streaming-review.md) |
 | `reasoning_mapping.py` | Map request field paths and string effort names for Chat, Responses, and compaction using an offline endpoint. | [Reasoning mappings](../docs/en/model-context-and-reasoning.md#custom-reasoning-fields-and-effort-names) |
+| `reasoning_gateway.py` | Send effort and replay assistant reasoning through an open-schema gateway, with streaming and one tool execution, entirely offline. | [Capability discovery](../docs/en/model-context-and-reasoning.md#capability-discovery-and-protocol-selection) |
 | `prepared_count_reprepare.py` | Handle a synthetic render rejection in a host wrapper; let the SDK prepare, count, and budget the replacement before sending it. | [Provider wrappers](../docs/en/model-context-and-reasoning.md#provider-wrappers-and-observations) |
 | `cache_usage.py` | Inspect opt-in synthetic cache counts, explicit zero and unknown usage through Chat, Responses, and streaming without network access. | [Prompt cache usage](../docs/en/model-context-and-reasoning.md#prompt-cache-usage) |
 | `context_management.py` | Observe request usage and fixed-heading Markdown checkpoints with source aliases through repeated offline cache-aware compaction, then restore source archives into another workspace. | [Long-running ToolAgent context](../docs/en/model-context-and-reasoning.md) |
@@ -42,6 +43,7 @@ credentials.
 uv run python -m examples.tool_agent
 uv run python -m examples.model_failure
 uv run python -m examples.reasoning_mapping
+uv run python -m examples.reasoning_gateway
 uv run python -m examples.prepared_count_reprepare
 uv run python -m examples.cache_usage
 uv run python -m examples.context_management
