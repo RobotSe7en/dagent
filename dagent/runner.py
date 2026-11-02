@@ -71,6 +71,7 @@ from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.conversation_resources import ConversationResourceError
 from dagent.harness_runtime.dag_design import design_dag as design_dag_candidate
 from dagent.harness_runtime.planner_skill import load_dag_generation_skill
+from dagent.harness_runtime.runtime import _new_run_id_for_mode
 from dagent.harness_runtime.steering import (
     RunSteeringControl,
     run_steering_context,
@@ -855,11 +856,15 @@ class Runner:
         *,
         skill_names: tuple[str, ...] | None = None,
         runtime_directory: str | None = None,
+        runtime_workspaces: tuple[Path, ...] = (),
     ) -> Iterator[None]:
         directory = self._runtime.runtime_directory if runtime_directory is None else runtime_directory
         with (
             runtime_storage_context(directory),
-            self._execution_scope(execution, skill_names=skill_names, runtime_directory=directory),
+            self._execution_scope(
+                execution, skill_names=skill_names, runtime_directory=directory,
+                runtime_workspaces=runtime_workspaces,
+            ),
         ):
             yield
 
@@ -870,6 +875,7 @@ class Runner:
         *,
         skill_names: tuple[str, ...] | None = None,
         runtime_directory: str,
+        runtime_workspaces: tuple[Path, ...] = (),
     ) -> Iterator[None]:
         """Enter run-scoped execution context; for sandbox, manage the container."""
         if execution != "sandbox":
@@ -886,6 +892,7 @@ class Runner:
             workspace_root=workspace,
             skill_dirs=self._sandbox_skill_dirs(skill_names),
             runtime_directory=runtime_directory,
+            runtime_workspaces=runtime_workspaces,
         )
         try:
             with (
@@ -1361,11 +1368,20 @@ class Runner:
             if isinstance(target, (AutoAgent, ToolAgent, DagAgent))
             else None
         )
+        runtime_workspaces: tuple[Path, ...] = ()
+        if resolved_execution == "sandbox" and Path(self.runtime_directory).is_absolute():
+            # Mount the run namespace before the container starts. The runtime
+            # still creates the run workspace and enforces its usual checks.
+            run_id = run_id or _new_run_id_for_mode("tool")
+            runtime_workspaces = (
+                resolved_workspace_path or self._resolve_run_workspace_root(workspace_root) / run_id,
+            )
         usage_tracker = ExecutionUsageTracker()
         with (
             self._run_scope(
                 resolved_execution,
                 skill_names=skill_names,
+                runtime_workspaces=runtime_workspaces,
             ),
             execution_usage_scope(usage_tracker),
             self._steering_scope(on_event) as steering_on_event,
@@ -2027,6 +2043,7 @@ class Runner:
                     resolved_execution,
                     skill_names=plan.skill_ids,
                     runtime_directory=plan.runtime_directory,
+                    runtime_workspaces=(Path(resume_state.workspace_path),) if resume_state.workspace_path else (),
                 ),
                 execution_usage_scope(usage_tracker),
             ):

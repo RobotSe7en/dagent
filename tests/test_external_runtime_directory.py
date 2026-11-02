@@ -130,6 +130,60 @@ def test_shell_output_is_external_and_workspaces_are_isolated(tmp_path):
         runner.close()
 
 
+@pytest.mark.parametrize("symlink_path", [".runtime", ".runtime/results"])
+def test_external_results_ignore_workspace_runtime_symlinks(tmp_path, symlink_path):
+    workspace = tmp_path / "workspace"
+    target = workspace / "existing"
+    target.mkdir(parents=True)
+    marker = target / "keep.txt"
+    marker.write_text("workspace data")
+    link = workspace / symlink_path
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target, target_is_directory=True)
+    body = "retained result\n" * 300
+
+    @dagent.tool
+    def report() -> str:
+        return body
+
+    runner = dagent.Runner(
+        workspace=workspace, runtime_directory=tmp_path / "private",
+        provider=MockProvider([
+            ChatResponse(tool_calls=[ToolCall(id="report", name="tool_report", arguments={})]),
+            ChatResponse(content="saved"),
+        ]), capabilities=[report], result_storage_policy=dagent.ResultStoragePolicy(max_inline_bytes=1024),
+    )
+    try:
+        result = run(runner.run(
+            dagent.ToolAgent(profile="conversation", capabilities=["tool.report"]),
+            input="report", workspace_path=workspace,
+        ))
+        assert result.status == "completed"
+        reference = results(result)[0].content
+        saved = runner.resolve_runtime_path(reference.path, workspace_path=workspace)
+        assert saved.is_relative_to(tmp_path / "private")
+        assert saved.read_text() == body
+        assert runner.resolve_runtime_path(workspace / reference.path, workspace_path=workspace) == saved
+        read = run(runner.test_capability(
+            "tool.read_file", {"path": reference.path, "offset_chars": 0, "limit_chars": 20},
+            boundary=dagent.Boundary(allowed_paths=[".runtime"]),
+        ))
+        assert read.status == "completed"
+        assert read.content == body[:20]
+        denied = run(runner.test_capability(
+            "tool.read_file", {"path": reference.path},
+            boundary=dagent.Boundary(allowed_paths=["other"]),
+        ))
+        assert denied.stop_reason == "BoundaryViolation"
+        blocked = run(runner.test_capability("tool.write_file", {"path": reference.path, "content": "replace"}))
+        assert blocked.stop_reason == "HardBoundaryViolation"
+        assert saved.read_text() == body
+        assert link.is_symlink()
+        assert marker.read_text() == "workspace data"
+    finally:
+        runner.close()
+
+
 def test_static_dag_passes_externalized_values_to_dependents(tmp_path):
     body = {"rows": list(range(1000))}
 
@@ -242,7 +296,12 @@ def test_sandbox_mounts_run_resources_and_worker_uses_external_directory(tmp_pat
     session = SandboxSession(dagent.DockerSandboxConfig(), workspace_root=workspace, runtime_directory=str(private))
     skeleton = build_skeleton(tmp_path / "skeleton")
     volumes = session._volumes(skeleton)
-    assert volumes[str(private / "runs")]["mode"] == "rw"
+    runtime_root = RuntimePaths(workspace, str(private)).root
+    assert volumes[str(runtime_root)] == {"bind": str(runtime_root), "mode": "rw"}
+    other = ResultStore(tmp_path / "other", str(private))
+    other_ref = other.save_text("private", "another workspace's data")
+    other_file = other.paths.resolve(other_ref.path)
+    assert not any(other_file.is_relative_to(source) for source in volumes)
     assert str(private / "conversations") not in volumes
     output = _run_worker(skeleton, "shell", {
         "command": "printf sandbox", "cwd": str(workspace),
@@ -252,6 +311,55 @@ def test_sandbox_mounts_run_resources_and_worker_uses_external_directory(tmp_pat
     ref = dagent.ContentReference.model_validate(output["content_reference"])
     assert "sandbox" in RuntimePaths(workspace, str(private)).resolve(ref.path).read_text()
     assert not (workspace / ".runtime").exists()
+
+
+@pytest.mark.parametrize("exact_workspace", [False, True])
+def test_sandbox_run_mounts_its_external_namespace(tmp_path, monkeypatch, exact_workspace):
+    from tests.test_sandbox import _FakeClient, _FakeContainer, _ok_exec, _patch_docker, _run_worker
+    import base64
+    import json
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    private = tmp_path / "private"
+    other = ResultStore(tmp_path / "other", str(private))
+    other_file = other.paths.resolve(other.save_text("private", "other workspace").path)
+    container = _FakeContainer(_ok_exec())
+    client = _FakeClient(present={dagent.DockerSandboxConfig().image}, container=container)
+    _patch_docker(monkeypatch, client)
+
+    def execute_worker(command, user=None, demux=False):
+        request = json.loads(base64.b64decode(command[-1]))
+        args = request["args"]
+        root = RuntimePaths(Path(args["_dagent_result_context"]["workspace"]), str(private)).root
+        volumes = client.containers.run_kwargs["volumes"]
+        assert volumes[str(root)] == {"bind": str(root), "mode": "rw"}
+        assert not any(other_file.is_relative_to(source) for source in volumes)
+        skeleton = next(Path(source) for source, mount in volumes.items() if mount["bind"] == "/opt/dagent-sandbox")
+        output = _run_worker(skeleton, request["tool"], args)
+        return 0, (json.dumps(output).encode(), b"")
+
+    monkeypatch.setattr(container, "exec_run", execute_worker)
+    runner = dagent.Runner(
+        workspace=workspace, runtime_directory=private,
+        provider=MockProvider([
+            ChatResponse(tool_calls=[ToolCall(id="shell", name="tool_shell", arguments={"command": "printf sandbox"})]),
+            ChatResponse(content="saved"),
+        ]),
+    )
+    try:
+        result = run(runner.run(
+            dagent.ToolAgent(profile="conversation"), input="shell", execution="sandbox",
+            workspace_path=workspace / "exact" if exact_workspace else None,
+        ))
+        assert result.status == "completed"
+        item = results(result)[0]
+        assert item.status == "completed"
+        reference = item.content
+        assert isinstance(reference, dagent.ContentReference)
+        assert "sandbox" in runner.resolve_runtime_path(reference.path, workspace_path=result.workspace_path).read_text()
+    finally:
+        runner.close()
 
 
 @pytest.mark.asyncio

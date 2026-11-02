@@ -60,6 +60,7 @@ async def main() -> None:
             item = next(item for item in continued.conversation.items if isinstance(item, dagent.ToolResultMessage))
             reference = item.content
             assert isinstance(reference, dagent.ContentReference)
+            # The resolver also handles an existing .runtime symlink in the workspace.
             physical = second.resolve_runtime_path(reference.path, workspace_path=next_workspace)
             assert physical.read_text() == REPORT
             read = await second.test_capability("tool.read_file", {

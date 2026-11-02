@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path, PurePosixPath
 
 
@@ -70,16 +71,16 @@ class RuntimePaths:
         return self.root if self.external else self.workspace
 
     def resolve(self, path: str | Path) -> Path:
-        logical = (self.workspace / path).resolve()
-        logical.relative_to(self.workspace)
-        if not self.external:
-            return logical
-        try:
+        # The external namespace is virtual: workspace symlinks must not
+        # redirect it before it is mapped to physical storage.
+        logical = Path(os.path.abspath(self.workspace / path))
+        if self.is_runtime_path(logical):
             relative = logical.relative_to(self.logical_root)
-        except ValueError:
-            return logical
-        target = (self.root / relative).resolve()
-        target.relative_to(self.root)
+            target = (self.root / relative).resolve()
+            target.relative_to(self.root)
+            return target
+        target = (self.workspace / path).resolve()
+        target.relative_to(self.workspace)
         return target
 
     def relative(self, path: Path) -> str:
@@ -96,7 +97,7 @@ class RuntimePaths:
         if not self.external:
             return False
         try:
-            (self.workspace / path).resolve().relative_to(self.logical_root)
+            Path(os.path.abspath(self.workspace / path)).relative_to(self.logical_root)
         except ValueError:
             return False
         return True

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import re
 import shlex
 
+from dagent.capabilities.tools.runtime_paths import RuntimePaths
 from dagent.schemas import Boundary
 
 
@@ -166,6 +168,8 @@ def _resolve_against_workspace(path: str | Path, workspace_root: Path) -> Path:
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = workspace_root / candidate
+    if RuntimePaths.current(workspace_root).is_runtime_path(candidate):
+        return Path(os.path.abspath(candidate))
     return candidate.resolve()
 
 

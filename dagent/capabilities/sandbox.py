@@ -121,11 +121,13 @@ class SandboxSession:
         workspace_root: Path,
         skill_dirs: tuple[Path, ...] = (),
         runtime_directory: str = ".runtime",
+        runtime_workspaces: tuple[Path, ...] = (),
     ) -> None:
         self.config = config
         self.workspace_root = Path(workspace_root).resolve()
         self.skill_dirs = tuple(dict.fromkeys(Path(d).resolve() for d in skill_dirs))
         self.runtime_paths = RuntimePaths(self.workspace_root, runtime_directory)
+        self.runtime_workspaces = runtime_workspaces
         self._lock = threading.Lock()
         self._container: Any | None = None
         self._skeleton_dir: Path | None = None
@@ -188,10 +190,12 @@ class SandboxSession:
             str(skeleton): {"bind": SKELETON_BIND, "mode": "ro"},
         }
         if self.runtime_paths.external:
-            runtime_runs = (self.runtime_paths.base / "runs").resolve()
-            runtime_runs.relative_to(self.runtime_paths.base)
-            runtime_runs.mkdir(parents=True, exist_ok=True)
-            volumes[str(runtime_runs)] = {"bind": str(runtime_runs), "mode": "rw"}
+            for workspace in (self.workspace_root, *self.runtime_workspaces):
+                workspace = Path(workspace).resolve()
+                workspace.relative_to(self.workspace_root)
+                runtime_root = RuntimePaths(workspace, self.runtime_paths.directory).root
+                runtime_root.mkdir(parents=True, exist_ok=True)
+                volumes[str(runtime_root)] = {"bind": str(runtime_root), "mode": "rw"}
         for skill_dir in self.skill_dirs:
             # identity mount; skip if nested under the workspace (already mounted)
             if skill_dir == self.workspace_root or str(skill_dir).startswith(f"{self.workspace_root}/"):

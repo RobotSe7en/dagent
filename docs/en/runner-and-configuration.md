@@ -88,8 +88,10 @@ Result references retain logical, workspace-relative `.runtime/...` paths.
 Built-in `read_file`, `grep`, and `list_files` resolve those paths into the
 external store while applying the existing read boundary. File tools cannot
 write this logical namespace. No symlink or `.runtime` placeholder is created
-in the workspace. Shell commands operate on the actual filesystem and cannot
-use those logical paths; use the file tools to inspect retained results.
+in the workspace. Existing workspace symlinks under `.runtime` do not redirect
+runtime references away from the external store. Shell commands operate on the
+actual filesystem and cannot use those logical paths; use the file tools to
+inspect retained results.
 For host-side access use:
 
 ```python
@@ -106,8 +108,10 @@ and persisting conversation/checkpoint records.
 
 An absolute directory changes storage location, not process permissions.
 Local shell commands retain the host process's access. Docker execution mounts
-the store's `runs/` directory read-write for tool workers; it does not mount
-`conversations/`. Sandbox startup therefore creates `runs/` when needed.
+only the runner workspace's and current run workspace's
+`runs/<workspace-key>/` directories read-write for tool workers; it does not mount
+the shared `runs/` parent or `conversations/`. Sandbox startup creates the mounted
+namespaces when needed.
 Use host permissions and sandbox policy when deletion must be prevented.
 
 ### Choose a run workspace

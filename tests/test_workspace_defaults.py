@@ -471,7 +471,7 @@ def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
     class FakeSandboxSession:
         instances = []
 
-        def __init__(self, _config, *, workspace_root: Path, skill_dirs=(), runtime_directory=".runtime") -> None:
+        def __init__(self, _config, *, workspace_root: Path, skill_dirs=(), runtime_directory=".runtime", runtime_workspaces=()) -> None:
             assert runtime_directory == ".runtime"
             self.workspace_root = Path(workspace_root).resolve()
             self.skill_dirs = tuple(skill_dirs)

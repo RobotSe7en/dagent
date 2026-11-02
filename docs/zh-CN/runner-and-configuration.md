@@ -72,7 +72,8 @@ runner = dagent.Runner(
 
 结果引用仍使用逻辑上的工作区相对路径 `.runtime/...`。内置 `read_file`、`grep` 和
 `list_files` 在现有读取 boundary 检查后，映射到外置存储；文件工具不能写入这个逻辑命名空间。
-SDK 不在工作区创建软链接或 `.runtime` 占位目录。Shell 操作真实文件系统，不能使用这些
+SDK 不在工作区创建软链接或 `.runtime` 占位目录；工作区内 `.runtime` 下已有的软链接
+不会改变运行资源引用到外置存储的映射。Shell 操作真实文件系统，不能使用这些
 逻辑路径读取资源；请用文件工具检查保存的结果。宿主直接访问资源文件时使用：
 
 ```python
@@ -86,8 +87,9 @@ saved_path = runner.resolve_runtime_path(
 冻结的设置续跑。宿主仍负责保留存储文件，以及持久化 conversation/checkpoint 记录。
 
 绝对目录只改变存储位置，不改变进程权限。本地 shell 仍拥有宿主进程的访问权限。
-Docker 执行为工具 worker 将外置存储的 `runs/` 挂载为可读写，不挂载 `conversations/`；
-因此沙箱启动会按需创建 `runs/`。需要防止删除时，仍应通过宿主权限和沙箱策略约束。
+Docker 执行只为工具 worker 将 Runner 工作区和当前 run workspace 对应的
+`runs/<workspace-key>/` 目录挂载为可读写，不挂载共享的 `runs/` 父目录或 `conversations/`；
+沙箱启动会按需创建这些命名空间。需要防止删除时，仍应通过宿主权限和沙箱策略约束。
 
 ### 选择运行工作区
 
