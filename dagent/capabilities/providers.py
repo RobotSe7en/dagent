@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 import hashlib
 import inspect
@@ -46,6 +46,10 @@ from dagent.capabilities.tools.registry import (
     content_and_value_from_result,
 )
 from dagent.capabilities.tools.shell_tools import ShellExecutionError, shell as builtin_shell
+from dagent.capabilities.tools.file_tools import (
+    read_file as builtin_read_file, grep as builtin_grep, list_files as builtin_list_files,
+)
+from dagent.capabilities.tools.runtime_paths import RuntimePaths
 
 
 class ToolCapabilityProvider:
@@ -685,6 +689,8 @@ def _execute_tool(
         getattr(context, "approved_boundary_invocation_id", None) == invocation.invocation_id
     )
     checked_args = _merge_tool_arguments(tool, invocation.arguments)
+    paths = RuntimePaths.current(workspace_root)
+    _enforce_runtime_tool_paths(tool.action, tool.path_args, checked_args, paths)
     for arg_name in tool.path_args:
         if boundary_override_approved:
             checked_args[arg_name] = resolve_path_against_workspace(
@@ -706,10 +712,18 @@ def _execute_tool(
                 workspace_root,
                 checked_args["cwd"],
             )
+    mapped_read = (
+        tool.handler in (builtin_read_file, builtin_grep, builtin_list_files)
+        and paths.is_runtime_path(checked_args["path"])
+    )
+    if mapped_read:
+        checked_args["path"] = paths.resolve(checked_args["path"])
     if tool.handler is builtin_shell:
         checked_args["_dagent_result_context"] = {
             "workspace": str(workspace_root),
-            "runtime_directory": getattr(context, "runtime_directory", ".dagent"),
+            "runtime_directory": (
+                paths.directory if paths.external else getattr(context, "runtime_directory", ".dagent")
+            ),
             "max_bytes": getattr(context, "max_shell_output_bytes", 64 * 1024 * 1024),
         }
     if current_run_execution() == "sandbox":
@@ -732,10 +746,21 @@ def _execute_tool(
             checked_args["_dagent_cancel_event"] = cancellation_event
         result = tool.handler(**checked_args)
     if isinstance(result, ToolOutput):
+        if mapped_read and tool.handler in (builtin_grep, builtin_list_files):
+            physical, logical = str(paths.root), str(paths.logical_root)
+            content = "\n".join(
+                logical + line[len(physical):] if line.startswith(physical) else line
+                for line in result.content.split("\n")
+            )
+            value = (
+                [logical + entry[len(physical):] for entry in result.value]
+                if tool.handler is builtin_list_files else result.value
+            )
+            result = replace(result, content=content, value=value)
         if result.retention and result.retention.get("continuation"):
             cursor = dict(result.retention["continuation"])
             try:
-                cursor["path"] = Path(cursor["path"]).resolve().relative_to(workspace_root).as_posix()
+                cursor["path"] = paths.relative(Path(cursor["path"]).resolve())
             except ValueError:
                 # Reviewed paths outside the workspace retain their checked path.
                 pass
@@ -743,6 +768,15 @@ def _execute_tool(
         return result
     content, value = content_and_value_from_result(result)
     return ToolOutput(content, value)
+
+
+def _enforce_runtime_tool_paths(
+    action: str, path_args: Iterable[str], arguments: dict[str, Any], paths: RuntimePaths,
+) -> None:
+    if action == "write":
+        for name in path_args:
+            if paths.is_runtime_path(arguments[name]):
+                raise HardBoundaryViolation("External runtime resources are read-only to file tools.")
 
 
 def _accepts_cancellation_event(handler: Callable[..., Any]) -> bool:
@@ -776,6 +810,10 @@ def check_tool_boundary_for_review(
     config = definition.config
     checked_args = _merge_definition_arguments(definition, invocation.arguments)
     try:
+        _enforce_runtime_tool_paths(
+            config.get("action", ""), config.get("path_args") or (), checked_args,
+            RuntimePaths.current(workspace_root),
+        )
         for arg_name in config.get("path_args") or ():
             enforce_path_allowed(
                 checked_args[arg_name],

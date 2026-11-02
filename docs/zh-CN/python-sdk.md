@@ -78,6 +78,10 @@ runner = dagent.Runner(
 可把 `extra_system_prompt` 设为非空字符串。Review checkpoint 会冻结当前 run 的初始值。
 参数顺序、适用范围、校验和排除项见[Runner 和配置](runner-and-configuration.md)。
 
+绝对路径 `runtime_directory` 会把 SDK 私有资源放到运行工作区外，结果引用仍使用逻辑路径
+`.runtime/...`。宿主可以调用 `Runner.resolve_runtime_path(path, workspace_path=...)`
+定位真实文件。布局、工具访问和续跑规则见[外置运行存储](runner-and-configuration.md#将-sdk-私有运行文件放到工作区外)。
+
 ## 最小 Tool
 
 ```python

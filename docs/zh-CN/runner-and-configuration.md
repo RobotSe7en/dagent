@@ -36,7 +36,7 @@ runner = dagent.Runner(
 
 `Runner(...)` 不会隐式读取 `config.yaml`。省略时，`workspace` 默认为
 `Path.home() / ".dagent"`，`runtime_directory` 默认为 `.runtime`。
-`runtime_directory` 必须是非空、无路径穿越的相对路径。自行管理存储或隔离边界的 host
+`runtime_directory` 支持绝对路径，也支持非空、无路径穿越的相对路径。自行管理存储或隔离边界的 host
 应显式传入这两个值；如果运行数据只需驻留内存，也可以把 workspace 放在 tmpfs。
 `Runner.from_config(...)` 使用相同的运行路径默认值，不会从 YAML 加载它们。
 
@@ -48,8 +48,50 @@ DagAgent message run 中，内置 file 和 shell tool 的相对路径从当前 r
 - `<run-workspace>/<runtime_directory>/results` 保存外置的 tool/MCP 输出；
 - `<run-workspace>/<runtime_directory>/history` 保存恢复到新 run workspace 的结果资源。
 
-这些目录按需创建。只构造 runner、执行纯文本轮次或保持小结果内联都不会创建它们。
-仅上传附件也不会创建 conversation backing store 或 history 目录。
+这些目录按需创建。只构造 runner 或执行纯文本轮次不会创建它们。
+工具执行可能为恢复需要保存小结果，shell 执行则无论输出大小都会保存。
+仅上传附件不会创建 conversation backing store 或 history 目录。
+
+### 将 SDK 私有运行文件放到工作区外
+
+传入绝对路径 `runtime_directory`，即可把 SDK 管理的结果和恢复资源放到模型工作目录之外：
+
+```python
+runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory="/srv/dagent-runtime",
+    provider=provider,
+)
+```
+
+外置目录包含 `conversations/` 和 `runs/<workspace-key>/{results,history}/`。
+`workspace-key` 是解析后的 run workspace 路径的 SHA-256，不同工作区的结果文件互相隔离；
+复用同一工作区时复用其存储命名空间。相对路径保留原有布局，`../runtime` 等相对路径穿越
+仍被拒绝。绝对路径在构造 Runner 时解析。`from_config` 接受这个显式参数，`derive`
+默认继承它，review checkpoint 会冻结它。
+
+结果引用仍使用逻辑上的工作区相对路径 `.runtime/...`。内置 `read_file`、`grep` 和
+`list_files` 在现有读取 boundary 检查后，映射到外置存储；文件工具不能写入这个逻辑命名空间。
+SDK 不在工作区创建软链接或 `.runtime` 占位目录；工作区内 `.runtime` 下已有的软链接
+不会改变运行资源引用到外置存储的映射。Shell 操作真实文件系统，不能使用这些
+逻辑路径读取资源；请用文件工具检查保存的结果。宿主直接访问资源文件时使用：
+
+```python
+saved_path = runner.resolve_runtime_path(
+    reference.path, workspace_path=result.workspace_path,
+    runtime_directory=result.plan.runtime_directory,
+)
+```
+
+多轮续聊应使用同一个绝对存储目录。改变设置不会自动搬迁已有文件；旧 checkpoint 按其
+冻结的设置续跑。宿主仍负责保留存储文件，以及持久化 conversation/checkpoint 记录。
+
+绝对目录只改变存储位置，不改变进程权限。本地 shell 仍拥有宿主进程的访问权限。
+Docker 执行只为工具 worker 将 Runner 工作区和当前 run workspace 对应的
+`runs/<workspace-key>/` 目录挂载为可读写，不挂载共享的 `runs/` 父目录或 `conversations/`；
+沙箱启动会按需创建这些命名空间。需要防止删除时，仍应通过宿主权限和沙箱策略约束。
+
+### 选择运行工作区
 
 如果应用已经拥有执行目录，可以给 `Runner.run(...)` 或 `Runner.stream(...)` 传入
 `workspace_path=...`。达智会直接使用这个目录运行，不再创建 `<run_id>` 子目录。
@@ -508,8 +550,8 @@ derived = runner.derive(
 )
 ```
 
-派生 runner 默认继承 `runtime_directory`；只有派生 runtime 确实需要另一套私有布局时，
-才传入不同的安全相对路径。
+派生 runner 默认继承 `runtime_directory`；派生 runtime 需要另一套私有布局时，
+可显式传入不同的安全相对路径或绝对存储目录。
 
 派生 runner 拥有自己的 catalog、MCP registrations、skill roots、agent registrations、
 sandbox config 和 validation 设置。默认复用 base provider；传入 `provider=` 时使用新的

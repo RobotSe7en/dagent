@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Any
 
 from dagent.capabilities.tools.registry import ToolOutput
+from dagent.capabilities.tools.runtime_paths import RuntimePaths
 
 
 def collect_output(
@@ -27,11 +28,12 @@ def collect_output(
     stop: Callable[[], None],
 ) -> tuple[ToolOutput, str | None]:
     relative = PurePosixPath(runtime_directory)
-    if relative.is_absolute() or ".." in relative.parts:
+    if ".." in relative.parts and not relative.is_absolute():
         raise ValueError("Invalid result directory.")
     workspace = workspace.resolve()
-    root = workspace.joinpath(*relative.parts, "results").resolve()
-    root.relative_to(workspace)
+    runtime_paths = RuntimePaths(workspace, runtime_directory)
+    root = (runtime_paths.root / "results").resolve()
+    root.relative_to(runtime_paths.boundary)
     lock = threading.Lock()
     tails = [bytearray(), bytearray()]
     handles: list[Any] = [None, None]
@@ -158,7 +160,7 @@ def collect_output(
             target = final
             reference = {
                 "type": "dagent_content_reference",
-                "path": target.relative_to(workspace).as_posix(),
+                "path": runtime_paths.relative(target),
                 "media_type": "text/plain; charset=utf-8",
                 "byte_length": target.stat().st_size,
                 "sha256": digest.hexdigest(),

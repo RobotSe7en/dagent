@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from pathlib import PurePath, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PydanticSchemaGenerationError, PydanticUserError, TypeAdapter
@@ -34,13 +34,15 @@ def validate_extra_system_prompt(value: Any) -> str | None:
 
 
 def validate_runtime_directory(value: Any) -> str:
-    """Return a canonical safe relative runtime directory."""
+    """Return an absolute store or a canonical safe relative runtime directory."""
 
     if not isinstance(value, (str, PurePath)):
         raise ValueError(
             "runtime_directory must be a safe, non-empty relative path."
         )
     raw = str(value)
+    if Path(raw).is_absolute():
+        return str(Path(raw).resolve())
     posix = PurePosixPath(raw)
     windows = PureWindowsPath(raw)
     segments = raw.replace("\\", "/").split("/")

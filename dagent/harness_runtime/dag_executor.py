@@ -29,6 +29,7 @@ from dagent.harness_runtime.capability_executor import (
     CapabilityExecutor,
 )
 from dagent.harness_runtime.result_storage import normalize_capability_result, ResultStorageError
+from dagent.capabilities.tools.runtime_paths import RuntimePaths
 from dagent.harness_runtime.static_agent_review import (
     StaticAgentExecutionControl,
     StaticAgentReviewRequired,
@@ -1138,9 +1139,8 @@ def _load_content_reference(
             "Cannot resolve an externalized capability result without a run workspace."
         )
     root = workspace_path.expanduser().resolve()
-    target = (root / reference.path).resolve()
     try:
-        target.relative_to(root)
+        target = RuntimePaths.current(root).resolve(reference.path)
     except ValueError as exc:
         raise DAGExecutionError(
             "Externalized capability result escapes the run workspace."

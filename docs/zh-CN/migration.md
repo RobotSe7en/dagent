@@ -6,6 +6,18 @@
 
 当前稳定包版本为 `0.10.3`。
 
+## 未发布
+
+`Runner.runtime_directory` 新增显式绝对路径支持，可将工具结果、恢复历史和会话资源
+保存到工作目录外。默认值和相对目录行为不变，仍拒绝相对路径中的 `..`；已有应用无需修改。
+新增 `Runner.resolve_runtime_path` 供宿主解析结果的逻辑路径。
+旧 checkpoint 保留其存储设置；改变设置不会迁移已有资源。
+参见[外置运行存储](runner-and-configuration.md#将-sdk-私有运行文件放到工作区外)，以及
+`uv run python -m examples.external_runtime_directory`。
+
+回归覆盖跨工作区多轮恢复、shell 输出、静态 DAG 值恢复、审核续跑和沙箱 worker。
+Docker 会将外置存储的 run 资源挂载为可读写；目录搬迁本身不会阻止有写权限的进程删除文件。
+
 ## 0.10.3
 
 使用 `pip install --upgrade 'dagent-ai==0.10.3'` 安装。

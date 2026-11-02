@@ -40,6 +40,11 @@ storage = dagent.ResultStoragePolicy(
 结果引用相对于运行工作区，保存在所配置运行目录的 `results` 子目录。
 直接读取能力不可用、路径被拒绝或文件缺失时，模型会得到提示；引用不是永久下载地址。
 
+使用绝对路径 `runtime_directory` 时，引用保留逻辑路径 `.runtime/...`，内置文件工具会
+映射到外置存储。宿主读取真实文件时，使用
+`runner.resolve_runtime_path(reference.path, workspace_path=...)`，不要直接拼接 workspace。
+详见[外置运行存储](runner-and-configuration.md#将-sdk-私有运行文件放到工作区外)。
+
 `tool.read_file` 保留从 1 开始的按行 `offset` 和 `limit`。
 超长单行和精确继续读取可使用 `offset_chars`（从 0 开始的 Unicode 字符位置，
 不包含文件开头的 UTF-8 BOM）和 `limit_chars`（默认 1024）。

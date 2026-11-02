@@ -53,6 +53,12 @@ Result references are relative to the run workspace, under the configured
 runtime directory's `results` directory. The model is told when direct reading
 is unavailable, denied or missing. A reference is not a permanent download URL.
 
+With an absolute `runtime_directory`, references use logical `.runtime/...`
+paths and built-in file tools resolve them into the external store. Host code
+uses `runner.resolve_runtime_path(reference.path, workspace_path=...)` instead
+of joining the reference to the workspace. See
+[external runtime storage](runner-and-configuration.md#store-private-runtime-files-outside-the-workspace).
+
 `tool.read_file` keeps its existing one-based line `offset` and `limit`.
 For long lines and exact continuation, use `offset_chars` (zero-based Unicode
 characters, excluding an initial UTF-8 BOM) and `limit_chars` (default 1024).

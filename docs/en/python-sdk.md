@@ -85,6 +85,12 @@ instruction. Review checkpoints freeze the run's initial value. See
 [Runner and Configuration](runner-and-configuration.md) for ordering, scope,
 validation, and exclusions.
 
+An absolute `runtime_directory` stores SDK-private resources outside the run
+workspace. Their references remain logical `.runtime/...` paths; hosts can call
+`Runner.resolve_runtime_path(path, workspace_path=...)` to locate the physical
+file. See [external runtime storage](runner-and-configuration.md#store-private-runtime-files-outside-the-workspace)
+for the layout, tool access and continuation rules.
+
 ## Minimal Tool
 
 ```python
