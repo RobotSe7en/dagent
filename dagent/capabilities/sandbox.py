@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from dagent.capabilities.tools.registry import ToolOutput
+from dagent.capabilities.tools.runtime_paths import RuntimePaths
 from dagent.schemas import DockerSandboxConfig, SandboxConfig
 
 
@@ -40,6 +41,7 @@ _SKELETON_MODULES = (
     "dagent.capabilities.tools.file_tools",
     "dagent.capabilities.tools.shell_tools",
     "dagent.capabilities.tools.output_capture",
+    "dagent.capabilities.tools.runtime_paths",
     "dagent.capabilities.tools.sandbox_worker",
 )
 
@@ -118,10 +120,12 @@ class SandboxSession:
         *,
         workspace_root: Path,
         skill_dirs: tuple[Path, ...] = (),
+        runtime_directory: str = ".runtime",
     ) -> None:
         self.config = config
         self.workspace_root = Path(workspace_root).resolve()
         self.skill_dirs = tuple(dict.fromkeys(Path(d).resolve() for d in skill_dirs))
+        self.runtime_paths = RuntimePaths(self.workspace_root, runtime_directory)
         self._lock = threading.Lock()
         self._container: Any | None = None
         self._skeleton_dir: Path | None = None
@@ -183,6 +187,11 @@ class SandboxSession:
             str(self.workspace_root): {"bind": str(self.workspace_root), "mode": "rw"},
             str(skeleton): {"bind": SKELETON_BIND, "mode": "ro"},
         }
+        if self.runtime_paths.external:
+            runtime_runs = (self.runtime_paths.base / "runs").resolve()
+            runtime_runs.relative_to(self.runtime_paths.base)
+            runtime_runs.mkdir(parents=True, exist_ok=True)
+            volumes[str(runtime_runs)] = {"bind": str(runtime_runs), "mode": "rw"}
         for skill_dir in self.skill_dirs:
             # identity mount; skip if nested under the workspace (already mounted)
             if skill_dir == self.workspace_root or str(skill_dir).startswith(f"{self.workspace_root}/"):

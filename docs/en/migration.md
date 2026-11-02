@@ -7,6 +7,22 @@ that may require action when upgrading.
 
 The current stable package version is `0.10.3`.
 
+## Unreleased
+
+`Runner.runtime_directory` now explicitly accepts an absolute path to keep
+private tool results, recovery history and conversation resources outside the
+working directory. Defaults and relative-directory behavior are unchanged;
+relative `..` remains invalid. No existing application needs to change.
+`Runner.resolve_runtime_path` resolves logical result paths for host access.
+Old checkpoints keep their storage setting; changing settings does not migrate
+existing resources. See [external runtime storage](runner-and-configuration.md#store-private-runtime-files-outside-the-workspace)
+and `uv run python -m examples.external_runtime_directory`.
+
+Regression coverage includes cross-workspace conversation recovery, shell
+output, static DAG value rehydration, review resume, and the sandbox worker.
+Docker mounts the external store's run resources read-write; relocating storage
+does not itself prevent a process with write access from deleting files.
+
 ## 0.10.3
 
 Install with `pip install --upgrade 'dagent-ai==0.10.3'`.

@@ -52,7 +52,6 @@ def test_runner_defaults_to_home_workspace_and_private_runtime_directory() -> No
         ".",
         "..",
         "../runtime",
-        "/tmp/runtime",
         r"C:\runtime",
         "runtime//state",
         "runtime/./state",
@@ -472,7 +471,8 @@ def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
     class FakeSandboxSession:
         instances = []
 
-        def __init__(self, _config, *, workspace_root: Path, skill_dirs=()) -> None:
+        def __init__(self, _config, *, workspace_root: Path, skill_dirs=(), runtime_directory=".runtime") -> None:
+            assert runtime_directory == ".runtime"
             self.workspace_root = Path(workspace_root).resolve()
             self.skill_dirs = tuple(skill_dirs)
             self.closed = False

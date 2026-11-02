@@ -55,8 +55,7 @@ class RecoveryAccess:
             return False
         store = self.result_store
         try:
-            path = (store.workspace / reference.path).resolve()
-            path.relative_to(store.workspace)
+            path = store.paths.resolve(reference.path)
             if store.read_boundary is not None:
                 enforce_path_allowed(reference.path, store.read_boundary, store.workspace)
             if not path.is_file() or not os.access(path, os.R_OK):

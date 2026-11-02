@@ -19,6 +19,7 @@ from dagent.schemas import (
     UserMessage,
 )
 from dagent.schemas.common import validate_runtime_directory
+from dagent.capabilities.tools.runtime_paths import RuntimePaths
 
 
 class ConversationResourceError(RuntimeError):
@@ -74,10 +75,10 @@ class ConversationResourceStore:
     ) -> None:
         root = Path(workspace_root).expanduser().resolve()
         self.runtime_directory = validate_runtime_directory(runtime_directory)
-        runtime_path = PurePosixPath(self.runtime_directory)
-        self.root = root.joinpath(*runtime_path.parts, "conversations").resolve()
+        self.paths = RuntimePaths(root, self.runtime_directory)
         try:
-            self.root.relative_to(root)
+            self.root = (self.paths.base / "conversations").resolve()
+            self.root.relative_to(self.paths.base if self.paths.external else root)
         except ValueError as exc:
             raise ValueError("runtime_directory escapes the runner workspace.") from exc
         # File identities this store verified, and the content-addressed links
@@ -121,13 +122,13 @@ class ConversationResourceStore:
 
         workspace = Path(workspace_path).expanduser().resolve()
         def retain(reference: ContentReference) -> bytes:
-            source = _resolve_workspace_resource(workspace, reference.path)
+            source = _resolve_workspace_resource(workspace, reference.path, self.runtime_directory)
             data = self._read(source, reference.byte_length, reference.sha256, label=reference.path)
             self._write_object(conversation.id, reference, data)
             return data
 
         def known(reference: ContentReference) -> bool:
-            return (self._known(_resolve_workspace_resource(workspace, reference.path),
+            return (self._known(_resolve_workspace_resource(workspace, reference.path, self.runtime_directory),
                                 reference.byte_length, reference.sha256)
                     and self._known(self._object_path(conversation.id, reference.sha256),
                                     reference.byte_length, reference.sha256))
@@ -152,7 +153,7 @@ class ConversationResourceStore:
         # Frozen displays and compaction records contain exact relative paths.
         # Restore their declared closure without rewriting opaque source text.
         def restore(reference: ContentReference) -> bytes:
-            destination = _resolve_workspace_resource(workspace, reference.path)
+            destination = _resolve_workspace_resource(workspace, reference.path, self.runtime_directory)
             if destination.is_file():
                 return self._read(destination, reference.byte_length, reference.sha256, label=reference.path)
             data = self._read(self._object_path(conversation.id, reference.sha256),
@@ -162,7 +163,7 @@ class ConversationResourceStore:
             return data
 
         def known(reference: ContentReference) -> bool:
-            return self._known(_resolve_workspace_resource(workspace, reference.path),
+            return self._known(_resolve_workspace_resource(workspace, reference.path, self.runtime_directory),
                                reference.byte_length, reference.sha256)
 
         roots = ((ref, kind) for ref, preserve, kind in _resource_roots(conversation) if preserve)
@@ -179,7 +180,7 @@ class ConversationResourceStore:
             existing = materialized.get(sha256)
             if existing is not None:
                 return existing
-            current = _resolve_workspace_resource(workspace, path)
+            current = _resolve_workspace_resource(workspace, path, self.runtime_directory)
             if current.is_file():
                 if not self._known(current, byte_length, sha256):
                     self._read(current, byte_length, sha256, label=path)
@@ -194,11 +195,11 @@ class ConversationResourceStore:
             data = self._read(object_path, byte_length, sha256, label=sha256)
             suffix = _safe_media_suffix(media_type)
             relative = (
-                PurePosixPath(self.runtime_directory)
+                PurePosixPath(self.paths.logical_directory)
                 / "history"
                 / f"{sha256}{suffix}"
             ).as_posix()
-            destination = _resolve_workspace_resource(workspace, relative)
+            destination = _resolve_workspace_resource(workspace, relative, self.runtime_directory)
             _write_verified_file(destination, data)
             self._note(destination, byte_length, sha256)
             materialized[sha256] = relative
@@ -448,15 +449,15 @@ def _remember(cache: dict[Any, Any], key: Any, value: Any) -> None:
         del cache[next(iter(cache))]
 
 
-def _resolve_workspace_resource(workspace: Path, relative: str) -> Path:
-    target = (workspace / PurePosixPath(relative)).resolve()
+def _resolve_workspace_resource(
+    workspace: Path, relative: str, runtime_directory: str | None = None,
+) -> Path:
     try:
-        target.relative_to(workspace)
+        return RuntimePaths.current(workspace, runtime_directory).resolve(relative)
     except ValueError as exc:
         raise ConversationResourceError(
             f"Conversation resource escapes its workspace: {relative}."
         ) from exc
-    return target
 
 
 def _read_verified(

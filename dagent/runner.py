@@ -41,6 +41,7 @@ from dagent.capabilities.sandbox_context import (
 from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider, visible_skills
 from dagent.capabilities.toolsets import BUILTIN_CAPABILITY_IDS
 from dagent.capabilities.workspace import workspace_context
+from dagent.capabilities.tools.runtime_paths import RuntimePaths, runtime_storage_context
 from dagent.dag_builder import Dag
 from dagent.config import (
     DEFAULT_RUNS_DIR,
@@ -853,6 +854,22 @@ class Runner:
         execution: RunExecution,
         *,
         skill_names: tuple[str, ...] | None = None,
+        runtime_directory: str | None = None,
+    ) -> Iterator[None]:
+        directory = self._runtime.runtime_directory if runtime_directory is None else runtime_directory
+        with (
+            runtime_storage_context(directory),
+            self._execution_scope(execution, skill_names=skill_names, runtime_directory=directory),
+        ):
+            yield
+
+    @contextmanager
+    def _execution_scope(
+        self,
+        execution: RunExecution,
+        *,
+        skill_names: tuple[str, ...] | None = None,
+        runtime_directory: str,
     ) -> Iterator[None]:
         """Enter run-scoped execution context; for sandbox, manage the container."""
         if execution != "sandbox":
@@ -868,6 +885,7 @@ class Runner:
             self.sandbox.docker,
             workspace_root=workspace,
             skill_dirs=self._sandbox_skill_dirs(skill_names),
+            runtime_directory=runtime_directory,
         )
         try:
             with (
@@ -885,6 +903,17 @@ class Runner:
 
     def _resolve_run_workspace_root(self, workspace_root: str | Path) -> Path:
         return resolve_run_workspace_root(self._runtime.capability_catalog.workspace_root, workspace_root)
+
+    def resolve_runtime_path(
+        self, path: str | Path, *, workspace_path: str | Path,
+        runtime_directory: str | Path | None = None,
+    ) -> Path:
+        """Resolve a result resource's logical path for host-side file access."""
+        directory = (
+            self.runtime_directory if runtime_directory is None
+            else validate_runtime_directory(runtime_directory)
+        )
+        return RuntimePaths.current(workspace_path, directory).resolve(path)
 
     def _sandbox_skill_dirs(self, skill_names: tuple[str, ...] | None) -> tuple[Path, ...]:
         if not skill_names:
@@ -1997,6 +2026,7 @@ class Runner:
                 self._run_scope(
                     resolved_execution,
                     skill_names=plan.skill_ids,
+                    runtime_directory=plan.runtime_directory,
                 ),
                 execution_usage_scope(usage_tracker),
             ):

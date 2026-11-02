@@ -1118,9 +1118,7 @@ class HistoryCompactor:
 
     def _read_reference(self, ref: ContentReference) -> bytes:
         assert self.result_store is not None
-        target = (self.result_store.workspace / ref.path).resolve()
         try:
-            target.relative_to(self.result_store.workspace)
             if self.result_store.read_boundary is not None:
                 enforce_path_allowed(ref.path, self.result_store.read_boundary, self.result_store.workspace)
             data = self.result_store.read_reference(ref)

@@ -409,7 +409,7 @@ async def _prepare_context(
     def summary_overhead(request: ModelRequest) -> int:
         # Snapshot names have a fixed SHA-256 width. This is only a local text
         # estimate: no fake ContentReference is constructed or persisted.
-        path = ((result_store.snapshot_root.relative_to(result_store.workspace) / ("0" * 64 + ".txt")).as_posix()
+        path = (result_store.paths.relative(result_store.snapshot_root / ("0" * 64 + ".txt"))
                 if result_store else None)
         wrapper = ModelUserInput(source_id="context_summary", content=_summary_context_text("", record_path=path))
         with_wrapper = replace(request, items=(wrapper, *request.items))

@@ -10,7 +10,7 @@ import mimetypes
 import os
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Iterable
 import warnings
@@ -32,6 +32,7 @@ from dagent.schemas.conversation import (
 from dagent.schemas.retention import ResultRetention, ResultStorageWarning
 from dagent.schemas.common import Boundary
 from dagent.capabilities.tools.boundary import enforce_path_allowed, BoundaryViolation
+from dagent.capabilities.tools.runtime_paths import RuntimePaths
 from dagent.harness_runtime.result_projection import result_references
 
 
@@ -71,11 +72,11 @@ class ResultStore:
         read_boundary: Boundary | None = None,
     ) -> None:
         self.workspace = Path(workspace_path).expanduser().resolve()
-        runtime = PurePosixPath(validate_runtime_directory(runtime_directory))
-        self.snapshot_root = self.workspace.joinpath(*runtime.parts, "history").resolve()
-        self.snapshot_root.relative_to(self.workspace)
-        self.root = self.workspace.joinpath(*runtime.parts, "results").resolve()
-        self.root.relative_to(self.workspace)
+        self.paths = RuntimePaths.current(self.workspace, validate_runtime_directory(runtime_directory))
+        self.snapshot_root = (self.paths.root / "history").resolve()
+        self.snapshot_root.relative_to(self.paths.boundary)
+        self.root = (self.paths.root / "results").resolve()
+        self.root.relative_to(self.paths.boundary)
         self.on_event = on_event
         self.read_boundary = read_boundary
         # New strategies share this unchanged-file verification cache for a run;
@@ -91,8 +92,7 @@ class ResultStore:
     def verify_reference(self, reference: ContentReference) -> None:
         """Check each unchanged file once within this store's lifetime."""
 
-        target = (self.workspace / reference.path).resolve()
-        target.relative_to(self.workspace)
+        target = self.paths.resolve(reference.path)
         identity = self._file_identity(target)
         key = (str(target), reference.byte_length, reference.sha256)
         if self._verified_references.get(key) == identity:
@@ -132,14 +132,13 @@ class ResultStore:
         """
 
         self.verify_reference(reference)
-        target = (self.workspace / reference.path).resolve()
+        target = self.paths.resolve(reference.path)
         return self._text_readability[(str(target), reference.byte_length, reference.sha256)]
 
     def read_reference(self, reference: ContentReference) -> bytes:
         """Read an immutable result reference, verifying its stored identity."""
 
-        target = (self.workspace / reference.path).resolve()
-        target.relative_to(self.workspace)
+        target = self.paths.resolve(reference.path)
         identity = self._file_identity(target)
         data = target.read_bytes()
         if len(data) != reference.byte_length:
@@ -162,20 +161,21 @@ class ResultStore:
         data = text.encode("utf-8")
         digest = hashlib.sha256(data).hexdigest()
         root = self.snapshot_root.resolve()
-        root.relative_to(self.workspace)
+        root.relative_to(self.paths.boundary)
         target = (root / f"{digest}.txt").resolve()
         target.relative_to(root)
         if target.exists():
             if target.read_bytes() != data:
                 raise OSError(f"Result snapshot conflicts with existing data: {target}")
             return ContentReference(
-                path=target.relative_to(self.workspace).as_posix(),
+                path=self.paths.relative(target),
                 media_type="text/plain; charset=utf-8", byte_length=len(data),
                 sha256=digest, preview=_head_tail_preview(text),
             )
         return _write_reference(
             self.workspace, root, target.name, data,
             media_type="text/plain; charset=utf-8", preview=_head_tail_preview(text),
+            paths=self.paths,
         )
 
     def can_read(self, item: ToolResultMessage | ResultObservation) -> bool:
@@ -184,8 +184,7 @@ class ResultStore:
             paths.append(item.retention.continuation.path)
         try:
             for path in paths:
-                target = (self.workspace / path).resolve()
-                target.relative_to(self.workspace)
+                target = self.paths.resolve(path)
                 if self.read_boundary is not None:
                     enforce_path_allowed(path, self.read_boundary, self.workspace)
                 if not target.exists() or not os.access(target, os.R_OK):
@@ -205,6 +204,7 @@ class ResultStore:
             data,
             media_type="text/plain; charset=utf-8",
             preview=_head_tail_preview(text),
+            paths=self.paths,
         )
 
     def warning(self, identity: str, field: str, exc: OSError) -> ResultStorageWarning:
@@ -294,8 +294,7 @@ class ResultStore:
 
         def chunks() -> Iterable[bytes]:
             if previous_ref:
-                target = (self.workspace / previous_ref.path).resolve()
-                target.relative_to(self.workspace)
+                target = self.paths.resolve(previous_ref.path)
                 digest = hashlib.sha256()
                 length = 0
                 with target.open("rb") as source:
@@ -344,6 +343,7 @@ class ResultStore:
                 chunks(),
                 media_type="application/x-ndjson",
                 preview="Earlier tool results and calls (JSONL)",
+                paths=self.paths,
             )
         except OSError as exc:
             self.warning("compaction", "manifest", exc)
@@ -371,10 +371,10 @@ def normalize_capability_result(
     """Return a checkpoint-safe result plus model/audit content references."""
 
     workspace = Path(workspace_path).expanduser().resolve()
-    runtime_path = PurePosixPath(validate_runtime_directory(runtime_directory))
-    result_root = workspace.joinpath(*runtime_path.parts, "results").resolve()
+    paths = RuntimePaths.current(workspace, validate_runtime_directory(runtime_directory))
     try:
-        result_root.relative_to(workspace)
+        result_root = (paths.root / "results").resolve()
+        result_root.relative_to(paths.boundary)
     except ValueError as exc:
         raise ValueError("runtime_directory escapes the run workspace.") from exc
     references: list[ContentReference] = []
@@ -424,6 +424,7 @@ def normalize_capability_result(
                 result.invocation_id,
                 index,
                 artifact,
+                paths=paths,
             )
         except OSError as exc:
             raise ResultStorageError(result, f"artifacts[{index}]", exc) from exc
@@ -480,6 +481,7 @@ def normalize_capability_result(
                     limit=min(8192, max(256, policy.max_inline_bytes // 2)),
                 )
             ),
+            paths=paths,
         )
         references.append(value_reference)
         normalized_value = value_reference.model_dump(mode="json")
@@ -543,6 +545,8 @@ def _normalize_artifact(
     invocation_id: str,
     index: int,
     artifact: dict[str, Any],
+    *,
+    paths: RuntimePaths,
 ) -> tuple[dict[str, Any], ContentReference | None]:
     data = artifact.get("data")
     if data is None:
@@ -576,6 +580,7 @@ def _normalize_artifact(
         encoded,
         media_type=media_type,
         preview="",
+        paths=paths,
     )
     normalized = {key: value for key, value in artifact.items() if key != "data"}
     normalized.update(reference.model_dump(mode="json"))
@@ -610,9 +615,11 @@ def _write_reference(
     *,
     media_type: str,
     preview: str,
+    paths: RuntimePaths | None = None,
 ) -> ContentReference:
     return _write_chunks(
-        workspace, root, filename, (data,), media_type=media_type, preview=preview
+        workspace, root, filename, (data,), media_type=media_type, preview=preview,
+        paths=paths,
     )
 
 
@@ -624,6 +631,7 @@ def _write_chunks(
     *,
     media_type: str,
     preview: str,
+    paths: RuntimePaths | None = None,
 ) -> ContentReference:
     root.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256()
@@ -651,7 +659,7 @@ def _write_chunks(
         except FileNotFoundError:
             pass
         raise
-    relative = target.relative_to(workspace).as_posix()
+    relative = (paths or RuntimePaths.current(workspace)).relative(target)
     return ContentReference(
         path=relative,
         media_type=media_type,

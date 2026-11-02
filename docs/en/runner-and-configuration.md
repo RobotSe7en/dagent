@@ -40,8 +40,8 @@ no worker or service loop.
 
 `Runner(...)` does not read `config.yaml` implicitly. When omitted, `workspace`
 defaults to `Path.home() / ".dagent"` and `runtime_directory` defaults to
-`.runtime`. `runtime_directory` must be a non-empty, traversal-free relative
-path. Hosts that own storage or isolation boundaries should pass both values
+`.runtime`. `runtime_directory` accepts an absolute path or a non-empty,
+traversal-free relative path. Hosts that own storage or isolation boundaries should pass both values
 explicitly and may put the workspace on tmpfs when runtime data should remain
 memory-backed. `Runner.from_config(...)` uses the same runtime-path defaults;
 they are not loaded from YAML.
@@ -58,9 +58,59 @@ chosen relative directory:
 - `<run-workspace>/<runtime_directory>/history` holds result resources restored into a
   new run workspace.
 
-These directories are lazy. Constructing a runner, running text-only turns, and
-keeping small results inline do not create them. Uploaded attachments alone do
-not create a conversation backing store or history directory.
+These directories are lazy. Constructing a runner or running text-only turns
+does not create them. Tool execution can save even a small result for recovery;
+shell execution saves its output regardless of size. Uploaded attachments alone
+do not create a conversation backing store or history directory.
+
+### Store private runtime files outside the workspace
+
+Pass an absolute `runtime_directory` to keep SDK-managed results and recovery
+resources outside the model's working directory:
+
+```python
+runner = dagent.Runner(
+    workspace="agent-workspace",
+    runtime_directory="/srv/dagent-runtime",
+    provider=provider,
+)
+```
+
+The store contains `conversations/` and `runs/<workspace-key>/{results,history}/`.
+`workspace-key` is the SHA-256 of the resolved run workspace path, so separate
+workspaces do not share their result files. Reusing the same workspace reuses
+its storage namespace. A relative value keeps the existing layout; relative
+parent traversal such as `../runtime` remains invalid. Absolute paths are
+resolved when the runner is constructed. `from_config` accepts this explicit
+argument, `derive` inherits it unless overridden, and review checkpoints freeze it.
+
+Result references retain logical, workspace-relative `.runtime/...` paths.
+Built-in `read_file`, `grep`, and `list_files` resolve those paths into the
+external store while applying the existing read boundary. File tools cannot
+write this logical namespace. No symlink or `.runtime` placeholder is created
+in the workspace. Shell commands operate on the actual filesystem and cannot
+use those logical paths; use the file tools to inspect retained results.
+For host-side access use:
+
+```python
+saved_path = runner.resolve_runtime_path(
+    reference.path, workspace_path=result.workspace_path,
+    runtime_directory=result.plan.runtime_directory,
+)
+```
+
+Continue conversations with the same absolute store. Existing stored files are
+not automatically moved when this setting changes; resume old checkpoints with
+their frozen storage setting. Hosts remain responsible for preserving the store
+and persisting conversation/checkpoint records.
+
+An absolute directory changes storage location, not process permissions.
+Local shell commands retain the host process's access. Docker execution mounts
+the store's `runs/` directory read-write for tool workers; it does not mount
+`conversations/`. Sandbox startup therefore creates `runs/` when needed.
+Use host permissions and sandbox policy when deletion must be prevented.
+
+### Choose a run workspace
 
 When an application already owns the execution directory, pass
 `workspace_path=...` to `Runner.run(...)` or `Runner.stream(...)`. This uses that
@@ -579,8 +629,8 @@ derived = runner.derive(
 )
 ```
 
-Derived runners inherit `runtime_directory`; pass a different safe relative
-value only when the derived runtime deliberately uses another private layout.
+Derived runners inherit `runtime_directory`; pass another safe relative path or
+an absolute storage directory when the derived runtime needs a different layout.
 
 The derived runner has its own catalog, MCP registrations, skill roots, agent
 registrations, sandbox config, and validation settings. It reuses the base
