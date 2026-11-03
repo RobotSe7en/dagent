@@ -102,6 +102,7 @@ async def main() -> None:
         ChatResponse(tool_calls=[ToolCall(id="report", name="tool_report", arguments={})]),
         ChatResponse(content="The approved report is ready."),
         ChatResponse(content="The earlier report remains available."),
+        ChatResponse(content="The report is available in this workspace too."),
     ])
     with TemporaryDirectory(prefix="dagent-changes-") as temporary:
         root = Path(temporary)
@@ -122,13 +123,16 @@ async def main() -> None:
                 if event.type == "run.finished":
                     assert journal.state == event.data.result.conversation
 
-            restored = journal.reload()
-            result = await runner.run(
-                agent, input="Continue from the saved report.", conversation=restored.state,
-                on_conversation_change=restored.save,
-            )
-            assert restored.state == result.conversation
-            assert restored.reload().state == result.conversation
+            # Restore twice: the third workspace keeps the rebased logical path
+            # but still delivers its new resource location to the host.
+            for workspace in (root / "second", root / "third"):
+                restored = journal.reload()
+                result = await runner.run(
+                    agent, input="Continue from the saved report.", conversation=restored.state,
+                    workspace_path=workspace, on_conversation_change=restored.save,
+                )
+                assert restored.state == result.conversation
+                assert restored.reload().state == result.conversation
             print(result.output_text)
             print(f"Replayed {len(restored.receipts)} batches; revision={restored.state.revision}")
 

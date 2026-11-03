@@ -22,6 +22,7 @@ from dagent.harness_runtime.dag_builder import (
     MAX_EXECUTION_CONTEXT_CHARS,
     context_excerpt,
 )
+from dagent.harness_runtime.dag_executor import _attach_agent_trace
 from dagent.harness_runtime.capability_executor import (
     CapabilityExecutionCallbacks,
     CapabilityExecutionContext,
@@ -535,6 +536,8 @@ class ToolAgentLoop:
         workspace = execution_context.workspace_path or current_workspace_root(self.capability_executor.workspace_root)
 
         changes = current_changes()
+        if changes is not None:
+            changes.trace = trace
         if changes is not None and changes.public:
             changes.publisher.state_factory = lambda: _tool_run_state(
                 run_id=resolved_run_id, status="failed", conversation=loop_conversation,
@@ -734,7 +737,12 @@ class ToolAgentLoop:
                     await observe_tool(item.call.id, invocation.capability_id, "starting")
                     try:
                         result = await self.capability_executor.execute(invocation, context=call_context, callbacks=capability_callbacks)
-                    except ConversationDeliveryFailure:
+                    except ConversationDeliveryFailure as error:
+                        if node is not None and error.trace is not None:
+                            _attach_agent_trace(node, error.trace)
+                            node.status = "failed"
+                            node.error = RunTraceError(code="ConversationChangeError", message=str(error))
+                            node.ended_at = datetime.now(timezone.utc)
                         raise
                     except asyncio.CancelledError:
                         await observe_tool(item.call.id, invocation.capability_id, "outcome_unknown")

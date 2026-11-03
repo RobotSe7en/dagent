@@ -143,6 +143,9 @@ Tool `starting` records a saved execution intention before dispatch, not proof
 of an effect. `completed` and `failed` report known outcomes. If dispatch was
 interrupted without a returned result, `outcome_unknown` preserves that
 uncertainty. No result is invented and tools are never automatically replayed.
+Each `MapNode` invocation follows the same acknowledgment and result-delivery
+rules. Persistence failure stops undispatched work; already running calls may
+still finish, and their execution evidence is retained.
 
 Cancellation stops further advancement and waits for the in-flight callback and
 necessary cleanup deliveries. It may therefore wait on host persistence. This
@@ -166,7 +169,9 @@ for resource in batch.resources:
 
 Save required file bytes before acknowledging references. SDK-created result
 files, received/display snapshots, compaction sources/records, and newly
-materialized references are notified without scanning directories. References
+materialized references are notified without scanning directories. A restored
+workspace location is notified even when its logical path is unchanged; this
+alone does not increase the conversation revision. References
 remain logical even with an absolute external runtime directory. Existing SDK
 backing-store restoration remains responsible for cross-workspace continuation;
 this feature does not add a host file-restoration API or relocate existing data.
@@ -184,6 +189,7 @@ holds the original host error. The result has no resumable checkpoint.
 `data.conversation_change_failure`. The SDK stops further work, including
 quality-validation retries. A completed tool remains completed in execution
 evidence even though the Run failed to persist.
+This includes completed calls inside subgraphs, loop bodies, and delegated agents.
 
 The new callback is disabled by default. `result.conversation`, `new_items`,
 review checkpoints, and full `run.finished` results remain supported. The

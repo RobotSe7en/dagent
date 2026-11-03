@@ -286,7 +286,7 @@ async def test_ready_files_restore_into_another_workspace(tmp_path, external):
 
     provider = MockProvider([
         ChatResponse(tool_calls=[ToolCall(id="report", name="tool_report", arguments={})]),
-        ChatResponse(content="saved"), ChatResponse(content="continued"),
+        ChatResponse(content="saved"), ChatResponse(content="continued"), ChatResponse(content="continued again"),
     ])
     directory = tmp_path / "private" if external else ".runtime"
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, runtime_directory=directory, skill_roots=[],
@@ -300,6 +300,10 @@ async def test_ready_files_restore_into_another_workspace(tmp_path, external):
                                  workspace_path=tmp_path / "second")
         assert host.state == second.conversation
         assert any(workspace == str(tmp_path / "second") for workspace, _ in host.resources)
+        third, _ = await invoke(runner, agent, host, False, input="continue again", conversation=host.state,
+                                workspace_path=tmp_path / "third")
+        assert host.state == third.conversation
+        assert any(workspace == str(tmp_path / "third") for workspace, _ in host.resources)
 
 
 @pytest.mark.asyncio
@@ -615,6 +619,204 @@ async def test_static_dag_save_failure_retains_actual_tool_execution(tmp_path):
         assert result.checkpoint is None
         assert any(node.capability_execution.result.status == "completed"
                    for node in result.trace.root.children[0].children if node.capability_execution is not None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_map_publishes_each_inline_result(tmp_path, stream):
+    @dagent.tool
+    def echo(value: str) -> str:
+        return value
+
+    graph = dagent.Dag("mapped")
+    graph.add_node(dagent.MapNode("each", target=echo, over=["one", "two"], inputs={"value": dagent.item}))
+    with closing(dagent.Runner(provider=MockProvider(), workspace=tmp_path, skill_roots=[])) as runner:
+        host = Host(runner=runner)
+        result, _ = await invoke(runner, graph, host, stream)
+        assert result.node_value("each") == ["one", "two"]
+        records = [record for batch in host.batches for record in batch.messages
+                   if isinstance(record.item, dagent.ToolResultMessage)]
+        assert {record.item.content.text for record in records} == {"one", "two"}
+        assert len({record.origin.id for record in records}) == 2
+        assert all(record.origin.scope == "planner" for record in records)
+        observations = [obs for batch in host.batches for obs in batch.observations if obs.type == "tool_execution"]
+        for record in records:
+            assert [obs.status for obs in observations if obs.call_id == record.item.call_id] == ["starting", "completed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_at", ["starting", "result"])
+async def test_map_save_acknowledgment_gates_dispatch_and_preserves_effects(tmp_path, fail_at):
+    executed = []
+    saving = asyncio.Event()
+    release = asyncio.Event()
+
+    @dagent.tool
+    def effect(value: str) -> str:
+        executed.append(value)
+        return value
+
+    graph = dagent.Dag("mapped")
+    graph.add_node(dagent.MapNode("each", target=effect, over=["one", "two"],
+                                 inputs={"value": dagent.item}, max_concurrency=1))
+
+    async def save(batch):
+        reject = (any(obs.type == "tool_execution" and obs.status == "starting" for obs in batch.observations)
+                  if fail_at == "starting" else
+                  any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages))
+        if reject:
+            saving.set()
+            await release.wait()
+            raise OSError("commit failed")
+
+    with closing(dagent.Runner(provider=MockProvider(), workspace=tmp_path, skill_roots=[])) as runner:
+        task = asyncio.create_task(runner.run(graph, on_conversation_change=save))
+        try:
+            await asyncio.wait_for(saving.wait(), timeout=5)
+            assert executed == ([] if fail_at == "starting" else ["one"])
+        finally:
+            release.set()
+        with pytest.raises(dagent.ConversationChangeError) as captured:
+            await task
+        assert isinstance(captured.value.__cause__, OSError)
+        assert executed == ([] if fail_at == "starting" else ["one"])
+        children = captured.value.result.trace.dag_node_traces()["each"].children
+        assert [child.capability_execution.result.content for child in children] == executed
+        assert all(child.status == "completed" for child in children)
+
+
+@pytest.mark.asyncio
+async def test_map_save_failure_retains_all_inflight_effects(tmp_path):
+    executed = []
+    both_started = asyncio.Event()
+
+    @dagent.tool
+    async def effect(value: str) -> str:
+        executed.append(value)
+        if len(executed) == 2:
+            both_started.set()
+        await both_started.wait()
+        return value
+
+    graph = dagent.Dag("concurrent")
+    graph.add_node(dagent.MapNode("each", target=effect, over=["one", "two"],
+                                 inputs={"value": dagent.item}, max_concurrency=2))
+
+    async def save(batch):
+        if any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages):
+            raise OSError("commit failed")
+
+    with closing(dagent.Runner(provider=MockProvider(), workspace=tmp_path, skill_roots=[])) as runner:
+        with pytest.raises(dagent.ConversationChangeError) as captured:
+            await asyncio.wait_for(runner.run(graph, on_conversation_change=save), timeout=5)
+        assert set(executed) == {"one", "two"}
+        children = captured.value.result.trace.dag_node_traces()["each"].children
+        assert [child.capability_execution.result.content for child in children] == ["one", "two"]
+        assert all(child.status == "completed" for child in children)
+
+
+@pytest.mark.asyncio
+async def test_nested_argument_mutation_is_replayed_and_continued(tmp_path):
+    @dagent.tool
+    def append(values: list) -> str:
+        values.append("added")
+        return "done"
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="append", name="tool_append", arguments={"values": ["original"]})]),
+        ChatResponse(content="done"), ChatResponse(content="continued"),
+    ])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        host = Host(runner=runner)
+        agent = dagent.ToolAgent(profile="conversation", capabilities=[append])
+        result, _ = await invoke(runner, agent, host, False, input="append")
+        assert host.state == result.conversation
+        call = next(item for item in host.state.items if isinstance(item, dagent.AssistantMessage)).tool_calls[0]
+        assert call.arguments == {"values": ["original", "added"]}
+        restored = dagent.ConversationState.model_validate_json(host.state.model_dump_json())
+        await invoke(runner, agent, host, False, input="continue", conversation=restored)
+        first_call = next(message for message in provider.requests[1]["messages"] if message.get("tool_calls"))
+        restored_call = next(message for message in provider.requests[2]["messages"] if message.get("tool_calls"))
+        assert first_call == restored_call
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bind_initial", [False, True])
+async def test_initial_publisher_snapshot_is_detached(bind_initial):
+    from dagent.harness_runtime.conversation_changes import ConversationChangePublisher
+
+    initial = dagent.ConversationState(items=(dagent.AssistantMessage(tool_calls=(
+        dagent.ToolCallItem(id="call", name="append", arguments={"values": ["original"]}),
+    )),))
+    host = Host(initial.model_copy(deep=True))
+    publisher = ConversationChangePublisher(host.save, None if bind_initial else initial)
+    publisher.bind("run", "tool", None, ".runtime", initial=initial if bind_initial else None)
+    initial.items[0].tool_calls[0].arguments["values"].append("added")
+    await publisher.publish(state=initial.model_copy(update={"revision": 1}))
+    assert host.state.items == initial.items
+    assert host.batches[-1].context.updated_item_ids == (initial.items[0].id,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapper,fail_at", [
+    ("subgraph", "result"), ("loop", "result"), ("agent", "result"),
+    ("delegated", "result"), ("delegated", "next_response"),
+])
+async def test_nested_save_failure_retains_completed_child_trace(tmp_path, wrapper, fail_at):
+    executed = []
+
+    @dagent.tool
+    def effect() -> str:
+        executed.append("effect")
+        return "evidence"
+
+    graph = dagent.Dag("outer")
+    responses = [ChatResponse(tool_calls=[ToolCall(id="effect", name="tool_effect", arguments={})])]
+    if wrapper == "delegated":
+        responses.insert(0, ChatResponse(tool_calls=[
+            ToolCall(id="delegate", name="agent_helper", arguments={"prompt": "do it"}),
+        ]))
+    provider = MockProvider(responses)
+    if wrapper in {"agent", "delegated"}:
+        child = dagent.ToolAgent(name="helper", profile="conversation", capabilities=[effect])
+        node = dagent.Node("child", target=child, inputs={"prompt": "do it"})
+    else:
+        child = dagent.Dag("inner")
+        child.add_node(dagent.Node("effect", target=effect))
+        node = (dagent.LoopNode("child", body=child, until=dagent.item == "done", max_iterations=2)
+                if wrapper == "loop" else dagent.Node("child", target=child))
+    graph.add_node(node)
+
+    async def save(batch):
+        reject = (any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages)
+                  if fail_at == "result" else executed and
+                  any(obs.type == "response" and obs.status == "started" for obs in batch.observations))
+        if reject:
+            raise OSError("commit failed")
+
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        if wrapper == "delegated":
+            runner.add_agent(child)
+            target = dagent.ToolAgent(profile="conversation", capabilities=[], agents=["agent.helper"])
+        else:
+            target = graph
+        with pytest.raises(dagent.ConversationChangeError) as captured:
+            await runner.run(target, input="do it" if wrapper == "delegated" else None, on_conversation_change=save)
+        assert executed == ["effect"]
+        trace = captured.value.result.trace
+        if wrapper != "delegated":
+            assert trace.dag_node_traces()["child"].children
+
+        def effects(node):
+            execution = node.capability_execution
+            if execution is not None and execution.invocation.capability_id == "tool.effect":
+                yield execution.result
+            for child_node in node.children:
+                assert child_node.parent_id == node.id
+                yield from effects(child_node)
+
+        assert [result.status for result in effects(trace.root)] == ["completed"]
+        assert captured.value.result.checkpoint is None
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,9 @@ from dagent.harness_runtime.capability_executor import (
     CapabilityExecutionError,
     CapabilityExecutor,
 )
-from dagent.harness_runtime.result_storage import normalize_capability_result, ResultStorageError
+from dagent.harness_runtime.result_storage import (
+    NormalizedCapabilityResult, normalize_capability_result, ResultStorageError,
+)
 from dagent.capabilities.tools.runtime_paths import RuntimePaths
 from dagent.harness_runtime.static_agent_review import (
     StaticAgentExecutionControl,
@@ -210,7 +212,14 @@ class DAGExecutor:
                     on_token=on_token,
                     on_event=on_event,
                 )
-        except ConversationDeliveryFailure:
+        except ConversationDeliveryFailure as error:
+            for partial in self.partial_node_traces.values():
+                trace.root.upsert_child(partial)
+            trace.root.status = "failed"
+            trace.root.error = _error(str(error), "ConversationChangeError")
+            trace.root.ended_at = _now()
+            trace.artifacts = dict(self.artifact_states)
+            error.trace = trace
             raise
         except Exception:
             trace.artifacts = dict(self.artifact_states)
@@ -402,12 +411,11 @@ class DAGExecutor:
                 value, selected_branch = self._execute_condition_node(payload, scope)
             else:
                 raise DAGExecutionError(f"Node '{node.id}' has unsupported payload type.")
-        except ConversationDeliveryFailure:
-            raise
         except Exception as exc:
             node.status = "failed"
             dag_node.status = "failed"
-            dag_node.error = _error(str(exc), type(exc).__name__)
+            dag_node.error = _error(str(exc), "ConversationChangeError"
+                                    if isinstance(exc, ConversationDeliveryFailure) else type(exc).__name__)
             dag_node.ended_at = _now()
             self.partial_node_traces[node.id] = dag_node
             raise
@@ -509,7 +517,8 @@ class DAGExecutor:
                 dag_node.status = "awaiting_review"
                 self.partial_node_traces[node.id] = dag_node
                 raise exc.bind(node_id=node.id, invocation=invocation)
-            except ConversationDeliveryFailure:
+            except ConversationDeliveryFailure as error:
+                self._record_child_delivery_failure(node, dag_node, invocation, error)
                 raise
             except asyncio.CancelledError:
                 await observe_tool(invocation.invocation_id, invocation.capability_id, "outcome_unknown")
@@ -546,20 +555,7 @@ class DAGExecutor:
             _attach_child_trace(capability_node, capability_result)
             dag_node.children.append(capability_node)
 
-            # The normalized result is factual even if host persistence now fails.
-            if current_changes() is not None:
-                self.partial_node_traces[node.id] = dag_node
-                audit_item = ToolResultMessage(
-                    run_id=dag.task_id, call_id=invocation.invocation_id,
-                    name=invocation.capability_id, capability_id=invocation.capability_id,
-                    status="completed" if capability_result.status == "completed" else "failed",
-                    content=stored_content, value=capability_result.value,
-                    value_reference=normalized.value_reference, artifacts=normalized.references,
-                    retention=capability_result.retention, scope="planner",
-                )
-                await publish_messages((audit_item,))
-                await observe_tool(invocation.invocation_id, invocation.capability_id,
-                                   "completed" if capability_result.status == "completed" else "failed")
+            await self._publish_capability_result(node, dag, dag_node, invocation, normalized)
 
             if capability_result.status == "failed":
                 error = capability_result.error or capability_result.content
@@ -603,6 +599,42 @@ class DAGExecutor:
             dag_node.ended_at = _now()
             return dag_node
 
+    async def _publish_capability_result(
+        self, node: DAGNode, dag: DAG, dag_node: RunTraceNode,
+        invocation: CapabilityInvocation, normalized: NormalizedCapabilityResult,
+    ) -> None:
+        if current_changes() is None:
+            return
+        # The normalized result is factual even if host persistence now fails.
+        self.partial_node_traces[node.id] = dag_node
+        result = normalized.result
+        status = "completed" if result.status == "completed" else "failed"
+        audit_item = ToolResultMessage(
+            run_id=dag.task_id, call_id=invocation.invocation_id,
+            name=invocation.capability_id, capability_id=invocation.capability_id,
+            status=status, content=normalized.content, value=result.value,
+            value_reference=normalized.value_reference, artifacts=normalized.references,
+            retention=result.retention, scope="planner",
+        )
+        await publish_messages((audit_item,))
+        await observe_tool(invocation.invocation_id, invocation.capability_id, status)
+
+    def _record_child_delivery_failure(
+        self, node: DAGNode, dag_node: RunTraceNode,
+        invocation: CapabilityInvocation, error: ConversationDeliveryFailure,
+    ) -> None:
+        if error.trace is None:
+            return
+        capability_node = RunTraceNode.capability_call(
+            parent_id=dag_node.id, invocation=invocation, status="failed", error=str(error),
+        )
+        _attach_agent_trace(capability_node, error.trace)
+        dag_node.children.append(capability_node)
+        dag_node.status = "failed"
+        dag_node.error = _error(str(error), "ConversationChangeError")
+        dag_node.ended_at = _now()
+        self.partial_node_traces[node.id] = dag_node
+
     async def _execute_map_node(
         self,
         node: DAGNode,
@@ -626,16 +658,12 @@ class DAGExecutor:
                 f"Map node '{node.id}' resolved {len(items)} items, exceeding max_items={payload.max_items}."
             )
         semaphore = asyncio.Semaphore(payload.max_concurrency)
+        item_traces: dict[int, RunTraceNode] = {}
 
         async def run_item(
             index: int,
             item: Any,
-        ) -> tuple[
-            CapabilityInvocation,
-            CapabilityResult,
-            ContentReference | None,
-            tuple[ContentReference, ...],
-        ]:
+        ) -> tuple[CapabilityResult, ContentReference | None]:
             invocation = payload.invocation.model_copy(
                 deep=True,
                 update={"invocation_id": f"{node.id}_item{index}_{uuid4().hex[:8]}"},
@@ -665,23 +693,39 @@ class DAGExecutor:
                 node=node.model_copy(update={"id": f"{node.id}[{index}]"}),
             )
             try:
-                async with semaphore:
-                    result = await self.capability_executor.execute(
-                        invocation,
-                        context=context,
-                        callbacks=CapabilityExecutionCallbacks(
-                            on_token=token_stream or on_token,
-                            on_event=emitter,
-                        ),
-                    )
-                    normalized = normalize_capability_result(
-                        result,
-                        workspace_path=self.workspace_path or self.capability_workspace_root,
-                        runtime_directory=self.runtime_directory,
-                        policy=self.result_storage_policy,
-                        on_event=on_event,
-                    )
-                    result = normalized.result
+                with audit_conversation_scope(invocation.invocation_id, "planner"):
+                    async with semaphore:
+                        await observe_tool(invocation.invocation_id, invocation.capability_id, "starting")
+                        try:
+                            result = await self.capability_executor.execute(
+                                invocation,
+                                context=context,
+                                callbacks=CapabilityExecutionCallbacks(
+                                    on_token=token_stream or on_token,
+                                    on_event=emitter,
+                                ),
+                            )
+                            normalized = normalize_capability_result(
+                                result,
+                                workspace_path=self.workspace_path or self.capability_workspace_root,
+                                runtime_directory=self.runtime_directory,
+                                policy=self.result_storage_policy,
+                                on_event=on_event,
+                            )
+                        except ConversationDeliveryFailure as error:
+                            self._record_child_delivery_failure(node, dag_node, invocation, error)
+                            raise
+                        except asyncio.CancelledError:
+                            await observe_tool(invocation.invocation_id, invocation.capability_id, "outcome_unknown")
+                            raise
+                        result = normalized.result
+                        item_node = RunTraceNode.capability_call(
+                            parent_id=dag_node.id, invocation=invocation, result=result, error=result.error,
+                        )
+                        item_node.references = normalized.references
+                        _attach_child_trace(item_node, result)
+                        item_traces[index] = item_node
+                        await self._publish_capability_result(node, dag, dag_node, invocation, normalized)
             except ResultStorageError as exc:
                 failed_storage_node = RunTraceNode.capability_call(
                     parent_id=dag_node.id, invocation=invocation, result=exc.audit_result,
@@ -693,17 +737,15 @@ class DAGExecutor:
             finally:
                 if token_stream is not None:
                     token_stream.finish()
-            return (
-                invocation,
-                result,
-                normalized.value_reference,
-                normalized.references,
-            )
+            return result, normalized.value_reference
 
-        outcomes = await asyncio.gather(
-            *[run_item(index, item) for index, item in enumerate(items)],
-            return_exceptions=True,
-        )
+        try:
+            outcomes = await asyncio.gather(
+                *[run_item(index, item) for index, item in enumerate(items)],
+                return_exceptions=True,
+            )
+        finally:
+            dag_node.children.extend(item_traces[index] for index in sorted(item_traces))
         values: list[Any] = []
         value_references: dict[str, ContentReference] = {}
         failure: str | None = None
@@ -711,16 +753,7 @@ class DAGExecutor:
             if isinstance(outcome, BaseException):
                 failure = failure or str(outcome)
                 continue
-            invocation, result, value_reference, references = outcome
-            item_node = RunTraceNode.capability_call(
-                parent_id=dag_node.id,
-                invocation=invocation,
-                result=result,
-                error=result.error,
-            )
-            item_node.references = references
-            _attach_child_trace(item_node, result)
-            dag_node.children.append(item_node)
+            result, value_reference = outcome
             if result.status == "failed":
                 failure = failure or (result.error or result.content)
             else:
@@ -730,6 +763,9 @@ class DAGExecutor:
                 )
                 if value_reference is not None:
                     value_references[f"/{value_index}"] = value_reference
+        for outcome in outcomes:
+            if isinstance(outcome, ConversationDeliveryFailure):
+                raise outcome
         if failure is not None:
             raise DAGExecutionError(failure)
         dag_node.value_references = value_references
@@ -835,6 +871,9 @@ class DAGExecutor:
                     break
                 if len(trace.dag_node_traces()) == settled_before:
                     raise DAGExecutionError(f"Embedded DAG '{spec.id}' made no progress.")
+        except ConversationDeliveryFailure as error:
+            trace = error.trace
+            raise
         finally:
             if trace is not None:
                 child_root = trace.root
@@ -1282,6 +1321,10 @@ def _attach_child_trace(
     if not capability_result.trace:
         return
     child_trace = RunTrace.model_validate(capability_result.trace)
+    _attach_agent_trace(capability_node, child_trace)
+
+
+def _attach_agent_trace(capability_node: RunTraceNode, child_trace: RunTrace) -> None:
     agent_loop = RunTraceNode(
         parent_id=capability_node.id,
         kind="agent_loop",

@@ -237,14 +237,12 @@ class ConversationResourceStore:
             changed = changed or updated != item
             items.append(updated)
 
-        if not changed:
-            return conversation
         updated_conversation = conversation.model_copy(
             update={
                 "revision": conversation.revision + 1,
                 "items": tuple(items),
             }
-        )
+        ) if changed else conversation
         for reference, _, _ in _resource_roots(updated_conversation):
             if reference.path in materialized.values():
                 note_resource(reference, workspace, self.runtime_directory)

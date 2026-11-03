@@ -16,6 +16,8 @@
 默认不启用。ConversationState V4、RunState V6 和 RunCheckpoint V9 不变，已有记录
 无需迁移，完整结果继续支持。未使用的流式身份和失败字段不参与序列化。启用后 SDK
 等待宿主保存确认，保存失败停止执行，工具副作用不回滚。
+这也覆盖每次 Map 调用和嵌套执行证据。发布快照可检测嵌套参数修改，恢复文件即使
+逻辑路径不变也会通知。已有记录无需迁移。
 
 详见[会话变化](conversation-changes.md)及
 `uv run python -m examples.conversation_changes`。回归覆盖独立状态重放、四入口、三种

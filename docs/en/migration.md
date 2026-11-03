@@ -19,6 +19,9 @@ ConversationState V4, RunState V6 and RunCheckpoint V9 records need no migration
 full results remain supported. Optional stream identity/failure fields are
 omitted when unused. Enabled callbacks introduce persistence backpressure and
 stop execution on failed acknowledgment; tool effects are not rolled back.
+This also covers each mapped invocation and nested execution evidence. Published
+snapshots detect nested argument mutations, and restored files are notified even
+when their logical paths are unchanged. No record migration is required.
 
 See [Conversation Changes](conversation-changes.md) and
 `uv run python -m examples.conversation_changes`. Regression coverage includes

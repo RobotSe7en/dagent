@@ -119,6 +119,8 @@ previous_state = dagent.ConversationState(
 工具 `starting` 表示执行派发前已经保存的调用意图，不证明副作用已经发生。
 `completed` 和 `failed` 表示已知结果；派发被中断且没有返回值时，用
 `outcome_unknown` 保留不确定性。不补造工具结果，也不自动重放工具调用。
+`MapNode` 的每次调用遵循相同的确认和结果交付规则。保存失败阻止尚未派发的工作；
+已经执行中的调用仍可能完成，其执行证据会保留。
 
 取消阻止后续推进，并等待正在执行的回调和必要收尾交付，因此可能等待宿主持久化。
 这不承诺进程崩溃时逐 token 持久化，也不回滚工具副作用。
@@ -139,7 +141,8 @@ for resource in batch.resources:
 ```
 
 确认引用前保存需要的文件字节。SDK 新形成的工具结果、接收/展示快照、压缩源归档和
-压缩记录，以及新物化的引用位置均会通知，不扫描整个目录。绝对 runtime 目录下，
+压缩记录，以及新物化的引用位置均会通知，不扫描整个目录。即使逻辑路径不变，新恢复的
+workspace 文件位置也会通知；仅此变化不增加会话 revision。绝对 runtime 目录下，
 引用仍使用逻辑路径。跨 workspace 续接继续使用已有 SDK backing store；本能力不
 新增宿主文件恢复 API，也不迁移旧文件。可变附件继续采用现有上传时元数据语义。
 
@@ -154,6 +157,7 @@ for resource in batch.resources:
 `error_type="ConversationChangeError"`，`data.result` 提供失败结果，
 `data.conversation_change_failure` 提供同样的类型化交付失败信息。SDK 停止后续工作，
 包括质量验证重试。即使 Run 因保存失败而失败，已完成的工具仍在执行证据中如实保留。
+这也包括子图、循环体和委派 agent 内已经完成的调用。
 
 默认不启用新回调。`result.conversation`、`new_items`、审核 checkpoint 和完整的
 `run.finished` 结果继续支持。增量大小保证针对新增通知，不包含原有完整终态结果；

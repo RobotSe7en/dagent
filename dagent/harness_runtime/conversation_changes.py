@@ -20,6 +20,7 @@ from dagent.schemas.conversation_changes import (
     ConversationResponseObservation, ConversationToolObservation,
 )
 from dagent.schemas.results import RunState
+from dagent.schemas.run_trace import RunTrace
 
 
 class ConversationDeliveryFailure(Exception):
@@ -27,14 +28,16 @@ class ConversationDeliveryFailure(Exception):
         super().__init__(str(cause))
         self.cause = cause
         self.failure = failure
+        self.trace: RunTrace | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class ChangeScope:
     publisher: ConversationChangePublisher
     origin: ConversationMessageOrigin
     public: bool = True
     response: ResponseRecorder | None = None
+    trace: RunTrace | None = None
 
 
 _CURRENT: ContextVar[ChangeScope | None] = ContextVar("dagent_conversation_changes", default=None)
@@ -58,11 +61,17 @@ def conversation_change_scope(publisher: ConversationChangePublisher | None) -> 
 @contextmanager
 def audit_conversation_scope(origin_id: str, scope: str) -> Iterator[None]:
     parent = current_changes()
-    token = _CURRENT.set(None if parent is None else ChangeScope(
+    audit = None if parent is None else ChangeScope(
         parent.publisher, ConversationMessageOrigin(id=origin_id, scope=scope), False,
-    ))
+    )
+    token = _CURRENT.set(audit)
     try:
         yield
+    except ConversationDeliveryFailure as error:
+        if audit is not None and audit.trace is not None:
+            audit.trace.root.status = "failed"
+            error.trace = audit.trace
+        raise
     finally:
         _CURRENT.reset(token)
 
@@ -81,7 +90,7 @@ class ConversationChangePublisher:
     def __init__(self, callback: ConversationChangeHandler, initial: ConversationState | None):
         self.callback = callback
         self.delivery_id = f"delivery_{uuid4().hex}"
-        self.conversation = initial
+        self.conversation = initial.model_copy(deep=True) if initial is not None else None
         self.run_id = ""
         self.kind = "tool"
         self.workspace_path: str | None = None
@@ -96,9 +105,9 @@ class ConversationChangePublisher:
         self._resources: dict[tuple[str, str, str, str], ConversationResourceReady] = {}
         self._seen_resources: set[tuple[str, str, str, str]] = set()
         self._messages: dict[tuple[str, str], ConversationMessageChange] = {}
-        if initial is not None:
-            origin = ConversationMessageOrigin(id=initial.id)
-            for item in initial.items:
+        if self.conversation is not None:
+            origin = ConversationMessageOrigin(id=self.conversation.id)
+            for item in self.conversation.items:
                 self._messages[(origin.id, item.id)] = ConversationMessageChange(item=item, origin=origin)
 
     def bind(self, run_id: str, kind: str, workspace: str | Path | None,
@@ -107,7 +116,7 @@ class ConversationChangePublisher:
         self.workspace_path = None if workspace is None else str(workspace)
         self.runtime_directory = runtime_directory
         if self.conversation is None and initial is not None:
-            self.conversation = initial
+            self.conversation = initial.model_copy(deep=True)
             self.acknowledged_revision = initial.revision
 
     def note_resource(self, reference: ContentReference | Attachment,
@@ -136,8 +145,9 @@ class ConversationChangePublisher:
                 raise RuntimeError("Conversation publisher must be bound before publication.")
             before = self.conversation
             context = None
-            records = list(messages)
+            records = [record.model_copy(deep=True) for record in messages]
             if state is not None:
+                state = state.model_copy(deep=True)
                 if before is None or before.id != state.id:
                     raise RuntimeError("Published conversation identity does not match its initial state.")
                 context, changed = _state_changes(before, state)
