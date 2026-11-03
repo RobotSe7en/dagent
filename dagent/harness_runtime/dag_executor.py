@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from dagent.harness_runtime.conversation_changes import (
+    ConversationDeliveryFailure, audit_conversation_scope, current_changes, observe_tool,
+    publish_messages, flush_resources,
+)
+from dagent.schemas.conversation import ToolResultMessage
+
 import asyncio
 import hashlib
 import json
@@ -204,6 +210,8 @@ class DAGExecutor:
                     on_token=on_token,
                     on_event=on_event,
                 )
+        except ConversationDeliveryFailure:
+            raise
         except Exception:
             trace.artifacts = dict(self.artifact_states)
             _emit_trace_snapshot(on_event, trace)
@@ -287,6 +295,8 @@ class DAGExecutor:
             except StaticAgentReviewRequired as exc:
                 review_pause = exc
                 break
+            except ConversationDeliveryFailure:
+                raise
             except Exception as exc:
                 agent_results.append(exc)
         batch_results.extend(agent_results)
@@ -392,6 +402,8 @@ class DAGExecutor:
                 value, selected_branch = self._execute_condition_node(payload, scope)
             else:
                 raise DAGExecutionError(f"Node '{node.id}' has unsupported payload type.")
+        except ConversationDeliveryFailure:
+            raise
         except Exception as exc:
             node.status = "failed"
             dag_node.status = "failed"
@@ -445,129 +457,151 @@ class DAGExecutor:
         if not invocation.capability_id:
             raise CapabilityExecutionError(f"Node '{node.id}' has no capability id.")
 
-        node_event_emitter = _node_event_emitter(on_event, dag=dag, node=node, invocation=invocation)
-        token_stream = None
-        if invocation.kind != "agent":
-            token_stream = response_token_stream(
-                on_raw=on_token,
-                on_event=node_event_emitter,
-                context=ResponseStreamContext.create(
-                    run_id=dag.task_id,
-                    dag_id=dag.dag_id,
-                    node_id=node.id,
-                    parent_capability_id=invocation.capability_id,
-                ),
-            )
-
-        try:
-            capability_result = await self.capability_executor.execute(
-                invocation,
-                context=self._execution_context(
-                    dag,
-                    node,
-                    approved_boundary_invocation_id=(
-                        invocation.invocation_id if approve_node_boundaries else None
-                    ),
-                    agent_execution_control=agent_execution_control,
-                    skills=skills,
-                ),
-                callbacks=CapabilityExecutionCallbacks(
-                    on_token=token_stream or on_token,
+        with audit_conversation_scope(invocation.invocation_id, "planner"):
+            node_event_emitter = _node_event_emitter(on_event, dag=dag, node=node, invocation=invocation)
+            token_stream = None
+            if invocation.kind != "agent":
+                token_stream = response_token_stream(
+                    on_raw=on_token,
                     on_event=node_event_emitter,
-                ),
-            )
-            normalized = normalize_capability_result(
-                capability_result,
-                workspace_path=self.workspace_path or self.capability_workspace_root,
-                runtime_directory=self.runtime_directory,
-                policy=self.result_storage_policy,
-                on_event=on_event,
-            )
-            capability_result = normalized.result
-            stored_content = normalized.content
-        except StaticAgentReviewRequired as exc:
+                    context=ResponseStreamContext.create(
+                        run_id=dag.task_id,
+                        dag_id=dag.dag_id,
+                        node_id=node.id,
+                        parent_capability_id=invocation.capability_id,
+                    ),
+                )
+
+            await observe_tool(invocation.invocation_id, invocation.capability_id, "starting")
+            try:
+                capability_result = await self.capability_executor.execute(
+                    invocation,
+                    context=self._execution_context(
+                        dag,
+                        node,
+                        approved_boundary_invocation_id=(
+                            invocation.invocation_id if approve_node_boundaries else None
+                        ),
+                        agent_execution_control=agent_execution_control,
+                        skills=skills,
+                    ),
+                    callbacks=CapabilityExecutionCallbacks(
+                        on_token=token_stream or on_token,
+                        on_event=node_event_emitter,
+                    ),
+                )
+                normalized = normalize_capability_result(
+                    capability_result,
+                    workspace_path=self.workspace_path or self.capability_workspace_root,
+                    runtime_directory=self.runtime_directory,
+                    policy=self.result_storage_policy,
+                    on_event=on_event,
+                )
+                capability_result = normalized.result
+                stored_content = normalized.content
+            except StaticAgentReviewRequired as exc:
+                capability_node = RunTraceNode.capability_call(
+                    parent_id=dag_node.id,
+                    invocation=invocation,
+                    status="awaiting_review",
+                )
+                dag_node.children.append(capability_node)
+                dag_node.status = "awaiting_review"
+                self.partial_node_traces[node.id] = dag_node
+                raise exc.bind(node_id=node.id, invocation=invocation)
+            except ConversationDeliveryFailure:
+                raise
+            except asyncio.CancelledError:
+                await observe_tool(invocation.invocation_id, invocation.capability_id, "outcome_unknown")
+                raise
+            except Exception as exc:
+                node.status = "failed"
+                failed_result = (exc.audit_result if isinstance(exc, ResultStorageError) else
+                                 CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__))
+                capability_node = RunTraceNode.capability_call(
+                    parent_id=dag_node.id,
+                    invocation=invocation,
+                    result=failed_result,
+                    error=str(exc),
+                )
+                dag_node.children.append(capability_node)
+                dag_node.status = "failed"
+                if isinstance(exc, ResultStorageError) and capability_node.error is not None:
+                    capability_node.error.code = "ResultStorageError"
+                dag_node.error = _error(str(exc), type(exc).__name__)
+                dag_node.ended_at = _now()
+                self.partial_node_traces[node.id] = dag_node
+                raise
+            finally:
+                if token_stream is not None:
+                    token_stream.finish()
+
             capability_node = RunTraceNode.capability_call(
                 parent_id=dag_node.id,
                 invocation=invocation,
-                status="awaiting_review",
+                result=capability_result,
+                error=capability_result.error,
             )
+            capability_node.references = normalized.references
+            _attach_child_trace(capability_node, capability_result)
             dag_node.children.append(capability_node)
-            dag_node.status = "awaiting_review"
-            self.partial_node_traces[node.id] = dag_node
-            raise exc.bind(node_id=node.id, invocation=invocation)
-        except Exception as exc:
-            node.status = "failed"
-            failed_result = (exc.audit_result if isinstance(exc, ResultStorageError) else
-                             CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__))
-            capability_node = RunTraceNode.capability_call(
-                parent_id=dag_node.id,
-                invocation=invocation,
-                result=failed_result,
-                error=str(exc),
+
+            # The normalized result is factual even if host persistence now fails.
+            if current_changes() is not None:
+                self.partial_node_traces[node.id] = dag_node
+                audit_item = ToolResultMessage(
+                    run_id=dag.task_id, call_id=invocation.invocation_id,
+                    name=invocation.capability_id, capability_id=invocation.capability_id,
+                    status="completed" if capability_result.status == "completed" else "failed",
+                    content=stored_content, value=capability_result.value,
+                    value_reference=normalized.value_reference, artifacts=normalized.references,
+                    retention=capability_result.retention, scope="planner",
+                )
+                await publish_messages((audit_item,))
+                await observe_tool(invocation.invocation_id, invocation.capability_id,
+                                   "completed" if capability_result.status == "completed" else "failed")
+
+            if capability_result.status == "failed":
+                error = capability_result.error or capability_result.content
+                stop_reason = (
+                    "boundary_violation"
+                    if capability_result.stop_reason == "BoundaryViolation"
+                    else "capability_error"
+                )
+                node.status = "failed"
+                dag_node.status = "failed"
+                dag_node.error = _error(error, stop_reason)
+                dag_node.ended_at = _now()
+                self.partial_node_traces[node.id] = dag_node
+                raise DAGExecutionError(error)
+
+            if self.workspace_path is not None and self.artifacts:
+                update_node_output_artifacts(
+                    node,
+                    artifacts=self.artifacts,
+                    states=self.artifact_states,
+                    workspace_path=self.workspace_path,
+                )
+            node.status = "completed"
+            dag_node.status = "completed"
+            dag_node.output = (
+                stored_content.text
+                if isinstance(stored_content, InlineContent)
+                else stored_content.model_dump(mode="json")
             )
-            dag_node.children.append(capability_node)
-            dag_node.status = "failed"
-            if isinstance(exc, ResultStorageError) and capability_node.error is not None:
-                capability_node.error.code = "ResultStorageError"
-            dag_node.error = _error(str(exc), type(exc).__name__)
+            dag_node.output_reference = (
+                stored_content if isinstance(stored_content, ContentReference) else None
+            )
+            dag_node.value = (
+                capability_result.value
+                if capability_result.value is not None
+                else dag_node.output
+            )
+            dag_node.value_reference = normalized.value_reference
+            dag_node.references = normalized.references
+            dag_node.step_count = 1
             dag_node.ended_at = _now()
-            self.partial_node_traces[node.id] = dag_node
-            raise
-        finally:
-            if token_stream is not None:
-                token_stream.finish()
-
-        capability_node = RunTraceNode.capability_call(
-            parent_id=dag_node.id,
-            invocation=invocation,
-            result=capability_result,
-            error=capability_result.error,
-        )
-        capability_node.references = normalized.references
-        _attach_child_trace(capability_node, capability_result)
-        dag_node.children.append(capability_node)
-
-        if capability_result.status == "failed":
-            error = capability_result.error or capability_result.content
-            stop_reason = (
-                "boundary_violation"
-                if capability_result.stop_reason == "BoundaryViolation"
-                else "capability_error"
-            )
-            node.status = "failed"
-            dag_node.status = "failed"
-            dag_node.error = _error(error, stop_reason)
-            dag_node.ended_at = _now()
-            self.partial_node_traces[node.id] = dag_node
-            raise DAGExecutionError(error)
-
-        if self.workspace_path is not None and self.artifacts:
-            update_node_output_artifacts(
-                node,
-                artifacts=self.artifacts,
-                states=self.artifact_states,
-                workspace_path=self.workspace_path,
-            )
-        node.status = "completed"
-        dag_node.status = "completed"
-        dag_node.output = (
-            stored_content.text
-            if isinstance(stored_content, InlineContent)
-            else stored_content.model_dump(mode="json")
-        )
-        dag_node.output_reference = (
-            stored_content if isinstance(stored_content, ContentReference) else None
-        )
-        dag_node.value = (
-            capability_result.value
-            if capability_result.value is not None
-            else dag_node.output
-        )
-        dag_node.value_reference = normalized.value_reference
-        dag_node.references = normalized.references
-        dag_node.step_count = 1
-        dag_node.ended_at = _now()
-        return dag_node
+            return dag_node
 
     async def _execute_map_node(
         self,

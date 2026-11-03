@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dagent.harness_runtime.conversation_changes import current_changes, note_resource
+
 import base64
 import codecs
 import hashlib
@@ -167,11 +169,13 @@ class ResultStore:
         if target.exists():
             if target.read_bytes() != data:
                 raise OSError(f"Result snapshot conflicts with existing data: {target}")
-            return ContentReference(
+            reference = ContentReference(
                 path=self.paths.relative(target),
                 media_type="text/plain; charset=utf-8", byte_length=len(data),
                 sha256=digest, preview=_head_tail_preview(text),
             )
+            note_resource(reference, self.workspace, self.paths.directory)
+            return reference
         return _write_reference(
             self.workspace, root, target.name, data,
             media_type="text/plain; charset=utf-8", preview=_head_tail_preview(text),
@@ -520,6 +524,13 @@ def normalize_capability_result(
             **normalized_text_fields,
         }
     )
+    if current_changes() is not None:
+        for reference in references:
+            try:
+                store.verify_reference(reference)
+            except OSError as exc:
+                raise ResultStorageError(normalized_result, "references", exc) from exc
+            note_resource(reference, workspace, store.paths.directory)
     return NormalizedCapabilityResult(
         result=normalized_result,
         content=stored_content,
@@ -660,13 +671,15 @@ def _write_chunks(
             pass
         raise
     relative = (paths or RuntimePaths.current(workspace)).relative(target)
-    return ContentReference(
+    reference = ContentReference(
         path=relative,
         media_type=media_type,
         byte_length=length,
         sha256=digest.hexdigest(),
         preview=preview,
     )
+    note_resource(reference, workspace, (paths or RuntimePaths.current(workspace)).directory)
+    return reference
 
 
 def _head_tail_preview(text: str, *, limit: int = 8192) -> str:

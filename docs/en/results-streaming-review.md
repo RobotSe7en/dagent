@@ -40,6 +40,11 @@ previous tool output is retained in the conversation and trace, not used as a
 replacement answer. Inspect the last `AssistantMessage.model_call` for terminal
 metadata and retry attempts. See [model failures and token accounting](model-context-and-reasoning.md).
 
+For opt-in incremental persistence during execution, use the shared async
+`on_conversation_change` callback on `run`, `stream`, `resume`, and
+`resume_stream`. See [Conversation Changes](conversation-changes.md) for batch
+ordering, reconstruction, audit, files, and persistence failures.
+
 ## What reaches the model
 
 Before every model call, one context assembler creates the OpenAI-compatible

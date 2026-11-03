@@ -7,6 +7,8 @@ Unicode ranges, or remains explicitly referenced when fallback is authorized.
 
 from __future__ import annotations
 
+from dagent.harness_runtime.conversation_changes import flush_resources, current_changes
+
 import asyncio
 import json
 import logging
@@ -783,6 +785,14 @@ class HistoryCompactor:
         self._active_summary = prepared
         self.logical_calls += 1
         attempts_before = self.http_attempts
+        if current_changes() is not None:
+            paused_at = monotonic()
+            try:
+                await flush_resources()
+            finally:
+                # Host persistence is not part of the compaction/model budget.
+                if self.deadline is not None:
+                    self.deadline += monotonic() - paused_at
         try:
             raw = await self._bounded(self.chat(request))
         except (RuntimeError, ValueError, OSError) as exc:

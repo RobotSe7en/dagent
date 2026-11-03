@@ -1,5 +1,8 @@
 # Recover large tool results
 
+For ready-file notifications and incremental host persistence, see
+[Conversation Changes](conversation-changes.md).
+
 Since 0.9.18, tool results use independent per-result display limits so appending
 new results does not shorten earlier displays. This applies to ToolAgent replies
 and structured DAG planner observations.

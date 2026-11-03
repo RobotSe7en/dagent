@@ -8,6 +8,20 @@
 
 ## 未发布
 
+### 可选会话变化交付
+
+`run`、`stream`、`resume` 和 `resume_stream` 新增可选异步回调
+`on_conversation_change`。包根新增 `ConversationChangeBatch` 和
+`ConversationChangeError`；详细载荷模型属于 `dagent.schemas.conversation_changes`。
+默认不启用。ConversationState V4、RunState V6 和 RunCheckpoint V9 不变，已有记录
+无需迁移，完整结果继续支持。未使用的流式身份和失败字段不参与序列化。启用后 SDK
+等待宿主保存确认，保存失败停止执行，工具副作用不回滚。
+
+详见[会话变化](conversation-changes.md)及
+`uv run python -m examples.conversation_changes`。回归覆盖独立状态重放、四入口、三种
+压缩策略、Chat/Responses 请求一致性、审计、文件、取消及保存失败。
+
+
 `Runner.runtime_directory` 新增显式绝对路径支持，可将工具结果、恢复历史和会话资源
 保存到工作目录外。默认值和相对目录行为不变，仍拒绝相对路径中的 `..`；已有应用无需修改。
 新增 `Runner.resolve_runtime_path` 供宿主解析结果的逻辑路径。

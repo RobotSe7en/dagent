@@ -4,6 +4,11 @@ from __future__ import annotations
 from dagent.harness_runtime.context import compaction_source
 
 import asyncio
+
+from dagent.harness_runtime.conversation_changes import (
+    ConversationDeliveryFailure, ResponseRecorder, current_changes, publish_state, flush_resources,
+    observe_tool, tool_observations,
+)
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -529,7 +534,16 @@ class ToolAgentLoop:
         capability_callbacks = CapabilityExecutionCallbacks(on_token=on_token, on_event=on_event)
         workspace = execution_context.workspace_path or current_workspace_root(self.capability_executor.workspace_root)
 
-        def apply_steers(steers: tuple[QueuedSteer, ...]) -> None:
+        changes = current_changes()
+        if changes is not None and changes.public:
+            changes.publisher.state_factory = lambda: _tool_run_state(
+                run_id=resolved_run_id, status="failed", conversation=loop_conversation,
+                trace=trace, context_usage=context_usages, capability_scope=state_scope,
+                workspace_path=str(workspace),
+            )
+        await publish_state(loop_conversation)
+
+        async def apply_steers(steers: tuple[QueuedSteer, ...]) -> None:
             nonlocal loop_conversation
             for steer in steers:
                 item = UserMessage(
@@ -539,10 +553,11 @@ class ToolAgentLoop:
                 )
                 loop_conversation = _append_item(loop_conversation, item)
                 new_items.append(item)
+            await publish_state(loop_conversation, tuple(new_items))
             if steering is not None:
                 steering.emit_applied(resolved_run_id, steers)
 
-        def append_skipped(tool_calls: Sequence[ToolCall]) -> None:
+        async def append_skipped(tool_calls: Sequence[ToolCall]) -> None:
             nonlocal loop_conversation
             loop_conversation, skipped_items = _append_skipped_tool_results(
                 loop_conversation,
@@ -551,6 +566,7 @@ class ToolAgentLoop:
                 content=_STEER_SKIPPED_TOOL_CONTENT,
             )
             new_items.extend(skipped_items)
+            await publish_state(loop_conversation, skipped_items)
             for call in tool_calls:
                 node = _find_capability_node(trace.root, call.id)
                 if node is not None:
@@ -580,7 +596,7 @@ class ToolAgentLoop:
                 new_items=tuple(new_items),
             )
 
-        def handle_pending_steers(
+        async def handle_pending_steers(
             steers: tuple[QueuedSteer, ...],
             *,
             step: int,
@@ -593,7 +609,7 @@ class ToolAgentLoop:
             if not steers:
                 return False
             if skipped_calls:
-                append_skipped(skipped_calls)
+                await append_skipped(skipped_calls)
             if step >= max_steps:
                 if steering is not None:
                     steering.set_phase(resolved_run_id, "finishing")
@@ -604,7 +620,7 @@ class ToolAgentLoop:
                     )
                 failure_diagnostic = _STEER_STEP_LIMIT_FAILURE_DIAGNOSTIC
                 return False
-            apply_steers(steers)
+            await apply_steers(steers)
             return True
 
         async def process_batch(batch: _PendingToolBatch, *, step: int) -> LoopOutcome | None:
@@ -657,7 +673,7 @@ class ToolAgentLoop:
                 if pending_steers:
                     remaining = [ToolCall(id=i.call.id, name=i.call.name, arguments=i.call.arguments)
                                  for i in batch.calls[batch.next_index:]]
-                    if handle_pending_steers(pending_steers, step=step, skipped_calls=remaining):
+                    if await handle_pending_steers(pending_steers, step=step, skipped_calls=remaining):
                         return None
                     return failed_outcome()
                 return pending_outcome()
@@ -670,7 +686,7 @@ class ToolAgentLoop:
                 if pending_steers:
                     remaining = [ToolCall(id=i.call.id, name=i.call.name, arguments=i.call.arguments)
                                  for i in batch.calls[batch.next_index:]]
-                    if handle_pending_steers(pending_steers, step=step, skipped_calls=remaining):
+                    if await handle_pending_steers(pending_steers, step=step, skipped_calls=remaining):
                         return None
                     return failed_outcome()
 
@@ -715,8 +731,14 @@ class ToolAgentLoop:
                     boundary_result, _ = check_tool_boundary_for_review(definition, invocation, Path(workspace))
                     if boundary_result is not None and _reviewable_boundary_result(boundary_result) and review_level == "fast":
                         call_context = replace(execution_context, approved_boundary_invocation_id=invocation.invocation_id)
+                    await observe_tool(item.call.id, invocation.capability_id, "starting")
                     try:
                         result = await self.capability_executor.execute(invocation, context=call_context, callbacks=capability_callbacks)
+                    except ConversationDeliveryFailure:
+                        raise
+                    except asyncio.CancelledError:
+                        await observe_tool(item.call.id, invocation.capability_id, "outcome_unknown")
+                        raise
                     except Exception as exc:
                         result = CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__)
                     content = _tool_content(result)
@@ -729,6 +751,8 @@ class ToolAgentLoop:
                     except ResultStorageError as exc:
                         assert invocation is not None
                         _record_storage_failure(trace, invocation, exc)
+                        await observe_tool(item.call.id, invocation.capability_id,
+                                           "completed" if exc.audit_result.status == "completed" else "failed")
                         raise ToolResultStorageFailure(exc, failed_outcome()) from exc
                     result = normalized.result
                     stored_content = normalized.content
@@ -769,6 +793,11 @@ class ToolAgentLoop:
                     )
                 batch.next_index += 1
                 boundary = batch.boundary
+                observations = (() if invocation is None or denied else tool_observations(
+                    item.call.id, invocation.capability_id,
+                    "completed" if result is not None and result.status == "completed" else "failed", tool_item.id,
+                ))
+                await publish_state(loop_conversation, (tool_item,), observations)
             return None
 
         if resume_state is not None and resume_state.pending_tool_batch is not None:
@@ -776,7 +805,7 @@ class ToolAgentLoop:
             if resumed is not None:
                 return resumed
 
-        def adopt_context(value: PreparedModelContext) -> None:
+        async def adopt_context(value: PreparedModelContext) -> None:
             nonlocal loop_conversation
             loop_conversation = value.conversation
             updated_items = {item.id: item for item in loop_conversation.items}
@@ -794,6 +823,7 @@ class ToolAgentLoop:
                         "content_reference": item.content if isinstance(item.content, ContentReference) else None,
                     })
             context_usages.append(value.usage)
+            await publish_state(loop_conversation, tuple(new_items))
             if on_event is not None and value.usage.compaction_method != "none":
                 on_event(
                     {
@@ -814,7 +844,7 @@ class ToolAgentLoop:
             tool_definitions = self._llm_tool_definitions(capability_ids=capability_ids)
             while True:
                 if steering is not None:
-                    apply_steers(steering.drain(resolved_run_id))
+                    await apply_steers(steering.drain(resolved_run_id))
                 if result_store is None or context_policy.compaction_strategy == "legacy":
                     result_store = ResultStore(workspace, self.runtime_directory, on_event, read_boundary=boundary)
                 compactor = None
@@ -861,18 +891,19 @@ class ToolAgentLoop:
                     if context_policy.compaction_strategy == "legacy":
                         raise
                     loop_conversation = getattr(exc, "_conversation", loop_conversation)
+                    await publish_state(loop_conversation, tuple(new_items))
                     if isinstance(exc, ContextWindowExceeded):
                         context_usages.append(exc.usage)
                     trace.root.error = RunTraceError(code=type(exc).__name__, message=str(exc))
                     trace.root.ended_at = datetime.now(timezone.utc)
                     raise ToolContextFailure(exc, failed_outcome()) from exc
-                adopt_context(prepared)
+                await adopt_context(prepared)
                 late_steers = (
                     () if steering is None else steering.drain(resolved_run_id)
                 )
                 if not late_steers:
                     break
-                apply_steers(late_steers)
+                await apply_steers(late_steers)
             async def reprepare_generation():
                 nonlocal loop_conversation, prepared
                 try:
@@ -899,9 +930,11 @@ class ToolAgentLoop:
                     trace.root.ended_at = datetime.now(timezone.utc)
                     raise ToolContextFailure(exc, failed_outcome()) from exc
                 prepared = fresh
-                adopt_context(fresh)
+                await adopt_context(fresh)
                 return fresh.prepared_call
 
+            response_record = (None if current_changes() is None else
+                               ResponseRecorder(run_id=resolved_run_id, step=step))
             model_error: RunTraceError | None = None
             provider_details: Any = None
             try:
@@ -909,6 +942,7 @@ class ToolAgentLoop:
                     prepared.request, run_id=resolved_run_id, step=step,
                     on_token=on_token, on_event=on_event,
                     prepared_call=prepared.prepared_call, reprepare=reprepare_generation,
+                    response_record=response_record,
                 )
             except ProviderResponseError as exc:
                 response = (chat_response_from_model(exc.response) if exc.response is not None
@@ -927,7 +961,9 @@ class ToolAgentLoop:
                     reason = "reasoning_only_response" if response.reasoning_content.strip() else "empty_response"
                     model_error = RunTraceError(code=reason, message="Model response has no final content, tool calls, or refusal.")
 
-            assistant_message = self._assistant_message(response)
+            assistant_message = self._assistant_message(
+                response, message_id=None if response_record is None else response_record.message_id,
+            )
             assistant_message = assistant_message.model_copy(
                 update={"run_id": resolved_run_id}
             )
@@ -955,6 +991,15 @@ class ToolAgentLoop:
                 )
             )
 
+            if response_record is not None:
+                await response_record.finish(
+                    assistant_message, state=loop_conversation,
+                    status="failed" if model_error is not None else "completed",
+                    partial=response.status != "completed",
+                )
+            else:
+                await publish_state(loop_conversation, (assistant_message,))
+
             if model_error is not None:
                 trace.root.error = model_error
                 return failed_outcome()
@@ -969,7 +1014,7 @@ class ToolAgentLoop:
                     )
                 )
                 if pending_steers:
-                    if handle_pending_steers(pending_steers, step=step):
+                    if await handle_pending_steers(pending_steers, step=step):
                         continue
                     return failed_outcome()
                 trace.root.status = "completed"
@@ -996,7 +1041,7 @@ class ToolAgentLoop:
                 () if steering is None else steering.drain(resolved_run_id)
             )
             if pending_steers:
-                if handle_pending_steers(
+                if await handle_pending_steers(
                     pending_steers,
                     step=step,
                     skipped_calls=response.tool_calls,
@@ -1121,11 +1166,13 @@ class ToolAgentLoop:
         prepared_call: Any = None,
         reprepare: Callable[[], Awaitable[Any]] | None = None,
         observer: ContextObserver | None = None,
+        response_record: ResponseRecorder | None = None,
     ) -> ChatResponse:
         observer = observer or ContextObserver(self.context_observability, on_event, run_id)
         output = response_token_stream(
             on_raw=on_token, on_event=on_event,
-            context=ResponseStreamContext.create(run_id=run_id, model_step=step),
+            context=(response_record.context if response_record is not None
+                     else ResponseStreamContext.create(run_id=run_id, model_step=step)),
         )
         emitted = False
 
@@ -1162,12 +1209,29 @@ class ToolAgentLoop:
                     response=ModelResponse(content="".join(content), reasoning="".join(reasoning), status="unknown"))
             return chat_response_from_model(response)
 
+        await flush_resources()
         try:
+            if response_record is not None:
+                await response_record.start()
             if output is not None:
                 output.start()
             return normalize_chat_response(await run_with_llm_retries(
                 attempt, policy=self.llm_retry_policy, sleep=self.llm_retry_sleep,
                 should_retry=lambda _exc: not emitted))
+        except ConversationDeliveryFailure:
+            raise
+        except (ProviderRequestError, ProviderResponseError):
+            if output is not None:
+                output.finish()
+            if response_record is not None:
+                response_record.capture(output)
+            raise
+        except BaseException as error:
+            if output is not None:
+                output.finish()
+            if response_record is not None:
+                await response_record.interrupt(output, "cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
+            raise
         finally:
             if output is not None:
                 output.finish()
@@ -1205,8 +1269,9 @@ class ToolAgentLoop:
                                max_retries=min(self.llm_retry_policy.max_retries, max_attempts - 1))
         return await run_with_llm_retries(attempt, policy=retry_policy, sleep=self.llm_retry_sleep)
 
-    def _assistant_message(self, response: ChatResponse) -> AssistantMessage:
+    def _assistant_message(self, response: ChatResponse, *, message_id: str | None = None) -> AssistantMessage:
         return AssistantMessage(
+            **({"id": message_id} if message_id is not None else {}),
             content=response.content,
             reasoning=response.reasoning_content,
             refusal=response.refusal,

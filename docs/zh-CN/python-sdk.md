@@ -27,6 +27,7 @@ import dagent
 | 不执行地设计或检查 DAG | [DAG 设计](dag-design.md) |
 | 使用 skills 和 managed skill installs | [Skills](skills.md) |
 | 持久化、stream、steer、review 或 resume runs | [结果、流式输出和 Review](results-streaming-review.md) |
+| 在执行过程中保存会话变化 | [会话变化](conversation-changes.md) |
 | 运行示例 | [Examples](../../examples/README.md) |
 
 ## 公开 Surface
@@ -42,8 +43,8 @@ import dagent
 | DAG design | `Runner.design_dag`（包括可选的 `RunStreamEvent` 观察）、`DAGDesignSelection`, `DAGDesignResult`, `DAGDesignProposal`, `DAGDesignNoChange`, `DAGDesignAnswer`, `DAGDesignFailure`, `DAGDiagnostic`, `DAGDiagnosticSeverity`, `inspect_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
-| Conversations and context | `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ReasoningEffort`, `ModelCallMetadata`, `ModelCallAttempt`, `ModelTokenUsage`, `ResultStoragePolicy` |
-| Reviews and results | `RunResult`（包含 `output_text` 和静态结构化 `output_value`）、`RunExecutionError`, `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `CapabilityReviewDecision`, `ReviewLevel` |
+| Conversations and context | `ConversationChangeBatch`, `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ReasoningEffort`, `ModelCallMetadata`, `ModelCallAttempt`, `ModelTokenUsage`, `ResultStoragePolicy` |
+| Reviews and results | `RunResult`（包含 `output_text` 和静态结构化 `output_value`）、`RunExecutionError`, `ConversationChangeError`, `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `CapabilityReviewDecision`, `ReviewLevel` |
 | Tool-run steering | `Runner.steer`, `SteerReceipt`, `SteerError`, `RunNotActiveError`, `RunNotSteerableError`, `SteerQueueFullError` |
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionUsage`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`；`dagent.providers` 也导出 `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ModelRequest`, `PreparedModelCall`, `ProviderReprepareRequired`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于能力查看、custom providers 和 tests |

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dagent.harness_runtime.conversation_changes import note_resource
+
 import hashlib
 import mimetypes
 import os
@@ -160,6 +162,7 @@ class ConversationResourceStore:
                               reference.byte_length, reference.sha256, label=reference.path)
             _write_verified_file(destination, data)
             self._note(destination, reference.byte_length, reference.sha256)
+            note_resource(reference, workspace, self.runtime_directory)
             return data
 
         def known(reference: ContentReference) -> bool:
@@ -236,12 +239,16 @@ class ConversationResourceStore:
 
         if not changed:
             return conversation
-        return conversation.model_copy(
+        updated_conversation = conversation.model_copy(
             update={
                 "revision": conversation.revision + 1,
                 "items": tuple(items),
             }
         )
+        for reference, _, _ in _resource_roots(updated_conversation):
+            if reference.path in materialized.values():
+                note_resource(reference, workspace, self.runtime_directory)
+        return updated_conversation
 
     def _object_path(self, conversation_id: str, sha256: str) -> Path:
         conversation_key = hashlib.sha256(

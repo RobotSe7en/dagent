@@ -9,6 +9,8 @@ from typing import Any, Literal
 from pydantic import ConfigDict, Field as PydanticField, TypeAdapter, model_serializer
 from pydantic.dataclasses import dataclass
 
+from dagent.schemas.conversation_changes import ConversationChangeFailure
+
 from dagent.review import ReviewHandle
 from dagent.steering import SteerDiscardReason
 from dagent.schemas.run_trace import RunTraceError
@@ -208,8 +210,18 @@ class RunStartedData:
     kind: RunResultKind
 
 
+class _OptionalConversationFields:
+    @model_serializer(mode="wrap")
+    def serialize_conversation_fields(self, serializer):
+        payload = serializer(self)
+        for key in ("message_id", "conversation_change_failure"):
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+
 @dataclass(frozen=True, config=_STRICT)
-class ResponseStartedData:
+class ResponseStartedData(_OptionalConversationFields):
     """Marks the start of one model call; ``response_id`` keys its deltas."""
 
     response_id: str
@@ -218,10 +230,11 @@ class ResponseStartedData:
     dag_id: str | None = None
     node_id: str | None = None
     parent_capability_id: str | None = None
+    message_id: str | None = None
 
 
 @dataclass(frozen=True, config=_STRICT)
-class TextDeltaData:
+class TextDeltaData(_OptionalConversationFields):
     delta: str
     response_id: str
     model_step: int | None = None
@@ -229,10 +242,11 @@ class TextDeltaData:
     dag_id: str | None = None
     node_id: str | None = None
     parent_capability_id: str | None = None
+    message_id: str | None = None
 
 
 @dataclass(frozen=True, config=_STRICT)
-class ResponseFinishedData:
+class ResponseFinishedData(_OptionalConversationFields):
     """Marks the end of the model call identified by ``response_id``."""
 
     response_id: str
@@ -241,6 +255,7 @@ class ResponseFinishedData:
     dag_id: str | None = None
     node_id: str | None = None
     parent_capability_id: str | None = None
+    message_id: str | None = None
 
 
 @dataclass(frozen=True, config=_STRICT)
@@ -386,10 +401,11 @@ class RunFinishedData:
 
 
 @dataclass(frozen=True, config=_STRICT)
-class RunFailedData:
+class RunFailedData(_OptionalConversationFields):
     message: str
     error_type: str
     result: RunResult | None = None
+    conversation_change_failure: ConversationChangeFailure | None = None
 
 
 class RunExecutionError(RuntimeError):
@@ -398,6 +414,17 @@ class RunExecutionError(RuntimeError):
     def __init__(self, message: str, *, result: RunResult) -> None:
         super().__init__(message)
         self.result = result
+
+
+class ConversationChangeError(RunExecutionError):
+    """A host rejected a batch; execution stopped without replaying effects."""
+
+    def __init__(self, message: str, *, result: RunResult, failure: ConversationChangeFailure):
+        super().__init__(message, result=result)
+        self.failure = failure
+        self.failed_batch = failure.failed_batch
+        self.acknowledged_sequence = failure.acknowledged_sequence
+        self.acknowledged_revision = failure.acknowledged_revision
 
 
 RunStreamEventData = (

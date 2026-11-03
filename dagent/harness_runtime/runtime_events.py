@@ -22,6 +22,7 @@ class ResponseStreamContext:
     dag_id: str | None = None
     node_id: str | None = None
     parent_capability_id: str | None = None
+    message_id: str | None = None
 
     @classmethod
     def create(
@@ -29,6 +30,7 @@ class ResponseStreamContext:
         *,
         run_id: str | None = None,
         model_step: int | None = None,
+        message_id: str | None = None,
         dag_id: str | None = None,
         node_id: str | None = None,
         parent_capability_id: str | None = None,
@@ -36,6 +38,7 @@ class ResponseStreamContext:
         return cls(
             run_id=run_id,
             response_id=f"resp_{uuid4().hex}",
+            message_id=message_id,
             model_step=model_step,
             dag_id=dag_id,
             node_id=node_id,
@@ -44,7 +47,7 @@ class ResponseStreamContext:
 
     def payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"response_id": self.response_id}
-        for key in ("run_id", "model_step", "dag_id", "node_id", "parent_capability_id"):
+        for key in ("run_id", "model_step", "dag_id", "node_id", "parent_capability_id", "message_id"):
             value = getattr(self, key)
             if value is not None:
                 payload[key] = value
@@ -74,6 +77,9 @@ class _ResponseTokenSplitter:
         on_event: LoopEventHandler | None,
         context: ResponseStreamContext,
     ) -> None:
+        self.observed_content: list[str] = []
+        self.observed_reasoning: list[str] = []
+        self._record_observed = context.message_id is not None
         self._on_raw = on_raw
         self._on_event = on_event
         self._buf = ""
@@ -123,6 +129,9 @@ class _ResponseTokenSplitter:
         self._emit({"type": "response_finished"})
 
     def _emit(self, event: dict[str, Any]) -> None:
+        if self._record_observed and event["type"] == "response_token":
+            target = self.observed_reasoning if event["channel"] == "reasoning" else self.observed_content
+            target.append(event["delta"])
         if self._on_event is not None:
             self._on_event({**event, **self._identity})
 

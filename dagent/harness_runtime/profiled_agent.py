@@ -1,6 +1,8 @@
 """Generic LLM-backed agent role loaded from an editable profile."""
 
 from __future__ import annotations
+
+from dagent.harness_runtime.conversation_changes import flush_resources, publish_messages, current_changes
 from dagent.schemas.conversation import ResultObservation
 from dagent.harness_runtime.result_storage import ResultStore
 
@@ -16,7 +18,7 @@ from dagent.providers.model_io import chat_response_from_model, complete_model
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.execution_usage import record_model_turn
 from dagent.harness_runtime.llm_retry import run_with_llm_retries
-from dagent.schemas import ContextPolicy, ContextUsage, ConversationState, UserMessage
+from dagent.schemas import AssistantMessage, ContextPolicy, ContextUsage, ConversationState, UserMessage
 from dagent.state import PromptBuilder, PromptRequest
 
 
@@ -74,19 +76,21 @@ class ProfiledAgent:
         )
         if len(messages) != 2 or messages[0].get("role") != "system":
             raise ValueError("Profiled agent prompt must contain system and user messages.")
+        conversation = ConversationState(
+            items=(
+                UserMessage(
+                    content=str(messages[1].get("content") or ""),
+                    scope="validator",
+                    visibility="internal",
+                    result_observations=result_observations,
+                ),
+            )
+        )
+        await publish_messages(conversation.items)
         prepared = await self.context_assembler.prepare(
             result_store=result_store,
             system_message=messages[0],
-            conversation=ConversationState(
-                items=(
-                    UserMessage(
-                        content=str(messages[1].get("content") or ""),
-                        scope="validator",
-                        visibility="internal",
-                        result_observations=result_observations,
-                    ),
-                )
-            ),
+            conversation=conversation,
             policy=self.context_policy,
         )
 
@@ -94,9 +98,20 @@ class ProfiledAgent:
             record_model_turn()
             return chat_response_from_model(await complete_model(self.provider, prepared.request))
 
+        await publish_messages(prepared.conversation.items)
+        await flush_resources()
         response = normalize_chat_response(
             await run_with_llm_retries(chat_attempt)
         )
+        changes = current_changes()
+        if changes is not None and changes.response is not None:
+            record = changes.response
+            await record.finish(AssistantMessage(
+                id=record.message_id, run_id=record.context.run_id,
+                content=response.content, reasoning=response.reasoning_content,
+                refusal=response.refusal, usage=response.usage, model_call=response.metadata,
+                scope="validator", visibility="internal",
+            ), status="completed" if response.status == "completed" else "failed")
         return response, prepared.usage
 
     async def run_text(

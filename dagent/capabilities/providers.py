@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 import hashlib
@@ -283,6 +284,7 @@ class AgentCapabilityProvider:
             StaticAgentReviewRequired,
         )
         from dagent.harness_runtime.steering import suspend_run_steering
+        from dagent.harness_runtime.conversation_changes import audit_conversation_scope, publish_messages
         from dagent.harness_runtime.tool_agent import ToolAgent, ToolAgentLoop
 
         profile = _profile_from_config(agent_name, config)
@@ -366,6 +368,7 @@ class AgentCapabilityProvider:
         with (
             capability_executor.workspace_context(workspace_path),
             suspend_run_steering(),
+            audit_conversation_scope(invocation.invocation_id, "subagent"),
         ):
             if control is not None and control.agent_state is not None:
                 outcome = await agent.resume_review(
@@ -380,6 +383,7 @@ class AgentCapabilityProvider:
                 if outcome is None:
                     raise ValueError("Static agent continuation has no resumable tool review.")
             else:
+                await publish_messages((conversation.items[-1],))
                 outcome = await agent.run_conversation(
                     conversation,
                     run_id=context.task_id if context is not None else None,

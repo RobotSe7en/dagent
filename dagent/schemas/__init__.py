@@ -1,5 +1,7 @@
 """Public schema exports."""
 
+from dagent.schemas.conversation_changes import ConversationChangeBatch
+
 from dagent.schemas.common import Boundary, RiskLevel
 from dagent.schemas.context import (
     ContextPolicy,
@@ -104,6 +106,7 @@ from dagent.schemas.sandbox import (
     SandboxConfig,
 )
 __all__ = [
+    "ConversationChangeBatch",
     "AssistantMessage",
     "Attachment",
     "Boundary",
