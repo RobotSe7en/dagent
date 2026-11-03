@@ -7,7 +7,7 @@ import hashlib
 import json
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
@@ -67,6 +67,11 @@ from dagent.harness_runtime.execution_usage import (
     ExecutionUsageTracker,
     execution_usage_scope,
 )
+from dagent.harness_runtime.conversation_changes import (
+    ConversationChangePublisher, ConversationDeliveryFailure, conversation_change_scope,
+    current_changes, publish_messages,
+)
+from dagent.schemas.conversation_changes import ConversationChangeHandler
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.conversation_resources import ConversationResourceError
 from dagent.harness_runtime.dag_design import design_dag as design_dag_candidate
@@ -96,6 +101,7 @@ from dagent.result import (
     ResponseStartedData,
     ReviewRequiredData,
     RunExecutionError,
+    ConversationChangeError,
     RunFailedData,
     RunFinishedData,
     RunResult,
@@ -1339,6 +1345,7 @@ class Runner:
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        on_conversation_change: ConversationChangeHandler | None = None,
     ) -> RunResult:
         self._ensure_open()
         if run_id is not None:
@@ -1377,46 +1384,107 @@ class Runner:
                 resolved_workspace_path or self._resolve_run_workspace_root(workspace_root) / run_id,
             )
         usage_tracker = ExecutionUsageTracker()
-        with (
-            self._run_scope(
-                resolved_execution,
-                skill_names=skill_names,
-                runtime_workspaces=runtime_workspaces,
-            ),
-            execution_usage_scope(usage_tracker),
-            self._steering_scope(on_event) as steering_on_event,
+        async with self._conversation_changes_scope(
+            on_conversation_change, conversation, usage_tracker, resolved_execution,
         ):
+            with (
+                self._run_scope(
+                    resolved_execution,
+                    skill_names=skill_names,
+                    runtime_workspaces=runtime_workspaces,
+                ),
+                execution_usage_scope(usage_tracker),
+                self._steering_scope(on_event) as steering_on_event,
+            ):
+                try:
+                    result = await self._run_dispatch(
+                        target,
+                        input=input,
+                        conversation=conversation,
+                        graph_input=graph_input,
+                        review=review,
+                        dynamic_adjust=dynamic_adjust,
+                        usage_tracker=usage_tracker,
+                        workspace_root=workspace_root,
+                        workspace_path=resolved_workspace_path,
+                        run_id=run_id,
+                        input_uploads=input_uploads,
+                        artifact_uploads=artifact_uploads,
+                        on_token=on_token,
+                        on_event=steering_on_event,
+                    )
+                    await self._finish_conversation_changes(result)
+                    return result
+                except ToolResultStorageFailure as exc:
+                    raise self._storage_failure_error(
+                        exc,
+                        usage=usage_tracker.snapshot(),
+                        execution=resolved_execution,
+                        user_request=input if isinstance(input, str) else "",
+                        review_level=review or exc.outcome.state.review_level,
+                    ) from exc.cause
+                except ToolContextFailure as exc:
+                    raise self._context_failure_error(
+                        exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
+                        user_request=input if isinstance(input, str) else "",
+                        review_level=review or exc.outcome.state.review_level,
+                    ) from exc
+
+    @asynccontextmanager
+    async def _conversation_changes_scope(self, callback, initial, usage_tracker, execution):
+        publisher = None if callback is None else ConversationChangePublisher(callback, initial)
+        if publisher is not None and usage_tracker is not None:
+            publisher.usage_factory = usage_tracker.snapshot
+        with conversation_change_scope(publisher):
             try:
-                return await self._run_dispatch(
-                    target,
-                    input=input,
-                    conversation=conversation,
-                    graph_input=graph_input,
-                    review=review,
-                    dynamic_adjust=dynamic_adjust,
-                    usage_tracker=usage_tracker,
-                    workspace_root=workspace_root,
-                    workspace_path=resolved_workspace_path,
-                    run_id=run_id,
-                    input_uploads=input_uploads,
-                    artifact_uploads=artifact_uploads,
-                    on_token=on_token,
-                    on_event=steering_on_event,
-                )
-            except ToolResultStorageFailure as exc:
-                raise self._storage_failure_error(
-                    exc,
-                    usage=usage_tracker.snapshot(),
-                    execution=resolved_execution,
-                    user_request=input if isinstance(input, str) else "",
-                    review_level=review or exc.outcome.state.review_level,
-                ) from exc.cause
-            except ToolContextFailure as exc:
-                raise self._context_failure_error(
-                    exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
-                    user_request=input if isinstance(input, str) else "",
-                    review_level=review or exc.outcome.state.review_level,
-                ) from exc
+                yield publisher
+            except BaseException as error:
+                if publisher is None:
+                    raise
+                failure = error if isinstance(error, ConversationDeliveryFailure) else publisher.failure
+                if failure is None and publisher.run_id:
+                    try:
+                        result = getattr(error, "result", None)
+                        if isinstance(result, RunResult):
+                            await self._finish_conversation_changes(result)
+                        elif publisher.state_factory is not None:
+                            state = publisher.state_factory()
+                            await publisher.publish(state=state.conversation)
+                        else:
+                            await publisher.publish()
+                    except ConversationDeliveryFailure as delivery_error:
+                        failure = delivery_error
+                if failure is not None:
+                    state = (publisher.state_factory() if publisher.state_factory is not None else RunState(
+                        run_id=publisher.run_id, kind=publisher.kind, status="failed",
+                        conversation=publisher.conversation, workspace_path=publisher.workspace_path,
+                        runtime_mode={"tool": "tool", "dynamic_dag": "dag", "static_dag": "dag_spec"}[publisher.kind],
+                    ))
+                    state = state.model_copy(deep=True, update={
+                        "status": "failed", "conversation": publisher.conversation,
+                        "pending_review": None, "pending_tool_batch": None,
+                        "static_agent_continuation": None, "execution": execution,
+                    })
+                    from dagent.schemas.run_trace import RunTraceError, RunTraceNode
+                    if state.trace is None:
+                        state.trace = RunTrace(run_id=state.run_id, root=RunTraceNode.run(run_id=state.run_id))
+                    state.trace.root.status = "failed"
+                    state.trace.root.error = RunTraceError(code="ConversationChangeError", message=str(failure))
+                    self._run_checkpoints.pop(state.run_id, None)
+                    self._runtime.session.save_run_state(state)
+                    usage = publisher.usage_factory() if publisher.usage_factory is not None else ExecutionUsage()
+                    raise ConversationChangeError(str(failure), result=RunResult(state=state, usage=usage),
+                                                  failure=failure.failure) from failure.cause
+                raise
+
+    async def _finish_conversation_changes(self, result: RunResult) -> None:
+        scope = current_changes()
+        if scope is None:
+            return
+        publisher = scope.publisher
+        await publisher.publish(state=result.conversation)
+        known = publisher.recorded_item_ids()
+        await publish_messages(tuple(item for item in result.new_items if item.id not in known))
 
     async def _run_dispatch(
         self,
@@ -1818,6 +1886,7 @@ class Runner:
         run_id: str | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
+        on_conversation_change: ConversationChangeHandler | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Run a target and yield typed stream events."""
 
@@ -1840,6 +1909,7 @@ class Runner:
                 input_uploads=input_uploads,
                 artifact_uploads=artifact_uploads,
                 on_event=on_event,
+                on_conversation_change=on_conversation_change,
             )
 
         async for event in self._stream_run(run_target):
@@ -1885,6 +1955,7 @@ class Runner:
         *,
         checkpoint: RunCheckpoint,
         execution: RunExecution = "local",
+        on_conversation_change: ConversationChangeHandler | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Resume a pending review and yield typed stream events."""
 
@@ -1894,6 +1965,7 @@ class Runner:
                 checkpoint=checkpoint,
                 execution=execution,
                 on_event=on_event,
+                on_conversation_change=on_conversation_change,
             )
             if result is None:
                 raise LookupError("Review session not found.")
@@ -1959,9 +2031,10 @@ class Runner:
                     type="run.failed",
                     data=RunFailedData(
                         message=str(exc),
+                        conversation_change_failure=(exc.failure if isinstance(exc, ConversationChangeError) else None),
                         error_type=(
                             type(exc.__cause__).__name__
-                            if isinstance(exc, RunExecutionError) and exc.__cause__ is not None
+                            if isinstance(exc, RunExecutionError) and not isinstance(exc, ConversationChangeError) and exc.__cause__ is not None
                             else type(exc).__name__
                         ),
                         result=(getattr(exc, "result", None)
@@ -1989,15 +2062,22 @@ class Runner:
         execution: RunExecution = "local",
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        on_conversation_change: ConversationChangeHandler | None = None,
     ) -> RunResult | None:
-        with self._steering_scope(on_event) as steering_on_event:
-            return await self._resume_checkpoint(
-                decision,
-                checkpoint,
-                execution=execution,
-                on_token=on_token,
-                on_event=steering_on_event,
-            )
+        async with self._conversation_changes_scope(
+            on_conversation_change, checkpoint.state.conversation, None, execution,
+        ):
+            with self._steering_scope(on_event) as steering_on_event:
+                result = await self._resume_checkpoint(
+                    decision,
+                    checkpoint,
+                    execution=execution,
+                    on_token=on_token,
+                    on_event=steering_on_event,
+                )
+                if result is not None:
+                    await self._finish_conversation_changes(result)
+                return result
 
     async def _resume_checkpoint(
         self,
@@ -2035,6 +2115,9 @@ class Runner:
         )
         runtime = self._runtime_for_resolved_plan(plan)
         usage_tracker = ExecutionUsageTracker(restored.usage)
+        changes = current_changes()
+        if changes is not None:
+            changes.publisher.usage_factory = usage_tracker.snapshot
         resolved_execution = _resolve_run_execution(execution, resume_state)
         self._consumed_review_ids.add(decision.review_id)
         try:
@@ -2087,6 +2170,9 @@ class Runner:
                 exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
                 user_request=resume_state.user_request, review_level=review_level,
             ) from exc
+        except ConversationDeliveryFailure:
+            runtime.session.discard_review(decision.review_id)
+            raise
         except BaseException:
             usage = usage_tracker.snapshot()
             failed_update: dict[str, Any] = {
@@ -3024,6 +3110,7 @@ def _response_event_context(data: dict[str, Any]) -> dict[str, Any]:
     model_step = data.get("model_step")
     return {
         "response_id": str(data.get("response_id", "")),
+        "message_id": _nullable_event_string(data.get("message_id")),
         "model_step": int(model_step) if model_step is not None else None,
         "run_id": _nullable_event_string(data.get("run_id")),
         "dag_id": _nullable_event_string(data.get("dag_id")),

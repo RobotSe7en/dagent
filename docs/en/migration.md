@@ -9,6 +9,26 @@ The current stable package version is `0.10.3`.
 
 ## Unreleased
 
+### Optional conversation change delivery
+
+`run`, `stream`, `resume`, and `resume_stream` accept optional async
+`on_conversation_change`. `ConversationChangeBatch` and `ConversationChangeError`
+are new intentional root exports; detailed payload models live in
+`dagent.schemas.conversation_changes`. Delivery is disabled by default. Existing
+ConversationState V4, RunState V6 and RunCheckpoint V9 records need no migration;
+full results remain supported. Optional stream identity/failure fields are
+omitted when unused. Enabled callbacks introduce persistence backpressure and
+stop execution on failed acknowledgment; tool effects are not rolled back.
+This also covers each mapped invocation and nested execution evidence. Published
+snapshots detect nested argument mutations, and restored files are notified even
+when their logical paths are unchanged. No record migration is required.
+
+See [Conversation Changes](conversation-changes.md) and
+`uv run python -m examples.conversation_changes`. Regression coverage includes
+independent state replay, all four entrypoints, compaction strategies,
+Chat/Responses request equivalence, audit, files, cancellation, and failed saves.
+
+
 `Runner.runtime_directory` now explicitly accepts an absolute path to keep
 private tool results, recovery history and conversation resources outside the
 working directory. Defaults and relative-directory behavior are unchanged;

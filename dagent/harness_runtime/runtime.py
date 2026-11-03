@@ -6,8 +6,13 @@ It does not know how loops execute internally; it only consumes LoopOutcome.
 
 from __future__ import annotations
 
+from dagent.harness_runtime.conversation_changes import (
+    ConversationDeliveryFailure, current_changes, publish_state, publish_messages, note_resource, ResponseRecorder, response_recording_scope,
+)
+
 from dagent.review import CapabilityReviewDecision
 
+import asyncio
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping
 import hashlib
 import mimetypes
@@ -227,19 +232,32 @@ class HarnessRuntime:
             execution_context = f"Run status: {loop_outcome.state.status}. Results follow as structured data."
             if thread and thread.summary:
                 execution_context += "\nEarlier summary:\n" + thread.summary.content
-        validation, response, context_usage = await self.validator.validate_with_audit(
-            user_request=user_request,
-            final_answer=loop_outcome.output_text,
-            execution_context=execution_context,
-            workspace_path=loop_outcome.state.workspace_path,
-            result_observations=observations,
-            result_store=(ResultStore(loop_outcome.state.workspace_path, self.runtime_directory, on_event)
-                          if loop_outcome.state.workspace_path else None),
-        )
+        response_record = (None if current_changes() is None else
+                           ResponseRecorder(run_id=loop_outcome.state.run_id, scope="validator"))
+        try:
+            if response_record is not None:
+                await response_record.start()
+            with response_recording_scope(response_record):
+                validation, response, context_usage = await self.validator.validate_with_audit(
+                    user_request=user_request,
+                    final_answer=loop_outcome.output_text,
+                    execution_context=execution_context,
+                    workspace_path=loop_outcome.state.workspace_path,
+                    result_observations=observations,
+                    result_store=(ResultStore(loop_outcome.state.workspace_path, self.runtime_directory, on_event)
+                                  if loop_outcome.state.workspace_path else None),
+                )
+        except ConversationDeliveryFailure:
+            raise
+        except BaseException as error:
+            if response_record is not None:
+                await response_record.interrupt(None, "cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
+            raise
         audit_item = (
             None
             if response is None
             else AssistantMessage(
+                **({"id": response_record.message_id} if response_record is not None else {}),
                 run_id=loop_outcome.state.run_id,
                 content=response.content,
                 reasoning=response.reasoning_content,
@@ -250,6 +268,11 @@ class HarnessRuntime:
                 visibility="internal",
             )
         )
+        if response_record is not None:
+            if audit_item is not None:
+                await response_record.finish(audit_item)
+            else:
+                await response_record.interrupt(None, "failed")
         if validation.passed:
             if on_event:
                 on_event({
@@ -335,6 +358,20 @@ class HarnessRuntime:
                         "new_items": (*audit_items, *failed.new_items),
                     })
                     raise
+                finally:
+                    changes = current_changes()
+                    if audit_trace is not None and changes is not None:
+                        # Retry loops own fresh traces. Keep delivery snapshots
+                        # cumulative on failure and before the next validation.
+                        if changes.trace is not None:
+                            changes.trace = audit_trace.merge(changes.trace)
+                        if changes.public and changes.publisher.state_factory is not None:
+                            delivery_state = changes.publisher.state_factory()
+                            if delivery_state.trace is not None:
+                                delivery_state = delivery_state.model_copy(update={
+                                    "trace": audit_trace.merge(delivery_state.trace),
+                                })
+                            changes.publisher.state_factory = lambda: delivery_state
                 loop_outcome = next_outcome
                 audit_items.extend(loop_outcome.new_items)
                 applied_steers.extend(
@@ -447,8 +484,13 @@ class HarnessRuntime:
             resolved_run_id,
             workspace_path=workspace_path,
         )
+        initial_conversation = conversation or ConversationState()
+        changes = current_changes()
+        if changes is not None:
+            changes.publisher.bind(resolved_run_id, _state_kind_for_mode(resolved_mode),
+                                   resolved_workspace_path, self.runtime_directory, initial_conversation)
         base_conversation = self.conversation_resources.materialize(
-            conversation or ConversationState(),
+            initial_conversation,
             workspace_path=resolved_workspace_path,
         )
         materialized_uploads = materialize_workbench_uploads(
@@ -468,6 +510,11 @@ class HarnessRuntime:
             input_item,
         )
         _emit_run_started(on_event, run_id=resolved_run_id, kind=_state_kind_for_mode(resolved_mode))
+        for attachment in input_item.attachments:
+            note_resource(attachment, resolved_workspace_path, self.runtime_directory)
+        await publish_state(run_conversation, (input_item,))
+        if route_item is not None:
+            await publish_messages((route_item,))
 
         async def run_once(feedback: UserMessage | None) -> LoopOutcome:
             nonlocal run_conversation
@@ -476,6 +523,7 @@ class HarnessRuntime:
                     run_conversation,
                     feedback,
                 )
+            await publish_state(run_conversation)
             next_outcome = await self._execute_loop(
                 user_request,
                 run_id=resolved_run_id,
@@ -537,7 +585,7 @@ class HarnessRuntime:
             if isinstance(failure, ToolContextFailure):
                 failure.runtime = self
             raise failure
-        return self._finish_loop_outcome(
+        return await self._finish_loop_outcome(
             outcome,
             user_request,
             resolved_mode,
@@ -566,6 +614,11 @@ class HarnessRuntime:
             return None
         pending_review = state.pending_review
         capability_scope = capability_scope_from_state(state.capability_scope)
+        changes = current_changes()
+        if changes is not None:
+            changes.publisher.bind(state.run_id, state.kind, state.workspace_path,
+                                   self.runtime_directory, state.conversation)
+            changes.publisher.state_factory = lambda: state
         _emit_run_started(on_event, run_id=state.run_id, kind=state.kind)
         if state.kind == "static_dag" and pending_review.kind == "capability_review":
             if state.dag_spec is None:
@@ -614,6 +667,7 @@ class HarnessRuntime:
                     or ConversationState(),
                     feedback,
                 )
+                await publish_state(retry_conversation, (feedback,))
                 previous_trace = retry_outcome.state.trace
                 with self.capability_executor.workspace_context(state.workspace_path):
                     next_outcome = await self.tool_agent.run_conversation(
@@ -643,7 +697,7 @@ class HarnessRuntime:
                 initial_loop_outcome=initial_outcome,
                 on_event=on_event,
             )
-            return self._finish_loop_outcome(
+            return await self._finish_loop_outcome(
                 outcome,
                 state.user_request,
                 "tool",
@@ -680,7 +734,7 @@ class HarnessRuntime:
             return None
         self.session.discard_review(review_id)
         if initial_outcome.state.status == "awaiting_review":
-            return self._finish_loop_outcome(
+            return await self._finish_loop_outcome(
                 initial_outcome,
                 state.user_request,
                 "dag",
@@ -699,6 +753,7 @@ class HarnessRuntime:
                 retry_outcome.state.conversation or ConversationState(),
                 feedback,
             )
+            await publish_state(retry_conversation, (feedback,))
             retry_outcome = await self.dag_agent.run_conversation(
                 retry_conversation,
                 task_id=state.run_id,
@@ -720,7 +775,7 @@ class HarnessRuntime:
             initial_loop_outcome=initial_outcome,
             on_event=on_event,
         )
-        return self._finish_loop_outcome(
+        return await self._finish_loop_outcome(
             outcome,
             state.user_request,
             "dag",
@@ -756,6 +811,7 @@ class HarnessRuntime:
             record_model_turn()
             return chat_response_from_model(await complete_model(self.provider, prepared.request))
 
+        route_message_id = f"msg_{uuid4().hex}" if current_changes() is not None else None
         try:
             response = normalize_chat_response(
                 await run_with_llm_retries(
@@ -766,6 +822,7 @@ class HarnessRuntime:
             )
             decision = response.content.strip().lower()
             audit_item = AssistantMessage(
+                **({"id": route_message_id} if route_message_id is not None else {}),
                 content=response.content,
                 reasoning=response.reasoning_content,
                 refusal=response.refusal,
@@ -891,7 +948,7 @@ class HarnessRuntime:
         else:
             raise ValueError(f"Unknown runtime mode: {mode}")
 
-    def _finish_loop_outcome(
+    async def _finish_loop_outcome(
         self,
         outcome: LoopOutcome,
         user_request: str,
@@ -948,6 +1005,10 @@ class HarnessRuntime:
             update["workspace_path"] = str(current_workspace_root("."))
         state = outcome.state.model_copy(update=update)
         state = self.session.save_run_state(state)
+        changes = current_changes()
+        if changes is not None:
+            changes.publisher.state_factory = lambda: state
+        await publish_state(conversation)
         return RunResult(
             state=state,
             output_text=final_answer,
@@ -973,6 +1034,9 @@ class HarnessRuntime:
         validate_dag_input(spec, graph_input)
         resolved_run_id = run_id or _new_run_id_for_mode("dag_spec")
         resolved_workspace_root = self._resolve_run_workspace_root(workspace_root)
+        changes = current_changes()
+        if changes is not None:
+            changes.publisher.bind(resolved_run_id, "static_dag", workspace_path, self.runtime_directory)
         _emit_run_started(on_event, run_id=resolved_run_id, kind="static_dag")
         outcome = await self._execute_loop(
             spec,

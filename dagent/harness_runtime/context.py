@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dagent.harness_runtime.conversation_changes import ConversationDeliveryFailure, flush_resources
+
 import json
 import math
 from collections.abc import Awaitable, Callable, Sequence
@@ -557,6 +559,7 @@ class ContextAssembler:
         elif _context_results(compactable):
             archive_incomplete = True
         summary_limit, _ = self.compaction_limits(policy.summary_max_tokens)
+        await flush_resources()
         try:
             if compact is None:
                 raise RuntimeError("No model compactor is configured.")
@@ -567,6 +570,8 @@ class ContextAssembler:
             )
             method = "model"
             reason = None
+        except ConversationDeliveryFailure:
+            raise
         except Exception as exc:
             summary = _deterministic_summary(
                 conversation.summary,

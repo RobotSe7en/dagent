@@ -15,6 +15,7 @@
 
 ## 功能指南
 
+- [会话变化](conversation-changes.md)：可选异步保存、精确状态重建、消息关联、文件就绪与失败处理。
 - [工具结果恢复](tool-result-recovery.md)：展示预算、原文保存、分页和存储故障。
 
 - [Runner 和配置](runner-and-configuration.md)：provider、`Runner(...)`、

@@ -1,5 +1,8 @@
 # Runner and Configuration
 
+For ready-file notifications and incremental host persistence, see
+[Conversation Changes](conversation-changes.md).
+
 For result display budgets, typed retention metadata and file/search pagination, see
 [Tool Result Recovery](tool-result-recovery.md).
 

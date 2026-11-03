@@ -17,6 +17,8 @@ Simplified Chinese documentation is available at
 
 ## Feature Guides
 
+- [Conversation Changes](conversation-changes.md): optional async persistence,
+  exact state reconstruction, message identity, file readiness, and failures.
 - [Tool Result Recovery](tool-result-recovery.md): display budgets, saved output, pagination and storage failures.
 
 - [Runner and Configuration](runner-and-configuration.md): providers,
