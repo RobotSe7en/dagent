@@ -1,6 +1,6 @@
 # 增量保存会话变化
 
-此能力属于 **Unreleased** SDK。`Runner.run`、`stream`、`resume` 和
+此能力自 SDK **0.10.4** 起可用。`Runner.run`、`stream`、`resume` 和
 `resume_stream` 共用可选的 `on_conversation_change` 异步回调。省略它时，保持已有
 执行行为、事件序列化、模型请求、压缩策略及结果/checkpoint 格式。
 

@@ -1,6 +1,6 @@
 # Persist conversation changes incrementally
 
-Available in the **Unreleased** SDK. The optional `on_conversation_change`
+Available since SDK **0.10.4**. The optional `on_conversation_change`
 callback is shared by `Runner.run`, `stream`, `resume`, and `resume_stream`.
 Omit it to retain existing behavior, event serialization, provider requests,
 compaction policies, and result/checkpoint formats.

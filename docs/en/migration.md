@@ -5,9 +5,19 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current stable package version is `0.10.3`.
+The current stable package version is `0.10.4`.
 
-## Unreleased
+## 0.10.4
+
+Install with `pip install --upgrade 'dagent-ai==0.10.4'`.
+
+### Compatibility and upgrade
+
+Both additions are explicitly opt-in. Existing SDK calls, configuration defaults,
+provider requests, and persisted conversation/checkpoint formats remain
+compatible. There are no breaking changes and no source, configuration, or
+record-format migration is required. Keep the existing callback and runtime
+directory settings to retain previous behavior.
 
 ### Optional conversation change delivery
 
@@ -28,6 +38,7 @@ See [Conversation Changes](conversation-changes.md) and
 independent state replay, all four entrypoints, compaction strategies,
 Chat/Responses request equivalence, audit, files, cancellation, and failed saves.
 
+### External runtime storage
 
 `Runner.runtime_directory` now explicitly accepts an absolute path to keep
 private tool results, recovery history and conversation resources outside the
@@ -42,6 +53,15 @@ Regression coverage includes cross-workspace conversation recovery, shell
 output, static DAG value rehydration, review resume, and the sandbox worker.
 Docker mounts the external store's run resources read-write; relocating storage
 does not itself prevent a process with write access from deleting files.
+
+### Release verification
+
+The complete Python suite with the development and MCP extras passed with
+**2278 passed, 3 skipped**. Both offline examples above, wheel/sdist builds,
+package metadata, lock consistency, and whitespace checks passed. The skips
+cover two opt-in live MiniMax tests and the real Docker test because no daemon
+was available. No live model requests are part of this release; host persistence
+and real Docker deployments need their own integration verification.
 
 ## 0.10.3
 
