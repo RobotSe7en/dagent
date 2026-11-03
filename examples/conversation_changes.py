@@ -48,6 +48,8 @@ class HostJournal:
         self.apply(batch)
 
     def _append(self, line: str) -> None:
+        # Keep full batches: terminal tool observations remain useful even
+        # when SDK result-file storage fails and no result message is available.
         with self.path.open("a", encoding="utf-8") as journal:
             journal.write(line + "\n")
             journal.flush()

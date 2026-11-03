@@ -222,6 +222,91 @@ async def test_save_failure_after_effect_stops_next_call_and_preserves_result(tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("fail_at", ["response_start", "result", "validation_start", "validation_result"])
+@pytest.mark.parametrize("attempts", [1, 2])
+async def test_retry_delivery_failure_preserves_prior_execution_traces(tmp_path, stream, resume, fail_at, attempts):
+    executed = []
+
+    @dagent.tool(risk="medium" if resume else "low")
+    def prepare() -> str:
+        executed.append("prepare")
+        return "prepared"
+
+    @dagent.tool
+    def retry(value: str) -> str:
+        executed.append(value)
+        return value
+
+    responses = [ChatResponse(tool_calls=[ToolCall(id="prepare", name="tool_prepare", arguments={})])]
+    for attempt in range(attempts):
+        responses.extend([
+            ChatResponse(content=f"answer {attempt}"),
+            ChatResponse(content=json.dumps({"passed": False, "summary": "Try again", "issues": []})),
+            ChatResponse(tool_calls=[ToolCall(id=f"retry_{attempt}", name="tool_retry",
+                                             arguments={"value": f"retry_{attempt}"})]),
+        ])
+    if fail_at.startswith("validation_"):
+        responses.extend([ChatResponse(content="final answer"),
+                          ChatResponse(content=json.dumps({"passed": True, "issues": []}))])
+    provider = MockProvider(responses)
+    feedback_ids = set()
+
+    async def save(batch):
+        feedback_ids.update(record.item.id for record in batch.messages
+                            if isinstance(record.item, dagent.UserMessage) and record.item.scope == "validator"
+                            and record.origin.scope == "conversation")
+        if len(feedback_ids) != attempts:
+            return
+        if fail_at == "response_start":
+            reject = any(obs.type == "response" and obs.status == "started" for obs in batch.observations)
+        elif fail_at == "result":
+            reject = any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages)
+        elif fail_at == "validation_start":
+            reject = any(obs.type == "response" and obs.status == "started" and obs.origin.scope == "validator"
+                         for obs in batch.observations)
+        else:
+            reject = any(isinstance(record.item, dagent.AssistantMessage) and record.item.scope == "validator"
+                         for record in batch.messages)
+        if reject:
+            raise OSError("retry commit failed")
+
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[],
+                              validator="validator_agent")) as runner:
+        runner.runtime.max_validation_retries = attempts
+        agent = dagent.ToolAgent(profile="conversation", capabilities=[prepare, retry],
+                                 review="careful" if resume else "fast")
+        if resume:
+            pending = await runner.run(agent, input="prepare", on_conversation_change=save)
+            operation = (runner.resume_stream(pending.review.approve(), checkpoint=pending.checkpoint,
+                                               on_conversation_change=save) if stream else
+                         runner.resume(pending.review.approve(), checkpoint=pending.checkpoint,
+                                       on_conversation_change=save))
+        else:
+            operation = (runner.stream(agent, input="prepare", on_conversation_change=save) if stream else
+                         runner.run(agent, input="prepare", on_conversation_change=save))
+        if stream:
+            events = [event async for event in operation]
+            assert events[-1].type == "run.failed"
+            assert events[-1].data.error_type == "ConversationChangeError"
+            result = events[-1].data.result
+        else:
+            with pytest.raises(dagent.ConversationChangeError) as captured:
+                await operation
+            result = captured.value.result
+        expected = ["prepare", *(f"retry_{attempt}" for attempt in range(attempts - (fail_at == "response_start")))]
+        assert executed == expected
+        executions = [node.capability_execution for node in result.trace.root.children if node.capability_execution]
+        assert [execution.invocation.invocation_id for execution in executions] == expected
+        assert all(execution.result.status == "completed" for execution in executions)
+        assert all(node.parent_id == result.trace.root.id for node in result.trace.root.children)
+        assert runner.run_state(result.run_id).trace == result.trace
+        assert result.checkpoint is None
+        assert len(provider.requests) == len(responses) - (fail_at in {"response_start", "validation_start"})
+
+
+@pytest.mark.asyncio
 async def test_save_backpressure_precedes_model_and_cancellation_waits_for_ack(tmp_path):
     saving = asyncio.Event()
     release = asyncio.Event()
@@ -619,6 +704,72 @@ async def test_static_dag_save_failure_retains_actual_tool_execution(tmp_path):
         assert result.checkpoint is None
         assert any(node.capability_execution.result.status == "completed"
                    for node in result.trace.root.children[0].children if node.capability_execution is not None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mapped", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("reject_terminal", [False, True])
+@pytest.mark.parametrize("outcome", ["completed", "failed"])
+async def test_dag_storage_failure_publishes_known_tool_outcome(tmp_path, monkeypatch, mapped, stream,
+                                                              reject_terminal, outcome):
+    from dagent.capabilities.tools.registry import ToolOutput
+    from dagent.harness_runtime import result_storage
+
+    executed = []
+
+    @dagent.tool
+    def binary():
+        executed.append("binary")
+        return ToolOutput("produced", value=b"\xff")
+
+    if outcome == "failed":
+        async def failed_binary(invocation):
+            executed.append("binary")
+            return dagent.CapabilityResult.failed(invocation, "tool failed", stop_reason="ToolError", value=b"\xff")
+
+        binary = dagent.CapabilityBinding(binary.definition, failed_binary)
+
+    def fail_storage(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(result_storage, "_write_reference", fail_storage)
+    graph = dagent.Dag("storage_failure")
+    graph.add_node(dagent.MapNode("produce", target=binary, over=[1]) if mapped else
+                   dagent.Node("produce", target=binary))
+    batches = []
+
+    async def save(batch):
+        batches.append(batch)
+        if reject_terminal and any(obs.type == "tool_execution" and obs.status == outcome
+                                   for obs in batch.observations):
+            raise OSError("terminal commit failed")
+
+    with closing(dagent.Runner(provider=MockProvider(), workspace=tmp_path, skill_roots=[])) as runner:
+        if stream:
+            events = [event async for event in runner.stream(graph, on_conversation_change=save)]
+            assert events[-1].type == ("run.failed" if reject_terminal else "run.finished")
+            result = events[-1].data.result
+            if reject_terminal:
+                assert events[-1].data.error_type == "ConversationChangeError"
+        elif reject_terminal:
+            with pytest.raises(dagent.RunExecutionError) as captured:
+                await runner.run(graph, on_conversation_change=save)
+            assert isinstance(captured.value, dagent.ConversationChangeError)
+            result = captured.value.result
+        else:
+            result = await runner.run(graph, on_conversation_change=save)
+        assert result.status == "failed"
+        assert executed == ["binary"]
+        observations = [obs for batch in batches for obs in batch.observations if obs.type == "tool_execution"]
+        assert [obs.status for obs in observations] == ["starting", outcome]
+        assert observations[0].call_id == observations[1].call_id
+        assert observations[0].origin == observations[1].origin
+        assert observations[1].origin.scope == "planner"
+        assert not any(isinstance(record.item, dagent.ToolResultMessage) for batch in batches for record in batch.messages)
+        execution = result.trace.dag_node_traces()["produce"].children[0].capability_execution
+        assert execution.result.status == outcome
+        assert execution.result.retention.unavailable_fields == ("value",)
 
 
 @pytest.mark.asyncio

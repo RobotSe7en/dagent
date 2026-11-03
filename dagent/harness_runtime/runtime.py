@@ -358,6 +358,20 @@ class HarnessRuntime:
                         "new_items": (*audit_items, *failed.new_items),
                     })
                     raise
+                finally:
+                    changes = current_changes()
+                    if audit_trace is not None and changes is not None:
+                        # Retry loops own fresh traces. Keep delivery snapshots
+                        # cumulative on failure and before the next validation.
+                        if changes.trace is not None:
+                            changes.trace = audit_trace.merge(changes.trace)
+                        if changes.public and changes.publisher.state_factory is not None:
+                            delivery_state = changes.publisher.state_factory()
+                            if delivery_state.trace is not None:
+                                delivery_state = delivery_state.model_copy(update={
+                                    "trace": audit_trace.merge(delivery_state.trace),
+                                })
+                            changes.publisher.state_factory = lambda: delivery_state
                 loop_outcome = next_outcome
                 audit_items.extend(loop_outcome.new_items)
                 applied_steers.extend(

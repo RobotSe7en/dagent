@@ -540,6 +540,9 @@ class DAGExecutor:
                 dag_node.error = _error(str(exc), type(exc).__name__)
                 dag_node.ended_at = _now()
                 self.partial_node_traces[node.id] = dag_node
+                if isinstance(exc, ResultStorageError):
+                    await observe_tool(invocation.invocation_id, invocation.capability_id,
+                                       "completed" if failed_result.status == "completed" else "failed")
                 raise
             finally:
                 if token_stream is not None:
@@ -712,6 +715,16 @@ class DAGExecutor:
                                 policy=self.result_storage_policy,
                                 on_event=on_event,
                             )
+                        except ResultStorageError as exc:
+                            failed_storage_node = RunTraceNode.capability_call(
+                                parent_id=dag_node.id, invocation=invocation, result=exc.audit_result,
+                                error=str(exc),
+                            )
+                            failed_storage_node.error.code = "ResultStorageError"
+                            dag_node.children.append(failed_storage_node)
+                            await observe_tool(invocation.invocation_id, invocation.capability_id,
+                                               "completed" if exc.audit_result.status == "completed" else "failed")
+                            raise
                         except ConversationDeliveryFailure as error:
                             self._record_child_delivery_failure(node, dag_node, invocation, error)
                             raise
@@ -726,14 +739,6 @@ class DAGExecutor:
                         _attach_child_trace(item_node, result)
                         item_traces[index] = item_node
                         await self._publish_capability_result(node, dag, dag_node, invocation, normalized)
-            except ResultStorageError as exc:
-                failed_storage_node = RunTraceNode.capability_call(
-                    parent_id=dag_node.id, invocation=invocation, result=exc.audit_result,
-                    error=str(exc),
-                )
-                failed_storage_node.error.code = "ResultStorageError"
-                dag_node.children.append(failed_storage_node)
-                raise
             finally:
                 if token_stream is not None:
                     token_stream.finish()

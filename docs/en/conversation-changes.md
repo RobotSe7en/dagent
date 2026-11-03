@@ -146,6 +146,11 @@ uncertainty. No result is invented and tools are never automatically replayed.
 Each `MapNode` invocation follows the same acknowledgment and result-delivery
 rules. Persistence failure stops undispatched work; already running calls may
 still finish, and their execution evidence is retained.
+If required result-file storage fails after a tool returns, its known
+`completed` or `failed` observation is still delivered before the storage error
+propagates, including for DAG nodes and mapped invocations. This observation
+does not mean the result files were saved; no complete result message is
+published for the unsuccessful normalization.
 
 Cancellation stops further advancement and waits for the in-flight callback and
 necessary cleanup deliveries. It may therefore wait on host persistence. This
@@ -190,6 +195,8 @@ holds the original host error. The result has no resumable checkpoint.
 quality-validation retries. A completed tool remains completed in execution
 evidence even though the Run failed to persist.
 This includes completed calls inside subgraphs, loop bodies, and delegated agents.
+If delivery fails during a quality-validation retry, the failed result and saved
+run state retain execution traces from earlier attempts as well as the retry.
 
 The new callback is disabled by default. `result.conversation`, `new_items`,
 review checkpoints, and full `run.finished` results remain supported. The
