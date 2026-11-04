@@ -5,11 +5,9 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current stable package version is `0.11.0`.
+The current stable package version is `0.10.4`.
 
-## 0.11.0
-
-Install with `pip install --upgrade 'dagent-ai==0.11.0'`.
+## Unreleased
 
 ### Breaking changes: best-effort tool-output files
 

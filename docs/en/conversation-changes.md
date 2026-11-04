@@ -180,10 +180,10 @@ without scanning directories. Two kinds of file are notified:
   SDK store. A compaction archive restored into another workspace is notified
   there even when its logical path is unchanged; this alone does not increase
   the conversation revision.
-- **Tool-output overflow files** (no `sha256`). These are best-effort since
-  0.11.0: the SDK does not check them, and saving them is optional. They are
-  not restored into later workspaces, so a host that wants them later must keep
-  its own copy.
+- **Tool-output overflow files** (no `sha256`). These are best-effort in the
+  **Unreleased** SDK: the SDK does not check them, and saving them is optional.
+  They are not restored into later workspaces, so a host that wants them later
+  must keep its own copy.
 
 References remain logical even with an absolute external runtime directory. The
 SDK backing store carries compaction archives across workspaces; this feature

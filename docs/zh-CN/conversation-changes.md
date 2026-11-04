@@ -148,7 +148,7 @@ for resource in batch.resources:
 - **压缩归档**（源归档和压缩记录，带 `sha256`）。如果宿主在 SDK 存储之外保存历史，
   应在确认批次前保存这些字节。压缩归档恢复到其他 workspace 时，即使逻辑路径不变也会在
   该 workspace 再通知一次；仅此变化不增加会话 revision。
-- **工具输出溢出文件**（不带 `sha256`）。自 0.11.0 起尽力保存：SDK 不校验，宿主可以不存。
+- **工具输出溢出文件**（不带 `sha256`）。在 **Unreleased** SDK 中尽力保存：SDK 不校验，宿主可以不存。
   它们不会恢复到之后的 workspace，宿主之后还需要时应自行保留副本。
 
 绝对 runtime 目录下，引用仍使用逻辑路径。SDK backing store 负责跨 workspace 携带压缩归档；
