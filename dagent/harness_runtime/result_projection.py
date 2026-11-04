@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-import hashlib
 from dataclasses import dataclass
-from typing import Protocol, Sequence
-from collections.abc import Callable
+from typing import Any, Literal, Protocol, Sequence
+from collections.abc import Callable, Iterable
 
 from dagent.schemas.context import ContextPolicy
 from dagent.schemas.conversation import (
@@ -22,6 +21,21 @@ class TextCounter(Protocol):
 
 
 ResultItem = ToolResultMessage | ResultObservation
+
+READ_FILE_TOOL_NAME = "tool_read_file"
+READ_FILE_CAPABILITY_ID = "tool.read_file"
+
+# How a model context handles results longer than their display budget:
+# "file": shorten them and point to a file holding the rest (read_file exists);
+# "full": never shorten them (the model cannot read files);
+# "truncate": shorten them without writing files (internal tool-less calls).
+ResultOverflow = Literal["file", "full", "truncate"]
+
+
+def read_file_available(tools: Iterable[dict[str, Any]]) -> bool:
+    """Whether the model can open saved result files with the built-in read_file."""
+
+    return any(tool.get("function", tool).get("name") == READ_FILE_TOOL_NAME for tool in tools)
 
 
 class ResultBudgetExceeded(ValueError):
@@ -51,10 +65,11 @@ def result_references(item: ResultItem) -> tuple[ContentReference, ...]:
     else:
         candidates.extend(item.references)
     if item.model_display is not None:
-        candidates.append(item.model_display.recovery)
+        if item.model_display.recovery is not None:
+            candidates.append(item.model_display.recovery)
         if item.model_display.previous_display is not None:
             candidates.append(item.model_display.previous_display)
-    unique = {(ref.path, ref.sha256): ref for ref in candidates}
+    unique = {ref.path: ref for ref in candidates}
     return tuple(unique.values())
 
 
@@ -78,6 +93,13 @@ def project_result(
     max_body_chars: int | None = None,
     recovery_reference: ContentReference | None = None,
 ) -> ResultProjection:
+    """Render one result within ``budget`` tokens.
+
+    With ``read_available`` false the model cannot open saved files, so the
+    result is never shortened and the budget does not apply. A result that has
+    an overflow file counts as shortened; nothing about the file is checked.
+    """
+
     if item.model_display is not None:
         display = item.model_display
         marker = "[Recover received result with read_file: "
@@ -87,13 +109,13 @@ def project_result(
         metadata = display.text[:body_start].rstrip("\n")
         total_tokens = counter.count_text(display.text)
         metadata_tokens = counter.count_text(metadata)
+        shortened = display.revision == 1 or display.recovery is not None
         return ResultProjection(
             display.text,
-            display.revision == 1
-            or hashlib.sha256(display.text[body_start:].encode("utf-8")).hexdigest() != display.recovery.sha256,
+            shortened,
             metadata_tokens,
             max(0, total_tokens - metadata_tokens),
-            not read_available,
+            shortened and not read_available,
             display.displayed_spans,
         )
     text = stored_content_text(item.content)
@@ -104,10 +126,7 @@ def project_result(
     source_partial = (
         retention is not None and retention.source_completeness == "partial"
     )
-    externalized = (
-        isinstance(item.content, ContentReference)
-        and hashlib.sha256(text.encode("utf-8")).hexdigest() != item.content.sha256
-    )
+    externalized = isinstance(item.content, ContentReference)
     status = f"[status={item.status}]"
     if isinstance(item, ResultObservation):
         status = f"Result {item.name}:\n" + status
@@ -173,13 +192,7 @@ def project_result(
 
     def render(chars: int) -> tuple[str, str, str, bool]:
         truncated = chars < len(text) or externalized
-        unavailable = (
-            (truncated or source_partial) and not refs and not cursor_text
-        ) or (
-            (truncated or source_partial or bool(refs))
-            and bool(refs or file_window)
-            and not read_available
-        )
+        unavailable = (truncated or source_partial) and not refs and not cursor_text
         metadata = [status]
         if isinstance(item, ToolResultMessage) and item.reviewer_feedback:
             metadata.append(f"Reviewer feedback: {item.reviewer_feedback}")
@@ -197,15 +210,7 @@ def project_result(
             )
             metadata.append(f"[Displayed: chars=[{start},{start + chars})]")
         if unavailable:
-            metadata.append(
-                "[RECOVERY_UNAVAILABLE: "
-                + (
-                    "read_file unavailable, path denied or missing"
-                    if refs or file_window
-                    else "no saved original"
-                )
-                + "]"
-            )
+            metadata.append("[RECOVERY_UNAVAILABLE: no saved original]")
         if reference_text:
             metadata.append(reference_text)
         if (recovery_reference is not None and retention and retention.continuation
@@ -248,7 +253,7 @@ def project_result(
 
     initial_chars = len(text) if max_body_chars is None else min(len(text), max(0, max_body_chars))
     full, meta, body, unavailable = render(initial_chars)
-    if counter.count_text(full) <= budget:
+    if not read_available or counter.count_text(full) <= budget:
         metadata_tokens = counter.count_text(meta)
         return ResultProjection(
             full,

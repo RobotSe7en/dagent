@@ -729,6 +729,7 @@ def _execute_tool(
                 paths.directory if paths.external else getattr(context, "runtime_directory", ".dagent")
             ),
             "max_bytes": getattr(context, "max_shell_output_bytes", 64 * 1024 * 1024),
+            "files": getattr(context, "result_files", True),
         }
     if current_run_execution() == "sandbox":
         session = current_sandbox_session()

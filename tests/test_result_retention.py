@@ -19,6 +19,8 @@ from dagent.schemas import (
 )
 from dagent.schemas.conversation import ContentReference, InlineContent
 
+READ_TOOL = {"type": "function", "function": {"name": "tool_read_file"}}
+
 
 @pytest.mark.parametrize("aggregate", [False, True])
 def test_file_observation_retention_matches_its_content(tmp_path, aggregate):
@@ -131,6 +133,7 @@ def test_every_large_result_has_an_independent_recoverable_limit(tmp_path, count
         assembler.prepare(
             system_message={"content": "test"},
             conversation=conversation,
+            tools=[READ_TOOL],
             policy=ContextPolicy(max_total_tool_result_tokens=budget),
             result_store=store,
         )
@@ -156,6 +159,7 @@ def test_every_large_result_has_an_independent_recoverable_limit(tmp_path, count
         assembler.prepare(
             system_message={"content": "test"},
             conversation=prepared.conversation,
+            tools=[READ_TOOL],
             policy=ContextPolicy(max_total_tool_result_tokens=budget),
             result_store=store,
         )
@@ -190,8 +194,10 @@ def test_query_pages_do_not_repeat_or_omit_entries(tmp_path):
 
 
 def test_shell_capture_limit_keeps_exit_status_and_tail(tmp_path):
+    # Beyond the inline limits the output overflows to a file, which the
+    # capture limit bounds; the shown tail still ends with the command.
     output = shell(
-        f"\"{sys.executable}\" -c \"print('x'*10000); print('END')\"",
+        f"\"{sys.executable}\" -c \"print('x'*200000); print('END')\"",
         cwd=tmp_path,
         _dagent_result_context={
             "workspace": str(tmp_path),
@@ -284,6 +290,7 @@ def test_context_compaction_keeps_original_result_index(tmp_path):
         assembler.prepare(
             system_message={"content": "test"},
             conversation=ConversationState(items=tuple(items)),
+            tools=[READ_TOOL],
             policy=policy,
             result_store=store,
         )
@@ -388,11 +395,17 @@ def test_saved_results_do_not_expand_read_boundaries(tmp_path):
             ],
         )
     )
-    assert "RECOVERY_UNAVAILABLE" in prepared.messages[-1]["content"]
-    assert prepared.usage.unrecoverable_tool_results == 1
+    # The path is only reported; reading it is still checked by read_file's
+    # own boundary, which saving the result does not widen.
+    from dagent.capabilities.tools.boundary import BoundaryViolation, enforce_path_allowed
+
     item = prepared.conversation.items[-1]
     assert isinstance(item.content, ContentReference)
     assert (tmp_path / item.content.path).is_file()
+    assert f"path={item.content.path}" in prepared.messages[-1]["content"]
+    assert "RECOVERY_UNAVAILABLE" not in prepared.messages[-1]["content"]
+    with pytest.raises(BoundaryViolation):
+        enforce_path_allowed(item.content.path, Boundary(allowed_paths=["allowed"]), tmp_path)
 
 
 def test_storage_warning_does_not_fail_a_streamed_run(tmp_path, monkeypatch):
@@ -426,7 +439,7 @@ def test_storage_warning_does_not_fail_a_streamed_run(tmp_path, monkeypatch):
                 event
                 async for event in runner.stream(
                     dagent.ToolAgent(
-                        profile="conversation", capabilities=["tool.data"]
+                        profile="conversation", capabilities=["tool.data", "tool.read_file"]
                     ),
                     input="test",
                 )

@@ -24,7 +24,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from dagent.capabilities.tools.boundary import enforce_path_allowed
 from dagent.harness_runtime.llm_retry import is_transient_llm_error
 from dagent.harness_runtime.model_observation import count_prepared_call
-from dagent.harness_runtime.result_projection import result_references
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import ChatResponse
 from dagent.providers.model_io import (
@@ -296,7 +295,7 @@ class HistoryCompactor:
         result_store: ResultStore | None, system_message: dict[str, Any],
         tools: Sequence[dict[str, Any]] = (),
         chat: Callable[[ModelRequest], Awaitable[ModelResponse | ChatResponse]],
-        read_available: bool | Callable[[ContentReference], bool] = False,
+        read_available: bool = False,
         source_request: ModelRequest | None = None,
         observer: Any = None,
         run_state: CompactionRunState | None = None,
@@ -936,40 +935,13 @@ class HistoryCompactor:
 
     def _archive(self, previous: ContextSummary | None,
                  items: tuple[ConversationItem, ...]) -> ContentReference:
-        from dagent.harness_runtime.conversation_resources import (
-            ConversationResourceError, ConversationResourceIndex, iter_resource_closure,
-        )
-
         if self.result_store is None:
             raise CompactionArchiveError("Recoverable compaction requires a result store.")
         sanitized = tuple(item.model_copy(update={"reasoning": ""})
                           if isinstance(item, AssistantMessage) else item for item in items)
-        refs: list[ContentReference] = []
-        for item in items:
-            results = ((item,) if isinstance(item, ToolResultMessage)
-                       else item.result_observations if isinstance(item, UserMessage) else ())
-            for result in results:
-                refs.extend(result_references(result))
-                if result.model_display:
-                    refs.append(result.model_display.recovery)
-                    if result.model_display.previous_display:
-                        refs.append(result.model_display.previous_display)
-        if previous:
-            refs.extend(ref for ref in (previous.compaction_record, previous.result_manifest) if ref)
-        roots = [(ref, "opaque") for ref in _unique_refs(refs)]
-        if previous and previous.compaction_record:
-            roots.append((previous.compaction_record, "record"))
-        if previous and previous.result_manifest:
-            roots.append((previous.result_manifest, "legacy_results"))
-        index = self.assembler._compaction_resource_index
-        if index is None or index.workspace != self.result_store.workspace:
-            index = ConversationResourceIndex(self.result_store.workspace)
-            self.assembler._compaction_resource_index = index
-        try:
-            for _ in iter_resource_closure(roots, self.result_store.read_reference, index=index):
-                pass
-        except (OSError, ValueError, ConversationResourceError) as exc:
-            raise CompactionArchiveError(f"Cannot retain compaction source references: {exc}") from exc
+        # Archived items keep their own tool-output paths; those files are
+        # neither collected nor opened. Only earlier archives are linked.
+        refs = [ref for ref in (previous.compaction_record, previous.result_manifest) if ref] if previous else []
         archive = CompactionSourceV1(previous_summary=previous.content if previous else None,
                                     previous_result_manifest=previous.result_manifest if previous else None,
                                     views=tuple(SourceView(source_id=key, text=text)
@@ -1007,31 +979,8 @@ class HistoryCompactor:
         source: ContentReference, sources: dict[str, str], chunks: list[CompactionChunk],
         max_tokens: int, *, reason: str, reused_from: ContentReference | None = None,
     ) -> ContextSummary:
-        from dagent.harness_runtime.conversation_resources import (
-            ConversationResourceError, iter_resource_closure,
-        )
-
-        def check_readable(ref: ContentReference) -> None:
-            allowed = self.read_available(ref) if callable(self.read_available) else self.read_available
-            if not allowed:
-                raise CompactionArchiveError("Reference fallback requires an available read capability and allowed source.")
-
-        def read_checked(ref: ContentReference) -> bytes:
-            check_readable(ref)
-            return self._read_reference(ref)
-
-        roots = [(source, "source")]
-        if previous and previous.compaction_record:
-            roots.append((previous.compaction_record, "record"))
-        if reused_from:
-            roots.append((reused_from, "record"))
-        try:
-            for ref in iter_resource_closure(roots, read_checked, index=self.assembler._compaction_resource_index):
-                # A cached digest is not an authorization decision. Recheck
-                # today's capability and boundary even when no body read is needed.
-                check_readable(ref)
-        except ConversationResourceError as exc:
-            raise CompactionArchiveError(str(exc)) from exc
+        if not self.read_available:
+            raise CompactionArchiveError("Reference fallback requires the read_file tool.")
         unresolved = _unresolved(sources, chunks)
         banner = ("[DEGRADED_CONTEXT] Some history is available only by reference; "
                   "do not assume it was summarized.\n"
@@ -1394,7 +1343,7 @@ def _unresolved(sources: dict[str, str], chunks: list[CompactionChunk]) -> tuple
 
 
 def _unique_refs(refs: Sequence[ContentReference]) -> tuple[ContentReference, ...]:
-    return tuple({(ref.path, ref.sha256): ref for ref in refs}.values())
+    return tuple({ref.path: ref for ref in refs}.values())
 
 
 def _balanced(items: tuple[ConversationItem, ...]) -> bool:

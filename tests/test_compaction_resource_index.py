@@ -1,3 +1,5 @@
+"""Compaction writes its archives without re-reading earlier history first."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -41,95 +43,64 @@ def engine(workspace, assembler, meter):
 
 
 @pytest.mark.asyncio
-async def test_incremental_archives_reuse_reads_across_prepare_operations(tmp_path):
-    assembler = ContextAssembler(context_window_tokens=8192)
+async def test_each_compaction_reads_a_bounded_number_of_archives(tmp_path):
     meter = ReadMeter()
     summary = None
-    steps = 40
-    for index in range(steps):
-        # Production creates both objects again for each context preparation.
-        compactor = engine(tmp_path, assembler, meter)
-        before = meter.bytes
-        summary = await compactor.compact(
+    reads = []
+    for index in range(40):
+        before = meter.calls
+        summary = await engine(tmp_path, ContextAssembler(context_window_tokens=8192), meter).compact(
             summary, (UserMessage(id=f"source_{index:02d}", content="next requirement"),), 256,
         )
-    last_read = meter.bytes - before
-    disk_bytes = sum(path.stat().st_size for path in tmp_path.rglob("*.txt"))
-    assert meter.calls < steps * 10
-    assert last_read < disk_bytes // 4
-
-    # A new runtime must verify existing history instead of trusting old cache.
-    before = meter.bytes
-    cold = engine(tmp_path, ContextAssembler(context_window_tokens=8192), meter)
-    await cold.compact(summary, (UserMessage(id="after_restart", content="Continue."),), 256)
-    assert meter.bytes - before > last_read * 2
+        reads.append(meter.calls - before)
+    # Only the latest record and the new source are read, however long the history.
+    assert max(reads) <= 3
+    assert set(reads[1:]) == {reads[1]}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["replace", "delete"])
-async def test_cached_archive_still_detects_changed_old_leaf(tmp_path, change):
+async def test_changed_old_archive_does_not_block_a_new_compaction(tmp_path, change):
     assembler = ContextAssembler(context_window_tokens=8192)
     meter = ReadMeter()
     first = engine(tmp_path, assembler, meter)
     summary = await first.compact(None, (UserMessage(id="old", content="Keep this evidence."),), 256)
     old_source = record_for(first, summary).source
-    # Warm the closure index, then change a deep leaf behind the current root.
-    second = engine(tmp_path, assembler, meter)
-    summary = await second.compact(summary, (UserMessage(id="new", content="More evidence."),), 256)
+    summary = await engine(tmp_path, assembler, meter).compact(
+        summary, (UserMessage(id="new", content="More evidence."),), 256,
+    )
     source_path = tmp_path / old_source.path
     if change == "delete":
         source_path.unlink()
     else:
-        original = source_path.read_bytes()
-        replacement = source_path.with_suffix(".replacement")
-        replacement.write_bytes(b"x" * len(original))
-        replacement.replace(source_path)
-    with pytest.raises(CompactionArchiveError):
-        await engine(tmp_path, assembler, meter).compact(
-            summary, (UserMessage(id="latest", content="Continue."),), 256,
-        )
-
-
-@pytest.mark.asyncio
-async def test_archive_index_does_not_cross_workspaces(tmp_path):
-    assembler = ContextAssembler(context_window_tokens=8192)
-    meter = ReadMeter()
-    source = tmp_path / "source"
-    destination = tmp_path / "destination"
-    compactor = engine(source, assembler, meter)
-    summary = await compactor.compact(None, (UserMessage(content="Evidence."),), 256)
-    summary = await engine(source, assembler, meter).compact(
-        summary, (UserMessage(content="More evidence."),), 256,
+        source_path.write_bytes(b"x" * source_path.stat().st_size)
+    latest = await engine(tmp_path, assembler, meter).compact(
+        summary, (UserMessage(id="latest", content="Continue."),), 256,
     )
-    with pytest.raises(CompactionArchiveError):
-        await engine(destination, assembler, meter).compact(
-            summary, (UserMessage(content="Continue."),), 256,
-        )
+    assert latest.compaction_record is not None
 
 
 @pytest.mark.asyncio
-async def test_reference_continuation_reuses_archive_reads_but_rechecks_access(tmp_path):
+async def test_reference_fallback_requires_read_file_and_reads_no_history(tmp_path):
     assembler = ContextAssembler(context_window_tokens=8192)
     meter = ReadMeter()
     summary = None
-    first_source = None
     for index in range(30):
         compactor = engine(tmp_path, assembler, meter)
         compactor.policy = ContextPolicy(compaction_strategy="chunked", allow_reference_fallback=True)
         compactor.read_available = True
+        before = meter.calls
         summary = await compactor.reference_fallback(
             summary, (UserMessage(id=f"source_{index}", content="Retained evidence."),),
             256, reason="Summary service unavailable.",
         )
-        if first_source is None:
-            first_source = record_for(compactor, summary).source
-    assert meter.calls < 30 * 10
+        assert meter.calls - before <= 2
+        assert summary.method == "reference_fallback"
 
-    # Permission is checked even when the old node's parsed links are cached.
     compactor = engine(tmp_path, assembler, meter)
     compactor.policy = ContextPolicy(compaction_strategy="chunked", allow_reference_fallback=True)
-    compactor.read_available = lambda ref: ref.path != first_source.path
-    with pytest.raises(CompactionArchiveError, match="available read capability"):
+    compactor.read_available = False
+    with pytest.raises(CompactionArchiveError, match="read_file"):
         await compactor.reference_fallback(
             summary, (UserMessage(content="Continue."),), 256, reason="offline",
         )

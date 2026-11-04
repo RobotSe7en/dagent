@@ -93,7 +93,7 @@ from dagent.state import PromptBuilder, PromptRequest
 from dagent.state.prompt_builder import PromptSkill
 from dagent.harness_runtime.context import ContextAssembler, PreparedModelContext
 from dagent.harness_runtime.result_storage import normalize_capability_result, ResultStore, ResultStorageError
-from dagent.harness_runtime.result_projection import ResultBudgetExceeded
+from dagent.harness_runtime.result_projection import ResultBudgetExceeded, read_file_available
 from dagent.schemas.retention import ResultRetention
 from dagent.schemas.context import ContextWindowExceeded
 from dagent.schemas.conversation import (
@@ -525,8 +525,11 @@ class ToolAgentLoop:
             task_id=resolved_run_id,
             skills=skills,
         )
+        # Oversized results overflow to files only when this model can read them.
+        result_files = read_file_available(self._llm_tool_definitions(capability_ids=capability_ids))
         execution_context = replace(execution_context, runtime_directory=self.runtime_directory,
-                                    max_shell_output_bytes=result_storage_policy.max_shell_output_bytes)
+                                    max_shell_output_bytes=result_storage_policy.max_shell_output_bytes,
+                                    result_files=result_files)
         state_scope = _state_capability_scope(
             capability_scope,
             capability_ids=capability_ids,
@@ -754,7 +757,7 @@ class ToolAgentLoop:
                     try:
                         normalized = normalize_capability_result(
                             result, workspace_path=workspace, runtime_directory=self.runtime_directory,
-                            policy=result_storage_policy, on_event=on_event,
+                            policy=result_storage_policy, on_event=on_event, result_files=result_files,
                         )
                     except ResultStorageError as exc:
                         assert invocation is not None
@@ -858,11 +861,9 @@ class ToolAgentLoop:
                 compactor = None
                 if context_policy.compaction_strategy != "legacy":
                     from dagent.harness_runtime.compaction import HistoryCompactor
-                    from dagent.harness_runtime.frozen_results import RecoveryAccess
 
                     if not callable(getattr(self.provider, "prepare_call", None)):
                         raise ValueError("The new ToolAgent context strategies require a provider with prepared-call support.")
-                    access = RecoveryAccess.from_tools(result_store, tool_definitions)
 
                     async def summarize(request: ModelRequest) -> ModelResponse:
                         return await self._summary_chat(
@@ -875,7 +876,8 @@ class ToolAgentLoop:
                     compactor = HistoryCompactor(
                         policy=context_policy, assembler=context_assembler,
                         result_store=result_store, system_message=system_message,
-                        tools=tool_definitions, chat=summarize, read_available=access.can_read,
+                        tools=tool_definitions, chat=summarize,
+                        read_available=read_file_available(tool_definitions),
                         observer=ContextObserver(self.context_observability, on_event, resolved_run_id),
                         run_state=compaction_run_state,
                     )

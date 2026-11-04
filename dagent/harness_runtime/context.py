@@ -10,11 +10,12 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from dagent.harness_runtime.result_storage import ResultStore
-from dagent.harness_runtime.conversation_resources import ConversationResourceIndex
 from dagent.harness_runtime.result_projection import (
     ResultBudgetExceeded,
+    ResultOverflow,
     project_result,
     project_results,
+    read_file_available,
     result_references,
 )
 
@@ -214,7 +215,6 @@ class ContextAssembler:
         self.request_preparer = request_preparer
         self.prepared_token_counter = prepared_token_counter
         self.estimator = "custom" if token_counter is not None else "heuristic"
-        self._compaction_resource_index: ConversationResourceIndex | None = None
 
     async def prepare(
         self,
@@ -233,7 +233,15 @@ class ContextAssembler:
         result_store: ResultStore | None = None,
         history_compactor: Any = None,
         enable_new_strategy: bool = False,
+        result_overflow: ResultOverflow | None = None,
     ) -> PreparedModelContext:
+        """Assemble one model request.
+
+        ``result_overflow`` says how tool results beyond their display budget
+        are handled; when omitted it follows whether ``tools`` include
+        read_file. The new strategies always follow ``tools``.
+        """
+
         if enable_new_strategy and policy.compaction_strategy != "legacy":
             from dagent.harness_runtime.context_strategy import prepare_context
 
@@ -256,26 +264,26 @@ class ContextAssembler:
             requested=max_output_tokens,
         )
 
-        read_enabled = any("read_file" in str(tool.get("function", tool).get("name", "")) for tool in tools)
-        def can_read_result(item: ToolResultMessage | ResultObservation) -> bool:
-            return read_enabled and (result_store is None or result_store.can_read(item))
-        # Materialize only results actually being shortened. Persist the updated
-        # typed items before the next projection so retries reuse the reference.
-        if result_store is not None:
+        overflow = result_overflow or ("file" if read_file_available(tools) else "full")
+        # Write overflow files only for results actually being shortened, and
+        # only when the model can read them. Persist the updated typed items
+        # before the next projection so retries reuse the reference.
+        if result_store is not None and overflow == "file":
             results = _context_results(working.items)
             to_save: set[str] = set()
             for item in results:
                 try:
                     projected = project_result(
                         item, policy.max_tool_result_tokens, self.token_counter,
-                        read_available=can_read_result(item),
+                        read_available=True,
                     )
                     if projected.truncated:
                         to_save.add(item.id)
                 except ResultBudgetExceeded:
                     to_save.add(item.id)
             working = _store_results(working, to_save, result_store)
-        readable_result_ids = frozenset(item.id for item in _context_results(working.items) if can_read_result(item))
+        readable_result_ids = (frozenset(item.id for item in _context_results(working.items))
+                               if overflow != "full" else frozenset())
         def read_available(item: ToolResultMessage | ResultObservation) -> bool:
             return item.id in readable_result_ids
         while True:

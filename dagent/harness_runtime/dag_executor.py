@@ -9,7 +9,6 @@ from dagent.harness_runtime.conversation_changes import (
 from dagent.schemas.conversation import ToolResultMessage
 
 import asyncio
-import hashlib
 import json
 import operator
 from collections import defaultdict
@@ -155,6 +154,8 @@ class DAGExecutor:
         self.runtime_directory = validate_runtime_directory(runtime_directory)
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
         self.extra_system_prompt = extra_system_prompt
+        # Set per layer: whether oversized display output may overflow to files.
+        self.result_files = True
 
     def configure_spec(
         self,
@@ -190,9 +191,16 @@ class DAGExecutor:
         skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        result_files: bool = True,
     ) -> RunTrace:
-        """Execute the next currently-ready DAG layer and return cumulative run trace."""
+        """Execute the next currently-ready DAG layer and return cumulative run trace.
+
+        ``result_files`` is false when the model reading node results has no
+        read_file capability; oversized display output then stays inline. A
+        static DAG has no such model and keeps the default.
+        """
         self.partial_node_traces = {}
+        self.result_files = result_files
         normalized = self.normalize(dag)
         validate_dag(normalized)
         self._enforce_review_gate(normalized)
@@ -504,6 +512,7 @@ class DAGExecutor:
                     runtime_directory=self.runtime_directory,
                     policy=self.result_storage_policy,
                     on_event=on_event,
+                    result_files=self.result_files,
                 )
                 capability_result = normalized.result
                 stored_content = normalized.content
@@ -714,6 +723,7 @@ class DAGExecutor:
                                 runtime_directory=self.runtime_directory,
                                 policy=self.result_storage_policy,
                                 on_event=on_event,
+                                result_files=self.result_files,
                             )
                         except ResultStorageError as exc:
                             failed_storage_node = RunTraceNode.capability_call(
@@ -871,6 +881,7 @@ class DAGExecutor:
                     skills=skills,
                     on_token=on_token,
                     on_event=child_on_event,
+                    result_files=self.result_files,
                 )
                 if trace.root.status == "completed":
                     break
@@ -916,6 +927,7 @@ class DAGExecutor:
         return CapabilityExecutionContext(
             runtime_directory=self.runtime_directory,
             max_shell_output_bytes=self.result_storage_policy.max_shell_output_bytes,
+            result_files=self.result_files,
             task_id=dag.task_id,
             dag_id=dag.dag_id,
             spec_id=self.spec_id,
@@ -1223,20 +1235,13 @@ def _load_content_reference(
         raise DAGExecutionError(
             "Externalized capability result escapes the run workspace."
         ) from exc
+    # The value is read as it is now; its contents are not checked.
     try:
         data = target.read_bytes()
     except OSError as exc:
         raise DAGExecutionError(
             f"Externalized capability result cannot be read: {reference.path}"
         ) from exc
-    if len(data) != reference.byte_length:
-        raise DAGExecutionError(
-            f"Externalized capability result size mismatch: {reference.path}"
-        )
-    if hashlib.sha256(data).hexdigest() != reference.sha256:
-        raise DAGExecutionError(
-            f"Externalized capability result checksum mismatch: {reference.path}"
-        )
     media_type = reference.media_type.split(";", 1)[0]
     if media_type == "application/json":
         return json.loads(data.decode("utf-8"))

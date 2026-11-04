@@ -68,6 +68,7 @@ def test_context_projection_never_replays_reasoning_and_preserves_tool_protocol(
         assembler.prepare(
             system_message={"role": "system", "content": "Be useful."},
             conversation=conversation,
+            tools=[{"type": "function", "function": {"name": "tool_read_file"}}],
             policy=ContextPolicy(
                 max_tool_result_tokens=128,
                 max_total_tool_result_tokens=128,

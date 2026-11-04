@@ -22,10 +22,9 @@ from dagent.harness_runtime.compaction import (
 )
 from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.frozen_results import (
-    RecoveryAccess, freeze_result_displays, reference_frozen_result_displays,
-    validate_frozen_result_recovery,
+    freeze_result_displays, reference_frozen_result_displays,
 )
-from dagent.harness_runtime.result_projection import ResultBudgetExceeded
+from dagent.harness_runtime.result_projection import ResultBudgetExceeded, read_file_available
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import StructuredOutputFormat
 from dagent.providers.model_io import (
@@ -203,8 +202,7 @@ async def _prepare_context(
         if identity not in source_keys:
             source_keys[identity] = (item, _source_key(item, policy, source_namespace))
         return source_keys[identity][1]
-    access = RecoveryAccess.from_tools(result_store, tools) if result_store else None
-    validate_frozen_result_recovery(working, access)
+    files = read_file_available(tools)
     requested_output = max_output_tokens if max_output_tokens is not None else assembler.max_output_tokens
     automatic_output = requested_output is None
     if requested_output is None:
@@ -215,11 +213,11 @@ async def _prepare_context(
     unprojected = working
     new_ids = {item.id for item in _context_results(working.items) if item.model_display is None}
     if new_ids:
-        if result_store is None or access is None:
+        if result_store is None:
             raise ValueError("The new context strategy requires result storage for tool results.")
         working = freeze_result_displays(
             unprojected, result_store=result_store, policy=policy,
-            counter=assembler.token_counter, recovery_access=access,
+            counter=assembler.token_counter, files=files,
             total_budget_tokens=2**60,
         )
 
@@ -227,9 +225,8 @@ async def _prepare_context(
                       candidate: ConversationState | None = None):
         nonlocal requested_output
         projected = working if candidate is None else candidate
-        readable = frozenset(item.id for item in _context_results(projected.items)
-                             if access and (access.can_read(item.model_display.recovery)
-                                            if item.model_display else result_store.can_read(item)))
+        readable = (frozenset(item.id for item in _context_results(projected.items))
+                    if files else frozenset())
         request, projection = assembler._project(
             system_message=system_message, conversation=projected, tools=tools,
             policy=policy, active_run_id=active_run_id, omitted_reasoning_ids=omitted,
@@ -672,7 +669,7 @@ async def _prepare_context(
 
         # If the latest newly received batch still does not fit, adjust only its
         # provisional displays. A displayed historical batch stays byte-identical.
-        if state.estimate > state.input_budget and new_ids and result_store and access:
+        if state.estimate > state.input_budget and new_ids and result_store:
             baseline = working
             original_by_id = {item.id: item for item in unprojected.items}
             originals = tuple(original_by_id.get(item.id, item) if item.id in original_by_id and (
@@ -684,14 +681,14 @@ async def _prepare_context(
                 local_budget = max(0, min(local_budget - 1, local_budget - math.ceil((state.estimate - state.input_budget) / (1 + policy.token_safety_margin))))
                 try:
                     working = freeze_result_displays(unfrozen, result_store=result_store, policy=policy,
-                        counter=assembler.token_counter, recovery_access=access, total_budget_tokens=local_budget)
+                        counter=assembler.token_counter, files=files, total_budget_tokens=local_budget)
                 except ResultBudgetExceeded as exc:
                     # An aggressive estimate may cross the metadata floor even
                     # though that exact floor still fits the final wire request.
                     minimum = exc.minimum_tokens
                     if minimum is not None:
                         working = freeze_result_displays(unfrozen, result_store=result_store, policy=policy,
-                            counter=assembler.token_counter, recovery_access=access, total_budget_tokens=minimum)
+                            counter=assembler.token_counter, files=files, total_budget_tokens=minimum)
                     else:
                         working = baseline
                     state = await project()
@@ -702,14 +699,14 @@ async def _prepare_context(
                 if not local_budget:
                     break
 
-        if state.estimate > state.input_budget and result_store and access:
+        if state.estimate > state.input_budget and result_store:
             groups = _atomic_groups(working.items, start=0, end=len(working.items))
             latest = _context_results(working.items[groups[-1][0]:]) if groups else []
             emergency_ids = {item.id for item in latest if item.model_display and item.model_display.revision == 0 and item.id not in new_ids}
             if emergency_ids:
                 try:
                     working = reference_frozen_result_displays(working, result_store=result_store,
-                        recovery_access=access, result_ids=emergency_ids)
+                        files=files, result_ids=emergency_ids)
                     state = await project()
                     prefix_break = "emergency_result_reference"
                 except ResultBudgetExceeded:

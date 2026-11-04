@@ -3,6 +3,7 @@
 import asyncio
 from pathlib import Path
 import shutil
+import sys
 
 import pytest
 
@@ -20,6 +21,10 @@ def run(awaitable):
 
 def results(result):
     return [item for item in result.conversation.items if isinstance(item, dagent.ToolResultMessage)]
+
+
+# Output beyond the shell's inline limits, so it overflows to a file.
+LARGE_OUTPUT = f"\"{sys.executable}\" -c \"print('hello'); print('x' * 200000)\""
 
 
 @pytest.mark.parametrize("as_string", [False, True])
@@ -45,7 +50,7 @@ def test_absolute_directory_is_explicit_and_created_only_when_needed(tmp_path, a
         runner.close()
 
 
-def test_external_results_restore_after_source_run_is_removed(tmp_path):
+def test_external_results_map_logical_paths_and_are_not_restored_elsewhere(tmp_path):
     body = "row: retained result\n" * 300
 
     @dagent.tool
@@ -63,15 +68,34 @@ def test_external_results_restore_after_source_run_is_removed(tmp_path):
         capabilities=[report], result_storage_policy=dagent.ResultStoragePolicy(max_inline_bytes=1024),
     )
     try:
-        first = run(runner.run(dagent.ToolAgent(profile="conversation", capabilities=["tool.report"]), input="report", workspace_path=source_workspace))
+        agent = dagent.ToolAgent(profile="conversation", capabilities=["tool.report", "tool.read_file"])
+        first = run(runner.run(agent, input="report", workspace_path=source_workspace))
         reference = results(first)[0].content
         assert isinstance(reference, dagent.ContentReference)
         assert reference.path.startswith(".runtime/results/")
+        assert reference.sha256 is None
         saved = runner.resolve_runtime_path(reference.path, workspace_path=source_workspace)
         assert saved.read_text() == body
         assert saved.is_relative_to(private)
         assert not (source_workspace / ".runtime").exists()
         assert first.plan.runtime_directory == str(private)
+        read = run(runner.test_capability("tool.read_file", {"path": reference.path, "offset_chars": 0, "limit_chars": 20}))
+        assert read.status == "completed"
+        assert read.content == body[:20]
+        assert read.retention.continuation.path == reference.path
+        denied = run(runner.test_capability(
+            "tool.read_file", {"path": reference.path},
+            boundary=dagent.Boundary(allowed_paths=["other"]),
+        ))
+        assert denied.stop_reason == "BoundaryViolation"
+        searched = run(runner.test_capability("tool.grep", {"path": reference.path, "pattern": "retained", "limit": 2}))
+        assert searched.status == "completed"
+        assert str(private) not in searched.content
+        listed = run(runner.test_capability("tool.list_files", {"path": ".runtime/results"}))
+        assert listed.status == "completed"
+        assert all(str(private) not in entry for entry in listed.value)
+        blocked = run(runner.test_capability("tool.write_file", {"path": reference.path, "content": "replace"}))
+        assert blocked.stop_reason == "HardBoundaryViolation"
         conversation = dagent.ConversationState.model_validate_json(first.conversation.model_dump_json())
     finally:
         runner.close()
@@ -84,26 +108,12 @@ def test_external_results_restore_after_source_run_is_removed(tmp_path):
         provider=MockProvider([ChatResponse(content="continued")]),
     )
     try:
-        second = run(runner.run(dagent.ToolAgent(profile="conversation"), input="continue", conversation=conversation, workspace_path=next_workspace))
-        restored = results(second)[0].content
-        assert runner.resolve_runtime_path(restored.path, workspace_path=next_workspace).read_text() == body
-        read = run(runner.test_capability("tool.read_file", {"path": restored.path, "offset_chars": 0, "limit_chars": 20}))
-        assert read.status == "completed"
-        assert read.content == body[:20]
-        assert read.retention.continuation.path == restored.path
-        denied = run(runner.test_capability(
-            "tool.read_file", {"path": restored.path},
-            boundary=dagent.Boundary(allowed_paths=["other"]),
-        ))
-        assert denied.stop_reason == "BoundaryViolation"
-        searched = run(runner.test_capability("tool.grep", {"path": restored.path, "pattern": "retained", "limit": 2}))
-        assert searched.status == "completed"
-        assert str(private) not in searched.content
-        listed = run(runner.test_capability("tool.list_files", {"path": ".runtime/history"}))
-        assert listed.status == "completed"
-        assert all(str(private) not in entry for entry in listed.value)
-        blocked = run(runner.test_capability("tool.write_file", {"path": restored.path, "content": "replace"}))
-        assert blocked.stop_reason == "HardBoundaryViolation"
+        second = run(runner.run(dagent.ToolAgent(profile="conversation"), input="continue",
+                                conversation=conversation, workspace_path=next_workspace))
+        assert second.status == "completed"
+        # Saved tool output is best-effort: its path is kept and nothing is restored.
+        assert results(second)[0].content == reference
+        assert not runner.resolve_runtime_path(reference.path, workspace_path=next_workspace).exists()
         assert not (next_workspace / ".runtime").exists()
     finally:
         runner.close()
@@ -116,7 +126,7 @@ def test_shell_output_is_external_and_workspaces_are_isolated(tmp_path):
     )
     runner.workspace.mkdir()
     try:
-        output = run(runner.test_capability("tool.shell", {"command": "printf 'hello\\n'"}))
+        output = run(runner.test_capability("tool.shell", {"command": LARGE_OUTPUT}))
         assert output.status == "completed"
         reference = output.content_reference
         saved = runner.resolve_runtime_path(reference.path, workspace_path=runner.workspace)
@@ -155,7 +165,7 @@ def test_external_results_ignore_workspace_runtime_symlinks(tmp_path, symlink_pa
     )
     try:
         result = run(runner.run(
-            dagent.ToolAgent(profile="conversation", capabilities=["tool.report"]),
+            dagent.ToolAgent(profile="conversation", capabilities=["tool.report", "tool.read_file"]),
             input="report", workspace_path=workspace,
         ))
         assert result.status == "completed"
@@ -230,7 +240,8 @@ def test_review_resume_uses_frozen_absolute_directory(tmp_path):
         result_storage_policy=dagent.ResultStoragePolicy(max_inline_bytes=1024),
     )
     try:
-        first = run(runner.run(dagent.ToolAgent(profile="conversation", capabilities=[report], review="careful"), input="report"))
+        first = run(runner.run(dagent.ToolAgent(profile="conversation", capabilities=[report, "tool.read_file"],
+                                                review="careful"), input="report"))
         checkpoint = dagent.RunCheckpoint.model_validate_json(first.checkpoint.model_dump_json())
     finally:
         runner.close()
@@ -254,15 +265,14 @@ def test_review_resume_uses_frozen_absolute_directory(tmp_path):
         runner.close()
 
 
-def test_external_snapshots_keep_integrity_and_reject_symlink_escape(tmp_path):
+def test_external_files_are_read_as_is_and_reject_symlink_escape(tmp_path):
     workspace = tmp_path / "workspace"
     store = ResultStore(workspace, str(tmp_path / "private"))
     ref = store.snapshot_text("original")
     assert store.read_reference(ref) == b"original"
     saved = store.paths.resolve(ref.path)
     saved.write_text("modified")
-    with pytest.raises(OSError, match="mismatch"):
-        store.read_reference(ref)
+    assert store.read_reference(ref) == b"modified"
     saved.unlink()
     outside = tmp_path / "outside"
     outside.write_text("original")
@@ -304,12 +314,12 @@ def test_sandbox_mounts_run_resources_and_worker_uses_external_directory(tmp_pat
     assert not any(other_file.is_relative_to(source) for source in volumes)
     assert str(private / "conversations") not in volumes
     output = _run_worker(skeleton, "shell", {
-        "command": "printf sandbox", "cwd": str(workspace),
+        "command": LARGE_OUTPUT, "cwd": str(workspace),
         "_dagent_result_context": {"workspace": str(workspace), "runtime_directory": str(private), "max_bytes": 4096},
     })
     assert output["ok"]
     ref = dagent.ContentReference.model_validate(output["content_reference"])
-    assert "sandbox" in RuntimePaths(workspace, str(private)).resolve(ref.path).read_text()
+    assert "hello" in RuntimePaths(workspace, str(private)).resolve(ref.path).read_text()
     assert not (workspace / ".runtime").exists()
 
 
@@ -343,7 +353,7 @@ def test_sandbox_run_mounts_its_external_namespace(tmp_path, monkeypatch, exact_
     runner = dagent.Runner(
         workspace=workspace, runtime_directory=private,
         provider=MockProvider([
-            ChatResponse(tool_calls=[ToolCall(id="shell", name="tool_shell", arguments={"command": "printf sandbox"})]),
+            ChatResponse(tool_calls=[ToolCall(id="shell", name="tool_shell", arguments={"command": LARGE_OUTPUT})]),
             ChatResponse(content="saved"),
         ]),
     )
@@ -357,14 +367,14 @@ def test_sandbox_run_mounts_its_external_namespace(tmp_path, monkeypatch, exact_
         assert item.status == "completed"
         reference = item.content
         assert isinstance(reference, dagent.ContentReference)
-        assert "sandbox" in runner.resolve_runtime_path(reference.path, workspace_path=result.workspace_path).read_text()
+        assert "hello" in runner.resolve_runtime_path(reference.path, workspace_path=result.workspace_path).read_text()
     finally:
         runner.close()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("strategy", ["chunked", "cache_aware"])
-async def test_compaction_records_and_frozen_displays_restore_from_external_store(tmp_path, strategy):
+async def test_compaction_records_restore_from_external_store_but_frozen_output_does_not(tmp_path, strategy):
     from dagent.harness_runtime.compaction import CompactionRecordV1, HistoryCompactor
     from dagent.harness_runtime.context import ContextAssembler
     from tests.test_compaction_strategy import summary_response
@@ -397,7 +407,8 @@ async def test_compaction_records_and_frozen_displays_restore_from_external_stor
         destination = tmp_path / "next"
         restored = backup.materialize(conversation, workspace_path=destination)
         new_store = ResultStore(destination, str(private))
-        assert new_store.read_reference(restored.items[1].model_display.recovery).decode() == source
+        assert restored == conversation
+        assert not new_store.paths.resolve(restored.items[1].model_display.recovery.path).exists()
         record = CompactionRecordV1.model_validate_json(new_store.read_reference(restored.summary.compaction_record))
         assert record.status == "complete"
         assert new_store.read_reference(record.source)
@@ -420,7 +431,8 @@ async def test_concurrent_runners_keep_external_storage_contexts_separate(tmp_pa
     ) for index in range(2)]
     try:
         completed = await asyncio.gather(*(
-            runner.run(dagent.ToolAgent(profile="conversation", capabilities=["tool.report"]), input="report")
+            runner.run(dagent.ToolAgent(profile="conversation", capabilities=["tool.report", "tool.read_file"]),
+                       input="report")
             for runner in runners
         ))
         for runner, result in zip(runners, completed):

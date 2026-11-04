@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import codecs
-import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import shutil
@@ -17,6 +16,13 @@ from dagent.capabilities.tools.registry import ToolOutput
 from dagent.capabilities.tools.runtime_paths import RuntimePaths
 
 
+_TAIL_BYTES = 100_000
+# Room for the exit-status prefix and stream separators around the output, so
+# output kept inline is never shortened again by the caller's display limits.
+_INLINE_BYTE_MARGIN = 1024
+_INLINE_LINE_MARGIN = 8
+
+
 def collect_output(
     process: Any,
     *,
@@ -26,7 +32,19 @@ def collect_output(
     timeout: int,
     cancel: threading.Event | None,
     stop: Callable[[], None],
+    files: bool = True,
+    inline_bytes: int = _TAIL_BYTES,
+    inline_lines: int = 2000,
 ) -> tuple[ToolOutput, str | None]:
+    """Collect stdout/stderr with bounded memory.
+
+    Output within ``inline_bytes``/``inline_lines`` is returned whole and no
+    file is written. Beyond them, with ``files`` the complete output (up to
+    ``max_bytes``) is streamed to one overflow file whose path is reported but
+    never checked; without ``files`` only an in-memory tail of each stream is
+    kept and the result is marked partial.
+    """
+
     relative = PurePosixPath(runtime_directory)
     if ".." in relative.parts and not relative.is_absolute():
         raise ValueError("Invalid result directory.")
@@ -35,12 +53,14 @@ def collect_output(
     root = (runtime_paths.root / "results").resolve()
     root.relative_to(runtime_paths.boundary)
     lock = threading.Lock()
+    # ``heads`` hold the complete streams until the inline limits are crossed.
+    heads = [bytearray(), bytearray()]
     tails = [bytearray(), bytearray()]
     handles: list[Any] = [None, None]
     paths: list[Path] = []
     failures: list[dict[str, str]] = []
-    received = retained = 0
-    closed = False
+    received = retained = newlines = 0
+    overflowed = closed = False
 
     def warn(exc: OSError) -> None:
         if not failures:
@@ -52,17 +72,34 @@ def collect_output(
                 }
             )
 
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        for index in range(2):
-            fd, path = tempfile.mkstemp(prefix=".shell-", dir=root)
-            handles[index] = os.fdopen(fd, "wb")
-            paths.append(Path(path))
-    except OSError as exc:
-        warn(exc)
+    def write(index: int, data: bytes) -> None:
+        nonlocal retained
+        allowed = max(0, max_bytes - retained)
+        if handles[index] is None or failures or not allowed:
+            return
+        # Cut only on a UTF-8 character boundary.
+        saved = data[:allowed].decode("utf-8", errors="ignore").encode("utf-8")
+        try:
+            handles[index].write(saved)
+            retained += len(saved)
+        except OSError as exc:
+            warn(exc)
+
+    def open_files() -> None:
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            for index in range(2):
+                fd, path = tempfile.mkstemp(prefix=".shell-", dir=root)
+                handles[index] = os.fdopen(fd, "wb")
+                paths.append(Path(path))
+        except OSError as exc:
+            warn(exc)
+            return
+        for index, head in enumerate(heads):
+            write(index, bytes(head))
 
     def drain(index: int, pipe: Any) -> None:
-        nonlocal received, retained
+        nonlocal received, newlines, overflowed
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         while True:
             try:
@@ -74,19 +111,20 @@ def collect_output(
                 if closed:
                     break
                 received += len(data)
+                newlines += data.count(b"\n")
                 tails[index].extend(data)
-                del tails[index][:-100_000]
-                allowed = max(0, max_bytes - retained)
-                if handles[index] is not None and not failures and allowed:
-                    # Cut only on a UTF-8 character boundary.
-                    saved = (
-                        data[:allowed].decode("utf-8", errors="ignore").encode("utf-8")
-                    )
-                    try:
-                        handles[index].write(saved)
-                        retained += len(saved)
-                    except OSError as exc:
-                        warn(exc)
+                del tails[index][:-_TAIL_BYTES]
+                if overflowed:
+                    write(index, data)
+                else:
+                    heads[index].extend(data)
+                    if (received + _INLINE_BYTE_MARGIN > inline_bytes
+                            or newlines + _INLINE_LINE_MARGIN > inline_lines):
+                        overflowed = True
+                        if files:
+                            open_files()
+                        heads[0].clear()
+                        heads[1].clear()
             if not chunk:
                 break
 
@@ -127,6 +165,7 @@ def collect_output(
     prefix = f"exit_code={process.returncode}"
     if reason:
         prefix = reason + "\n" + prefix
+    # Within the inline limits each tail still holds its complete stream.
     preview = "\n".join(
         part
         for part in (
@@ -135,9 +174,17 @@ def collect_output(
         )
         if part
     )
-    partial = received > retained or unfinished or bool(reason)
+    saved = overflowed and len(paths) == 2 and not failures
+    if not overflowed:
+        kept = received
+    elif saved:
+        kept = retained
+    else:
+        kept = sum(len(tail) for tail in tails)
+    limited = received > kept
+    partial = limited or unfinished or bool(reason)
     reference = None
-    if not failures:
+    if saved:
         target: Path | None = None
         try:
             fd, name = tempfile.mkstemp(prefix="shell-", suffix=".txt", dir=root)
@@ -151,19 +198,11 @@ def collect_output(
                     output.write(b"\n")
                 output.flush()
                 os.fsync(output.fileno())
-            digest = hashlib.sha256()
-            with target.open("rb") as source:
-                for chunk in iter(lambda: source.read(65536), b""):
-                    digest.update(chunk)
-            final = root / f"shell-{digest.hexdigest()}.txt"
-            os.replace(target, final)
-            target = final
             reference = {
                 "type": "dagent_content_reference",
                 "path": runtime_paths.relative(target),
                 "media_type": "text/plain; charset=utf-8",
                 "byte_length": target.stat().st_size,
-                "sha256": digest.hexdigest(),
                 "preview": preview,
             }
         except OSError as exc:
@@ -188,14 +227,14 @@ def collect_output(
                 else reason
                 or (
                     "capture_limit"
-                    if received > retained
+                    if limited
                     else "open_pipe"
                     if unfinished
                     else None
                 )
             ),
             "received_bytes": received,
-            "retained_bytes": retained,
+            "retained_bytes": kept,
             "storage_warnings": failures,
             "exit_code": process.returncode,
         },

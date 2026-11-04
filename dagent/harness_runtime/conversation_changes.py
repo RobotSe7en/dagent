@@ -102,8 +102,8 @@ class ConversationChangePublisher:
         self.usage_factory = None
         self._lock = asyncio.Lock()
         self._resource_lock = Lock()
-        self._resources: dict[tuple[str, str, str, str], ConversationResourceReady] = {}
-        self._seen_resources: set[tuple[str, str, str, str]] = set()
+        self._resources: dict[tuple[str, str, str], ConversationResourceReady] = {}
+        self._seen_resources: set[tuple[str, str, str]] = set()
         self._messages: dict[tuple[str, str], ConversationMessageChange] = {}
         if self.conversation is not None:
             origin = ConversationMessageOrigin(id=self.conversation.id)
@@ -122,7 +122,7 @@ class ConversationChangePublisher:
     def note_resource(self, reference: ContentReference | Attachment,
                       workspace: str | Path, runtime_directory: str) -> None:
         location = str(Path(workspace).resolve())
-        key = (location, runtime_directory, reference.path, reference.sha256)
+        key = (location, runtime_directory, reference.path)
         with self._resource_lock:
             if key not in self._seen_resources:
                 self._resources[key] = ConversationResourceReady(

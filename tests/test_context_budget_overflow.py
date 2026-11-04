@@ -75,7 +75,7 @@ async def test_large_latest_results_fit_after_history_compaction(window, count, 
     )
     prepared = await assembler.prepare(
         system_message={"content": "Inspect the data."}, conversation=conversation,
-        policy=policy, compact=summarize, active_run_id="run",
+        tools=[READ_TOOL], policy=policy, compact=summarize, active_run_id="run",
     )
 
     assert prepared.usage.compaction_method == "model"
@@ -159,7 +159,7 @@ async def test_fixed_result_above_soft_target_still_fits_hard_budget():
     prepared = await ContextAssembler(context_window_tokens=1024, max_output_tokens=128).prepare(
         system_message={"content": "x" * 2100},
         conversation=tool_history(count=1, text="数据" * 3000, old_steps=False),
-        policy=ContextPolicy(compaction_trigger_ratio=0.5, max_tool_result_tokens=128),
+        tools=[READ_TOOL], policy=ContextPolicy(compaction_trigger_ratio=0.5, max_tool_result_tokens=128),
     )
     assert prepared.usage.compaction_trigger_tokens < prepared.usage.estimated_input_tokens
     assert prepared.usage.estimated_input_tokens <= prepared.usage.input_budget_tokens
@@ -194,7 +194,8 @@ async def test_latest_reasoning_is_preserved_when_results_cannot_fit():
     with pytest.raises(ContextWindowExceeded) as caught:
         await ContextAssembler(
             context_window_tokens=2048, request_reasoning_field=reasoning_field,
-        ).prepare(system_message={"content": "Inspect"}, conversation=conversation, policy=ContextPolicy())
+        ).prepare(system_message={"content": "Inspect"}, conversation=conversation, tools=[READ_TOOL],
+                  policy=ContextPolicy())
     assert caught.value.usage.replayed_reasoning_items == 1
     assert caught.value.usage.omitted_reasoning_items == 0
     assert caught.value.usage.tool_result_body_tokens > 0
@@ -206,7 +207,7 @@ async def test_result_storage_alone_does_not_emit_compaction_finished(tmp_path):
     conversation = tool_history(count=1, text="x" * 20000, old_steps=False)
     with closing(dagent.Runner(provider=MockProvider([ChatResponse(content="ok")]), workspace=tmp_path)) as runner:
         events = [event async for event in runner.stream(
-            dagent.ToolAgent(profile="conversation", capabilities=[]),
+            dagent.ToolAgent(profile="conversation", capabilities=["tool.read_file"]),
             input="Continue", conversation=conversation,
         )]
     assert not any(event.type.startswith("context.compaction.") for event in events)
@@ -245,6 +246,7 @@ async def test_fixed_shortening_preserves_storage_warning(tmp_path, monkeypatch,
         prepared = await ContextAssembler(context_window_tokens=2048).prepare(
             system_message={"content": "Inspect"},
             conversation=conversation,
+            tools=[READ_TOOL],
             policy=ContextPolicy(max_tool_result_tokens=1024, max_total_tool_result_tokens=131072),
             result_store=store,
         )
@@ -258,7 +260,8 @@ async def test_fixed_shortening_preserves_storage_warning(tmp_path, monkeypatch,
     assert str(prepared.messages).count("storage warning:") == 1
     assert store.ensure(result) == result
     assert attempts == ["references" if reference_count else "content"]
-    assert prepared.usage.unrecoverable_tool_results == 1
+    # Listed references remain readable with read_file; only a bare body is unrecoverable.
+    assert prepared.usage.unrecoverable_tool_results == (0 if reference_count else 1)
     assert prepared.usage.estimated_input_tokens <= prepared.usage.compaction_trigger_tokens
 
 
@@ -311,7 +314,7 @@ async def test_review_resume_uses_frozen_policy_and_preserves_large_result(tmp_p
     policy = ContextPolicy(max_tool_result_tokens=1024, max_total_tool_result_tokens=131072)
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
         pending = await runner.run(dagent.ToolAgent(
-            profile="conversation", capabilities=[report], context=policy, review="careful",
+            profile="conversation", capabilities=[report, "tool.read_file"], context=policy, review="careful",
         ), input="Make the report", workspace_path=tmp_path)
         assert pending.requires_review
         checkpoint = dagent.RunCheckpoint.model_validate_json(pending.checkpoint.model_dump_json())
@@ -370,3 +373,37 @@ async def test_new_agent_inherits_verified_window_when_counter_unavailable(tmp_p
     assert caught.value.usage.context_window_source == "server"
     assert caught.value.usage.estimator == "heuristic"
     assert provider.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_file", [False, True])
+async def test_oversized_result_overflows_to_a_file_only_with_read_file(tmp_path, read_file):
+    original = "完整结果" * 3000
+
+    @dagent.tool
+    def report() -> str:
+        return original
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="report", name="tool_report", arguments={})]),
+        ChatResponse(content="done"),
+    ])
+    provider.context_window_tokens = 131072
+    capabilities = [report, "tool.read_file"] if read_file else [report]
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[],
+                               result_storage_policy=dagent.ResultStoragePolicy(max_inline_bytes=1024))) as runner:
+        result = await runner.run(dagent.ToolAgent(
+            profile="conversation", capabilities=capabilities,
+            context=ContextPolicy(max_tool_result_tokens=256),
+        ), input="Make the report", workspace_path=tmp_path)
+    stored = next(item for item in result.conversation.items if isinstance(item, ToolResultMessage))
+    shown = next(message["content"] for message in provider.requests[-1]["messages"] if message["role"] == "tool")
+    if read_file:
+        assert isinstance(stored.content, ContentReference)
+        assert stored.content.sha256 is None
+        assert (tmp_path / stored.content.path).read_text() == original
+        assert "[TRUNCATED]" in shown and f"path={stored.content.path}" in shown
+    else:
+        assert stored.content == inline_content(original)
+        assert original in shown and "[TRUNCATED]" not in shown
+        assert not (tmp_path / ".dagent").exists() and not (tmp_path / ".runtime").exists()

@@ -194,7 +194,7 @@ def test_review_and_restart_preserve_upload_edits(tmp_path, operation):
         resumed_runner.close()
 
 
-def test_only_result_references_are_persisted_and_rebased(tmp_path):
+def test_tool_result_references_are_neither_persisted_nor_rebased(tmp_path):
     original = tmp_path / "original"
     original.mkdir()
     content = b"retained result"
@@ -202,7 +202,6 @@ def test_only_result_references_are_persisted_and_rebased(tmp_path):
     source.write_bytes(content)
     reference = dagent.ContentReference(
         path="result.txt", media_type="text/plain", byte_length=len(content),
-        sha256=hashlib.sha256(content).hexdigest(),
     )
     attachment = dagent.Attachment(
         path="uploads/missing.txt", byte_length=5, sha256=hashlib.sha256(b"hello").hexdigest(),
@@ -218,14 +217,12 @@ def test_only_result_references_are_persisted_and_rebased(tmp_path):
     store.persist(conversation, workspace_path=original)
     source.unlink()
     destination = tmp_path / "new"
-    restored = store.materialize(conversation, workspace_path=destination)
-    assert restored.items[0] == conversation.items[0]
-    result = restored.items[1]
-    assert (destination / result.content.path).read_bytes() == content
-    assert result.value_reference == result.content == result.artifacts[0]
-    assert result.value == result.content.model_dump(mode="json")
-    (destination / result.content.path).write_bytes(b"x" * len(content))
-    with pytest.raises(dagent.ConversationResourceError, match="SHA-256 mismatch"):
-        store.materialize(restored, workspace_path=destination)
-    with pytest.raises(dagent.ConversationResourceError, match="SHA-256 mismatch"):
-        store.persist(restored, workspace_path=destination)
+    # Tool output is best-effort: it is not copied, restored or rewritten, and
+    # a missing or changed file is not an error.
+    assert store.materialize(conversation, workspace_path=destination) == conversation
+    assert not (destination / reference.path).exists()
+    assert not store.root.exists()
+    destination.mkdir()
+    (destination / reference.path).write_bytes(b"x" * len(content))
+    assert store.materialize(conversation, workspace_path=destination) == conversation
+    store.persist(conversation, workspace_path=destination)

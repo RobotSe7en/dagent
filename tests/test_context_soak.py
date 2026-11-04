@@ -52,7 +52,8 @@ async def test_latest_frozen_batch_can_make_one_recoverable_emergency_transition
         policy=policy, result_store=store, enable_new_strategy=True)
     current = second.conversation.items[-1].model_display
     assert current.revision == 1 and current.displayed_spans == ()
-    assert store.read_reference(current.previous_display).decode() == old.text
+    # The earlier display text is not archived separately; the full result is.
+    assert current.previous_display is None
     assert store.read_reference(current.recovery).decode() == source.items[-1].content.text
     assert second.usage.prefix_break_reason == "emergency_result_reference"
     assert second.usage.estimated_input_tokens <= second.usage.input_budget_tokens
