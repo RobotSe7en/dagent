@@ -192,7 +192,10 @@ def project_result(
 
     def render(chars: int) -> tuple[str, str, str, bool]:
         truncated = chars < len(text) or externalized
-        unavailable = (truncated or source_partial) and not refs and not cursor_text
+        no_original = (truncated or source_partial) and not refs and not cursor_text
+        # A saved file the model cannot open does not make the result recoverable.
+        unreadable = (truncated or source_partial) and bool(refs) and not read_available
+        unavailable = no_original or unreadable
         metadata = [status]
         if isinstance(item, ToolResultMessage) and item.reviewer_feedback:
             metadata.append(f"Reviewer feedback: {item.reviewer_feedback}")
@@ -210,7 +213,8 @@ def project_result(
             )
             metadata.append(f"[Displayed: chars=[{start},{start + chars})]")
         if unavailable:
-            metadata.append("[RECOVERY_UNAVAILABLE: no saved original]")
+            metadata.append("[RECOVERY_UNAVAILABLE: "
+                            + ("no saved original" if no_original else "read_file unavailable") + "]")
         if reference_text:
             metadata.append(reference_text)
         if (recovery_reference is not None and retention and retention.continuation

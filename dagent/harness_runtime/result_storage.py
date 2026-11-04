@@ -160,8 +160,15 @@ class ResultStore:
         return warning
 
     def ensure(
-        self, item: ToolResultMessage | ResultObservation
+        self, item: ToolResultMessage | ResultObservation, *, identity: str | None = None,
     ) -> ToolResultMessage | ResultObservation:
+        """Write a shortened inline result to an overflow file.
+
+        ``identity`` names the file; it defaults to the item id and must be
+        unique in the workspace (observation ids are unique only per message).
+        """
+
+        identity = identity or item.id
         refs = result_references(item)
         reference_storage_failed = item.retention and any(
             warning.field == "references" for warning in item.retention.storage_warnings
@@ -169,7 +176,7 @@ class ResultStore:
         if len(refs) > 4 and not reference_storage_failed:
             try:
                 manifest = self.save_text(
-                    item.id,
+                    identity,
                     "\n".join(ref.model_dump_json() for ref in refs),
                     field="references",
                 )
@@ -198,7 +205,7 @@ class ResultStore:
         if retention.storage_warnings or retention.window_start is not None:
             return item
         try:
-            reference = self.save_text(item.id, item.content.text)
+            reference = self.save_text(identity, item.content.text)
         except OSError as exc:
             warning = self.warning(item.id, "content", exc)
             return item.model_copy(
@@ -524,7 +531,8 @@ def _normalize_artifact(
 
 
 def _result_filename(identity: str, field_name: str, extension: str) -> str:
-    # The identity is hashed only to make an arbitrary id a safe file name.
+    # The identity is hashed only to make an arbitrary id a safe file name;
+    # callers pass an identity that is unique within the run workspace.
     identity_digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     return f"{identity_digest}-{field_name}{extension}"
 

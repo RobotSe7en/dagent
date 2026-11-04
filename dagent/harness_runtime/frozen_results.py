@@ -98,8 +98,9 @@ def freeze_result_displays(
         # Tokens of the complete inline display, which needs no file.
         complete_tokens: int | None = None
         if isinstance(item.content, ContentReference):
-            # Already saved when received: show its stored preview.
-            shown, shorten = item, True
+            # Already saved when received: show its stored preview. Whether
+            # the model can open the file only changes the recovery notice.
+            shown, shorten = item, files
         elif files:
             planned = result_store.text_reference(identity, item.content.text)
             shown, shorten = _display_item(item, item.content.text, planned), True
@@ -154,9 +155,9 @@ def freeze_result_displays(
             shown, allocation, counter, read_available=shorten, recovery_reference=planned,
         )
         if isinstance(item.content, ContentReference):
-            display = FrozenResultDisplay(
-                text=projection.text, recovery=item.content, displayed_spans=projection.displayed_spans,
-            )
+            # The preview is an excerpt with its own coordinates, so no
+            # displayed source range can be stated for the saved file.
+            display = FrozenResultDisplay(text=projection.text, recovery=item.content)
             updates[identity] = item.model_copy(update={"model_display": display})
             continue
         if planned is not None:

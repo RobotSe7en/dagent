@@ -170,3 +170,101 @@ def test_static_dag_reads_an_externalized_value_as_it_is_now(tmp_path):
     assert seen == [body]
     path = Path(result.workspace_path) / reference.path
     assert path.is_file()
+
+
+def _saved_result(store, text, *, call_id="call"):
+    saved = store.save_text(call_id, text)
+    return ConversationState(items=(
+        AssistantMessage(tool_calls=(ToolCallItem(id=call_id, name="tool_data"),)),
+        ToolResultMessage(call_id=call_id, name="tool_data", status="completed", content=saved),
+    )), saved
+
+
+def test_frozen_display_of_a_saved_result_states_no_source_range(tmp_path):
+    from dagent.harness_runtime.context import HeuristicTokenCounter
+    from dagent.harness_runtime.frozen_results import freeze_result_displays
+
+    store = ResultStore(tmp_path, ".runtime")
+    conversation, saved = _saved_result(store, "evidence " * 40000)
+    frozen = freeze_result_displays(conversation, result_store=store, policy=ContextPolicy(max_tool_result_tokens=4096),
+                                    counter=HeuristicTokenCounter(), files=True, total_budget_tokens=2**60)
+    display = frozen.items[1].model_display
+    # The preview is an excerpt, so its coordinates must not be stored as file ranges.
+    assert display.displayed_spans == ()
+    assert display.recovery == saved
+    assert "Recover received result" not in display.text
+
+
+@pytest.mark.asyncio
+async def test_saved_result_shown_to_a_model_without_read_file_is_marked_unrecoverable(tmp_path):
+    store = ResultStore(tmp_path, ".runtime")
+    conversation, _ = _saved_result(store, "evidence " * 40000)
+    prepared = await ContextAssembler().prepare(
+        system_message={"content": "Inspect"}, conversation=conversation, policy=ContextPolicy(), result_store=store,
+    )
+    assert "[RECOVERY_UNAVAILABLE: read_file unavailable]" in prepared.messages[-1]["content"]
+    assert prepared.usage.unrecoverable_tool_results == 1
+
+
+@pytest.mark.asyncio
+async def test_observations_sharing_an_id_get_separate_overflow_files(tmp_path):
+    from dagent.schemas.conversation import ResultObservation, UserMessage
+
+    store = ResultStore(tmp_path, ".runtime")
+    texts = ["first " * 5000, "second " * 5000]
+    conversation = ConversationState(items=tuple(
+        UserMessage(content="observe", result_observations=(
+            ResultObservation(id="dag-output", name="DAG output", status="completed", content=inline_content(text)),
+        )) for text in texts
+    ))
+    prepared = await ContextAssembler().prepare(
+        system_message={"content": "Plan"}, conversation=conversation, tools=[{"function": {"name": "tool_read_file"}}],
+        policy=ContextPolicy(max_tool_result_tokens=256), result_store=store,
+    )
+    saved = [item.result_observations[0].content for item in prepared.conversation.items]
+    assert saved[0].path != saved[1].path
+    assert [store.read_reference(reference).decode() for reference in saved] == texts
+
+
+@pytest.mark.asyncio
+async def test_unreadable_earlier_records_degrade_instead_of_failing(tmp_path):
+    from dagent.harness_runtime.compaction import HistoryCompactor
+    from dagent.schemas.conversation import UserMessage
+    from tests.test_compaction_strategy import record_for, summary_response
+
+    async def chat(request):
+        return summary_response(request)
+
+    engine = HistoryCompactor(policy=ContextPolicy(compaction_strategy="chunked"),
+                              assembler=ContextAssembler(context_window_tokens=8192),
+                              result_store=ResultStore(tmp_path, ".runtime"),
+                              system_message={"content": "Keep the task."}, chat=chat)
+    first = await engine.compact(None, (UserMessage(id="a", content="first"),), 256)
+    (tmp_path / first.compaction_record.path).unlink()
+    second = await engine.compact(first, (UserMessage(id="b", content="second"),), 256)
+    assert record_for(engine, second).has_unresolved_history
+    assert await engine.reuse_compaction(first, (UserMessage(id="c", content="third"),), 256,
+                                         record_reference=first.compaction_record) is None
+
+
+@pytest.mark.asyncio
+async def test_reference_fallback_respects_the_read_boundary(tmp_path):
+    from dagent.harness_runtime.compaction import CompactionArchiveError, HistoryCompactor
+    from dagent.schemas.common import Boundary
+    from dagent.schemas.conversation import UserMessage
+
+    async def chat(_request):
+        raise AssertionError("fallback makes no model call")
+
+    def engine(boundary):
+        return HistoryCompactor(
+            policy=ContextPolicy(compaction_strategy="chunked", allow_reference_fallback=True),
+            assembler=ContextAssembler(context_window_tokens=8192),
+            result_store=ResultStore(tmp_path, ".runtime", read_boundary=boundary),
+            system_message={"content": "Keep the task."}, chat=chat, read_available=True)
+
+    item = (UserMessage(id="a", content="evidence"),)
+    with pytest.raises(CompactionArchiveError, match="read boundary"):
+        await engine(Boundary(allowed_paths=["src"])).reference_fallback(None, item, 256, reason="offline")
+    summary = await engine(Boundary(allowed_paths=[".runtime"])).reference_fallback(None, item, 256, reason="offline")
+    assert summary.method == "reference_fallback"

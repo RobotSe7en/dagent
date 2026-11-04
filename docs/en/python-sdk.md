@@ -51,6 +51,12 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionUsage`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`; `dagent.providers` also exports `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ModelRequest`, `PreparedModelCall`, `ProviderReprepareRequired`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for capability inspection, custom providers, and tests |
 
+Since 0.11.0, `ContentReference.sha256` is optional and is `None` for tool-output
+overflow files, large values and artifacts; compaction archives keep a digest.
+`FrozenResultDisplay.recovery` is `None` for a display that shows the complete
+result. See [tool result recovery](tool-result-recovery.md) and the
+[0.11.0 migration notes](migration.md#0110).
+
 Since 0.10.0, opt-in prompt-cache statistics extend the existing `ModelTokenUsage`
 with nullable `cached_input_tokens`. See
 [prompt cache usage](model-context-and-reasoning.md#prompt-cache-usage)

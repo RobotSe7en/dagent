@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from dagent.capabilities.tools.boundary import enforce_path_allowed
+from dagent.capabilities.tools.boundary import BoundaryViolation, enforce_path_allowed
 from dagent.harness_runtime.llm_retry import is_transient_llm_error
 from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.result_storage import ResultStore
@@ -312,6 +312,7 @@ class HistoryCompactor:
         self.tools = tuple(tools)
         self.chat = chat
         self.read_available = read_available
+        self._archived_operations: dict[str, tuple[str, ...]] = {}
         self.source_request = source_request
         self.prepared_call: Any = None
         self.prepared_request: ModelRequest | None = None
@@ -445,13 +446,13 @@ class HistoryCompactor:
         sources = _source_texts(previous, items)
         source = self._archive(previous, items)
         chunks: list[CompactionChunk] = []
-        if failed_record:
-            record = CompactionRecordV1.model_validate_json(self._read_reference(failed_record))
-            # The failed item projection can remain unchanged while a later
-            # slice updates the root. Chunks summarize both inputs, so only an
-            # exact source match is reusable; the old record remains evidence.
-            if record.source_digest == source.sha256:
-                chunks = list(record.chunks)
+        record = self._load_record(failed_record) if failed_record else None
+        # The failed item projection can remain unchanged while a later slice
+        # updates the root. Chunks summarize both inputs, so only an exact
+        # source match is reusable; the old record remains evidence. A missing
+        # or unreadable failed record simply contributes no chunks.
+        if record is not None and record.source_digest == source.sha256:
+            chunks = list(record.chunks)
         return self._fallback(previous, items, source, sources, chunks,
                               max_tokens, reason=reason, reused_from=failed_record)
 
@@ -461,8 +462,9 @@ class HistoryCompactor:
     ) -> ContextSummary | None:
         """Recover an exact paid replacement without issuing another request."""
 
-        record = CompactionRecordV1.model_validate_json(self._read_reference(record_reference))
-        if record.status != "complete" or record.task_summary is None or record.unresolved_ranges:
+        record = self._load_record(record_reference)
+        if (record is None or record.status != "complete" or record.task_summary is None
+                or record.unresolved_ranges):
             return None
         source = self._archive(previous, items)
         if record.source_digest != source.sha256:
@@ -948,9 +950,13 @@ class HistoryCompactor:
                                                 for key, text in _source_texts(previous, items).items()),
                                     items=sanitized, refs=_unique_refs(refs))
         try:
-            return self.result_store.snapshot_text(archive.model_dump_json() + "\n")
+            source = self.result_store.snapshot_text(archive.model_dump_json() + "\n")
         except OSError as exc:
             raise CompactionArchiveError(f"Cannot archive compaction source: {exc}") from exc
+        # Records reuse these instead of reading the source back.
+        self._archived_operations[source.path] = tuple(
+            item.call_id for item in sanitized if isinstance(item, ToolResultMessage))
+        return source
 
     def _finish(
         self, previous: ContextSummary | None, items: tuple[ConversationItem, ...],
@@ -981,6 +987,12 @@ class HistoryCompactor:
     ) -> ContextSummary:
         if not self.read_available:
             raise CompactionArchiveError("Reference fallback requires the read_file tool.")
+        if self.result_store is not None and self.result_store.read_boundary is not None:
+            try:
+                enforce_path_allowed(source.path, self.result_store.read_boundary, self.result_store.workspace)
+            except (BoundaryViolation, ValueError) as exc:
+                raise CompactionArchiveError(
+                    "Reference fallback requires a source archive inside the read boundary.") from exc
         unresolved = _unresolved(sources, chunks)
         banner = ("[DEGRADED_CONTEXT] Some history is available only by reference; "
                   "do not assume it was summarized.\n"
@@ -1033,14 +1045,16 @@ class HistoryCompactor:
         task_summary: TaskSummary | None = None,
     ) -> ContentReference:
         assert self.result_store is not None
-        archive = CompactionSourceV1.model_validate_json(self.result_store.read_reference(source))
+        operation_ids = self._archived_operations.get(source.path)
+        if operation_ids is None:
+            archive = CompactionSourceV1.model_validate_json(self.result_store.read_reference(source))
+            operation_ids = tuple(item.call_id for item in archive.items if isinstance(item, ToolResultMessage))
         record = CompactionRecordV1(status=status, source=source, source_digest=source.sha256,
                                     previous_record=previous.compaction_record if previous else None,
                                     reused_from=reused_from,
                                     source_ranges=_all_ranges(sources), chunks=tuple(chunks),
                                     task_summary=task_summary,
-                                    operation_ids=tuple(item.call_id for item in archive.items
-                                                        if isinstance(item, ToolResultMessage)),
+                                    operation_ids=operation_ids,
                                     has_unresolved_history=(status != "complete"
                                                             or self._inherits_unresolved(previous)),
                                     unresolved_ranges=_unresolved(sources, chunks), calls=tuple(self.calls[self._call_offset:]),
@@ -1060,8 +1074,17 @@ class HistoryCompactor:
         if (previous.source_truncated or previous.result_archive_incomplete
                 or previous.method == "reference_fallback" or previous.compaction_record is None):
             return True
-        record = CompactionRecordV1.model_validate_json(self._read_reference(previous.compaction_record))
-        return record.has_unresolved_history or record.status != "complete"
+        record = self._load_record(previous.compaction_record)
+        # An unreadable earlier record is treated as unresolved history.
+        return record is None or record.has_unresolved_history or record.status != "complete"
+
+    def _load_record(self, reference: ContentReference) -> CompactionRecordV1 | None:
+        """Read an earlier compaction record, or ``None`` when it is missing or invalid."""
+
+        try:
+            return CompactionRecordV1.model_validate_json(self._read_reference(reference))
+        except (CompactionArchiveError, ValueError):
+            return None
 
     def _bounded_summary_text(self, summary: TaskSummary, banner: str, max_tokens: int) -> str:
         if self.assembler.token_counter.count_text(banner) > max_tokens:

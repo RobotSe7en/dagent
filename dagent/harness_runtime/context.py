@@ -143,7 +143,8 @@ def _store_results(
             item = store.ensure(item)
         elif isinstance(item, UserMessage) and item.result_observations:
             item = item.model_copy(update={"result_observations": tuple(
-                store.ensure(result) if f"{item.id}/{result.id}" in result_ids else result
+                store.ensure(result, identity=f"{item.id}/{result.id}")
+                if f"{item.id}/{result.id}" in result_ids else result
                 for result in item.result_observations
             )})
         saved.append(item)

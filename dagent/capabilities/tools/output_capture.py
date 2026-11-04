@@ -53,8 +53,8 @@ def collect_output(
     root = (runtime_paths.root / "results").resolve()
     root.relative_to(runtime_paths.boundary)
     lock = threading.Lock()
-    # ``heads`` hold the complete streams until the inline limits are crossed.
-    heads = [bytearray(), bytearray()]
+    # Each tail holds its complete stream until the inline limits are crossed.
+    inline_bytes = min(inline_bytes, _TAIL_BYTES)
     tails = [bytearray(), bytearray()]
     handles: list[Any] = [None, None]
     paths: list[Path] = []
@@ -95,8 +95,8 @@ def collect_output(
         except OSError as exc:
             warn(exc)
             return
-        for index, head in enumerate(heads):
-            write(index, bytes(head))
+        for index, tail in enumerate(tails):
+            write(index, bytes(tail))
 
     def drain(index: int, pipe: Any) -> None:
         nonlocal received, newlines, overflowed
@@ -113,18 +113,14 @@ def collect_output(
                 received += len(data)
                 newlines += data.count(b"\n")
                 tails[index].extend(data)
-                del tails[index][:-_TAIL_BYTES]
                 if overflowed:
                     write(index, data)
-                else:
-                    heads[index].extend(data)
-                    if (received + _INLINE_BYTE_MARGIN > inline_bytes
-                            or newlines + _INLINE_LINE_MARGIN > inline_lines):
-                        overflowed = True
-                        if files:
-                            open_files()
-                        heads[0].clear()
-                        heads[1].clear()
+                elif (received + _INLINE_BYTE_MARGIN > inline_bytes
+                        or newlines + _INLINE_LINE_MARGIN > inline_lines):
+                    overflowed = True
+                    if files:
+                        open_files()
+                del tails[index][:-_TAIL_BYTES]
             if not chunk:
                 break
 
