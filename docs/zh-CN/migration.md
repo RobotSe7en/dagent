@@ -33,7 +33,9 @@
 - **冻结展示（`chunked`、`cache_aware`）。** `FrozenResultDisplay.recovery` 改为可选，完整
   展示的结果，以及为无法打开文件的模型截断的结果，均为 `None`，不写文件。接收时已保存的结果直接复用该文件，不再写第二份快照。
   恢复文件缺失不再抛出 `ResultBudgetExceeded`。紧急切换不读取文件，不再写
-  `previous_display`，并且只在模型能打开文件时进行；否则所有展示保持不变。
+  `previous_display`，并且只在模型能打开文件时进行；否则所有展示保持不变。展示文件写入
+  失败不再以 `OSError` 让 Run 失败：结果保留存储告警，没有文件而被截断的展示标
+  `[RECOVERY_UNAVAILABLE: no saved original]`。
 - **压缩。** 不再读取或校验工具输出文件，写入新归档前不再遍历更早的归档，
   `CompactionSourceV1.refs` 不再列出工具输出引用。读取所需的上一条压缩记录时不校验摘要，
   也不套用模型的读取边界。旧版结果索引原样归档结果，不再为每条结果单独写文件。引用回退
@@ -58,6 +60,9 @@
 - 希望之后几轮仍能读取溢出文件时，每个会话复用同一个 `workspace_path`，或通过
   `on_conversation_change` 由宿主自行保存副本。
 - 若此前依赖 SDK 的完整性报错来发现结果文件被改，请改由宿主实现。
+- 若此前依赖 `OSError` 在展示文件写不进去时停止 `chunked` 或 `cache_aware` Run，请改为
+  监听 `tool_result_storage_warning` 事件（`Runner.stream` 中为
+  `capability.result.storage_warning`）或检查 `retention.storage_warnings`。
 
 无需迁移记录。ConversationState V4、RunState V6 和 RunCheckpoint V9 记录原样加载，包括
 带摘要的引用、早期版本的冻结展示，以及 backing store 中已有的归档。保持不变的部分：

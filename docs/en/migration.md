@@ -51,7 +51,10 @@ Review these behavior changes before upgrading:
   file instead of a second snapshot. A missing recovery file no longer raises
   `ResultBudgetExceeded`. The emergency transition reads no file, no longer
   writes `previous_display`, and is made only when the model can open files;
-  otherwise every display stays as it is.
+  otherwise every display stays as it is. A display file that cannot be written
+  no longer fails the Run with `OSError`: the result keeps a storage warning,
+  and a display shortened without its file is marked
+  `[RECOVERY_UNAVAILABLE: no saved original]`.
 - **Compaction.** Compaction no longer reads or verifies tool-output files,
   no longer walks earlier archives before writing a new one, and no longer
   lists tool-output references in `CompactionSourceV1.refs`. It reads the
@@ -88,6 +91,10 @@ Review these behavior changes before upgrading:
   per conversation, or keep host copies from `on_conversation_change`.
 - If you relied on SDK integrity errors to detect changed result files, enforce
   that in the host.
+- If you relied on `OSError` to stop a `chunked` or `cache_aware` Run when a
+  display file cannot be written, watch `tool_result_storage_warning` events
+  (`capability.result.storage_warning` in `Runner.stream`) or
+  `retention.storage_warnings` instead.
 
 No record migration is required. ConversationState V4, RunState V6 and
 RunCheckpoint V9 records load unchanged, including references that carry a

@@ -74,7 +74,10 @@ class ToolCallItem(BaseModel):
 class FrozenResultDisplay(BaseModel):
     """Exact model-visible result text and the file holding undisplayed text.
 
-    ``recovery`` is ``None`` when the display shows the complete result.
+    ``recovery`` is ``None`` when no file holds the undisplayed text: the
+    display shows the complete result, or it was shortened without a file
+    (the model cannot open files, the text contains NUL, or the write
+    failed). Only ``displayed_spans`` and the display text tell these apart.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

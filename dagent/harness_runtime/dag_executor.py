@@ -196,7 +196,8 @@ class DAGExecutor:
         """Execute the next currently-ready DAG layer and return cumulative run trace.
 
         ``result_files`` is false when the model reading node results has no
-        read_file capability; oversized display output then stays inline. A
+        read_file capability; oversized display output is then kept inline,
+        with a bounded display, instead of overflowing to a file. A
         static DAG has no such model and keeps the default.
         """
         self.partial_node_traces = {}

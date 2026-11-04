@@ -38,8 +38,9 @@ class CapabilityExecutionContext:
     approved_boundary_invocation_id: str | None = None
     runtime_directory: str = ".dagent"
     max_shell_output_bytes: int = 64 * 1024 * 1024
-    # False when the model reading the results has no read_file tool: oversized
-    # display output then stays inline instead of overflowing to a file.
+    # False when the model reading the results cannot open saved files: oversized
+    # display output is then kept inline (its display is still bounded) instead
+    # of overflowing to a file.
     result_files: bool = True
 
 

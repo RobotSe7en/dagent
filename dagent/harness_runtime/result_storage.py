@@ -336,9 +336,9 @@ def normalize_capability_result(
     """Return a checkpoint-safe result plus model/audit content references.
 
     ``result_files`` is false when the model that reads this result cannot
-    open saved files: display text then stays inline instead of overflowing
-    to a file. Text containing NUL also stays inline, since read_file cannot
-    open it. Values and artifacts are data and are stored by size either way.
+    open saved files: display text is then kept inline instead of overflowing
+    to a file, and its display is bounded later. Text containing NUL is also
+    kept inline, since read_file cannot open it. Values and artifacts are data and are stored by size either way.
     """
 
     workspace = Path(workspace_path).expanduser().resolve()

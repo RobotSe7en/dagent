@@ -207,8 +207,9 @@ async def _prepare_context(
         if identity not in source_keys:
             source_keys[identity] = (item, _source_key(item, policy, source_namespace))
         return source_keys[identity][1]
-    # Results are shortened only when the model can open their files: it has
-    # read_file and its read boundary admits the runtime result folders.
+    # Results are always shortened to their display budget. Overflow files are
+    # written only when the model can open them: it has read_file and its read
+    # boundary admits the runtime result folders.
     files = read_file_available(tools) and (result_store is None or result_store.files_readable())
     requested_output = max_output_tokens if max_output_tokens is not None else assembler.max_output_tokens
     automatic_output = requested_output is None
