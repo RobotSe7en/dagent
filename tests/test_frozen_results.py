@@ -140,7 +140,7 @@ def test_shortening_without_read_file_writes_no_file(tmp_path):
     assert _emergency(frozen, store, {result.id}, files=False) is frozen
 
 
-def test_nul_text_is_never_hidden_behind_a_file_read_file_cannot_open(tmp_path):
+def test_nul_text_is_shortened_without_a_file_read_file_cannot_open(tmp_path):
     from dagent.capabilities.tools.file_tools import read_file
 
     store = ResultStore(tmp_path, ".runtime")
@@ -152,11 +152,12 @@ def test_nul_text_is_never_hidden_behind_a_file_read_file_cannot_open(tmp_path):
     (tmp_path / probe.path).unlink()
     frozen = _freeze(_conversation(source), store, cap=64)
     result = frozen.items[1]
-    assert source in result.model_display.text
-    assert result.model_display.displayed_spans == ((0, len(source)),)
-    assert result.model_display.recovery is None and result.content == InlineContent(text=source)
-    with pytest.raises(ResultBudgetExceeded):
-        _freeze(_conversation(source), store, budget=512, cap=64)
+    display = result.model_display
+    # Shortened without a file, like a model that cannot open files.
+    assert "[TRUNCATED]" in display.text and "[RECOVERY_UNAVAILABLE: no saved original]" in display.text
+    assert source not in display.text and "path=" not in display.text
+    assert sum(end - start for start, end in display.displayed_spans) < len(source)
+    assert display.recovery is None and result.content == InlineContent(text=source)
     assert _emergency(frozen, store, {result.id}) is frozen
     assert not any((tmp_path / ".runtime" / "results").iterdir())
 

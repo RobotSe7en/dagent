@@ -18,7 +18,7 @@
   溢出文件时，完整文本才写入溢出文件：模型具备内置 `read_file` 工具，且 ToolAgent 的读取
   边界允许 runtime 的 `results/` 和 `history/` 目录（DagAgent 为能力列表包含
   `tool.read_file`）。否则不写文件，被截断的展示标 `[RECOVERY_UNAVAILABLE: no saved original]`。
-  对具备 `read_file` 的模型，含 NUL 的文本 `read_file` 打不开，因此从不截断、也不写文件。
+  含 NUL 的文本 `read_file` 打不开，即使模型具备 `read_file`，也同样截断、不写文件。
   `ValidatorAgent` 等没有工具的 profiled agent 同样截断但不写文件。静态 DAG 仍按大小保存大值。
 - **不带摘要，不做检查。** `ContentReference.sha256` 改为可选，工具输出、大值和产物均为
   `None`。读取时不再校验大小、摘要或文件身份，不再拒绝被改过的文件，也不再回读刚写的

@@ -412,7 +412,7 @@ def test_text_with_nul_never_overflows_to_a_file(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("strategy", ["legacy", "cache_aware"])
-async def test_inline_results_with_nul_are_shown_completely(tmp_path, strategy):
+async def test_inline_results_with_nul_are_shortened_without_a_file(tmp_path, strategy):
     store = ResultStore(tmp_path, ".runtime")
     conversation = ConversationState(items=(
         AssistantMessage(tool_calls=(ToolCallItem(id="call", name="tool_data"),)),
@@ -425,9 +425,14 @@ async def test_inline_results_with_nul_are_shown_completely(tmp_path, strategy):
         result_store=store, enable_new_strategy=strategy != "legacy",
     )
     item = prepared.conversation.items[1]
+    # read_file could not open a file holding it, so none is written; the
+    # display is still bounded, as for a model that cannot open files.
     assert item.content == inline_content(NUL_TEXT)
-    assert prepared.usage.truncated_tool_results == 0
-    assert prepared.usage.unrecoverable_tool_results == 0
+    shown = (prepared.messages[-1]["content"] if strategy == "legacy" else item.model_display.text)
+    assert "[TRUNCATED]" in shown and "[RECOVERY_UNAVAILABLE: no saved original]" in shown
+    assert "path=" not in shown
+    assert prepared.usage.truncated_tool_results == 1
+    assert prepared.usage.unrecoverable_tool_results == 1
     assert not (tmp_path / ".runtime").exists()
     if strategy == "cache_aware":
         from dagent.harness_runtime.frozen_results import reference_frozen_result_displays

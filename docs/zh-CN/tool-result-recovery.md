@@ -15,8 +15,8 @@
   路径，不打开文件。
 - **没有 `read_file`**，或读取边界不允许 runtime 目录时，不写文件。结果仍按展示上限截断，
   被截断的展示标 `[RECOVERY_UNAVAILABLE: no saved original]`。紧急的仅引用切换不会进行，因为它会移除模型读不回的正文。
-- **含 NUL 的文本**：对具备 `read_file` 的模型，从不截断，也不写文件，因为 `read_file`
-  拒绝读取这类文件；它保持完整内联。
+- **含 NUL 的文本**即使模型具备 `read_file` 也同样处理：截断但不写文件，因为 `read_file`
+  拒绝读取这类文件。
 - `ValidatorAgent` 等 profiled agent 没有工具：仍截断以保持上下文有界，但不为它们写文件，
   被截断的内联结果标 `[RECOVERY_UNAVAILABLE: no saved original]`。
 

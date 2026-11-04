@@ -19,11 +19,11 @@ In the **Unreleased** SDK, a result is shortened only for a model that can open 
   folders; only those paths are checked, no file is opened.
 - **Without `read_file`**, or when that boundary excludes the runtime folders,
   no file is written. The result is still shortened to its display limit, and a
-  shortened display is marked `[RECOVERY_UNAVAILABLE: no saved original]`. The emergency reference-only transition is
-  not made, since it would remove text the model cannot read back.
-- **Text containing NUL** is never shortened or saved to a file for a model
-  with `read_file`, because `read_file` rejects such files. It stays inline in
-  full.
+  shortened display is marked `[RECOVERY_UNAVAILABLE: no saved original]`. The
+  emergency reference-only transition is not made, since it would remove text
+  the model cannot read back.
+- **Text containing NUL** is handled the same way even with `read_file`: it is
+  shortened without a file, because `read_file` rejects such files.
 - `ValidatorAgent` and other profiled agents have no tools. Their context stays
   bounded by shortening results, but no file is written for them and a shortened
   inline result is marked `[RECOVERY_UNAVAILABLE: no saved original]`.

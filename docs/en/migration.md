@@ -24,10 +24,10 @@ Review these behavior changes before upgrading:
   tool and, for a ToolAgent, its read boundary admits the runtime `results/` and
   `history/` folders (for a DagAgent, `tool.read_file` in its capabilities).
   Otherwise no file is written and the shortened display is marked
-  `[RECOVERY_UNAVAILABLE: no saved original]`. For a model with `read_file`, text
-  containing NUL, which `read_file` cannot open, is never shortened or saved to
-  a file. `ValidatorAgent` and other tool-less profiled agents also shorten
-  without writing files. Static DAGs still store large values by size.
+  `[RECOVERY_UNAVAILABLE: no saved original]`. Text containing NUL, which
+  `read_file` cannot open, is handled the same way even with `read_file`.
+  `ValidatorAgent` and other tool-less profiled agents also shorten without
+  writing files. Static DAGs still store large values by size.
 - **No digest and no checks.** `ContentReference.sha256` is now optional and is
   `None` for tool output, large values and artifacts. The SDK no longer verifies
   size, digest or file identity when reading them, no longer rejects a changed

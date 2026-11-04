@@ -86,9 +86,9 @@ def freeze_result_displays(
 ) -> ConversationState:
     """Water-fill a new result batch; existing displays are never redistributed.
 
-    ``files`` is whether the model can read saved files. Without it an inline
-    result is shortened without a file; with it, text containing NUL is never
-    shortened. ``total_budget_tokens`` belongs only to displays without a
+    ``files`` is whether the model can read saved files. Without it, or for
+    text containing NUL, an inline result is shortened without a file.
+    ``total_budget_tokens`` belongs only to displays without a
     receipt. The caller has already reserved fixed input, existing
     displays and model output.
     """
@@ -109,11 +109,9 @@ def freeze_result_displays(
             planned = result_store.text_reference(identity, item.content.text)
             shown, shorten = _display_item(item, item.content.text, planned), True
             complete_tokens = counter.count_text(project_result(item, 2**60, counter, read_available=False).text)
-        elif files:
-            # Text with NUL stays complete: read_file could not open its file.
-            shown, shorten = item, False
         else:
-            # The model cannot open files: shorten in memory, write nothing.
+            # The model cannot open files, or read_file could not open this
+            # text (it contains NUL): shorten in memory, write nothing.
             shown, shorten = item, True
             complete_tokens = counter.count_text(project_result(item, 2**60, counter, read_available=False).text)
         minimum = project_result(
@@ -184,8 +182,7 @@ def freeze_result_displays(
             )
             updates[identity] = item.model_copy(update={"content": saved, "model_display": display})
             continue
-        # No file: shown completely (NUL text), or shortened and marked as
-        # having no saved original.
+        # No file: shortened and marked as having no saved original.
         display = FrozenResultDisplay(text=projection.text, displayed_spans=projection.displayed_spans)
         updates[identity] = item.model_copy(update={"model_display": display})
     return _replace_results(conversation, updates)

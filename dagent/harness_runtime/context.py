@@ -278,7 +278,7 @@ class ContextAssembler:
         # Write overflow files only for results actually being shortened, and
         # only when the model can read them. Persist the updated typed items
         # before the next projection so retries reuse the reference. Text with
-        # NUL cannot be read back from a file, so it is never shortened.
+        # NUL gets no file, since read_file could not open it.
         if result_store is not None and overflow == "file":
             results = _context_results(working.items)
             to_save: set[str] = set()
@@ -295,12 +295,11 @@ class ContextAssembler:
                 except ResultBudgetExceeded:
                     to_save.add(item.id)
             working = _store_results(working, to_save, result_store)
-        # Results are shortened to their display budget. With files, text
-        # with NUL is not, since read_file could not open its file; without
-        # them saved files are marked as ones the model cannot open.
+        # Every result is shortened to its display budget; one without a
+        # file is marked as having no saved original. Without file access,
+        # saved files are marked as ones the model cannot open.
         can_open_files = overflow == "file"
-        readable_result_ids = frozenset(item.id for item in _context_results(working.items)
-                                        if not can_open_files or _file_readable_result(item))
+        readable_result_ids = frozenset(item.id for item in _context_results(working.items))
         def read_available(item: ToolResultMessage | ResultObservation) -> bool:
             return item.id in readable_result_ids
         while True:
