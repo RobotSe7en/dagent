@@ -4,7 +4,57 @@
 
 ## 当前发布线
 
-当前稳定包版本为 `0.10.4`。
+当前稳定包版本为 `0.11.0`。
+
+## 0.11.0
+
+使用 `pip install --upgrade 'dagent-ai==0.11.0'` 安装。
+
+### 破坏性变更：工具输出文件改为尽力保存
+
+本版本调整超限工具输出的存储方式：溢出文件只为能读取它的模型写入，从不校验，也不带到
+之后的 run workspace。压缩归档保持原有的存储和校验。升级前请确认以下行为变化：
+
+- **截断需要 `read_file`。** 只有读取结果的模型具备内置 `read_file` 工具（DagAgent 为能力
+  列表包含 `tool.read_file`）时，超过展示上限的结果才会被截断，完整文本写入溢出文件。
+  没有它时结果完整内联、不写文件；放不进上下文窗口时按常规上下文超限报错。
+  `ValidatorAgent` 等没有工具的 profiled agent 仍保持展示有界，但不再写文件。静态 DAG
+  仍按大小保存大值。
+- **不带摘要，不做检查。** `ContentReference.sha256` 改为可选，工具输出、大值和产物均为
+  `None`。读取时不再校验大小、摘要或文件身份，不再拒绝被改过的文件，也不再回读刚写的
+  文件。文件被改后读到改后的内容；被删除时由读取工具报告不存在。静态 DAG 下游读取上游值时
+  不再报大小或校验和不符。溢出文件名不再包含内容 hash。
+- **不跨 workspace 携带。** 会话 backing store 只保存和恢复压缩归档链；工具输出文件不复制、
+  不恢复、不改写路径，文件缺失也不再导致下一次 Run 失败。使用默认的每轮新 workspace 时，
+  之后几轮读不到前几轮的溢出文件。
+- **Shell 输出。** 未超过 shell 内联上限（100,000 字节且 2,000 行）的输出完整返回，不再
+  写文件。更大的输出只在具备 `read_file` 时流式写入一个溢出文件；否则只保留尾部，并标
+  `[SOURCE_TRUNCATED]`。
+- **冻结展示（`chunked`、`cache_aware`）。** `FrozenResultDisplay.recovery` 改为可选，完整
+  展示的结果为 `None`，不写文件。接收时已保存的结果直接复用该文件，不再写第二份快照。
+  恢复文件缺失不再抛出 `ResultBudgetExceeded`。紧急切换不读取文件，也不再写
+  `previous_display`。
+- **压缩。** 写入新归档前不再读取或校验更早的归档和工具输出文件，`CompactionSourceV1.refs`
+  不再列出工具输出引用。旧版结果索引原样归档结果，不再为每条结果单独写文件。引用回退需要
+  `read_file` 工具。
+- **展示标记。** 不再输出 `[RECOVERY_UNAVAILABLE: read_file unavailable, path denied or
+  missing]`；`[RECOVERY_UNAVAILABLE: no saved original]` 保留，用于写入失败和没有工具的验证器。
+- **会话变化。** 工具输出资源不带摘要，宿主可以不存；不再为之后的 workspace 通知。
+  压缩归档的通知不变。
+
+### 迁移步骤
+
+- 读取 `ContentReference.sha256` 或 `FrozenResultDisplay.recovery` 的宿主代码需接受 `None`。
+- 希望模型看到截断结果的 agent，加上 `tool.read_file` 能力；不加时，请按完整结果配置上下文上限。
+- 希望之后几轮仍能读取溢出文件时，每个会话复用同一个 `workspace_path`，或通过
+  `on_conversation_change` 由宿主自行保存副本。
+- 若此前依赖 SDK 的完整性报错来发现结果文件被改，请改由宿主实现。
+
+无需迁移记录。ConversationState V4、RunState V6 和 RunCheckpoint V9 记录原样加载，包括
+带摘要的引用、早期版本的冻结展示，以及 backing store 中已有的归档。保持不变的部分：
+压缩归档的摘要与校验、上传写入校验、runtime 路径包含检查和外置 runtime 目录映射，以及
+`ResultStoragePolicy` 的全部字段。回归测试覆盖 ToolAgent、DagAgent 与验证器的
+`read_file` 规则、shell 溢出、冻结展示、压缩、跨 workspace 续聊和会话变化。
 
 ## 0.10.4
 

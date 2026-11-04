@@ -46,13 +46,17 @@ runner = dagent.Runner(
 DagAgent message run 中，内置 file 和 shell tool 的相对路径从当前 run workspace
 解析。SDK 私有数据隔离在调用方选择的相对目录中：
 
-- `<workspace>/<runtime_directory>/conversations` 保存后续会话轮次需要的内容寻址外置结果；
-- `<run-workspace>/<runtime_directory>/results` 保存外置的 tool/MCP 输出；
-- `<run-workspace>/<runtime_directory>/history` 保存恢复到新 run workspace 的结果资源。
+- `<workspace>/<runtime_directory>/conversations` 按内容寻址保存后续会话轮次需要的压缩归档
+  （压缩记录、源归档和旧版结果索引）；
+- `<run-workspace>/<runtime_directory>/results` 保存超出展示上限的 tool/MCP 输出，以及大值和二进制产物；
+- `<run-workspace>/<runtime_directory>/history` 保存压缩归档。
 
 这些目录按需创建。只构造 runner 或执行纯文本轮次不会创建它们。
-工具执行可能为恢复需要保存小结果，shell 执行则无论输出大小都会保存。
-仅上传附件不会创建 conversation backing store 或 history 目录。
+只有读取结果的模型具备内置 `read_file` 工具时，展示内容才会溢出写入文件；否则结果
+完整内联，不截断。Shell 输出只在超过 shell 自身的内联上限（100,000 字节或 2,000 行）
+时写入文件。溢出文件尽力写入，不带摘要，SDK 不校验、不回读，也不复制到之后的 run
+workspace，详见[工具结果恢复](tool-result-recovery.md)。仅上传附件不会创建
+conversation backing store 或 history 目录。
 
 ### 将 SDK 私有运行文件放到工作区外
 
@@ -66,7 +70,7 @@ runner = dagent.Runner(
 )
 ```
 
-外置目录包含 `conversations/` 和 `runs/<workspace-key>/{results,history}/`。
+外置目录包含 `conversations/`（压缩归档）和 `runs/<workspace-key>/{results,history}/`。
 `workspace-key` 是解析后的 run workspace 路径的 SHA-256，不同工作区的结果文件互相隔离；
 复用同一工作区时复用其存储命名空间。相对路径保留原有布局，`../runtime` 等相对路径穿越
 仍被拒绝。绝对路径在构造 Runner 时解析。`from_config` 接受这个显式参数，`derive`
@@ -85,8 +89,10 @@ saved_path = runner.resolve_runtime_path(
 )
 ```
 
-多轮续聊应使用同一个绝对存储目录。改变设置不会自动搬迁已有文件；旧 checkpoint 按其
-冻结的设置续跑。宿主仍负责保留存储文件，以及持久化 conversation/checkpoint 记录。
+多轮续聊应使用同一个绝对存储目录，以便压缩归档保持可用。改变设置不会自动搬迁已有文件；
+旧 checkpoint 按其冻结的设置续跑。宿主仍负责保留存储文件，以及持久化
+conversation/checkpoint 记录。溢出文件留在所属 run workspace 的命名空间中；在其他
+workspace 续聊时保留原路径，但读不到这些文件。
 
 绝对目录只改变存储位置，不改变进程权限。本地 shell 仍拥有宿主进程的访问权限。
 Docker 执行只为工具 worker 将 Runner 工作区和当前 run workspace 对应的
@@ -111,7 +117,8 @@ validator。Profile Markdown 本身保持不变；runtime path 不会写入 prof
 
 模型会在该 system 段中收到解析后的 run workspace。附件记录和外置结果使用 workspace
 相对路径，不暴露 runner-level conversation backing store。附件的字节数和摘要描述
-上传时的内容；结果引用的元数据描述受完整性校验保护的已保存结果。
+上传时的内容。工具输出引用只说明溢出文件写在哪里，不带摘要，文件也不受校验，
+之后读取到的是文件当时的内容。
 
 `extra_system_prompt` 用一个普通字符串统一追加宿主指令，不会替换 Agent Profile 或
 `Runtime Context`。SDK 的组装顺序是：Profile、Runtime Context、Extra System Prompt，
@@ -142,7 +149,8 @@ boundary、绕过 review 或改变 workspace 权限。
 继续编辑时，向下一轮传入相同的 `workspace_path` 和上一轮的 `conversation`。
 如选择其他工作区，由调用方复制需要的工作文件；SDK 不自动复制历史上传文件、恢复
 已删除附件或改写附件路径。需要原始版本时，由宿主使用独立快照保存。
-已保存的 tool/MCP 结果引用仍保留完整性校验和跨工作区恢复能力。
+已保存的 tool/MCP 溢出文件同样处理：不校验，也不复制或恢复到其他工作区。
+只有压缩归档会跨工作区携带。
 
 可离线运行[上传文件编辑示例](../../examples/editable_uploads.py)，查看在同一显式工作区
 内上传、编辑和续聊的完整流程。

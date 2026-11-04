@@ -104,8 +104,13 @@ Hosts that replace local storage must upload the referenced bytes and preserve
 their typed provenance. The SDK does not create public URLs or enforce host
 retention.
 
+Since 0.11.0, only compaction archives are carried across workspaces. Tool-output
+overflow files have no digest, are not checked, and are not copied or rebased;
+see the [0.11.0 migration notes](migration.md#0110).
+
 Never accept a client-supplied reference path as trusted. Resolve references
-inside the recorded run workspace and verify their checksum.
+inside the recorded run workspace; only compaction archives still carry a
+checksum to verify.
 
 ## Rollout verification
 

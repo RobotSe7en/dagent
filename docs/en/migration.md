@@ -5,7 +5,80 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current stable package version is `0.10.4`.
+The current stable package version is `0.11.0`.
+
+## 0.11.0
+
+Install with `pip install --upgrade 'dagent-ai==0.11.0'`.
+
+### Breaking changes: best-effort tool-output files
+
+This release changes how oversized tool output is stored. Overflow files are now
+written only for a model that can read them, are never checked, and are not
+carried into later run workspaces. Compaction archives keep their existing
+storage and verification. Review these behavior changes before upgrading:
+
+- **Shortening requires `read_file`.** A result longer than its display limit is
+  shortened, and its full text written to an overflow file, only when the model
+  reading it has the built-in `read_file` tool (for a DagAgent, `tool.read_file`
+  in its capabilities). Without it the result stays inline in full and no file is
+  written; a result that cannot fit the context window fails with the normal
+  context-window error. `ValidatorAgent` and other tool-less profiled agents keep
+  bounded displays but no longer write files. Static DAGs still store large
+  values by size.
+- **No digest and no checks.** `ContentReference.sha256` is now optional and is
+  `None` for tool output, large values and artifacts. The SDK no longer verifies
+  size, digest or file identity when reading them, no longer rejects a changed
+  file, and no longer rereads a file it just wrote. A changed file is read as it
+  is; a missing one is reported by the reading tool. Static DAG dependents no
+  longer raise size or checksum mismatch errors for upstream values. Overflow
+  file names no longer contain a content hash.
+- **Not carried across workspaces.** The conversation backing store now
+  persists and restores only the compaction-archive chain. Tool-output files
+  are not copied, restored or rebased into a new run workspace, and missing ones
+  no longer fail the next Run. With the default per-run workspaces, overflow
+  files from earlier turns are no longer readable in later turns.
+- **Shell output.** Output within the shell's inline limits (100,000 bytes and
+  2,000 lines) is returned whole and no longer written to a file. Larger output
+  is streamed to one overflow file only with `read_file`; without it only the
+  tail is kept and marked `[SOURCE_TRUNCATED]`.
+- **Frozen displays (`chunked`, `cache_aware`).** `FrozenResultDisplay.recovery`
+  is now optional and is `None` for a display that shows the complete result;
+  no file is written for it. A result already saved when received reuses that
+  file instead of a second snapshot. A missing recovery file no longer raises
+  `ResultBudgetExceeded`. The emergency transition reads no file and no longer
+  writes `previous_display`.
+- **Compaction.** Compaction no longer reads or verifies earlier archives or
+  tool-output files before writing a new archive, and no longer lists
+  tool-output references in `CompactionSourceV1.refs`. Legacy result manifests
+  archive results as they are instead of writing a file per result. Reference
+  fallback requires the `read_file` tool.
+- **Display markers.** `[RECOVERY_UNAVAILABLE: read_file unavailable, path denied
+  or missing]` is no longer emitted. `[RECOVERY_UNAVAILABLE: no saved original]`
+  remains for failed writes and tool-less validators.
+- **Conversation changes.** Tool-output resources carry no digest and are
+  optional to save; they are no longer notified for later workspaces.
+  Compaction archives are notified as before.
+
+### Migration steps
+
+- Accept `None` wherever host code reads `ContentReference.sha256` or
+  `FrozenResultDisplay.recovery`.
+- Give agents that should see shortened results the `tool.read_file`
+  capability. Without it, configure context limits for full results.
+- To keep overflow files readable in later turns, reuse one `workspace_path`
+  per conversation, or keep host copies from `on_conversation_change`.
+- If you relied on SDK integrity errors to detect changed result files, enforce
+  that in the host.
+
+No record migration is required. ConversationState V4, RunState V6 and
+RunCheckpoint V9 records load unchanged, including references that carry a
+digest, frozen displays from earlier versions and archives already in the
+backing store. Unchanged: compaction archive digests and verification, upload
+ingestion checks, runtime-path containment and external runtime directory
+mapping, and all `ResultStoragePolicy` fields. Regression coverage includes the
+`read_file` rule for ToolAgent, DagAgent and validators, shell overflow, frozen
+displays, compaction, cross-workspace continuation and conversation changes.
 
 ## 0.10.4
 

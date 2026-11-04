@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import closing
-import hashlib
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -33,17 +32,21 @@ class HostJournal:
     async def save(self, batch: dagent.ConversationChangeBatch) -> None:
         if batch.batch_id in self.receipts:
             return
-        # Copy ready files before acknowledging the references. Object writes
-        # are idempotent; the existing SDK backing store remains in use too.
+        # Copy notified files before acknowledging the batch. Tool-output files
+        # are best-effort: the SDK does not check them and a missing one is
+        # skipped. Compaction archives keep using the SDK backing store too.
         for resource in batch.resources:
             source = self.runner.resolve_runtime_path(
                 resource.reference.path, workspace_path=resource.workspace_path,
                 runtime_directory=resource.runtime_directory,
             )
-            data = await asyncio.to_thread(source.read_bytes)
-            if len(data) != resource.reference.byte_length or hashlib.sha256(data).hexdigest() != resource.reference.sha256:
-                raise ValueError("Resource identity changed before host storage.")
-            await asyncio.to_thread((self.directory / resource.reference.sha256).write_bytes, data)
+            try:
+                data = await asyncio.to_thread(source.read_bytes)
+            except FileNotFoundError:
+                continue
+            target = self.directory / "files" / resource.reference.path
+            await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(target.write_bytes, data)
         await asyncio.to_thread(self._append, batch.model_dump_json())
         self.apply(batch)
 
@@ -104,7 +107,7 @@ async def main() -> None:
         ChatResponse(tool_calls=[ToolCall(id="report", name="tool_report", arguments={})]),
         ChatResponse(content="The approved report is ready."),
         ChatResponse(content="The earlier report remains available."),
-        ChatResponse(content="The report is available in this workspace too."),
+        ChatResponse(content="Continued from the saved conversation in a new workspace."),
     ])
     with TemporaryDirectory(prefix="dagent-changes-") as temporary:
         root = Path(temporary)
@@ -125,8 +128,8 @@ async def main() -> None:
                 if event.type == "run.finished":
                     assert journal.state == event.data.result.conversation
 
-            # Restore twice: the third workspace keeps the rebased logical path
-            # but still delivers its new resource location to the host.
+            # Continue twice in fresh workspaces. Saved tool output keeps its
+            # original path and is not copied there; the host kept its copy.
             for workspace in (root / "second", root / "third"):
                 restored = journal.reload()
                 result = await runner.run(

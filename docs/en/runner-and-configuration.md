@@ -55,16 +55,21 @@ resolve from the current run workspace. SDK-private data is isolated under the
 chosen relative directory:
 
 - `<workspace>/<runtime_directory>/conversations` stores content-addressed
-  externalized results needed by later conversation turns.
-- `<run-workspace>/<runtime_directory>/results` stores externalized tool and MCP
-  output.
-- `<run-workspace>/<runtime_directory>/history` holds result resources restored into a
-  new run workspace.
+  copies of compaction archives (records, sources and legacy result indexes)
+  needed by later conversation turns.
+- `<run-workspace>/<runtime_directory>/results` stores tool and MCP output that
+  overflowed its display limit, plus large values and binary artifacts.
+- `<run-workspace>/<runtime_directory>/history` stores compaction archives.
 
 These directories are lazy. Constructing a runner or running text-only turns
-does not create them. Tool execution can save even a small result for recovery;
-shell execution saves its output regardless of size. Uploaded attachments alone
-do not create a conversation backing store or history directory.
+does not create them. Display output overflows to a file only when the model
+that reads it has the built-in `read_file` tool; otherwise the result stays
+inline and is not shortened. Shell output is written to a file only when it
+exceeds the shell's own inline limits (100,000 bytes or 2,000 lines). Overflow
+files are written best-effort, carry no digest, are never checked or reread by
+the SDK, and are not copied to later run workspaces. See
+[tool result recovery](tool-result-recovery.md). Uploaded attachments alone do
+not create a conversation backing store or history directory.
 
 ### Store private runtime files outside the workspace
 
@@ -79,7 +84,8 @@ runner = dagent.Runner(
 )
 ```
 
-The store contains `conversations/` and `runs/<workspace-key>/{results,history}/`.
+The store contains `conversations/` (compaction archives) and
+`runs/<workspace-key>/{results,history}/`.
 `workspace-key` is the SHA-256 of the resolved run workspace path, so separate
 workspaces do not share their result files. Reusing the same workspace reuses
 its storage namespace. A relative value keeps the existing layout; relative
@@ -104,10 +110,12 @@ saved_path = runner.resolve_runtime_path(
 )
 ```
 
-Continue conversations with the same absolute store. Existing stored files are
-not automatically moved when this setting changes; resume old checkpoints with
-their frozen storage setting. Hosts remain responsible for preserving the store
-and persisting conversation/checkpoint records.
+Continue conversations with the same absolute store so compaction archives stay
+available. Existing stored files are not automatically moved when this setting
+changes; resume old checkpoints with their frozen storage setting. Hosts remain
+responsible for preserving the store and persisting conversation/checkpoint
+records. Overflow files of a run workspace stay in that workspace's namespace;
+a continuation in another workspace keeps their paths but cannot read them.
 
 An absolute directory changes storage location, not process permissions.
 Local shell commands retain the host process's access. Docker execution mounts
@@ -140,8 +148,9 @@ substituted into profile content. Lower-level profile-backed helpers such as
 The model receives the resolved run workspace in that system section. Attachment
 records and externalized results use workspace-relative paths without exposing
 the runner-level conversation backing store. An attachment's byte count and
-digest describe its upload-time contents; a result reference describes the saved
-result that its integrity checks protect.
+digest describe its upload-time contents. A tool-output reference only reports
+where an overflow file was written; it has no digest and the file is not
+checked, so a later read returns whatever the file contains then.
 
 `extra_system_prompt` adds one literal, runner-wide instruction string without
 replacing the agent profile or `Runtime Context`. The SDK assembles profile,
@@ -181,8 +190,9 @@ For continued editing, pass the same `workspace_path` and the preceding
 `conversation` to the next run. If you select another workspace, the caller must
 copy the desired working files there: the SDK does not copy historical uploads,
 restore deleted attachments, or rebase their paths. Keep original versions in
-independent host-managed snapshots when needed. Saved tool/MCP result references
-retain their existing integrity checks and cross-workspace restoration.
+independent host-managed snapshots when needed. Saved tool/MCP overflow files
+are treated the same way: they are not checked, copied or restored into another
+workspace. Only compaction archives are carried across workspaces.
 
 Run [the editable uploads example](../../examples/editable_uploads.py) for an
 offline upload, edit, and continuation using one explicit workspace.

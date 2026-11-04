@@ -172,15 +172,23 @@ for resource in batch.resources:
     await host.save_file(path, resource.reference)
 ```
 
-Save required file bytes before acknowledging references. SDK-created result
-files, received/display snapshots, compaction sources/records, and newly
-materialized references are notified without scanning directories. A restored
-workspace location is notified even when its logical path is unchanged; this
-alone does not increase the conversation revision. References
-remain logical even with an absolute external runtime directory. Existing SDK
-backing-store restoration remains responsible for cross-workspace continuation;
-this feature does not add a host file-restoration API or relocate existing data.
-Mutable attachments retain their existing upload-time metadata semantics.
+Notified files are complete when the batch is delivered, and are notified
+without scanning directories. Two kinds of file are notified:
+
+- **Compaction archives** (sources and records, which carry a `sha256`). Save
+  these before acknowledging the batch if the host keeps history outside the
+  SDK store. A compaction archive restored into another workspace is notified
+  there even when its logical path is unchanged; this alone does not increase
+  the conversation revision.
+- **Tool-output overflow files** (no `sha256`). These are best-effort since
+  0.11.0: the SDK does not check them, and saving them is optional. They are
+  not restored into later workspaces, so a host that wants them later must keep
+  its own copy.
+
+References remain logical even with an absolute external runtime directory. The
+SDK backing store carries compaction archives across workspaces; this feature
+does not add a host file-restoration API or relocate existing data. Mutable
+attachments retain their existing upload-time metadata semantics.
 
 ## Handle persistence failures
 

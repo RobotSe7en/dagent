@@ -754,25 +754,30 @@ Human review feedback is retained independently of an externalized result body.
 It is required display metadata, including after emergency shortening, rather
 than part of the body's truncatable allowance or its character offsets.
 
-Shortening requires the original received text to be readable through the
-agent's existing boundary-checked recovery tool. Tools are not silently added.
-Unreadable result bodies stay intact, including NUL text that the built-in file
-reader cannot recover. Budget pressure can then require an explicit failure.
-Recovery restores what the SDK received;
-upstream source truncation cannot be undone. The active user instructions and
+Shortening requires the agent's built-in `read_file` tool; tools are not
+silently added. A result shortened for such an agent has its full received text
+in a best-effort overflow file (see
+[tool result recovery](tool-result-recovery.md)). A display that shows the
+complete result has no file. Without `read_file`, result bodies stay intact and
+budget pressure can then require an explicit failure. Overflow files are not
+checked; recovery reads what the file holds at that time, and upstream source
+truncation cannot be undone. The active user instructions and
 complete latest call/result relationships are protected. Oversized system
 instructions, tool schemas, user input, call arguments, or minimum result
 metadata can therefore still require `ContextWindowExceeded`.
 
-An older frozen display with hidden text also requires working recovery. If its
-reader or source becomes unavailable, preparation fails without rewriting the
-receipt; a display that already contains the complete body remains usable.
+An older frozen display is reused as saved even if its overflow file is gone;
+the model's read then reports the missing file. The emergency transition never
+reads an overflow file: it reuses the saved file reference, or, for a complete
+display and only with `read_file`, writes one first. It no longer archives the
+previous display text (`previous_display` stays `None`).
 
 `allow_reference_fallback=False` preserves raw source when complete semantic
 summarization fails. A request that still fits may continue. Setting it to `True`
-also permits lower-fidelity reference continuation when necessary to fit: only
-recoverable source is replaced, unresolved coverage stays explicit, and the final
-hard check still applies. `ContextSummary.method="reference_fallback"` and the
+also permits lower-fidelity reference continuation when necessary to fit. It
+requires the `read_file` tool, replaces history with a reference to its source
+archive, keeps unresolved coverage explicit, and the final hard check still
+applies. `ContextSummary.method="reference_fallback"` and the
 archived record's `partial` or `reference_only` status distinguish this from a
 complete summary. Neither mode promises lossless semantics or zero context errors.
 This opt-in fallback also applies when history compaction or root tightening
@@ -784,23 +789,19 @@ Old partial summaries are reused only for matching input. If another compaction
 changed the root, enabled reference fallback retains the current source and
 explicit unresolved ranges without repeating a model request for that source.
 
-A runtime archive index reuses verified reference links across preparations.
-Every traversal checks file identity; unchanged historical bodies need not be
-reread, rehashed or reparsed. Changed files are reverified; missing or corrupt
-files still fail verification. A new runtime or workspace verifies its history
-afresh. Body I/O is reduced,
-while file-state traversal remains proportional to retained history. The index
-retains links and file identities, not all historical bodies.
+Compaction writes its new source archive and record without first reading or
+verifying earlier history or any tool-output file. It reads only what it needs:
+the latest record and its own new source.
 
 At Run boundaries, every Run of one `Runner` uses the same conversation resource
-store, which saves retained results after a Run and restores them before the next.
-It records, in bounded memory, the file identities it has verified and the links
-of verified compaction records. Unchanged retained results, compaction records and
-archived sources are not reread when a continued conversation is persisted or
-restored again. Changed files are verified again, a deleted stored copy is
-rewritten, and missing or corrupt files still fail. Restoring into a new
-workspace still copies, and therefore reads, each retained resource once. A new
-`Runner` or process verifies its history afresh.
+store, which saves the compaction-archive chain (records, sources and legacy
+result indexes) after a Run and restores it before the next. Tool-output files
+are not saved, restored or rewritten; their paths stay unchanged. The store
+records, in bounded memory, the archive files it has verified, so unchanged
+archives are not reread when a continued conversation is persisted or restored
+again. Changed archives are verified again, a deleted stored copy is rewritten,
+and a missing or corrupt archive still fails the next Run clearly. A new
+`Runner` or process verifies its archives afresh.
 
 ### Failure snapshots and cache verification
 

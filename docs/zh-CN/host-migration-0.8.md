@@ -92,6 +92,9 @@ host 的保留策略。
 不要信任客户端提交的 reference path。只能在记录的 run workspace 内解析，并校验
 checksum。
 
+自 0.11.0 起，只有压缩归档跨 workspace 携带。工具输出溢出文件不带摘要、不受校验，也不
+复制或改写路径，因此只有压缩归档还能校验 checksum；详见 [0.11.0 迁移说明](migration.md#0110)。
+
 ## 上线验证
 
 - 两轮会话只发送 system、摘要/近期历史和本轮输入，不包含 reasoning 字段；
