@@ -32,8 +32,9 @@ from dagent.schemas.conversation import (
 )
 from dagent.schemas.retention import ResultRetention, ResultStorageWarning
 from dagent.schemas.common import Boundary
+from dagent.capabilities.tools.boundary import enforce_path_allowed
 from dagent.capabilities.tools.runtime_paths import RuntimePaths
-from dagent.harness_runtime.result_projection import result_references
+from dagent.harness_runtime.result_projection import file_readable_text, result_references
 
 
 class ResultStorageError(RuntimeError):
@@ -79,6 +80,21 @@ class ResultStore:
         self.root.relative_to(self.paths.boundary)
         self.on_event = on_event
         self.read_boundary = read_boundary
+
+    def files_readable(self) -> bool:
+        """Whether the read boundary lets the model open overflow and archive files.
+
+        Only the folder paths are checked; no file is opened.
+        """
+
+        if self.read_boundary is None:
+            return True
+        try:
+            for root in (self.root, self.snapshot_root):
+                enforce_path_allowed(self.paths.relative(root), self.read_boundary, self.workspace)
+        except (PermissionError, ValueError):
+            return False
+        return True
 
     def read_reference(self, reference: ContentReference) -> bytes:
         """Read a saved file as it is now; its contents are not checked."""
@@ -221,7 +237,14 @@ class ResultStore:
 
     def archive(
         self, previous: ContextSummary | None, items: Iterable[ConversationItem]
-    ) -> ContentReference | None:
+    ) -> tuple[ContentReference | None, bool]:
+        """Append archived results to the legacy result manifest.
+
+        Returns the manifest and whether the earlier manifest could not be
+        opened; its entries are then left out instead of failing compaction.
+        The earlier manifest is copied as it is, without checking it.
+        """
+
         previous_ref = previous.result_manifest if previous else None
         archived_items = tuple(items)
         has_results = any(
@@ -230,23 +253,17 @@ class ResultStore:
             for item in archived_items
         )
         if not has_results:
-            return previous_ref
+            return previous_ref, False
+        earlier = None
+        if previous_ref:
+            try:
+                earlier = self.paths.resolve(previous_ref.path).open("rb")
+            except (OSError, ValueError):
+                earlier = None
 
         def chunks() -> Iterable[bytes]:
-            if previous_ref:
-                target = self.paths.resolve(previous_ref.path)
-                digest = hashlib.sha256()
-                length = 0
-                with target.open("rb") as source:
-                    for data in iter(lambda: source.read(65536), b""):
-                        digest.update(data)
-                        length += len(data)
-                        yield data
-                if (
-                    length != previous_ref.byte_length
-                    or digest.hexdigest() != previous_ref.sha256
-                ):
-                    raise OSError("Result manifest checksum mismatch")
+            if earlier is not None:
+                yield from iter(lambda: earlier.read(65536), b"")
             for item in archived_items:
                 if isinstance(item, AssistantMessage) and item.tool_calls:
                     yield (
@@ -277,7 +294,7 @@ class ResultStore:
                     yield (result.model_dump_json() + "\n").encode("utf-8")
 
         try:
-            return _write_chunks(
+            manifest = _write_chunks(
                 self.workspace,
                 self.root,
                 None,
@@ -290,6 +307,10 @@ class ResultStore:
         except OSError as exc:
             self.warning("compaction", "manifest", exc)
             raise
+        finally:
+            if earlier is not None:
+                earlier.close()
+        return manifest, previous_ref is not None and earlier is None
 
 
 @dataclass(frozen=True)
@@ -313,9 +334,10 @@ def normalize_capability_result(
 ) -> NormalizedCapabilityResult:
     """Return a checkpoint-safe result plus model/audit content references.
 
-    ``result_files`` is false when the model that reads this result has no
-    ``read_file`` tool: display text then stays inline instead of overflowing
-    to a file. Values and artifacts are data and are stored by size either way.
+    ``result_files`` is false when the model that reads this result cannot
+    open saved files: display text then stays inline instead of overflowing
+    to a file. Text containing NUL also stays inline, since read_file cannot
+    open it. Values and artifacts are data and are stored by size either way.
     """
 
     workspace = Path(workspace_path).expanduser().resolve()
@@ -346,6 +368,7 @@ def normalize_capability_result(
         and content_reference is None
         and len(content_bytes) > policy.max_inline_bytes
         and retention.window_start is None
+        and file_readable_text(display_content)
     ):
         try:
             content_reference = store.save_text(result.invocation_id, display_content)
@@ -437,7 +460,8 @@ def normalize_capability_result(
         if not field_value:
             continue
         encoded = field_value.encode("utf-8")
-        if not result_files or len(encoded) <= policy.max_inline_bytes:
+        if (not result_files or len(encoded) <= policy.max_inline_bytes
+                or not file_readable_text(field_value)):
             continue
         try:
             reference = store.save_text(

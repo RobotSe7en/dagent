@@ -769,14 +769,16 @@ metadata can therefore still require `ContextWindowExceeded`.
 An older frozen display is reused as saved even if its overflow file is gone;
 the model's read then reports the missing file. The emergency transition never
 reads an overflow file: it reuses the saved file reference, or, for a complete
-display and only with `read_file`, writes one first. It no longer archives the
-previous display text (`previous_display` stays `None`).
+display, writes one first. It removes displayed text, so it is made only when
+the model can open files (it has `read_file` and its read boundary admits the
+runtime directory); otherwise displays stay as they are. It no longer archives
+the previous display text (`previous_display` stays `None`).
 
 `allow_reference_fallback=False` preserves raw source when complete semantic
 summarization fails. A request that still fits may continue. Setting it to `True`
 also permits lower-fidelity reference continuation when necessary to fit. It
-requires the `read_file` tool, replaces history with a reference to its source
-archive, keeps unresolved coverage explicit, and the final hard check still
+requires the `read_file` tool and a read boundary that admits the runtime
+directory, replaces history with a reference to its source archive, keeps unresolved coverage explicit, and the final hard check still
 applies. `ContextSummary.method="reference_fallback"` and the
 archived record's `partial` or `reference_only` status distinguish this from a
 complete summary. Neither mode promises lossless semantics or zero context errors.
@@ -790,8 +792,14 @@ changed the root, enabled reference fallback retains the current source and
 explicit unresolved ranges without repeating a model request for that source.
 
 Compaction writes its new source archive and record without first reading or
-verifying earlier history or any tool-output file. It reads only what it needs:
-the latest record and its own new source.
+verifying earlier history or any tool-output file. It reads only what it needs,
+the latest record and its own new source, without checking digests and without
+applying the model's read boundary. An earlier record it cannot read is not
+linked from the new record, which records `prior_coverage="unknown"` and
+unresolved history; the summary then carries `[DEGRADED_CONTEXT]`. Failed
+records that cannot be read are dropped from `compaction_state`, so the archive
+chain saved at the end of the Run names no missing file. An archive deleted
+during a Run that compaction never reads still fails that save.
 
 At Run boundaries, every Run of one `Runner` uses the same conversation resource
 store, which saves the compaction-archive chain (records, sources and legacy
@@ -801,7 +809,8 @@ records, in bounded memory, the archive files it has verified, so unchanged
 archives are not reread when a continued conversation is persisted or restored
 again. Changed archives are verified again, a deleted stored copy is rewritten,
 and a missing or corrupt archive still fails the next Run clearly. A new
-`Runner` or process verifies its archives afresh.
+`Runner` or process verifies its archives afresh. These run-boundary checks are
+the only digest checks on compaction archives.
 
 ### Failure snapshots and cache verification
 

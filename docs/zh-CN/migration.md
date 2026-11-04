@@ -11,13 +11,15 @@
 ### 破坏性变更：工具输出文件改为尽力保存
 
 本版本调整超限工具输出的存储方式：溢出文件只为能读取它的模型写入，从不校验，也不带到
-之后的 run workspace。压缩归档保持原有的存储和校验。升级前请确认以下行为变化：
+之后的 run workspace。压缩归档仍带摘要，会话 backing store 在 run 边界保存和恢复归档时
+仍会校验；压缩过程中读取归档则不再校验。升级前请确认以下行为变化：
 
-- **截断需要 `read_file`。** 只有读取结果的模型具备内置 `read_file` 工具（DagAgent 为能力
-  列表包含 `tool.read_file`）时，超过展示上限的结果才会被截断，完整文本写入溢出文件。
-  没有它时结果完整内联、不写文件；放不进上下文窗口时按常规上下文超限报错。
-  `ValidatorAgent` 等没有工具的 profiled agent 仍保持展示有界，但不再写文件。静态 DAG
-  仍按大小保存大值。
+- **截断需要 `read_file`。** 只有读取结果的模型能打开溢出文件时，超过展示上限的结果才会
+  被截断，完整文本写入溢出文件：模型具备内置 `read_file` 工具，且 ToolAgent 的读取边界
+  允许 runtime 的 `results/` 和 `history/` 目录（DagAgent 为能力列表包含 `tool.read_file`）。
+  否则结果完整内联、不写文件；放不进上下文窗口时按常规上下文超限报错。含 NUL 的文本
+  `read_file` 打不开，因此从不截断、也不写文件。`ValidatorAgent` 等没有工具的 profiled
+  agent 仍保持展示有界，但不再写文件。静态 DAG 仍按大小保存大值。
 - **不带摘要，不做检查。** `ContentReference.sha256` 改为可选，工具输出、大值和产物均为
   `None`。读取时不再校验大小、摘要或文件身份，不再拒绝被改过的文件，也不再回读刚写的
   文件。文件被改后读到改后的内容；被删除时由读取工具报告不存在。静态 DAG 下游读取上游值时
@@ -26,15 +28,21 @@
   不恢复、不改写路径，文件缺失也不再导致下一次 Run 失败。使用默认的每轮新 workspace 时，
   之后几轮读不到前几轮的溢出文件。
 - **Shell 输出。** 未超过 shell 内联上限（100,000 字节且 2,000 行）的输出完整返回，不再
-  写文件。更大的输出只在具备 `read_file` 时流式写入一个溢出文件；否则只保留尾部，并标
-  `[SOURCE_TRUNCATED]`。
+  写文件。更大的输出只在具备 `read_file` 时流式写入一个溢出文件；否则，或输出中含 NUL
+  时，只保留尾部，并标 `[SOURCE_TRUNCATED]`。
 - **冻结展示（`chunked`、`cache_aware`）。** `FrozenResultDisplay.recovery` 改为可选，完整
   展示的结果为 `None`，不写文件。接收时已保存的结果直接复用该文件，不再写第二份快照。
-  恢复文件缺失不再抛出 `ResultBudgetExceeded`。紧急切换不读取文件，也不再写
-  `previous_display`。
-- **压缩。** 写入新归档前不再读取或校验更早的归档和工具输出文件，`CompactionSourceV1.refs`
-  不再列出工具输出引用。旧版结果索引原样归档结果，不再为每条结果单独写文件。引用回退需要
-  `read_file` 工具。
+  恢复文件缺失不再抛出 `ResultBudgetExceeded`。紧急切换不读取文件，不再写
+  `previous_display`，并且只在模型能打开文件时进行；否则所有展示保持不变。
+- **压缩。** 不再读取或校验工具输出文件，写入新归档前不再遍历更早的归档，
+  `CompactionSourceV1.refs` 不再列出工具输出引用。读取所需的上一条压缩记录时不校验摘要，
+  也不套用模型的读取边界。旧版结果索引原样归档结果，不再为每条结果单独写文件。引用回退
+  需要 `read_file` 工具，且读取边界允许 runtime 文件。
+- **归档缺失时降级。** 读不到上一条压缩记录不再导致压缩失败：新记录不链接它，记为
+  `prior_coverage="unknown"` 并标记历史未完全覆盖，摘要带 `[DEGRADED_CONTEXT]`。读不到的
+  失败记录会从 `compaction_state` 中移除。打不开的上一份旧版结果索引不再并入新索引，并设置
+  `result_archive_incomplete`。因此 run 结束保存时不会引用缺失的归档。run 中途被删、
+  且压缩从未读取的归档，仍会让这次保存失败；下一次 Run 开始时归档缺失仍会明确报错。
 - **展示标记。** 不再输出 `[RECOVERY_UNAVAILABLE: read_file unavailable, path denied or
   missing]`；`[RECOVERY_UNAVAILABLE: no saved original]` 保留，用于写入失败和没有工具的验证器。
 - **会话变化。** 工具输出资源不带摘要，宿主可以不存；不再为之后的 workspace 通知。
@@ -43,14 +51,16 @@
 ### 迁移步骤
 
 - 读取 `ContentReference.sha256` 或 `FrozenResultDisplay.recovery` 的宿主代码需接受 `None`。
-- 希望模型看到截断结果的 agent，加上 `tool.read_file` 能力；不加时，请按完整结果配置上下文上限。
+- 希望模型看到截断结果的 agent，加上 `tool.read_file` 能力，并让读取边界包含 runtime 目录。
+  否则结果保持完整，长工具输出会更快占满上下文：历史压缩更频繁，缓存的提示前缀也更常
+  变化。请按完整结果配置上下文上限。
 - 希望之后几轮仍能读取溢出文件时，每个会话复用同一个 `workspace_path`，或通过
   `on_conversation_change` 由宿主自行保存副本。
 - 若此前依赖 SDK 的完整性报错来发现结果文件被改，请改由宿主实现。
 
 无需迁移记录。ConversationState V4、RunState V6 和 RunCheckpoint V9 记录原样加载，包括
 带摘要的引用、早期版本的冻结展示，以及 backing store 中已有的归档。保持不变的部分：
-压缩归档的摘要与校验、上传写入校验、runtime 路径包含检查和外置 runtime 目录映射，以及
+压缩归档的摘要及会话 backing store 在 run 边界的校验、上传写入校验、runtime 路径包含检查和外置 runtime 目录映射，以及
 `ResultStoragePolicy` 的全部字段。回归测试覆盖 ToolAgent、DagAgent 与验证器的
 `read_file` 规则、shell 溢出、冻结展示、压缩、跨 workspace 续聊和会话变化。
 

@@ -14,6 +14,7 @@ from dagent.harness_runtime.result_projection import (
     ResultBudgetExceeded,
     ResultItem,
     TextCounter,
+    file_readable_text,
     project_result,
 )
 from dagent.harness_runtime.result_storage import ResultStore
@@ -83,8 +84,8 @@ def freeze_result_displays(
 ) -> ConversationState:
     """Water-fill a new result batch; existing displays are never redistributed.
 
-    ``files`` is whether the model can read saved files. Without it an inline
-    result is never shortened. ``total_budget_tokens`` belongs only to displays
+    ``files`` is whether the model can read saved files. Without it, or when
+    its text contains NUL, an inline result is never shortened. ``total_budget_tokens`` belongs only to displays
     without a receipt. The caller has already reserved fixed input, existing
     displays and model output.
     """
@@ -101,7 +102,8 @@ def freeze_result_displays(
             # Already saved when received: show its stored preview. Whether
             # the model can open the file only changes the recovery notice.
             shown, shorten = item, files
-        elif files:
+        elif files and file_readable_text(item.content.text):
+            # Text with NUL stays complete: read_file could not open its file.
             planned = result_store.text_reference(identity, item.content.text)
             shown, shorten = _display_item(item, item.content.text, planned), True
             complete_tokens = counter.count_text(project_result(item, 2**60, counter, read_available=False).text)
@@ -189,12 +191,16 @@ def reference_frozen_result_displays(
 ) -> ConversationState:
     """Make the explicit one-way emergency transition to reference-only displays.
 
-    No saved file is read. A complete display without a file gets one only when
-    the model can read files; otherwise it stays as it is.
+    No saved file is read. The transition removes displayed text, so it is
+    made only when the model can read files; otherwise every display stays as
+    it is. A complete display without a file gets one, unless its text
+    contains NUL, which read_file could not open.
     """
 
     from dagent.harness_runtime.context import HeuristicTokenCounter
 
+    if not files:
+        return conversation
     updates = {}
     for identity, item in _results(conversation):
         display = item.model_display
@@ -202,7 +208,7 @@ def reference_frozen_result_displays(
             continue
         recovery = display.recovery
         if recovery is None:
-            if not files:
+            if not file_readable_text(stored_content_text(item.content)):
                 continue
             try:
                 recovery = result_store.save_text(identity, stored_content_text(item.content))

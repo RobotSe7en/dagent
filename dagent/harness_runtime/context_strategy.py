@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass, field, replace
-from typing import Any, Sequence
+from typing import Any, Collection, Sequence
 
 from dagent.harness_runtime.context import (
     ContextAssembler, PreparedModelContext, _atomic_groups, _context_results,
@@ -59,6 +59,9 @@ class _CompactionProgress:
     failed: set[str] = field(init=False)
     failed_records: list[FailedCompaction] = field(init=False)
     staged_records: list[FailedCompaction] = field(default_factory=list)
+    # Record paths the compactor could not read; saved state drops them so
+    # the archives carried across runs never name a missing file.
+    unreadable: Collection[str] = ()
 
     def __post_init__(self) -> None:
         state = self.conversation.compaction_state
@@ -70,7 +73,8 @@ class _CompactionProgress:
             return self.conversation
         keys = self.failed | {key for record in self.staged_records for key in record.source_keys}
         records = tuple({record.record.sha256: record for record in
-                         [*self.failed_records, *self.staged_records]}.values())
+                         [*self.failed_records, *self.staged_records]
+                         if record.record.path not in self.unreadable}.values())
         state = CompactionState(failed_sources=tuple(sorted(keys)), failed_records=records)
         return self.conversation.model_copy(update={
             "compaction_state": state, "revision": self.conversation.revision + 1,
@@ -139,6 +143,7 @@ async def prepare_context(
     compactor: Any,
 ) -> PreparedModelContext:
     progress = _CompactionProgress(conversation)
+    progress.unreadable = getattr(compactor, "unreadable_records", ())
     outcome = "failed"
     try:
         prepared = await _prepare_context(
@@ -202,7 +207,9 @@ async def _prepare_context(
         if identity not in source_keys:
             source_keys[identity] = (item, _source_key(item, policy, source_namespace))
         return source_keys[identity][1]
-    files = read_file_available(tools)
+    # Results are shortened only when the model can open their files: it has
+    # read_file and its read boundary admits the runtime result folders.
+    files = read_file_available(tools) and (result_store is None or result_store.files_readable())
     requested_output = max_output_tokens if max_output_tokens is not None else assembler.max_output_tokens
     automatic_output = requested_output is None
     if requested_output is None:
@@ -450,6 +457,10 @@ async def _prepare_context(
                     if cached_summary is not None:
                         selected = (start, end)
                         break
+                    if record.record.path in compaction_progress.unreadable:
+                        # The paid or failed attempt is lost with its record,
+                        # so its source may be summarized again.
+                        failed.difference_update(record.source_keys)
             for start, end in ranges if selected is None else ():
                 # Split only between complete atomic exchanges. New work can be
                 # summarized without repeatedly sending a failed unchanged span.
@@ -705,10 +716,12 @@ async def _prepare_context(
             emergency_ids = {item.id for item in latest if item.model_display and item.model_display.revision == 0 and item.id not in new_ids}
             if emergency_ids:
                 try:
-                    working = reference_frozen_result_displays(working, result_store=result_store,
+                    referenced = reference_frozen_result_displays(working, result_store=result_store,
                         files=files, result_ids=emergency_ids)
-                    state = await project()
-                    prefix_break = "emergency_result_reference"
+                    if referenced is not working:
+                        working = referenced
+                        state = await project()
+                        prefix_break = "emergency_result_reference"
                 except ResultBudgetExceeded:
                     pass
 
@@ -732,7 +745,9 @@ async def _prepare_context(
     retained_failed = tuple(source_key(item) for item in working.items if source_key(item) in failed)
     if summary_key() in failed:
         retained_failed += (summary_key(),)
-    retained_records = tuple(record for record in failed_records if set(record.source_keys) & set(retained_failed))
+    retained_records = tuple(record for record in failed_records
+                             if set(record.source_keys) & set(retained_failed)
+                             and record.record.path not in compaction_progress.unreadable)
     compaction_state = CompactionState(failed_sources=retained_failed, failed_records=retained_records) if retained_failed else None
     if compaction_state != working.compaction_state:
         working = working.model_copy(update={"compaction_state": compaction_state, "revision": working.revision + 1})

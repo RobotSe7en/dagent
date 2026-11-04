@@ -525,11 +525,9 @@ class ToolAgentLoop:
             task_id=resolved_run_id,
             skills=skills,
         )
-        # Oversized results overflow to files only when this model can read them.
-        result_files = read_file_available(self._llm_tool_definitions(capability_ids=capability_ids))
         execution_context = replace(execution_context, runtime_directory=self.runtime_directory,
-                                    max_shell_output_bytes=result_storage_policy.max_shell_output_bytes,
-                                    result_files=result_files)
+                                    max_shell_output_bytes=result_storage_policy.max_shell_output_bytes)
+        read_file_tool = read_file_available(self._llm_tool_definitions(capability_ids=capability_ids))
         state_scope = _state_capability_scope(
             capability_scope,
             capability_ids=capability_ids,
@@ -537,6 +535,12 @@ class ToolAgentLoop:
         )
         capability_callbacks = CapabilityExecutionCallbacks(on_token=on_token, on_event=on_event)
         workspace = execution_context.workspace_path or current_workspace_root(self.capability_executor.workspace_root)
+
+        def files_readable(current: Boundary) -> bool:
+            # Oversized results overflow to files only when this model can
+            # open them: it has read_file and its boundary admits the files.
+            return read_file_tool and ResultStore(
+                workspace, self.runtime_directory, read_boundary=current).files_readable()
 
         changes = current_changes()
         if changes is not None:
@@ -714,6 +718,7 @@ class ToolAgentLoop:
                     item.error_result = fresh.error_result
 
                 invocation = item.invocation
+                result_files = files_readable(batch.boundary)
                 node = None if invocation is None else _find_capability_node(trace.root, item.call.id)
                 if invocation is not None and node is None:
                     node = RunTraceNode.capability_call(parent_id=trace.root.id, invocation=invocation, status="running")
@@ -730,13 +735,13 @@ class ToolAgentLoop:
                 if denied:
                     content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
                 elif invocation is not None and item.error is None:
-                    call_context = execution_context
+                    call_context = replace(execution_context, result_files=result_files)
                     definition = self.tool_adapter.ensure_allowed(
                         invocation.capability_id, enabled_toolsets=self.enabled_toolsets, capability_ids=capability_ids,
                     )
                     boundary_result, _ = check_tool_boundary_for_review(definition, invocation, Path(workspace))
                     if boundary_result is not None and _reviewable_boundary_result(boundary_result) and review_level == "fast":
-                        call_context = replace(execution_context, approved_boundary_invocation_id=invocation.invocation_id)
+                        call_context = replace(call_context, approved_boundary_invocation_id=invocation.invocation_id)
                     await observe_tool(item.call.id, invocation.capability_id, "starting")
                     try:
                         result = await self.capability_executor.execute(invocation, context=call_context, callbacks=capability_callbacks)

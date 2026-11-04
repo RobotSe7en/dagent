@@ -135,7 +135,28 @@ def test_no_shortening_or_file_without_read_file(tmp_path):
     assert _emergency(frozen, store, {result.id}, files=False) is frozen
 
 
-def test_read_file_is_the_only_condition():
+def test_nul_text_is_never_hidden_behind_a_file_read_file_cannot_open(tmp_path):
+    from dagent.capabilities.tools.file_tools import read_file
+
+    store = ResultStore(tmp_path, ".runtime")
+    source = "a" * 5000 + "\0" + "b" * 5000
+    # Why: read_file rejects a file containing NUL.
+    probe = store.save_text("probe", source)
+    with pytest.raises(ValueError, match="not a UTF-8 text file"):
+        read_file(tmp_path / probe.path, offset_chars=4900, limit_chars=200)
+    (tmp_path / probe.path).unlink()
+    frozen = _freeze(_conversation(source), store, cap=64)
+    result = frozen.items[1]
+    assert source in result.model_display.text
+    assert result.model_display.displayed_spans == ((0, len(source)),)
+    assert result.model_display.recovery is None and result.content == InlineContent(text=source)
+    with pytest.raises(ResultBudgetExceeded):
+        _freeze(_conversation(source), store, budget=512, cap=64)
+    assert _emergency(frozen, store, {result.id}) is frozen
+    assert not any((tmp_path / ".runtime" / "results").iterdir())
+
+
+def test_read_file_tool_is_detected_by_its_exact_name():
     assert read_file_available(_reader_tools())
     assert read_file_available([{"type": "function", "function": {"name": "tool_read_file"}}])
     assert not read_file_available([{"type": "function", "function": {"name": "tool_shell"}}])
@@ -163,6 +184,10 @@ def test_saved_overflow_is_shown_from_its_preview_without_opening_the_file(tmp_p
         assert "[TRUNCATED]" in display.text
         assert f"path={saved.path}" in display.text
         emergency = _emergency(frozen, store, {frozen.items[1].id}, files=files)
+        if not files:
+            # The transition removes displayed text, so it needs read access.
+            assert emergency is frozen
+            continue
         changed = emergency.items[1].model_display
         assert changed.revision == 1 and changed.recovery == saved and changed.previous_display is None
 
@@ -566,7 +591,7 @@ def test_new_source_preserves_declared_legacy_result_manifest_but_not_its_result
     store = ResultStore(workspace, ".runtime")
     result_body = store.save_text("legacy", "earlier result")
     result = _conversation("").items[1].model_copy(update={"content": result_body})
-    legacy = store.archive(None, (result,))
+    legacy, _ = store.archive(None, (result,))
     source = store.snapshot_text(CompactionSourceV1(
         items=(), refs=(legacy,), previous_result_manifest=legacy,
     ).model_dump_json())

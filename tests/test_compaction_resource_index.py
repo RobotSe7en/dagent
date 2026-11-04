@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -104,3 +105,148 @@ async def test_reference_fallback_requires_read_file_and_reads_no_history(tmp_pa
         await compactor.reference_fallback(
             summary, (UserMessage(content="Continue."),), 256, reason="offline",
         )
+
+
+@pytest.mark.asyncio
+async def test_missing_earlier_record_is_not_linked_and_the_chain_still_persists(tmp_path):
+    from dagent.harness_runtime.conversation_resources import ConversationResourceStore
+    from dagent.schemas import ConversationState
+
+    assembler = ContextAssembler(context_window_tokens=8192)
+    meter = ReadMeter()
+    workspace = tmp_path / "run"
+    first = await engine(workspace, assembler, meter).compact(None, (UserMessage(id="a", content="first"),), 256)
+    # Deleted mid-run, after the run start restored it.
+    (workspace / first.compaction_record.path).unlink()
+    compactor = engine(workspace, assembler, meter)
+    second = await compactor.compact(first, (UserMessage(id="b", content="second"),), 256)
+    record = record_for(compactor, second)
+    assert record.previous_record is None and record.prior_coverage == "unknown"
+    assert record.has_unresolved_history and "[DEGRADED_CONTEXT]" in second.content
+    # The archive chain names no missing file, so the run end can carry it.
+    ConversationResourceStore(tmp_path, ".runtime").persist(ConversationState(summary=second), workspace_path=workspace)
+
+
+@pytest.mark.asyncio
+async def test_archive_chain_is_read_regardless_of_the_model_read_boundary(tmp_path):
+    from dagent.schemas.common import Boundary
+
+    async def summarize(request):
+        return summary_response(request)
+
+    def bounded():
+        return HistoryCompactor(
+            policy=ContextPolicy(compaction_strategy="chunked", allow_reference_fallback=True),
+            assembler=ContextAssembler(context_window_tokens=8192),
+            result_store=ResultStore(tmp_path, ".runtime", read_boundary=Boundary(allowed_paths=["src"])),
+            system_message={"content": "Keep the task state."}, chat=summarize, read_available=True,
+        )
+
+    first = await bounded().compact(None, (UserMessage(id="a", content="first"),), 256)
+    compactor = bounded()
+    second = await compactor.compact(first, (UserMessage(id="b", content="second"),), 256)
+    # The runtime reads its own archives; only the model is bounded.
+    record = record_for(compactor, second)
+    assert record.previous_record == first.compaction_record and not record.has_unresolved_history
+    # The model could not open the source archive, so no reference fallback.
+    assert not compactor.read_available
+    with pytest.raises(CompactionArchiveError, match="read boundary"):
+        await compactor.reference_fallback(second, (UserMessage(id="c", content="third"),), 256, reason="offline")
+
+
+@pytest.mark.asyncio
+async def test_failed_records_that_cannot_be_read_are_dropped_from_saved_state(tmp_path):
+    import dagent
+    from dagent.harness_runtime.conversation_resources import ConversationResourceStore
+    from dagent.providers.model_io import ModelTokenCount
+    from dagent.providers.openai_compatible import ProviderTokenCountError
+
+    paid = round_paid = 0
+
+    async def count(request, _field):
+        if request.purpose == "compaction":
+            return ModelTokenCount(count=100, max_model_len=8192, exact=True, source="render")
+        remaining = len({item.source_id for item in request.items} & {"A", "B"})
+        if remaining == 0 and round_paid == 2:
+            raise ProviderTokenCountError("Counting failed after the paid summaries.")
+        return ModelTokenCount(count={2: 11000, 1: 9000, 0: 100}[remaining], max_model_len=8192,
+                               exact=True, source="render")
+
+    async def summarize(request):
+        nonlocal paid, round_paid
+        paid += 1
+        round_paid += 1
+        response = summary_response(request)
+        # A later summary differs, so its record gets a new path.
+        return replace(response, content=response.content.replace("pending", f"pending {paid}"))
+
+    conversation = dagent.ConversationState(items=(
+        dagent.UserMessage(id="first_task", run_id="run", content="First task."),
+        dagent.AssistantMessage(id="A", run_id="run", content="First evidence."),
+        dagent.UserMessage(id="steer", run_id="run", content="Keep this correction."),
+        dagent.AssistantMessage(id="B", run_id="run", content="Second evidence."),
+        dagent.AssistantMessage(id="tail", run_id="run", content="Latest protected step."),
+    ))
+    policy = dagent.ContextPolicy(compaction_strategy="chunked", compaction_retain_ratio=.0001)
+    assembler = ContextAssembler(context_window_tokens=8192, max_output_tokens=512, request_token_counter=count)
+    store = ResultStore(tmp_path / "run", ".runtime")
+
+    async def failed_state(source):
+        nonlocal round_paid
+        round_paid = 0
+        with pytest.raises(ProviderTokenCountError) as failed:
+            await assembler.prepare(
+                system_message={"content": "Task"}, conversation=source, policy=policy,
+                result_store=store, enable_new_strategy=True,
+                history_compactor=HistoryCompactor(policy=policy, assembler=assembler,
+                    result_store=store, system_message={"content": "Task"}, chat=summarize),
+            )
+        return failed.value._conversation
+
+    saved = await failed_state(conversation)
+    missing = {failure.record.path for failure in saved.compaction_state.failed_records}
+    assert paid == 2 and len(missing) == 2
+    for path in missing:
+        (tmp_path / "run" / path).unlink()
+    # The lost replacements cannot be reused, so their sources are summarized
+    # again, and the saved state names only records that exist.
+    again = await failed_state(saved)
+    assert paid == 4
+    kept = {failure.record.path for failure in again.compaction_state.failed_records}
+    assert len(kept) == 2 and not missing & kept
+    assert all((tmp_path / "run" / path).is_file() for path in kept)
+    ConversationResourceStore(tmp_path, ".runtime").persist(again, workspace_path=tmp_path / "run")
+
+
+@pytest.mark.asyncio
+async def test_missing_legacy_result_manifest_leaves_its_results_out(tmp_path):
+    import json
+
+    from dagent.schemas import ContextSummary, ConversationState
+    from dagent.schemas.conversation import AssistantMessage, ToolCallItem, ToolResultMessage, inline_content
+
+    store = ResultStore(tmp_path, ".runtime")
+
+    def call(call_id):
+        return (AssistantMessage(tool_calls=(ToolCallItem(id=call_id, name="tool_data"),)),
+                ToolResultMessage(call_id=call_id, name="tool_data", status="completed",
+                                  content=inline_content(f"{call_id} result")))
+
+    earlier, lost = store.archive(None, call("old"))
+    assert not lost
+    (tmp_path / earlier.path).unlink()
+    conversation = ConversationState(
+        summary=ContextSummary(content="Earlier work.", source_item_count=2, result_manifest=earlier),
+        items=(*call("new"), UserMessage(content="Continue.")),
+    )
+
+    async def summarize(previous, items, limit):
+        return ContextSummary(content="Summary.", source_item_count=previous.source_item_count + len(items))
+
+    compacted, method, _ = await ContextAssembler()._compact_slice(
+        conversation, start=0, end=2, policy=ContextPolicy(), compact=summarize, result_store=store,
+    )
+    summary = compacted.summary
+    assert method == "model" and summary.result_archive_incomplete
+    lines = [json.loads(line) for line in (tmp_path / summary.result_manifest.path).read_text().splitlines()]
+    assert [line.get("call_id") for line in lines if line.get("type") == "tool_result"] == ["new"]

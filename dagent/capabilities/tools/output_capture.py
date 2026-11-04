@@ -42,7 +42,9 @@ def collect_output(
     file is written. Beyond them, with ``files`` the complete output (up to
     ``max_bytes``) is streamed to one overflow file whose path is reported but
     never checked; without ``files`` only an in-memory tail of each stream is
-    kept and the result is marked partial.
+    kept and the result is marked partial. Output containing NUL is never
+    saved to a file, since read_file cannot open it; beyond the limits only
+    its tail is kept, as without ``files``.
     """
 
     relative = PurePosixPath(runtime_directory)
@@ -60,7 +62,7 @@ def collect_output(
     paths: list[Path] = []
     failures: list[dict[str, str]] = []
     received = retained = newlines = 0
-    overflowed = closed = False
+    overflowed = closed = binary = False
 
     def warn(exc: OSError) -> None:
         if not failures:
@@ -75,7 +77,7 @@ def collect_output(
     def write(index: int, data: bytes) -> None:
         nonlocal retained
         allowed = max(0, max_bytes - retained)
-        if handles[index] is None or failures or not allowed:
+        if handles[index] is None or failures or binary or not allowed:
             return
         # Cut only on a UTF-8 character boundary.
         saved = data[:allowed].decode("utf-8", errors="ignore").encode("utf-8")
@@ -99,7 +101,7 @@ def collect_output(
             write(index, bytes(tail))
 
     def drain(index: int, pipe: Any) -> None:
-        nonlocal received, newlines, overflowed
+        nonlocal received, newlines, overflowed, binary
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         while True:
             try:
@@ -112,13 +114,14 @@ def collect_output(
                     break
                 received += len(data)
                 newlines += data.count(b"\n")
+                binary = binary or b"\0" in data
                 tails[index].extend(data)
                 if overflowed:
                     write(index, data)
                 elif (received + _INLINE_BYTE_MARGIN > inline_bytes
                         or newlines + _INLINE_LINE_MARGIN > inline_lines):
                     overflowed = True
-                    if files:
+                    if files and not binary:
                         open_files()
                 del tails[index][:-_TAIL_BYTES]
             if not chunk:
@@ -170,7 +173,7 @@ def collect_output(
         )
         if part
     )
-    saved = overflowed and len(paths) == 2 and not failures
+    saved = overflowed and len(paths) == 2 and not failures and not binary
     if not overflowed:
         kept = received
     elif saved:

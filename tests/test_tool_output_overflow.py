@@ -268,3 +268,191 @@ async def test_reference_fallback_respects_the_read_boundary(tmp_path):
         await engine(Boundary(allowed_paths=["src"])).reference_fallback(None, item, 256, reason="offline")
     summary = await engine(Boundary(allowed_paths=[".runtime"])).reference_fallback(None, item, 256, reason="offline")
     assert summary.method == "reference_fallback"
+
+
+def test_files_are_readable_only_when_the_boundary_admits_the_runtime_folders(tmp_path):
+    from dagent.schemas.common import Boundary
+
+    def readable(*allowed, directory=".runtime"):
+        boundary = Boundary(allowed_paths=list(allowed)) if allowed else None
+        return ResultStore(tmp_path / "ws", directory, read_boundary=boundary).files_readable()
+
+    assert readable() and readable(".") and readable(".runtime")
+    assert not readable("src")
+    # Reference fallback points at archives, so results alone are not enough.
+    assert not readable(".runtime/results")
+    # An external runtime directory keeps its logical .runtime paths.
+    assert readable(".", directory=str(tmp_path / "external"))
+    assert not readable("src", directory=str(tmp_path / "external"))
+    # Only paths are checked; nothing is created or opened.
+    assert not (tmp_path / "ws").exists() and not (tmp_path / "external").exists()
+
+
+@pytest.mark.parametrize("allowed,saved", [(["src"], False), (["."], True)])
+def test_tool_agent_overflows_only_when_the_read_boundary_admits_the_file(tmp_path, allowed, saved):
+    from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
+    from dagent.capabilities.decorator import tool
+    from dagent.capabilities.providers import ToolCapabilityProvider
+    from dagent.capabilities.tools.file_tools import create_file_tool_registry
+    from dagent.harness_runtime import CapabilityExecutor, ToolAgentLoop
+    from dagent.providers import ToolCall
+    from dagent.schemas import Boundary, UserMessage
+
+    original = "evidence " * 4000
+
+    @tool
+    def report() -> str:
+        return original
+
+    catalog = CapabilityCatalog(workspace_root=tmp_path)
+    ToolCapabilityProvider(create_file_tool_registry()).register_into(catalog)
+    catalog.register(report.definition, report.handler)
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call", name="tool_report", arguments={})]),
+        ChatResponse(content="Done."),
+    ])
+    loop = ToolAgentLoop(
+        runtime_directory=".runtime", provider=provider, capability_executor=CapabilityExecutor(catalog),
+        tool_adapter=CapabilityToolAdapter(catalog, toolsets=[CapabilityToolset("builtin", tuple(sorted(catalog.ids())))]),
+    )
+    outcome = asyncio.run(loop.run(
+        ConversationState(items=(UserMessage(content="report"),)), boundary=Boundary(allowed_paths=allowed),
+        system_message={"role": "system", "content": "Report."}, context_policy=ContextPolicy(),
+        result_storage_policy=dagent.ResultStoragePolicy(max_inline_bytes=1024), context_assembler=ContextAssembler(),
+    ))
+    assert outcome.state.status == "completed"
+    result = next(item for item in outcome.new_items if isinstance(item, ToolResultMessage))
+    shown = str(provider.requests[-1]["messages"])
+    if saved:
+        assert isinstance(result.content, ContentReference)
+        assert f"path={result.content.path}" in shown
+    else:
+        assert result.content == inline_content(original)
+        assert original.strip() in shown and "[TRUNCATED]" not in shown
+        assert not (tmp_path / ".runtime").exists()
+
+
+@pytest.mark.asyncio
+async def test_cache_aware_display_stays_complete_when_the_boundary_excludes_runtime_files(tmp_path):
+    from dagent.schemas.common import Boundary
+
+    original = "evidence " * 4000
+    conversation = ConversationState(items=(
+        AssistantMessage(tool_calls=(ToolCallItem(id="call", name="tool_data"),)),
+        ToolResultMessage(call_id="call", name="tool_data", status="completed", content=inline_content(original)),
+    ))
+
+    async def prepare(boundary):
+        return await ContextAssembler(context_window_tokens=131072, max_output_tokens=8192).prepare(
+            system_message={"content": "Inspect"}, conversation=conversation,
+            tools=[{"type": "function", "function": {"name": "tool_read_file"}}],
+            policy=ContextPolicy(compaction_strategy="cache_aware", max_tool_result_tokens=256),
+            result_store=ResultStore(tmp_path, ".runtime", read_boundary=boundary), enable_new_strategy=True,
+        )
+
+    excluded = await prepare(Boundary(allowed_paths=["src"]))
+    item = excluded.conversation.items[1]
+    assert item.content == inline_content(original) and item.model_display.recovery is None
+    assert excluded.usage.truncated_tool_results == 0
+    assert not (tmp_path / ".runtime").exists()
+    admitted = await prepare(Boundary(allowed_paths=["."]))
+    assert admitted.conversation.items[1].model_display.recovery is not None
+    assert admitted.usage.truncated_tool_results == 1
+
+
+def test_emergency_transition_needs_read_access_even_for_saved_results(tmp_path):
+    from dagent.harness_runtime.frozen_results import reference_frozen_result_displays
+    from dagent.schemas.conversation import FrozenResultDisplay
+
+    store = ResultStore(tmp_path, ".runtime")
+    conversation, saved = _saved_result(store, "evidence " * 40000)
+    result = conversation.items[1]
+    display = FrozenResultDisplay(text="[status=completed]\nevidence evidence", recovery=saved)
+    conversation = conversation.model_copy(update={"items": (
+        conversation.items[0], result.model_copy(update={"model_display": display}))})
+    # Without read access the reference-only display would drop text the
+    # model can never get back, so nothing changes.
+    unchanged = reference_frozen_result_displays(conversation, result_store=store, files=False,
+                                                 result_ids={result.id})
+    assert unchanged is conversation
+    changed = reference_frozen_result_displays(conversation, result_store=store, files=True,
+                                               result_ids={result.id})
+    assert changed.items[1].model_display.revision == 1
+
+
+NUL_TEXT = "binary\0data " * 4000
+
+
+def test_text_with_nul_never_overflows_to_a_file(tmp_path):
+    invocation = CapabilityInvocation(capability_id="tool.dump", kind="tool")
+    result = CapabilityResult(invocation_id=invocation.invocation_id, capability_id="tool.dump", kind="tool",
+                              status="completed", content=NUL_TEXT, stdout=NUL_TEXT)
+    normalized = normalize_capability_result(result, workspace_path=tmp_path, runtime_directory=".runtime",
+                                             policy=dagent.ResultStoragePolicy(max_inline_bytes=1024))
+    # read_file rejects text with NUL, so a file would be unreadable.
+    assert normalized.content == inline_content(NUL_TEXT)
+    assert normalized.result.stdout == NUL_TEXT
+    assert not (tmp_path / ".runtime").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["legacy", "cache_aware"])
+async def test_inline_results_with_nul_are_shown_completely(tmp_path, strategy):
+    store = ResultStore(tmp_path, ".runtime")
+    conversation = ConversationState(items=(
+        AssistantMessage(tool_calls=(ToolCallItem(id="call", name="tool_data"),)),
+        ToolResultMessage(call_id="call", name="tool_data", status="completed", content=inline_content(NUL_TEXT)),
+    ))
+    prepared = await ContextAssembler(context_window_tokens=131072, max_output_tokens=8192).prepare(
+        system_message={"content": "Inspect"}, conversation=conversation,
+        tools=[{"type": "function", "function": {"name": "tool_read_file"}}],
+        policy=ContextPolicy(compaction_strategy=strategy, max_tool_result_tokens=256),
+        result_store=store, enable_new_strategy=strategy != "legacy",
+    )
+    item = prepared.conversation.items[1]
+    assert item.content == inline_content(NUL_TEXT)
+    assert prepared.usage.truncated_tool_results == 0
+    assert prepared.usage.unrecoverable_tool_results == 0
+    assert not (tmp_path / ".runtime").exists()
+    if strategy == "cache_aware":
+        from dagent.harness_runtime.frozen_results import reference_frozen_result_displays
+
+        emergency = reference_frozen_result_displays(prepared.conversation, result_store=store, files=True,
+                                                     result_ids={item.id})
+        assert emergency is prepared.conversation
+        assert not (tmp_path / ".runtime").exists()
+
+
+def test_shell_output_with_nul_keeps_only_a_marked_tail(tmp_path):
+    output = _shell(tmp_path, _python("import sys; sys.stdout.write('x\\\\0y' * 100000); print('END')"), files=True)
+    assert output.content_reference is None
+    assert "END" in output.content
+    assert output.retention["source_completeness"] == "partial"
+    results = tmp_path / ".runtime" / "results"
+    assert not results.exists() or not any(results.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_failed_overflow_write_counts_as_truncated_and_unrecoverable(tmp_path, monkeypatch):
+    store = ResultStore(tmp_path, ".runtime")
+
+    def fail(self, reference, text):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ResultStore, "write_text", fail)
+    conversation = ConversationState(items=(
+        AssistantMessage(tool_calls=(ToolCallItem(id="call", name="tool_data"),)),
+        ToolResultMessage(call_id="call", name="tool_data", status="completed",
+                          content=inline_content("evidence " * 4000)),
+    ))
+    with pytest.warns(RuntimeWarning):
+        prepared = await ContextAssembler(context_window_tokens=131072, max_output_tokens=8192).prepare(
+            system_message={"content": "Inspect"}, conversation=conversation,
+            tools=[{"type": "function", "function": {"name": "tool_read_file"}}],
+            policy=ContextPolicy(compaction_strategy="cache_aware", max_tool_result_tokens=256),
+            result_store=store, enable_new_strategy=True,
+        )
+    display = prepared.conversation.items[1].model_display
+    assert display.recovery is None and "[RECOVERY_UNAVAILABLE: no saved original]" in display.text
+    assert prepared.usage.truncated_tool_results == 1
+    assert prepared.usage.unrecoverable_tool_results == 1

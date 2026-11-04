@@ -13,17 +13,21 @@ The current stable package version is `0.10.4`.
 
 This release changes how oversized tool output is stored. Overflow files are now
 written only for a model that can read them, are never checked, and are not
-carried into later run workspaces. Compaction archives keep their existing
-storage and verification. Review these behavior changes before upgrading:
+carried into later run workspaces. Compaction archives keep their digests, and
+the conversation backing store still verifies them when it saves and restores
+them at run boundaries; compaction itself now reads them without checking.
+Review these behavior changes before upgrading:
 
 - **Shortening requires `read_file`.** A result longer than its display limit is
   shortened, and its full text written to an overflow file, only when the model
-  reading it has the built-in `read_file` tool (for a DagAgent, `tool.read_file`
-  in its capabilities). Without it the result stays inline in full and no file is
-  written; a result that cannot fit the context window fails with the normal
-  context-window error. `ValidatorAgent` and other tool-less profiled agents keep
-  bounded displays but no longer write files. Static DAGs still store large
-  values by size.
+  reading it can open that file: it has the built-in `read_file` tool and, for a
+  ToolAgent, its read boundary admits the runtime `results/` and `history/`
+  folders (for a DagAgent, `tool.read_file` in its capabilities). Otherwise the
+  result stays inline in full and no file is written; a result that cannot fit
+  the context window fails with the normal context-window error. Text containing
+  NUL, which `read_file` cannot open, is never shortened or saved to a file.
+  `ValidatorAgent` and other tool-less profiled agents keep bounded displays but
+  no longer write files. Static DAGs still store large values by size.
 - **No digest and no checks.** `ContentReference.sha256` is now optional and is
   `None` for tool output, large values and artifacts. The SDK no longer verifies
   size, digest or file identity when reading them, no longer rejects a changed
@@ -38,19 +42,31 @@ storage and verification. Review these behavior changes before upgrading:
   files from earlier turns are no longer readable in later turns.
 - **Shell output.** Output within the shell's inline limits (100,000 bytes and
   2,000 lines) is returned whole and no longer written to a file. Larger output
-  is streamed to one overflow file only with `read_file`; without it only the
-  tail is kept and marked `[SOURCE_TRUNCATED]`.
+  is streamed to one overflow file only with `read_file`; without it, or when
+  the output contains NUL, only the tail is kept and marked `[SOURCE_TRUNCATED]`.
 - **Frozen displays (`chunked`, `cache_aware`).** `FrozenResultDisplay.recovery`
   is now optional and is `None` for a display that shows the complete result;
   no file is written for it. A result already saved when received reuses that
   file instead of a second snapshot. A missing recovery file no longer raises
-  `ResultBudgetExceeded`. The emergency transition reads no file and no longer
-  writes `previous_display`.
-- **Compaction.** Compaction no longer reads or verifies earlier archives or
-  tool-output files before writing a new archive, and no longer lists
-  tool-output references in `CompactionSourceV1.refs`. Legacy result manifests
-  archive results as they are instead of writing a file per result. Reference
-  fallback requires the `read_file` tool.
+  `ResultBudgetExceeded`. The emergency transition reads no file, no longer
+  writes `previous_display`, and is made only when the model can open files;
+  otherwise every display stays as it is.
+- **Compaction.** Compaction no longer reads or verifies tool-output files,
+  no longer walks earlier archives before writing a new one, and no longer
+  lists tool-output references in `CompactionSourceV1.refs`. It reads the
+  earlier compaction record it needs without checking its digest and without
+  applying the model's read boundary. Legacy result manifests archive results
+  as they are instead of writing a file per result. Reference fallback requires
+  the `read_file` tool and a read boundary that admits the runtime files.
+- **Missing archives degrade.** An earlier record that compaction cannot read
+  no longer fails it: the new record does not link it, records
+  `prior_coverage="unknown"` with unresolved history, and the summary carries
+  `[DEGRADED_CONTEXT]`. Failed records that cannot be read are dropped from
+  `compaction_state`. An earlier legacy result manifest that cannot be opened is
+  left out of the new one, which sets `result_archive_incomplete`. The run-end
+  save therefore names no missing archive. An archive deleted during a run that
+  compaction never reads still fails that save, and a missing archive still
+  fails the next Run clearly when it starts.
 - **Display markers.** `[RECOVERY_UNAVAILABLE: read_file unavailable, path denied
   or missing]` is no longer emitted. `[RECOVERY_UNAVAILABLE: no saved original]`
   remains for failed writes and tool-less validators.
@@ -63,7 +79,10 @@ storage and verification. Review these behavior changes before upgrading:
 - Accept `None` wherever host code reads `ContentReference.sha256` or
   `FrozenResultDisplay.recovery`.
 - Give agents that should see shortened results the `tool.read_file`
-  capability. Without it, configure context limits for full results.
+  capability and a read boundary that includes the runtime directory. Without
+  them results stay complete, so long tool output fills the context sooner:
+  history compaction runs more often and the cached prompt prefix changes more
+  often. Configure context limits for full results.
 - To keep overflow files readable in later turns, reuse one `workspace_path`
   per conversation, or keep host copies from `on_conversation_change`.
 - If you relied on SDK integrity errors to detect changed result files, enforce
@@ -72,8 +91,8 @@ storage and verification. Review these behavior changes before upgrading:
 No record migration is required. ConversationState V4, RunState V6 and
 RunCheckpoint V9 records load unchanged, including references that carry a
 digest, frozen displays from earlier versions and archives already in the
-backing store. Unchanged: compaction archive digests and verification, upload
-ingestion checks, runtime-path containment and external runtime directory
+backing store. Unchanged: compaction archive digests and their verification by
+the conversation backing store at run boundaries, upload ingestion checks, runtime-path containment and external runtime directory
 mapping, and all `ResultStoragePolicy` fields. Regression coverage includes the
 `read_file` rule for ToolAgent, DagAgent and validators, shell overflow, frozen
 displays, compaction, cross-workspace continuation and conversation changes.

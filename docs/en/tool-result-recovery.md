@@ -14,10 +14,16 @@ In the **Unreleased** SDK, a result is shortened only for a model that can open 
 - **With the built-in `read_file` tool** (for a DagAgent: `tool.read_file` in its
   capabilities), a result longer than its display limit is shortened. Its full
   text is written to an overflow file under the runtime directory's `results/`
-  directory, and the display tells the model where it is.
-- **Without `read_file`**, the result is never shortened and no file is written.
-  It stays inline in full. A result too large for the context window fails with
-  the normal context-window error.
+  directory, and the display tells the model where it is. For a ToolAgent, the
+  run's read boundary must also admit the runtime `results/` and `history/`
+  folders; only those paths are checked, no file is opened.
+- **Without `read_file`**, or when that boundary excludes the runtime folders,
+  the result is never shortened and no file is written. It stays inline in full.
+  A result too large for the context window fails with the normal context-window
+  error. The emergency reference-only transition is not made either, since it
+  would remove text the model cannot read back.
+- **Text containing NUL** is never shortened or saved to a file, because
+  `read_file` rejects such files. It stays inline in full.
 - `ValidatorAgent` and other profiled agents have no tools. Their context stays
   bounded by shortening results, but no file is written for them and a shortened
   inline result is marked `[RECOVERY_UNAVAILABLE: no saved original]`.
@@ -30,6 +36,10 @@ neither checks nor copies them. Large structured values, binary values and MCP
 artifacts are data rather than display text: they are still stored by size,
 without a digest, and a static DAG node reading an upstream value fails only if
 the file cannot be read.
+
+Keeping results complete has a cost: without `read_file`, long tool output fills
+the context sooner, so history compaction runs more often and the cached prompt
+prefix changes more often.
 
 ## Configure display and storage separately
 
@@ -119,8 +129,9 @@ within the shell's inline limits (100,000 bytes and 2,000 lines) is returned
 whole and no file is written. Beyond them, with `read_file`, the complete output
 is streamed to one overflow file under a shared per-call capture limit (64 MiB
 by default); above that limit the command continues, pipes keep draining, and
-the saved record is explicitly partial. Without `read_file`, only a bounded tail
-of each stream is kept and the result is marked `[SOURCE_TRUNCATED]`. Exit codes,
+the saved record is explicitly partial. Without `read_file`, or once the output
+contains NUL, only a bounded tail of each stream is kept, no file is left, and
+the result is marked `[SOURCE_TRUNCATED]`. Exit codes,
 timeouts and cancellations are preserved. This capture limit is not a
 workspace-wide disk quota.
 
@@ -147,6 +158,8 @@ resource is downloaded automatically.
 of earlier tool results and calls. Runtime code retains this reference separately
 from model-generated summary prose. `result_archive_incomplete` explicitly marks
 an archival failure. Later compactions retain access to earlier index entries.
+If an earlier index can no longer be opened, the new index leaves its entries
+out and sets `result_archive_incomplete` instead of failing compaction.
 Compaction archives (records, sources and this index) are the part of history
 the SDK keeps across run workspaces. They hold the compacted messages and the
 results as they were, so a result that had an overflow file is archived with

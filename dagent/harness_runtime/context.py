@@ -13,6 +13,7 @@ from dagent.harness_runtime.result_storage import ResultStore
 from dagent.harness_runtime.result_projection import (
     ResultBudgetExceeded,
     ResultOverflow,
+    file_readable_text,
     project_result,
     project_results,
     read_file_available,
@@ -38,6 +39,7 @@ from dagent.schemas.context import (
 )
 from dagent.schemas.conversation import (
     AssistantMessage,
+    ContentReference,
     ContextSummary,
     ConversationItem,
     ConversationState,
@@ -128,6 +130,10 @@ def _context_results(items: Sequence[ConversationItem]) -> list[ToolResultMessag
             results.extend(result.model_copy(update={"id": f"{item.id}/{result.id}"})
                            for result in item.result_observations)
     return results
+
+
+def _file_readable_result(item: ToolResultMessage | ResultObservation) -> bool:
+    return isinstance(item.content, ContentReference) or file_readable_text(item.content.text)
 
 
 def _store_results(
@@ -265,14 +271,18 @@ class ContextAssembler:
             requested=max_output_tokens,
         )
 
-        overflow = result_overflow or ("file" if read_file_available(tools) else "full")
+        files = read_file_available(tools) and (result_store is None or result_store.files_readable())
+        overflow = result_overflow or ("file" if files else "full")
         # Write overflow files only for results actually being shortened, and
         # only when the model can read them. Persist the updated typed items
-        # before the next projection so retries reuse the reference.
+        # before the next projection so retries reuse the reference. Text with
+        # NUL cannot be read back from a file, so it is never shortened.
         if result_store is not None and overflow == "file":
             results = _context_results(working.items)
             to_save: set[str] = set()
             for item in results:
+                if not _file_readable_result(item):
+                    continue
                 try:
                     projected = project_result(
                         item, policy.max_tool_result_tokens, self.token_counter,
@@ -283,7 +293,8 @@ class ContextAssembler:
                 except ResultBudgetExceeded:
                     to_save.add(item.id)
             working = _store_results(working, to_save, result_store)
-        readable_result_ids = (frozenset(item.id for item in _context_results(working.items))
+        readable_result_ids = (frozenset(item.id for item in _context_results(working.items)
+                                         if overflow == "truncate" or _file_readable_result(item))
                                if overflow != "full" else frozenset())
         def read_available(item: ToolResultMessage | ResultObservation) -> bool:
             return item.id in readable_result_ids
@@ -562,9 +573,13 @@ class ContextAssembler:
         archive_incomplete = conversation.summary.result_archive_incomplete if conversation.summary else False
         if result_store:
             try:
-                manifest = result_store.archive(conversation.summary, compactable)
+                manifest, earlier_lost = result_store.archive(conversation.summary, compactable)
             except OSError:
                 archive_incomplete = True
+            else:
+                # An earlier manifest that could not be opened leaves its
+                # results out of the new one instead of failing compaction.
+                archive_incomplete = archive_incomplete or earlier_lost
         elif _context_results(compactable):
             archive_incomplete = True
         summary_limit, _ = self.compaction_limits(policy.summary_max_tokens)

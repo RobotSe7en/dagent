@@ -38,6 +38,12 @@ def read_file_available(tools: Iterable[dict[str, Any]]) -> bool:
     return any(tool.get("function", tool).get("name") == READ_FILE_TOOL_NAME for tool in tools)
 
 
+def file_readable_text(text: str) -> bool:
+    """Whether read_file could open ``text`` from a file; it rejects text with NUL."""
+
+    return "\0" not in text
+
+
 class ResultBudgetExceeded(ValueError):
     """Mandatory result information cannot fit the requested budget."""
 
@@ -109,13 +115,20 @@ def project_result(
         metadata = display.text[:body_start].rstrip("\n")
         total_tokens = counter.count_text(display.text)
         metadata_tokens = counter.count_text(metadata)
-        shortened = display.revision == 1 or display.recovery is not None
+        # A saved result shows only its preview. An inline one is shortened
+        # when its spans miss part of the text, as when its file could not be
+        # written. Either is recoverable only through a file the model can open.
+        shown_text = None if isinstance(item.content, ContentReference) else item.content.text
+        if shown_text is not None and item.retention and item.retention.window_length is not None:
+            shown_text = shown_text[: item.retention.window_length]
+        shown_chars = sum(end - start for start, end in display.displayed_spans)
+        shortened = display.revision == 1 or shown_text is None or shown_chars < len(shown_text)
         return ResultProjection(
             display.text,
             shortened,
             metadata_tokens,
             max(0, total_tokens - metadata_tokens),
-            shortened and not read_available,
+            shortened and (display.recovery is None or not read_available),
             display.displayed_spans,
         )
     text = stored_content_text(item.content)
