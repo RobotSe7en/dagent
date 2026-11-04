@@ -544,3 +544,45 @@ def test_display_limit_bounds_results_for_a_small_window_without_read_file(tmp_p
     assert "[TRUNCATED]" in shown and "[RECOVERY_UNAVAILABLE: no saved original]" in shown
     assert result.state.context_usage[-1].compacted_items == 0
     assert not (tmp_path / ".runtime").exists()
+
+
+@pytest.mark.asyncio
+async def test_value_file_does_not_make_shortened_text_recoverable(tmp_path):
+    store = ResultStore(tmp_path, ".runtime")
+    value = store.save_text("value", '{"rows": []}', field="value")
+    conversation = ConversationState(items=(
+        AssistantMessage(tool_calls=(ToolCallItem(id="call", name="tool_data"),)),
+        ToolResultMessage(call_id="call", name="tool_data", status="completed",
+                          content=inline_content(NUL_TEXT), value_reference=value),
+    ))
+    prepared = await ContextAssembler().prepare(
+        system_message={"content": "Inspect"}, conversation=conversation,
+        tools=[{"type": "function", "function": {"name": "tool_read_file"}}],
+        policy=ContextPolicy(max_tool_result_tokens=256), result_store=store,
+    )
+    shown = prepared.messages[-1]["content"]
+    # The value file is listed, but it does not hold the omitted text.
+    assert f"path={value.path}" in shown
+    assert "[RECOVERY_UNAVAILABLE: no saved original]" in shown
+    assert prepared.usage.unrecoverable_tool_results == 1
+
+
+@pytest.mark.asyncio
+async def test_planner_without_read_file_sees_saved_observations_bounded_and_unreadable(tmp_path):
+    from dagent.harness_runtime.context import HeuristicTokenCounter
+    from dagent.schemas.conversation import ResultObservation, UserMessage
+
+    store = ResultStore(tmp_path, ".runtime")
+    saved = store.save_text("node", "node evidence " * 40000)
+    conversation = ConversationState(items=(UserMessage(content="Plan", result_observations=(
+        ResultObservation(id="node", name="DAG output", status="completed", content=saved),
+    )),))
+    # A DagAgent planner without tool.read_file uses the "truncate" overflow.
+    prepared = await ContextAssembler().prepare(
+        system_message={"content": "Plan"}, conversation=conversation, result_store=store,
+        policy=ContextPolicy(max_tool_result_tokens=128), result_overflow="truncate",
+    )
+    shown = prepared.messages[-1]["content"]
+    assert HeuristicTokenCounter().count_text(saved.preview) > 1000
+    assert "[TRUNCATED]" in shown and "[RECOVERY_UNAVAILABLE: read_file unavailable]" in shown
+    assert prepared.usage.unrecoverable_tool_results == 1

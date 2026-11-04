@@ -69,8 +69,9 @@ Context-window pressure uses the normal history-summary and reasoning-omission
 steps. It does not shrink result displays again. If required input still exceeds
 the hard input budget, generation fails explicitly. Configure the per-result
 limit to fit the model window, accounting for parallel results, system
-instructions, tool schemas, user input and output capacity. A shortened inline
-result gets its overflow file when it is first shortened. A failed write keeps
+instructions, tool schemas, user input and output capacity. When the model can
+open files, a shortened inline result gets its overflow file when it is first
+shortened (text containing NUL never does). A failed write keeps
 its storage warning and is not retried by later projections.
 
 The inline threshold is independent: with `read_file`, a result above
@@ -82,7 +83,8 @@ rehydration behavior.
 ## Read the original
 
 Enable `tool.read_file` explicitly when the agent should recover saved text;
-it is also what allows results to be shortened at all. The SDK does not
+without it results are still shortened, but no overflow file is written. The
+SDK does not
 automatically add capabilities or expand path permissions: reading an overflow
 file still goes through `read_file`'s normal boundary checks. Result references
 are relative to the run workspace, under the configured runtime directory's

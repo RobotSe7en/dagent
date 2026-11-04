@@ -260,8 +260,8 @@ async def test_fixed_shortening_preserves_storage_warning(tmp_path, monkeypatch,
     assert str(prepared.messages).count("storage warning:") == 1
     assert store.ensure(result) == result
     assert attempts == ["references" if reference_count else "content"]
-    # Listed references remain readable with read_file; only a bare body is unrecoverable.
-    assert prepared.usage.unrecoverable_tool_results == (0 if reference_count else 1)
+    # Listed references do not hold the undisplayed body, so it is unrecoverable.
+    assert prepared.usage.unrecoverable_tool_results == 1
     assert prepared.usage.estimated_input_tokens <= prepared.usage.compaction_trigger_tokens
 
 

@@ -213,7 +213,11 @@ def project_result(
 
     def render(chars: int) -> tuple[str, str, str, bool]:
         truncated = chars < len(text) or externalized
-        no_original = (truncated or source_partial) and not refs and not cursor_text
+        # Other references (a value or artifact file) do not hold the
+        # undisplayed text; only the saved content or its recovery file does.
+        text_saved = externalized or recovery_reference is not None
+        no_original = ((truncated and not text_saved and not cursor_text)
+                       or (source_partial and not refs and not cursor_text))
         # A saved file the model cannot open does not make the result recoverable.
         unreadable = (truncated or source_partial) and bool(refs) and not can_open
         unavailable = no_original or unreadable
