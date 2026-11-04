@@ -361,7 +361,7 @@ def test_required_value_storage_error_keeps_successful_execution(tmp_path, monke
     assert raised.value.result.value == result.value
 
 
-def test_results_stay_complete_when_the_read_boundary_excludes_runtime_files(tmp_path):
+def test_results_write_no_file_when_the_read_boundary_excludes_runtime_files(tmp_path):
     from dagent.capabilities.tools.boundary import BoundaryViolation, enforce_path_allowed
     from dagent.schemas.common import Boundary
 
@@ -396,13 +396,14 @@ def test_results_stay_complete_when_the_read_boundary_excludes_runtime_files(tmp
             )
         )
 
-    # The model could not open an overflow file, so nothing is shortened or saved.
+    # The model could not open an overflow file, so the display is shortened
+    # without one and says so.
     excluded = prepare(Boundary(allowed_paths=["allowed"]))
     assert excluded.conversation == conversation
-    assert "[TRUNCATED]" not in excluded.messages[-1]["content"]
-    assert "RECOVERY_UNAVAILABLE" not in excluded.messages[-1]["content"]
-    assert excluded.usage.truncated_tool_results == 0
-    assert excluded.usage.unrecoverable_tool_results == 0
+    assert "[TRUNCATED]" in excluded.messages[-1]["content"]
+    assert "[RECOVERY_UNAVAILABLE: no saved original]" in excluded.messages[-1]["content"]
+    assert excluded.usage.truncated_tool_results == 1
+    assert excluded.usage.unrecoverable_tool_results == 1
     assert not (tmp_path / ".runtime").exists()
     # Saving never widens the boundary: read_file still checks the path itself.
     admitted = prepare(Boundary(allowed_paths=[".runtime"]))

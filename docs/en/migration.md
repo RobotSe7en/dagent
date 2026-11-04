@@ -18,16 +18,16 @@ the conversation backing store still verifies them when it saves and restores
 them at run boundaries; compaction itself now reads them without checking.
 Review these behavior changes before upgrading:
 
-- **Shortening requires `read_file`.** A result longer than its display limit is
-  shortened, and its full text written to an overflow file, only when the model
-  reading it can open that file: it has the built-in `read_file` tool and, for a
-  ToolAgent, its read boundary admits the runtime `results/` and `history/`
-  folders (for a DagAgent, `tool.read_file` in its capabilities). Otherwise the
-  result stays inline in full and no file is written; a result that cannot fit
-  the context window fails with the normal context-window error. Text containing
-  NUL, which `read_file` cannot open, is never shortened or saved to a file.
-  `ValidatorAgent` and other tool-less profiled agents keep bounded displays but
-  no longer write files. Static DAGs still store large values by size.
+- **Overflow files require `read_file`.** A result longer than its display
+  limit is still shortened. Its full text is written to an overflow file only
+  when the model reading it can open that file: it has the built-in `read_file`
+  tool and, for a ToolAgent, its read boundary admits the runtime `results/` and
+  `history/` folders (for a DagAgent, `tool.read_file` in its capabilities).
+  Otherwise no file is written and the shortened display is marked
+  `[RECOVERY_UNAVAILABLE: no saved original]`. For a model with `read_file`, text
+  containing NUL, which `read_file` cannot open, is never shortened or saved to
+  a file. `ValidatorAgent` and other tool-less profiled agents also shorten
+  without writing files. Static DAGs still store large values by size.
 - **No digest and no checks.** `ContentReference.sha256` is now optional and is
   `None` for tool output, large values and artifacts. The SDK no longer verifies
   size, digest or file identity when reading them, no longer rejects a changed
@@ -45,8 +45,9 @@ Review these behavior changes before upgrading:
   is streamed to one overflow file only with `read_file`; without it, or when
   the output contains NUL, only the tail is kept and marked `[SOURCE_TRUNCATED]`.
 - **Frozen displays (`chunked`, `cache_aware`).** `FrozenResultDisplay.recovery`
-  is now optional and is `None` for a display that shows the complete result;
-  no file is written for it. A result already saved when received reuses that
+  is now optional and is `None` for a display that shows the complete result,
+  or that was shortened for a model that cannot open files; no file is written
+  for it. A result already saved when received reuses that
   file instead of a second snapshot. A missing recovery file no longer raises
   `ResultBudgetExceeded`. The emergency transition reads no file, no longer
   writes `previous_display`, and is made only when the model can open files;
@@ -68,8 +69,10 @@ Review these behavior changes before upgrading:
   compaction never reads still fails that save, and a missing archive still
   fails the next Run clearly when it starts.
 - **Display markers.** `[RECOVERY_UNAVAILABLE: read_file unavailable, path denied
-  or missing]` is no longer emitted. `[RECOVERY_UNAVAILABLE: no saved original]`
-  remains for failed writes and tool-less validators.
+  or missing]` is no longer emitted. A shortened result with no file is marked
+  `[RECOVERY_UNAVAILABLE: no saved original]` (a model that cannot open files, a
+  failed write, or a tool-less validator); a result saved earlier that the model
+  cannot open is marked `[RECOVERY_UNAVAILABLE: read_file unavailable]`.
 - **Conversation changes.** Tool-output resources carry no digest and are
   optional to save; they are no longer notified for later workspaces.
   Compaction archives are notified as before.
@@ -78,11 +81,9 @@ Review these behavior changes before upgrading:
 
 - Accept `None` wherever host code reads `ContentReference.sha256` or
   `FrozenResultDisplay.recovery`.
-- Give agents that should see shortened results the `tool.read_file`
+- Give agents that should recover shortened results the `tool.read_file`
   capability and a read boundary that includes the runtime directory. Without
-  them results stay complete, so long tool output fills the context sooner:
-  history compaction runs more often and the cached prompt prefix changes more
-  often. Configure context limits for full results.
+  them the displays stay bounded, but the omitted text is not saved.
 - To keep overflow files readable in later turns, reuse one `workspace_path`
   per conversation, or keep host copies from `on_conversation_change`.
 - If you relied on SDK integrity errors to detect changed result files, enforce

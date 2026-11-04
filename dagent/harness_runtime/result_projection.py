@@ -26,10 +26,11 @@ READ_FILE_TOOL_NAME = "tool_read_file"
 READ_FILE_CAPABILITY_ID = "tool.read_file"
 
 # How a model context handles results longer than their display budget:
-# "file": shorten them and point to a file holding the rest (read_file exists);
-# "full": never shorten them (the model cannot read files);
-# "truncate": shorten them without writing files (internal tool-less calls).
-ResultOverflow = Literal["file", "full", "truncate"]
+# "file": shorten them and point to a file holding the rest (the model can
+# open it with read_file);
+# "truncate": shorten them without writing files (the model cannot open
+# files, or an internal tool-less call).
+ResultOverflow = Literal["file", "truncate"]
 
 
 def read_file_available(tools: Iterable[dict[str, Any]]) -> bool:
@@ -98,13 +99,20 @@ def project_result(
     read_available: bool,
     max_body_chars: int | None = None,
     recovery_reference: ContentReference | None = None,
+    can_open_files: bool | None = None,
 ) -> ResultProjection:
     """Render one result within ``budget`` tokens.
 
-    With ``read_available`` false the model cannot open saved files, so the
-    result is never shortened and the budget does not apply. A result that has
-    an overflow file counts as shortened; nothing about the file is checked.
+    With ``read_available`` true the result may be shortened to ``budget``;
+    without a saved file it is then marked as having no saved original. With
+    it false the result is rendered completely and the budget does not apply.
+    ``can_open_files`` (default: ``read_available``) is whether the model can
+    open saved files; a shortened result whose files it cannot open is marked
+    unrecoverable. A result that has an overflow file counts as shortened;
+    nothing about the file is checked.
     """
+
+    can_open = read_available if can_open_files is None else can_open_files
 
     if item.model_display is not None:
         display = item.model_display
@@ -128,7 +136,7 @@ def project_result(
             shortened,
             metadata_tokens,
             max(0, total_tokens - metadata_tokens),
-            shortened and (display.recovery is None or not read_available),
+            shortened and (display.recovery is None or not can_open),
             display.displayed_spans,
         )
     text = stored_content_text(item.content)
@@ -207,7 +215,7 @@ def project_result(
         truncated = chars < len(text) or externalized
         no_original = (truncated or source_partial) and not refs and not cursor_text
         # A saved file the model cannot open does not make the result recoverable.
-        unreadable = (truncated or source_partial) and bool(refs) and not read_available
+        unreadable = (truncated or source_partial) and bool(refs) and not can_open
         unavailable = no_original or unreadable
         metadata = [status]
         if isinstance(item, ToolResultMessage) and item.reviewer_feedback:
@@ -310,6 +318,7 @@ def project_results(
     counter: TextCounter,
     *,
     read_available: bool | Callable[[ResultItem], bool],
+    can_open_files: bool | None = None,
 ) -> dict[str, ResultProjection]:
     """Render independently without redistributing a shared result budget."""
 
@@ -321,5 +330,6 @@ def project_results(
             policy.max_tool_result_tokens,
             counter,
             read_available=readable,
+            can_open_files=can_open_files,
         )
     return projections

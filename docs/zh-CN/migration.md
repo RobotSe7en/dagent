@@ -14,12 +14,12 @@
 之后的 run workspace。压缩归档仍带摘要，会话 backing store 在 run 边界保存和恢复归档时
 仍会校验；压缩过程中读取归档则不再校验。升级前请确认以下行为变化：
 
-- **截断需要 `read_file`。** 只有读取结果的模型能打开溢出文件时，超过展示上限的结果才会
-  被截断，完整文本写入溢出文件：模型具备内置 `read_file` 工具，且 ToolAgent 的读取边界
-  允许 runtime 的 `results/` 和 `history/` 目录（DagAgent 为能力列表包含 `tool.read_file`）。
-  否则结果完整内联、不写文件；放不进上下文窗口时按常规上下文超限报错。含 NUL 的文本
-  `read_file` 打不开，因此从不截断、也不写文件。`ValidatorAgent` 等没有工具的 profiled
-  agent 仍保持展示有界，但不再写文件。静态 DAG 仍按大小保存大值。
+- **溢出文件需要 `read_file`。** 超过展示上限的结果仍会截断。只有读取结果的模型能打开
+  溢出文件时，完整文本才写入溢出文件：模型具备内置 `read_file` 工具，且 ToolAgent 的读取
+  边界允许 runtime 的 `results/` 和 `history/` 目录（DagAgent 为能力列表包含
+  `tool.read_file`）。否则不写文件，被截断的展示标 `[RECOVERY_UNAVAILABLE: no saved original]`。
+  对具备 `read_file` 的模型，含 NUL 的文本 `read_file` 打不开，因此从不截断、也不写文件。
+  `ValidatorAgent` 等没有工具的 profiled agent 同样截断但不写文件。静态 DAG 仍按大小保存大值。
 - **不带摘要，不做检查。** `ContentReference.sha256` 改为可选，工具输出、大值和产物均为
   `None`。读取时不再校验大小、摘要或文件身份，不再拒绝被改过的文件，也不再回读刚写的
   文件。文件被改后读到改后的内容；被删除时由读取工具报告不存在。静态 DAG 下游读取上游值时
@@ -31,7 +31,7 @@
   写文件。更大的输出只在具备 `read_file` 时流式写入一个溢出文件；否则，或输出中含 NUL
   时，只保留尾部，并标 `[SOURCE_TRUNCATED]`。
 - **冻结展示（`chunked`、`cache_aware`）。** `FrozenResultDisplay.recovery` 改为可选，完整
-  展示的结果为 `None`，不写文件。接收时已保存的结果直接复用该文件，不再写第二份快照。
+  展示的结果，以及为无法打开文件的模型截断的结果，均为 `None`，不写文件。接收时已保存的结果直接复用该文件，不再写第二份快照。
   恢复文件缺失不再抛出 `ResultBudgetExceeded`。紧急切换不读取文件，不再写
   `previous_display`，并且只在模型能打开文件时进行；否则所有展示保持不变。
 - **压缩。** 不再读取或校验工具输出文件，写入新归档前不再遍历更早的归档，
@@ -44,16 +44,17 @@
   `result_archive_incomplete`。因此 run 结束保存时不会引用缺失的归档。run 中途被删、
   且压缩从未读取的归档，仍会让这次保存失败；下一次 Run 开始时归档缺失仍会明确报错。
 - **展示标记。** 不再输出 `[RECOVERY_UNAVAILABLE: read_file unavailable, path denied or
-  missing]`；`[RECOVERY_UNAVAILABLE: no saved original]` 保留，用于写入失败和没有工具的验证器。
+  missing]`。没有文件的截断结果标 `[RECOVERY_UNAVAILABLE: no saved original]`（模型无法打开
+  文件、写入失败或没有工具的验证器）；之前已保存、但模型打不开的结果标
+  `[RECOVERY_UNAVAILABLE: read_file unavailable]`。
 - **会话变化。** 工具输出资源不带摘要，宿主可以不存；不再为之后的 workspace 通知。
   压缩归档的通知不变。
 
 ### 迁移步骤
 
 - 读取 `ContentReference.sha256` 或 `FrozenResultDisplay.recovery` 的宿主代码需接受 `None`。
-- 希望模型看到截断结果的 agent，加上 `tool.read_file` 能力，并让读取边界包含 runtime 目录。
-  否则结果保持完整，长工具输出会更快占满上下文：历史压缩更频繁，缓存的提示前缀也更常
-  变化。请按完整结果配置上下文上限。
+- 希望模型能找回截断内容的 agent，加上 `tool.read_file` 能力，并让读取边界包含 runtime 目录。
+  否则展示仍然有界，但省略的内容不会保存。
 - 希望之后几轮仍能读取溢出文件时，每个会话复用同一个 `workspace_path`，或通过
   `on_conversation_change` 由宿主自行保存副本。
 - 若此前依赖 SDK 的完整性报错来发现结果文件被改，请改由宿主实现。

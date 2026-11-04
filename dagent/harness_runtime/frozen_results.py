@@ -1,9 +1,11 @@
 """Choose model result displays once; undisplayed text goes to a file.
 
-A display that shows a result completely has no file. A shortened display
-points to the file that holds the full text: an overflow file written when the
-result was received, or one written here when the display shortens an inline
-result. These files are written best-effort and never opened again here.
+A display that shows a result completely has no file. When the model can open
+files, a shortened display points to the file that holds the full text: an
+overflow file written when the result was received, or one written here when
+the display shortens an inline result. Otherwise the display is shortened
+without a file and says so. These files are written best-effort and never
+opened again here.
 """
 
 from __future__ import annotations
@@ -84,9 +86,10 @@ def freeze_result_displays(
 ) -> ConversationState:
     """Water-fill a new result batch; existing displays are never redistributed.
 
-    ``files`` is whether the model can read saved files. Without it, or when
-    its text contains NUL, an inline result is never shortened. ``total_budget_tokens`` belongs only to displays
-    without a receipt. The caller has already reserved fixed input, existing
+    ``files`` is whether the model can read saved files. Without it an inline
+    result is shortened without a file; with it, text containing NUL is never
+    shortened. ``total_budget_tokens`` belongs only to displays without a
+    receipt. The caller has already reserved fixed input, existing
     displays and model output.
     """
 
@@ -101,17 +104,21 @@ def freeze_result_displays(
         if isinstance(item.content, ContentReference):
             # Already saved when received: show its stored preview. Whether
             # the model can open the file only changes the recovery notice.
-            shown, shorten = item, files
+            shown, shorten = item, True
         elif files and file_readable_text(item.content.text):
-            # Text with NUL stays complete: read_file could not open its file.
             planned = result_store.text_reference(identity, item.content.text)
             shown, shorten = _display_item(item, item.content.text, planned), True
             complete_tokens = counter.count_text(project_result(item, 2**60, counter, read_available=False).text)
-        else:
+        elif files:
+            # Text with NUL stays complete: read_file could not open its file.
             shown, shorten = item, False
+        else:
+            # The model cannot open files: shorten in memory, write nothing.
+            shown, shorten = item, True
+            complete_tokens = counter.count_text(project_result(item, 2**60, counter, read_available=False).text)
         minimum = project_result(
             shown, 2**60, counter, read_available=shorten,
-            max_body_chars=0 if shorten else None, recovery_reference=planned,
+            max_body_chars=0 if shorten else None, recovery_reference=planned, can_open_files=files,
         )
         floor = counter.count_text(minimum.text)
         if complete_tokens is not None and complete_tokens <= floor + policy.max_tool_result_tokens:
@@ -119,7 +126,7 @@ def freeze_result_displays(
         else:
             wanted = project_result(
                 shown, floor + policy.max_tool_result_tokens, counter,
-                read_available=shorten, recovery_reference=planned,
+                read_available=shorten, recovery_reference=planned, can_open_files=files,
             ) if shorten else minimum
             wanted_tokens = counter.count_text(wanted.text)
         # A complete tiny result can cost less than a reference-only display,
@@ -155,6 +162,7 @@ def freeze_result_displays(
             continue
         projection = project_result(
             shown, allocation, counter, read_available=shorten, recovery_reference=planned,
+            can_open_files=files,
         )
         if isinstance(item.content, ContentReference):
             # The preview is an excerpt with its own coordinates, so no
@@ -176,7 +184,8 @@ def freeze_result_displays(
             )
             updates[identity] = item.model_copy(update={"content": saved, "model_display": display})
             continue
-        # Without read_file the result is shown completely and has no file.
+        # No file: shown completely (NUL text), or shortened and marked as
+        # having no saved original.
         display = FrozenResultDisplay(text=projection.text, displayed_spans=projection.displayed_spans)
         updates[identity] = item.model_copy(update={"model_display": display})
     return _replace_results(conversation, updates)

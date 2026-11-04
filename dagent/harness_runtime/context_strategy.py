@@ -239,7 +239,7 @@ async def _prepare_context(
             policy=policy, active_run_id=active_run_id, omitted_reasoning_ids=omitted,
             response_format=response_format, max_output_tokens=requested_output,
             reasoning_effort=reasoning_effort, purpose=purpose,
-            readable_result_ids=readable, strict_context_budget=True,
+            readable_result_ids=readable, strict_context_budget=True, can_open_files=files,
         )
         prepared = None
         count = None

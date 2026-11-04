@@ -569,7 +569,7 @@ class DAGAgentLoop:
             active_run_id=resolved_task_id,
             response_format=response_format,
             result_overflow=("file" if self._reads_result_files(capability_scope.capability_ids)
-                             else "full"),
+                             else "truncate"),
             compact=lambda summary, items, limit: self._compact_history(
                 summary,
                 items,

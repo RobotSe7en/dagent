@@ -52,8 +52,8 @@ DagAgent message run 中，内置 file 和 shell tool 的相对路径从当前 r
 - `<run-workspace>/<runtime_directory>/history` 保存压缩归档。
 
 这些目录按需创建。只构造 runner 或执行纯文本轮次不会创建它们。
-只有读取结果的模型具备内置 `read_file` 工具时，展示内容才会溢出写入文件；否则结果
-完整内联，不截断。Shell 输出只在超过 shell 自身的内联上限（100,000 字节或 2,000 行）
+只有读取结果的模型具备内置 `read_file` 工具时，展示内容才会溢出写入文件；否则展示
+仍会截断，但不写文件。Shell 输出只在超过 shell 自身的内联上限（100,000 字节或 2,000 行）
 时写入文件。溢出文件尽力写入，不带摘要，SDK 不校验、不回读，也不复制到之后的 run
 workspace，详见[工具结果恢复](tool-result-recovery.md)。仅上传附件不会创建
 conversation backing store 或 history 目录。

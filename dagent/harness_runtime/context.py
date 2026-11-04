@@ -245,8 +245,10 @@ class ContextAssembler:
         """Assemble one model request.
 
         ``result_overflow`` says how tool results beyond their display budget
-        are handled; when omitted it follows whether ``tools`` include
-        read_file. The new strategies always follow ``tools``.
+        are handled; when omitted it is ``"file"`` if the model can open saved
+        files (``tools`` include read_file and the store's read boundary admits
+        them) and ``"truncate"`` otherwise. The new strategies always follow
+        ``tools``.
         """
 
         if enable_new_strategy and policy.compaction_strategy != "legacy":
@@ -272,7 +274,7 @@ class ContextAssembler:
         )
 
         files = read_file_available(tools) and (result_store is None or result_store.files_readable())
-        overflow = result_overflow or ("file" if files else "full")
+        overflow = result_overflow or ("file" if files else "truncate")
         # Write overflow files only for results actually being shortened, and
         # only when the model can read them. Persist the updated typed items
         # before the next projection so retries reuse the reference. Text with
@@ -293,15 +295,19 @@ class ContextAssembler:
                 except ResultBudgetExceeded:
                     to_save.add(item.id)
             working = _store_results(working, to_save, result_store)
-        readable_result_ids = (frozenset(item.id for item in _context_results(working.items)
-                                         if overflow == "truncate" or _file_readable_result(item))
-                               if overflow != "full" else frozenset())
+        # Results are shortened to their display budget. With files, text
+        # with NUL is not, since read_file could not open its file; without
+        # them saved files are marked as ones the model cannot open.
+        can_open_files = overflow == "file"
+        readable_result_ids = frozenset(item.id for item in _context_results(working.items)
+                                        if not can_open_files or _file_readable_result(item))
         def read_available(item: ToolResultMessage | ResultObservation) -> bool:
             return item.id in readable_result_ids
         while True:
             try:
                 project_results(_context_results(working.items),
-                                policy, self.token_counter, read_available=read_available)
+                                policy, self.token_counter, read_available=read_available,
+                                can_open_files=can_open_files)
                 break
             except ResultBudgetExceeded as exc:
                 groups = _atomic_groups(working.items, start=0, end=len(working.items))
@@ -331,6 +337,7 @@ class ContextAssembler:
                 reasoning_effort=reasoning_effort,
                 purpose=purpose,
                 readable_result_ids=readable_result_ids,
+                can_open_files=can_open_files,
             )
             estimate, exact_count = await self._safe_estimate(request, policy, stream=stream)
             return request, projection, estimate, exact_count
@@ -644,6 +651,7 @@ class ContextAssembler:
         purpose: Literal["generation", "compaction"],
         readable_result_ids: frozenset[str] = frozenset(),
         strict_context_budget: bool = False,
+        can_open_files: bool | None = None,
     ) -> tuple[ModelRequest, "_ProjectionUsage"]:
         items: list[ModelUserInput | ModelAssistantTurn | ModelToolResultInput] = []
         summary_tokens = 0
@@ -670,6 +678,7 @@ class ContextAssembler:
             _context_results(conversation.items),
             policy, self.token_counter,
             read_available=lambda item: item.id in readable_result_ids,
+            can_open_files=can_open_files,
         )
 
         for item in conversation.items:

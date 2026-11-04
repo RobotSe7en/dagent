@@ -754,12 +754,13 @@ Human review feedback is retained independently of an externalized result body.
 It is required display metadata, including after emergency shortening, rather
 than part of the body's truncatable allowance or its character offsets.
 
-Shortening requires the agent's built-in `read_file` tool; tools are not
+Overflow files require the agent's built-in `read_file` tool; tools are not
 silently added. A result shortened for such an agent has its full received text
 in a best-effort overflow file (see
 [tool result recovery](tool-result-recovery.md)). A display that shows the
-complete result has no file. Without `read_file`, result bodies stay intact and
-budget pressure can then require an explicit failure. Overflow files are not
+complete result has no file. Without `read_file`, results are still shortened
+to their display limit, but no file is written and the display is marked
+`[RECOVERY_UNAVAILABLE: no saved original]`. Overflow files are not
 checked; recovery reads what the file holds at that time, and upstream source
 truncation cannot be undone. The active user instructions and
 complete latest call/result relationships are protected. Oversized system

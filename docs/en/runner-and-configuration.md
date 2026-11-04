@@ -63,8 +63,8 @@ chosen relative directory:
 
 These directories are lazy. Constructing a runner or running text-only turns
 does not create them. Display output overflows to a file only when the model
-that reads it has the built-in `read_file` tool; otherwise the result stays
-inline and is not shortened. Shell output is written to a file only when it
+that reads it has the built-in `read_file` tool; otherwise the display is still
+shortened, but no file is written. Shell output is written to a file only when it
 exceeds the shell's own inline limits (100,000 bytes or 2,000 lines). Overflow
 files are written best-effort, carry no digest, are never checked or reread by
 the SDK, and are not copied to later run workspaces. See

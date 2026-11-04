@@ -120,18 +120,23 @@ def test_metadata_floor_can_exceed_per_result_body_cap(tmp_path):
     assert HeuristicTokenCounter().count_text(at_floor.items[1].model_display.text) == minimum
 
 
-def test_no_shortening_or_file_without_read_file(tmp_path):
+def test_shortening_without_read_file_writes_no_file(tmp_path):
     store = ResultStore(tmp_path, ".runtime")
     original = "important data " * 1000
     frozen = _freeze(_conversation(original), store, files=False, cap=64)
     result = frozen.items[1]
-    assert original in result.model_display.text
-    assert result.model_display.recovery is None
-    assert result.model_display.displayed_spans == ((0, len(original)),)
+    display = result.model_display
+    assert "[TRUNCATED]" in display.text and "[RECOVERY_UNAVAILABLE: no saved original]" in display.text
+    assert original not in display.text and "path=" not in display.text
+    assert display.recovery is None
+    assert sum(end - start for start, end in display.displayed_spans) < len(original)
     assert result.content == InlineContent(text=original)
     assert not (tmp_path / ".runtime").exists()
-    with pytest.raises(ResultBudgetExceeded):
-        _freeze(_conversation(original), store, budget=512, files=False, cap=64)
+    projection = project_result(result, 64, HeuristicTokenCounter(), read_available=False)
+    assert projection.truncated and projection.unrecoverable
+    # A small result is still shown completely and marked as nothing.
+    small = _freeze(_conversation("short"), store, files=False, cap=64).items[1].model_display
+    assert "[TRUNCATED]" not in small.text and "RECOVERY_UNAVAILABLE" not in small.text
     assert _emergency(frozen, store, {result.id}, files=False) is frozen
 
 

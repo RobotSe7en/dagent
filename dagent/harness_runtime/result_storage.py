@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from collections.abc import Callable, Iterable
 import warnings
+from uuid import uuid4
 
 from dagent.schemas import CapabilityResult
 from dagent.schemas.common import validate_runtime_directory
@@ -350,6 +351,11 @@ def normalize_capability_result(
     references: list[ContentReference] = []
     content_reference: ContentReference | None = result.content_reference
     store = ResultStore(workspace, runtime_directory, on_event)
+    # Names this execution's files. Invocation ids can repeat (a ToolAgent
+    # uses the provider's call id, often "call_0"), so a fresh suffix keeps
+    # one execution from overwriting another's files. A result is normalized
+    # once, so the files are not duplicated.
+    file_identity = f"{result.invocation_id}/{uuid4().hex}"
     retention = result.retention or ResultRetention()
     if on_event:
         for warning in retention.storage_warnings:
@@ -371,7 +377,7 @@ def normalize_capability_result(
         and file_readable_text(display_content)
     ):
         try:
-            content_reference = store.save_text(result.invocation_id, display_content)
+            content_reference = store.save_text(file_identity, display_content)
         except OSError as exc:
             warning = store.warning(result.invocation_id, "content", exc)
             retention = retention.model_copy(
@@ -393,7 +399,7 @@ def normalize_capability_result(
             normalized, reference = _normalize_artifact(
                 workspace,
                 result_root,
-                result.invocation_id,
+                file_identity,
                 index,
                 artifact,
                 paths=paths,
@@ -437,7 +443,7 @@ def normalize_capability_result(
             "value",
             workspace,
             result_root,
-            _result_filename(result.invocation_id, "value", value_extension),
+            _result_filename(file_identity, "value", value_extension),
             encoded_value,
             media_type=value_media_type,
             preview=(
@@ -465,7 +471,7 @@ def normalize_capability_result(
             continue
         try:
             reference = store.save_text(
-                result.invocation_id, field_value, field=field_name
+                file_identity, field_value, field=field_name
             )
         except OSError as exc:
             warning = store.warning(result.invocation_id, field_name, exc)

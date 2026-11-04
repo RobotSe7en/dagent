@@ -129,10 +129,10 @@ for item in result.new_items:
 
 ## 大型工具与 MCP 结果
 
-通常情况下，256 KiB 以内的工具/MCP 文本内联保存；展示预算截断也会触发原文保存。
-更大的文本、二进制 value 和 MCP
-二进制 payload 会原子写入 run workspace，并转换为带校验和的 `ContentReference`。
-模型只看到有界预览和 workspace 相对引用。
+通常情况下，256 KiB 以内的工具/MCP 文本内联保存。对具备内置 `read_file` 工具的模型，
+展示预算截断也会触发原文保存，更大的文本写入溢出文件。二进制 value 和 MCP 二进制
+payload 总会原子写入 run workspace。这些文件以不带摘要的 `ContentReference` 表示，
+不做校验。模型只看到有界预览和 workspace 相对引用，详见[工具结果恢复](tool-result-recovery.md)。
 
 ```python
 runner = dagent.Runner(

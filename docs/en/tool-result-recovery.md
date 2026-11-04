@@ -18,12 +18,12 @@ In the **Unreleased** SDK, a result is shortened only for a model that can open 
   run's read boundary must also admit the runtime `results/` and `history/`
   folders; only those paths are checked, no file is opened.
 - **Without `read_file`**, or when that boundary excludes the runtime folders,
-  the result is never shortened and no file is written. It stays inline in full.
-  A result too large for the context window fails with the normal context-window
-  error. The emergency reference-only transition is not made either, since it
-  would remove text the model cannot read back.
-- **Text containing NUL** is never shortened or saved to a file, because
-  `read_file` rejects such files. It stays inline in full.
+  no file is written. The result is still shortened to its display limit, and a
+  shortened display is marked `[RECOVERY_UNAVAILABLE: no saved original]`. The emergency reference-only transition is
+  not made, since it would remove text the model cannot read back.
+- **Text containing NUL** is never shortened or saved to a file for a model
+  with `read_file`, because `read_file` rejects such files. It stays inline in
+  full.
 - `ValidatorAgent` and other profiled agents have no tools. Their context stays
   bounded by shortening results, but no file is written for them and a shortened
   inline result is marked `[RECOVERY_UNAVAILABLE: no saved original]`.
@@ -36,10 +36,6 @@ neither checks nor copies them. Large structured values, binary values and MCP
 artifacts are data rather than display text: they are still stored by size,
 without a digest, and a static DAG node reading an upstream value fails only if
 the file cannot be read.
-
-Keeping results complete has a cost: without `read_file`, long tool output fills
-the context sooner, so history compaction runs more often and the cached prompt
-prefix changes more often.
 
 ## Configure display and storage separately
 
@@ -121,8 +117,9 @@ have a partial saved record or a storage warning.
 - `[TRUNCATED]`: the model sees only an excerpt of received content.
 - `[SOURCE_TRUNCATED]`: the source was bounded or returned a window.
 - `[RECOVERY_UNAVAILABLE: no saved original]`: the display was shortened but no
-  overflow file was written (a storage failure, or a tool-less validator); do
-  not assume the omitted data can be reconstructed.
+  overflow file was written (a storage failure, a model that cannot open files,
+  or a tool-less validator); do not assume the omitted data can be
+  reconstructed.
 
 Shell stdout and stderr are drained concurrently with bounded memory. Output
 within the shell's inline limits (100,000 bytes and 2,000 lines) is returned

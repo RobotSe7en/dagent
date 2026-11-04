@@ -404,6 +404,7 @@ async def test_oversized_result_overflows_to_a_file_only_with_read_file(tmp_path
         assert (tmp_path / stored.content.path).read_text() == original
         assert "[TRUNCATED]" in shown and f"path={stored.content.path}" in shown
     else:
+        # Without read_file the display is still bounded, but no file is written.
         assert stored.content == inline_content(original)
-        assert original in shown and "[TRUNCATED]" not in shown
+        assert "[TRUNCATED]" in shown and "[RECOVERY_UNAVAILABLE: no saved original]" in shown and "path=" not in shown
         assert not (tmp_path / ".dagent").exists() and not (tmp_path / ".runtime").exists()

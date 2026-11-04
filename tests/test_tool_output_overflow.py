@@ -137,8 +137,8 @@ async def test_dag_agent_overflows_node_output_only_with_read_file(tmp_path, rea
         assert f"path={reference.path}" in planner
     else:
         assert call.capability_execution.result.content_reference is None
-        assert original.strip() in planner
-        assert "[TRUNCATED]" not in planner and "path=" not in planner
+        assert "[TRUNCATED]" in planner and "[RECOVERY_UNAVAILABLE: no saved original]" in planner
+        assert "path=" not in planner
         assert not (tmp_path / ".runtime").exists()
 
 
@@ -196,13 +196,25 @@ def test_frozen_display_of_a_saved_result_states_no_source_range(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_saved_result_shown_to_a_model_without_read_file_is_marked_unrecoverable(tmp_path):
+@pytest.mark.parametrize("strategy", ["legacy", "cache_aware"])
+async def test_saved_result_shown_to_a_model_without_read_file_is_bounded_and_marked_unrecoverable(
+        tmp_path, strategy):
+    from dagent.harness_runtime.context import HeuristicTokenCounter
+
     store = ResultStore(tmp_path, ".runtime")
-    conversation, _ = _saved_result(store, "evidence " * 40000)
-    prepared = await ContextAssembler().prepare(
-        system_message={"content": "Inspect"}, conversation=conversation, policy=ContextPolicy(), result_store=store,
+    conversation, saved = _saved_result(store, "evidence " * 40000)
+    prepared = await ContextAssembler(context_window_tokens=131072, max_output_tokens=8192).prepare(
+        system_message={"content": "Inspect"}, conversation=conversation, result_store=store,
+        policy=ContextPolicy(compaction_strategy=strategy, max_tool_result_tokens=128),
+        enable_new_strategy=strategy != "legacy",
     )
-    assert "[RECOVERY_UNAVAILABLE: read_file unavailable]" in prepared.messages[-1]["content"]
+    shown = (prepared.messages[-1]["content"] if strategy == "legacy"
+             else prepared.conversation.items[1].model_display.text)
+    # Its stored preview is still shortened to the display limit (cache_aware
+    # adds its metadata floor to the body cap).
+    assert HeuristicTokenCounter().count_text(saved.preview) > 1000
+    assert HeuristicTokenCounter().count_text(shown) <= 256
+    assert "[RECOVERY_UNAVAILABLE: read_file unavailable]" in shown
     assert prepared.usage.unrecoverable_tool_results == 1
 
 
@@ -327,13 +339,14 @@ def test_tool_agent_overflows_only_when_the_read_boundary_admits_the_file(tmp_pa
         assert isinstance(result.content, ContentReference)
         assert f"path={result.content.path}" in shown
     else:
+        # The model could not open a file, so the display is shortened without one.
         assert result.content == inline_content(original)
-        assert original.strip() in shown and "[TRUNCATED]" not in shown
+        assert "[TRUNCATED]" in shown and "[RECOVERY_UNAVAILABLE: no saved original]" in shown and "path=" not in shown
         assert not (tmp_path / ".runtime").exists()
 
 
 @pytest.mark.asyncio
-async def test_cache_aware_display_stays_complete_when_the_boundary_excludes_runtime_files(tmp_path):
+async def test_cache_aware_display_writes_no_file_when_the_boundary_excludes_runtime_files(tmp_path):
     from dagent.schemas.common import Boundary
 
     original = "evidence " * 4000
@@ -353,7 +366,9 @@ async def test_cache_aware_display_stays_complete_when_the_boundary_excludes_run
     excluded = await prepare(Boundary(allowed_paths=["src"]))
     item = excluded.conversation.items[1]
     assert item.content == inline_content(original) and item.model_display.recovery is None
-    assert excluded.usage.truncated_tool_results == 0
+    assert "[RECOVERY_UNAVAILABLE: no saved original]" in item.model_display.text
+    assert excluded.usage.truncated_tool_results == 1
+    assert excluded.usage.unrecoverable_tool_results == 1
     assert not (tmp_path / ".runtime").exists()
     admitted = await prepare(Boundary(allowed_paths=["."]))
     assert admitted.conversation.items[1].model_display.recovery is not None
@@ -456,3 +471,71 @@ async def test_failed_overflow_write_counts_as_truncated_and_unrecoverable(tmp_p
     assert display.recovery is None and "[RECOVERY_UNAVAILABLE: no saved original]" in display.text
     assert prepared.usage.truncated_tool_results == 1
     assert prepared.usage.unrecoverable_tool_results == 1
+
+
+def test_repeated_invocation_ids_never_overwrite_earlier_result_files(tmp_path):
+    # A ToolAgent uses the provider's call id, which many servers repeat.
+    policy = dagent.ResultStoragePolicy(max_inline_bytes=1024)
+    saved = []
+    for text in ("first " * 1000, "second " * 1000):
+        result = CapabilityResult(invocation_id="call_0", capability_id="tool.report", kind="tool",
+                                  status="completed", content=text, stdout=text, value={"rows": [text]})
+        saved.append((text, normalize_capability_result(result, workspace_path=tmp_path,
+                                                        runtime_directory=".runtime", policy=policy)))
+    paths = [{ref.path for ref in normalized.references} for _, normalized in saved]
+    assert len(paths[0]) == 3 and not paths[0] & paths[1]
+    for text, normalized in saved:
+        assert (tmp_path / normalized.content.path).read_text() == text
+
+
+def test_runs_reusing_a_workspace_and_call_id_keep_their_own_result_files(tmp_path):
+    from dagent.providers import ToolCall
+
+    texts = iter(["first run " * 2000, "second run " * 2000])
+
+    @dagent.tool
+    def report() -> str:
+        return next(texts)
+
+    references = []
+    with closing(dagent.Runner(workspace=tmp_path, skill_roots=[], provider=MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call_0", name="tool_report", arguments={})]),
+        ChatResponse(content="done"),
+        ChatResponse(tool_calls=[ToolCall(id="call_0", name="tool_report", arguments={})]),
+        ChatResponse(content="done"),
+    ]), result_storage_policy=dagent.ResultStoragePolicy(max_inline_bytes=1024))) as runner:
+        agent = dagent.ToolAgent(profile="conversation", capabilities=[report, "tool.read_file"])
+        for _ in range(2):
+            result = asyncio.run(runner.run(agent, input="report", workspace_path=tmp_path))
+            references.append(next(item for item in result.conversation.items
+                                   if isinstance(item, ToolResultMessage)).content)
+    assert references[0].path != references[1].path
+    assert (tmp_path / references[0].path).read_text() == "first run " * 2000
+    assert (tmp_path / references[1].path).read_text() == "second run " * 2000
+
+
+def test_display_limit_bounds_results_for_a_small_window_without_read_file(tmp_path):
+    from dagent.providers import ToolCall
+
+    original = "evidence row " * 2500  # About 30 KB.
+
+    @dagent.tool
+    def report() -> str:
+        return original
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call_0", name="tool_report", arguments={})]),
+        ChatResponse(content="done"),
+    ])
+    provider.context_window_tokens = 4096
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        result = asyncio.run(runner.run(dagent.ToolAgent(
+            profile="conversation", capabilities=[report],
+            context=ContextPolicy(max_tool_result_tokens=256),
+        ), input="report", workspace_path=tmp_path))
+    # The result is shortened in memory instead of overflowing the window.
+    assert result.status == "completed"
+    shown = next(message["content"] for message in provider.requests[-1]["messages"] if message["role"] == "tool")
+    assert "[TRUNCATED]" in shown and "[RECOVERY_UNAVAILABLE: no saved original]" in shown
+    assert result.state.context_usage[-1].compacted_items == 0
+    assert not (tmp_path / ".runtime").exists()

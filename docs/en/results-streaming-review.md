@@ -149,11 +149,13 @@ for serialization compatibility and per-call ratios.
 
 ## Large tool and MCP results
 
-Tool and MCP text up to 256 KiB normally stays inline. Text shortened for model
-display is also saved even below this threshold. Larger text, binary
-values, and MCP binary payloads are written atomically under the run workspace
-and represented by checksum-bearing `ContentReference` values. The model sees a
-bounded preview plus the workspace-relative reference.
+Tool and MCP text up to 256 KiB normally stays inline. For a model with the
+built-in `read_file` tool, text shortened for model display is also saved even
+below this threshold, and larger text is written to an overflow file. Binary
+values and MCP binary payloads are always written atomically under the run
+workspace. These files are represented by `ContentReference` values without a
+digest and are not checked. The model sees a bounded preview plus the
+workspace-relative reference. See [tool result recovery](tool-result-recovery.md).
 
 ```python
 runner = dagent.Runner(
