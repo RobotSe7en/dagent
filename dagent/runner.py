@@ -62,7 +62,7 @@ from dagent.harness_runtime import (
     ToolAgentLoop,
     ValidatorAgent,
 )
-from dagent.harness_runtime.artifacts import ArtifactUpload
+from dagent.harness_runtime.artifacts import ArtifactUpload, conversation_workspace
 from dagent.harness_runtime.execution_usage import (
     ExecutionUsageTracker,
     execution_usage_scope,
@@ -73,10 +73,8 @@ from dagent.harness_runtime.conversation_changes import (
 )
 from dagent.schemas.conversation_changes import ConversationChangeHandler
 from dagent.harness_runtime.context import ContextAssembler
-from dagent.harness_runtime.conversation_resources import ConversationResourceError
 from dagent.harness_runtime.dag_design import design_dag as design_dag_candidate
 from dagent.harness_runtime.planner_skill import load_dag_generation_skill
-from dagent.harness_runtime.runtime import _new_run_id_for_mode
 from dagent.harness_runtime.steering import (
     RunSteeringControl,
     run_steering_context,
@@ -1379,9 +1377,12 @@ class Runner:
         if resolved_execution == "sandbox" and Path(self.runtime_directory).is_absolute():
             # Mount the run namespace before the container starts. The runtime
             # still creates the run workspace and enforces its usual checks.
-            run_id = run_id or _new_run_id_for_mode("tool")
+            # Without an explicit path it is the conversation's workspace, so
+            # the conversation identity is fixed here.
+            conversation = conversation or ConversationState()
             runtime_workspaces = (
-                resolved_workspace_path or self._resolve_run_workspace_root(workspace_root) / run_id,
+                resolved_workspace_path or conversation_workspace(
+                    self._resolve_run_workspace_root(workspace_root), conversation.id, create=False),
             )
         usage_tracker = ExecutionUsageTracker()
         async with self._conversation_changes_scope(
@@ -1725,7 +1726,6 @@ class Runner:
             "review_level": review_level, "pending_review": None,
             "pending_tool_batch": None,
         })
-        conversation = state.model_thread or state.conversation
         runtime = getattr(failure, "runtime", self._runtime)
         assembler = runtime.tool_agent.context_assembler
         snapshot_window = assembler.context_window_tokens
@@ -1746,14 +1746,6 @@ class Runner:
         # Preserve ContextWindowExceeded and provider diagnostics. New strategy
         # exceptions gain a failed result without changing their public type.
         failure.cause.result = result
-        if conversation is not None and state.workspace_path:
-            try:
-                runtime.conversation_resources.persist(conversation, workspace_path=state.workspace_path)
-            except ConversationResourceError as exc:
-                # Broken source storage must not replace the original failure
-                # or discard the complete in-memory conversation snapshot.
-                failure.cause.recovery_error = str(exc)
-                failure.cause.add_note(f"Conversation resource recovery failed: {exc}")
         return failure.cause
 
     def _finalize_run_result(
@@ -2275,7 +2267,6 @@ class Runner:
         )
         runtime.session = self._runtime.session
         runtime.runs = self._runtime.runs
-        _share_conversation_resources(runtime, self._runtime)
         return runtime
 
     def _runtime_for_auto_agent(self, agent: AutoAgent) -> _ResolvedRuntime:
@@ -2783,15 +2774,7 @@ def _runtime_from_existing(
     )
     runtime.session = base.session
     runtime.runs = base.runs
-    _share_conversation_resources(runtime, base)
     return runtime
-
-
-def _share_conversation_resources(runtime: HarnessRuntime, base: HarnessRuntime) -> None:
-    # Per-run runtimes over the same store keep its verified-file cache, so
-    # unchanged history is not reread at every run boundary.
-    if runtime.conversation_resources.root == base.conversation_resources.root:
-        runtime.conversation_resources = base.conversation_resources
 
 
 def _tool_adapter(catalog, capability_ids: tuple[str, ...]) -> CapabilityToolAdapter:

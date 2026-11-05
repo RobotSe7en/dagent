@@ -1020,8 +1020,10 @@ def user_content_for_model(item: UserMessage) -> str:
         *[
             (
                 f"- {attachment.path} "
-                f"({attachment.media_type}, {attachment.byte_length} bytes, "
-                f"sha256={attachment.sha256})"
+                f"({attachment.media_type}, {attachment.byte_length} bytes"
+                # Only uploads from earlier versions carry a digest; it stays
+                # in their text so existing history renders unchanged.
+                + (f", sha256={attachment.sha256})" if attachment.sha256 else ")")
             )
             for attachment in item.attachments
         ],

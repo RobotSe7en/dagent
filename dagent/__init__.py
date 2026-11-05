@@ -36,7 +36,6 @@ from dagent.dag_builder import (
 from dagent.harness_runtime import (
     ArtifactUpload,
     CapabilityScope,
-    ConversationResourceError,
     DAGInputValidationError,
     inspect_dag_spec,
     validate_dag_input,
@@ -136,7 +135,6 @@ __all__ = [
     "ContextUsage",
     "ContextWindowExceeded",
     "ConversationState",
-    "ConversationResourceError",
     "DAG",
     "DAGDesignAnswer",
     "DAGDesignFailure",

@@ -143,7 +143,8 @@ async def test_two_hundred_tool_steps_preserve_prefix_between_compactions_and_co
             previous_messages = None  # A new run changes active reasoning policy legitimately.
             continued = await runner.run(agent, input="Continue.", conversation=result.conversation, workspace_path=second_workspace)
             assert continued.status == "completed"
-            assert (second_workspace / result.conversation.summary.compaction_record.path).is_file()
+            # Another workspace gets no copy of the archives; continuing works.
+            assert not (second_workspace / result.conversation.summary.compaction_record.path).exists()
             assert executions == list(range(1, 201))
 
 
@@ -331,18 +332,7 @@ async def test_cache_aware_switches_to_chunks_after_a_cold_warm_prefix(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_runs_of_one_runner_share_the_verified_resource_store(tmp_path, monkeypatch):
-    from dagent.harness_runtime.conversation_resources import ConversationResourceStore
-
-    stores = []
-    original = ConversationResourceStore.persist
-
-    def persist(self, conversation, *, workspace_path):
-        stores.append(self)
-        return original(self, conversation, workspace_path=workspace_path)
-
-    monkeypatch.setattr(ConversationResourceStore, "persist", persist)
-
+async def test_runs_of_one_conversation_share_a_workspace_and_copy_nothing(tmp_path):
     def respond(request):
         body = json.loads(request.content)
         return _completion("chat_completions", body.get("stream", False), usage=_usage("chat_completions"), content="done")
@@ -351,6 +341,9 @@ async def test_runs_of_one_runner_share_the_verified_resource_store(tmp_path, mo
         with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
             agent = dagent.ToolAgent(profile="conversation", context=dagent.ContextPolicy(compaction_strategy="chunked"))
             first = await runner.run(agent, input="First.")
-            await runner.run(agent, input="Second.", conversation=first.conversation)
-    # Per-run runtimes keep one store, so its verified-file cache survives runs.
-    assert len(stores) == 2 and stores[0] is stores[1]
+            second = await runner.run(agent, input="Second.", conversation=first.conversation)
+            other = await runner.run(agent, input="Another conversation.")
+    # Every run of a conversation uses its workspace, so archives stay where
+    # the next run reads them and the SDK keeps no second copy.
+    assert first.workspace_path == second.workspace_path != other.workspace_path
+    assert not list(tmp_path.rglob("conversations"))

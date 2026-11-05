@@ -6,7 +6,7 @@ import pytest
 import dagent
 import dagent.runner as runner_module
 from dagent.capabilities.tools.registry import ToolOutput
-from dagent.harness_runtime.artifacts import create_run_workspace
+from dagent.harness_runtime.artifacts import conversation_workspace, create_run_workspace
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from tests.planner_helpers import capability_plan_response, final_answer_response
 
@@ -197,7 +197,7 @@ def test_dag_agent_uses_run_workspace_for_relative_tool_paths(
     assert not (tmp_path / "sdk-workspace" / "shared" / "dag.txt").exists()
 
 
-def test_tool_agent_conversation_continuation_uses_a_new_run_workspace(
+def test_tool_agent_conversation_continuation_shares_the_conversation_workspace(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -241,14 +241,14 @@ def test_tool_agent_conversation_continuation_uses_a_new_run_workspace(
         )
     )
 
+    # Runs of one conversation share its workspace, so earlier files remain.
     assert second.run_id != first.run_id
-    assert second.workspace_path != first.workspace_path
-    first_workspace = Path(first.workspace_path)
-    second_workspace = Path(second.workspace_path)
-    assert (first_workspace / "shared" / "first.txt").read_text(encoding="utf-8") == "one"
-    assert not (first_workspace / "shared" / "second.txt").exists()
-    assert not (second_workspace / "shared" / "first.txt").exists()
-    assert (second_workspace / "shared" / "second.txt").read_text(encoding="utf-8") == "two"
+    assert second.workspace_path == first.workspace_path
+    workspace = Path(first.workspace_path)
+    assert workspace.name == conversation_workspace(
+        tmp_path / "sdk-workspace" / "runs", first.conversation.id, create=False).name
+    assert (workspace / "shared" / "first.txt").read_text(encoding="utf-8") == "one"
+    assert (workspace / "shared" / "second.txt").read_text(encoding="utf-8") == "two"
     assert not (tmp_path / "sdk-workspace" / "shared" / "first.txt").exists()
     assert not (tmp_path / "sdk-workspace" / "shared" / "second.txt").exists()
 
@@ -326,7 +326,7 @@ def test_conversation_continuation_can_choose_a_new_exact_workspace(
     assert first.run_id != second.run_id
 
 
-def test_dag_agent_conversation_continuation_uses_a_new_run_workspace(
+def test_dag_agent_conversation_continuation_shares_the_conversation_workspace(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -363,13 +363,10 @@ def test_dag_agent_conversation_continuation_uses_a_new_run_workspace(
     )
 
     assert second.run_id != first.run_id
-    assert second.workspace_path != first.workspace_path
-    first_workspace = Path(first.workspace_path)
-    second_workspace = Path(second.workspace_path)
-    assert (first_workspace / "shared" / "dag_first.txt").read_text(encoding="utf-8") == "one"
-    assert not (first_workspace / "shared" / "dag_second.txt").exists()
-    assert not (second_workspace / "shared" / "dag_first.txt").exists()
-    assert (second_workspace / "shared" / "dag_second.txt").read_text(encoding="utf-8") == "two"
+    assert second.workspace_path == first.workspace_path
+    workspace = Path(first.workspace_path)
+    assert (workspace / "shared" / "dag_first.txt").read_text(encoding="utf-8") == "one"
+    assert (workspace / "shared" / "dag_second.txt").read_text(encoding="utf-8") == "two"
     assert not (tmp_path / "sdk-workspace" / "shared" / "dag_first.txt").exists()
     assert not (tmp_path / "sdk-workspace" / "shared" / "dag_second.txt").exists()
 
@@ -521,8 +518,8 @@ def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
     assert FakeSandboxSession.instances[0].closed is True
     assert result.workspace_path is not None
     workspace_path = Path(result.workspace_path)
-    assert workspace_path.parent == tmp_path / "sdk-workspace" / "runs"
-    assert workspace_path.name == result.run_id
+    assert workspace_path == conversation_workspace(
+        tmp_path / "sdk-workspace" / "runs", result.conversation.id, create=False)
     assert (workspace_path / "shared" / "sandbox.txt").read_text(encoding="utf-8") == "hi"
     assert not (tmp_path / "sdk-workspace" / "shared" / "sandbox.txt").exists()
 

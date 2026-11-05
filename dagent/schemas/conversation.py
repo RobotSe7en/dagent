@@ -130,8 +130,10 @@ class ResultObservation(_OptionalDisplay):
 class Attachment(BaseModel):
     """Upload-time metadata for a mutable, workspace-relative user file.
 
-    Size and digest describe the received bytes, not the current file. Hosts
-    own file continuation and original snapshots; historical paths may be absent.
+    The size describes the received bytes, not the current file. New uploads
+    carry no digest (``sha256`` is ``None``); records from earlier versions
+    keep theirs. Hosts own file continuation and original snapshots;
+    historical paths may be absent.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -141,7 +143,7 @@ class Attachment(BaseModel):
     path: str = Field(min_length=1)
     media_type: str = "application/octet-stream"
     byte_length: int = Field(ge=0)
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_path(self) -> "Attachment":

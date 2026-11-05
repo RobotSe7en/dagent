@@ -670,4 +670,5 @@ async def test_long_run_multiple_compactions_and_portable_resources(tmp_path,pro
             assert result.conversation.summary.compaction_record
             continued=await runner.run(agent,input="Continue.",conversation=result.conversation,workspace_path=tmp_path/"second")
             assert continued.status == "completed"
-            assert (tmp_path/"second"/result.conversation.summary.compaction_record.path).is_file()
+            # Another workspace gets no copy of the archives; continuing works.
+            assert not (tmp_path/"second"/result.conversation.summary.compaction_record.path).exists()

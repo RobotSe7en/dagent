@@ -10,7 +10,6 @@ import pytest
 import dagent
 from dagent.capabilities.sandbox import SandboxSession, build_skeleton
 from dagent.capabilities.tools.runtime_paths import RuntimePaths, runtime_storage_context
-from dagent.harness_runtime.conversation_resources import ConversationResourceStore
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 
@@ -284,7 +283,7 @@ def test_external_files_are_read_as_is_and_reject_symlink_escape(tmp_path):
 def test_relative_storage_keeps_workspace_internal_symlinks_supported(tmp_path):
     runtime = tmp_path / ".runtime"
     runtime.mkdir()
-    for name in ("results", "history", "conversations"):
+    for name in ("results", "history"):
         target = tmp_path / f"saved-{name}"
         target.mkdir()
         (runtime / name).symlink_to(target, target_is_directory=True)
@@ -293,8 +292,6 @@ def test_relative_storage_keeps_workspace_internal_symlinks_supported(tmp_path):
     snapshot = store.snapshot_text("snapshot")
     assert (tmp_path / text.path).read_text() == "saved"
     assert (tmp_path / snapshot.path).read_text() == "snapshot"
-    backup = ConversationResourceStore(tmp_path, ".runtime")
-    assert backup.root == tmp_path / "saved-conversations"
 
 
 def test_sandbox_mounts_run_resources_and_worker_uses_external_directory(tmp_path):
@@ -374,7 +371,7 @@ def test_sandbox_run_mounts_its_external_namespace(tmp_path, monkeypatch, exact_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("strategy", ["chunked", "cache_aware"])
-async def test_compaction_records_restore_from_external_store_but_frozen_output_does_not(tmp_path, strategy):
+async def test_hosts_copy_external_compaction_archives_into_another_workspace(tmp_path, strategy):
     from dagent.harness_runtime.compaction import CompactionRecordV1, HistoryCompactor
     from dagent.harness_runtime.context import ContextAssembler
     from tests.test_compaction_strategy import summary_response
@@ -400,19 +397,21 @@ async def test_compaction_records_restore_from_external_store_but_frozen_output_
             chat=summarize, read_available=True,
         )
         summary = await compactor.compact(None, frozen.items, 256)
-        conversation = frozen.model_copy(update={"summary": summary})
-        backup = ConversationResourceStore(tmp_path / "runner", str(private))
-        backup.persist(conversation, workspace_path=workspace)
-        shutil.rmtree(store.paths.root)
-        destination = tmp_path / "next"
-        restored = backup.materialize(conversation, workspace_path=destination)
-        new_store = ResultStore(destination, str(private))
-        assert restored == conversation
-        assert not new_store.paths.resolve(restored.items[1].model_display.recovery.path).exists()
-        record = CompactionRecordV1.model_validate_json(new_store.read_reference(restored.summary.compaction_record))
-        assert record.status == "complete"
-        assert new_store.read_reference(record.source)
-        assert not (destination / ".runtime").exists()
+        # The same workspace reads its archives where they were written.
+        record = CompactionRecordV1.model_validate_json(store.read_reference(summary.compaction_record))
+        assert record.status == "complete" and store.read_reference(record.source)
+        # Another workspace has none; the SDK copies nothing. A host that
+        # moves the conversation copies them to the same logical paths.
+        new_store = ResultStore(tmp_path / "next", str(private))
+        assert not new_store.paths.resolve(summary.compaction_record.path).exists()
+        for reference in (summary.compaction_record, record.source):
+            target = new_store.paths.resolve(reference.path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(store.read_reference(reference))
+        moved = CompactionRecordV1.model_validate_json(new_store.read_reference(summary.compaction_record))
+        assert moved == record and new_store.read_reference(moved.source) == store.read_reference(record.source)
+        assert not new_store.paths.resolve(frozen.items[1].model_display.recovery.path).exists()
+        assert not (tmp_path / "next" / ".runtime").exists()
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@ import dagent.harness_runtime.compaction as compaction
 from dagent.harness_runtime.compaction import (
     CompactionArchiveError, CompactionBudgetExceeded, CompactionChunk, CompactionError,
     CompactionRecordV1, CompactionRunState, CompactionSourceV1, HistoryCompactor,
-    SummaryEntry, TaskSummary, load_compaction_references,
+    SummaryEntry, TaskSummary,
 )
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import ResultStore
@@ -171,8 +171,7 @@ async def test_archive_omits_reasoning_and_preserves_received_snapshot_and_view(
     assert b'"displayed_spans":[[0,8]]' in raw
     # The archived item keeps its recovery path; the file itself is not linked.
     assert recovery.path.encode() in raw
-    assert recovery not in load_compaction_references(raw)
-    assert record.source in load_compaction_references(engine.result_store.read_reference(summary.compaction_record))
+    assert recovery not in CompactionSourceV1.model_validate_json(raw).refs
 
 
 @pytest.mark.asyncio

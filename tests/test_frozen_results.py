@@ -2,12 +2,10 @@
 
 import hashlib
 import json
-import shutil
 
 import pytest
 
 from dagent.harness_runtime.context import HeuristicTokenCounter
-from dagent.harness_runtime.conversation_resources import ConversationResourceError, ConversationResourceStore
 from dagent.harness_runtime.frozen_results import (
     freeze_result_displays,
     reference_frozen_result_displays,
@@ -48,17 +46,6 @@ def _reader_tools():
             "limit_chars": {"type": "integer"},
         }},
     }}]
-
-
-def _archive_chain(store, items=()):
-    """A compaction source and record, as compaction writes them."""
-    from dagent.harness_runtime.compaction import CompactionRecordV1, CompactionSourceV1
-
-    source = store.snapshot_text(CompactionSourceV1(items=items).model_dump_json())
-    record = store.snapshot_text(CompactionRecordV1(
-        status="complete", source=source, source_digest=source.sha256, source_ranges=(), chunks=(),
-    ).model_dump_json())
-    return source, record
 
 
 def test_new_batch_shares_budget_and_retains_unicode_source_spans(tmp_path):
@@ -396,108 +383,6 @@ def test_saved_files_are_read_as_they_are_now(tmp_path):
     assert store.snapshot_text("archive") == archive
 
 
-def test_tool_output_is_neither_persisted_nor_restored_into_a_new_run(tmp_path, monkeypatch):
-    import pathlib
-
-    workspace = tmp_path / "first"
-    result_store = ResultStore(workspace, ".runtime")
-    frozen = _freeze(_conversation("source " * 1000, "other " * 1000), result_store)
-    frozen = _emergency(frozen, result_store, {frozen.items[1].id})
-    recovery = frozen.items[1].model_display.recovery
-    reads = []
-    original = pathlib.Path.read_bytes
-
-    def counted(self):
-        reads.append(self.name)
-        return original(self)
-
-    monkeypatch.setattr(pathlib.Path, "read_bytes", counted)
-    resources = ConversationResourceStore(tmp_path, ".runtime")
-    resources.persist(frozen, workspace_path=workspace)
-    shutil.rmtree(workspace)
-    destination = tmp_path / "next"
-    assert resources.materialize(frozen, workspace_path=destination) == frozen
-    assert reads == []
-    assert not (destination / recovery.path).exists()
-    assert not resources.root.exists()
-
-
-def test_repeated_boundaries_reuse_verified_records_and_legacy_results(tmp_path, monkeypatch):
-    import pathlib
-
-    workspace = tmp_path / "first"
-    store = ResultStore(workspace, ".runtime")
-    frozen = _freeze(_conversation("first " * 1000), store)
-    _, record = _archive_chain(store, frozen.items)
-    legacy = ToolResultMessage(call_id="legacy", name="tool_legacy", status="completed",
-                               content=store.save_text("legacy", "legacy result body"))
-    conversation = ConversationState(id=frozen.id, items=(*frozen.items, legacy), summary=ContextSummary(
-        content="summary", source_item_count=2, compaction_record=record))
-    resources = ConversationResourceStore(tmp_path, ".runtime")
-    resources.persist(conversation, workspace_path=workspace)
-    destination = tmp_path / "next"
-    restored = resources.materialize(conversation, workspace_path=destination)
-    assert restored == conversation
-    reads = []
-    original = pathlib.Path.read_bytes
-
-    def counted(self):
-        reads.append(self.name)
-        return original(self)
-
-    monkeypatch.setattr(pathlib.Path, "read_bytes", counted)
-    resources.persist(restored, workspace_path=destination)
-    assert resources.materialize(restored, workspace_path=destination) == restored
-    # Records and archived sources are unchanged; tool output is never read.
-    assert reads == []
-
-
-def test_persist_rewrites_a_deleted_archive_object(tmp_path):
-    workspace = tmp_path / "first"
-    store = ResultStore(workspace, ".runtime")
-    _, record = _archive_chain(store)
-    conversation = ConversationState(summary=ContextSummary(
-        content="summary", source_item_count=1, compaction_record=record))
-    resources = ConversationResourceStore(tmp_path, ".runtime")
-    resources.persist(conversation, workspace_path=workspace)
-    stored = resources._object_path(conversation.id, record.sha256)
-    stored.unlink()
-    resources.persist(conversation, workspace_path=workspace)
-    assert hashlib.sha256(stored.read_bytes()).hexdigest() == record.sha256
-
-
-def test_verified_resource_caches_are_bounded(tmp_path, monkeypatch):
-    from dagent.harness_runtime import conversation_resources
-    from dagent.harness_runtime.compaction import CompactionRecordV1, CompactionSourceV1
-
-    monkeypatch.setattr(conversation_resources, "_CACHE_LIMIT", 3)
-    workspace = tmp_path / "first"
-    store = ResultStore(workspace, ".runtime")
-    previous = None
-    for index in range(4):
-        source = store.snapshot_text(CompactionSourceV1(items=(), previous_summary=str(index)).model_dump_json())
-        previous = store.snapshot_text(CompactionRecordV1(
-            status="complete", source=source, source_digest=source.sha256, source_ranges=(),
-            chunks=(), previous_record=previous,
-        ).model_dump_json())
-    conversation = ConversationState(summary=ContextSummary(
-        content="summary", source_item_count=1, compaction_record=previous))
-    resources = ConversationResourceStore(tmp_path, ".runtime")
-    resources.persist(conversation, workspace_path=workspace)
-    resources.materialize(conversation, workspace_path=tmp_path / "next")
-    assert len(resources._verified) <= 3 and len(resources._edges) <= 3
-
-
-def test_result_json_is_not_interpreted_as_a_resource_manifest(tmp_path):
-    store = ResultStore(tmp_path / "first", ".runtime")
-    source = json.dumps({"type": "dagent_compaction_source", "refs": [{"path": "must-not-read"}]})
-    frozen = _freeze(_conversation(source), store)
-    resources = ConversationResourceStore(tmp_path, ".runtime")
-    resources.persist(frozen, workspace_path=store.workspace)
-    restored = resources.materialize(frozen, workspace_path=tmp_path / "next")
-    assert restored.items[1].model_display.text == frozen.items[1].model_display.text
-
-
 def test_snapshot_rejects_a_symlink_outside_the_workspace(tmp_path):
     workspace = tmp_path / "workspace"
     store = ResultStore(workspace, ".runtime")
@@ -508,114 +393,6 @@ def test_snapshot_rejects_a_symlink_outside_the_workspace(tmp_path):
     with pytest.raises(ValueError):
         store.snapshot_text("must stay in the workspace")
     assert list(outside.iterdir()) == []
-
-
-def test_compaction_record_restores_its_archive_chain_but_not_tool_output(tmp_path):
-    from dagent.harness_runtime.compaction import CompactionRecordV1, CompactionSourceV1
-
-    workspace = tmp_path / "first"
-    store = ResultStore(workspace, ".runtime")
-    frozen = _freeze(_conversation("first " * 1000), store)
-    result = frozen.items[1]
-    # Older sources also listed tool output in ``refs``; it is no longer followed.
-    archive = CompactionSourceV1(items=frozen.items, refs=(result.model_display.recovery,))
-    source = store.snapshot_text(archive.model_dump_json())
-    record = CompactionRecordV1(status="complete", source=source, source_digest=source.sha256,
-                                source_ranges=(), chunks=())
-    previous = store.snapshot_text(record.model_dump_json())
-    next_source = store.snapshot_text(CompactionSourceV1(items=(), previous_summary="first summary").model_dump_json())
-    latest = store.snapshot_text(CompactionRecordV1(
-        status="reference_only", source=next_source, source_digest=next_source.sha256,
-        source_ranges=(), chunks=(), previous_record=previous,
-    ).model_dump_json())
-    conversation = ConversationState(id=frozen.id, summary=ContextSummary(
-        content="summary", source_item_count=2, compaction_record=latest,
-    ))
-    resources = ConversationResourceStore(tmp_path, ".runtime")
-    resources.persist(conversation, workspace_path=workspace)
-    shutil.rmtree(workspace)
-    destination = tmp_path / "next"
-    assert resources.materialize(conversation, workspace_path=destination) == conversation
-    for reference in (latest, next_source, previous, source):
-        data = (destination / reference.path).read_bytes()
-        assert hashlib.sha256(data).hexdigest() == reference.sha256
-    assert not (destination / result.model_display.recovery.path).exists()
-    # Archive verification itself is unchanged in this release.
-    (destination / previous.path).write_text("broken")
-    with pytest.raises(ConversationResourceError, match="size mismatch"):
-        resources.materialize(conversation, workspace_path=destination)
-
-
-def test_missing_archive_fails_a_new_run_clearly(tmp_path):
-    workspace = tmp_path / "first"
-    store = ResultStore(workspace, ".runtime")
-    _, record = _archive_chain(store)
-    conversation = ConversationState(summary=ContextSummary(
-        content="summary", source_item_count=1, compaction_record=record))
-    resources = ConversationResourceStore(tmp_path, ".runtime")
-    shutil.rmtree(workspace)
-    with pytest.raises(ConversationResourceError, match="cannot be read"):
-        resources.materialize(conversation, workspace_path=tmp_path / "next")
-
-
-def test_failed_record_and_reused_partial_record_restore_their_archive_chain(tmp_path):
-    from dagent.harness_runtime.compaction import CompactionRecordV1, CompactionSourceV1
-    from dagent.schemas.conversation import CompactionState, FailedCompaction
-
-    workspace = tmp_path / "first"
-    store = ResultStore(workspace, ".runtime")
-    result = _freeze(_conversation("original evidence " * 100), store).items[1]
-    source = store.snapshot_text(CompactionSourceV1(
-        items=(result,), refs=(result.model_display.recovery,),
-    ).model_dump_json())
-    partial = store.snapshot_text(CompactionRecordV1(
-        status="partial", source=source, source_digest=source.sha256,
-        source_ranges=(), chunks=(),
-    ).model_dump_json())
-    next_source = store.snapshot_text(CompactionSourceV1(items=()).model_dump_json())
-    reused = store.snapshot_text(CompactionRecordV1(
-        status="reference_only", source=next_source, source_digest=next_source.sha256,
-        source_ranges=(), chunks=(), reused_from=partial,
-    ).model_dump_json())
-    conversation = ConversationState(compaction_state=CompactionState(failed_records=(
-        FailedCompaction(source_keys=("failed",), record=reused),
-    )))
-    resources = ConversationResourceStore(tmp_path, ".runtime")
-    resources.persist(conversation, workspace_path=workspace)
-    shutil.rmtree(workspace)
-    destination = tmp_path / "next"
-    assert resources.materialize(conversation, workspace_path=destination) == conversation
-    for reference in (reused, next_source, partial, source):
-        assert hashlib.sha256((destination / reference.path).read_bytes()).hexdigest() == reference.sha256
-    assert not (destination / result.model_display.recovery.path).exists()
-
-
-def test_new_source_preserves_declared_legacy_result_manifest_but_not_its_results(tmp_path):
-    from dagent.harness_runtime.compaction import CompactionRecordV1, CompactionSourceV1
-
-    workspace = tmp_path / "first"
-    store = ResultStore(workspace, ".runtime")
-    result_body = store.save_text("legacy", "earlier result")
-    result = _conversation("").items[1].model_copy(update={"content": result_body})
-    legacy, _ = store.archive(None, (result,))
-    source = store.snapshot_text(CompactionSourceV1(
-        items=(), refs=(legacy,), previous_result_manifest=legacy,
-    ).model_dump_json())
-    record = store.snapshot_text(CompactionRecordV1(
-        status="complete", source=source, source_digest=source.sha256,
-        source_ranges=(), chunks=(),
-    ).model_dump_json())
-    conversation = ConversationState(summary=ContextSummary(
-        content="summary", source_item_count=1, compaction_record=record,
-    ))
-    resources = ConversationResourceStore(tmp_path, ".runtime")
-    resources.persist(conversation, workspace_path=workspace)
-    shutil.rmtree(workspace)
-    destination = tmp_path / "next"
-    resources.materialize(conversation, workspace_path=destination)
-    rows = (destination / legacy.path).read_text().splitlines()
-    assert ToolResultMessage.model_validate_json(rows[0]).content == result_body
-    assert not (destination / result_body.path).exists()
 
 
 @pytest.mark.asyncio

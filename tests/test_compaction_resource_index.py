@@ -108,23 +108,19 @@ async def test_reference_fallback_requires_read_file_and_reads_no_history(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_missing_earlier_record_is_not_linked_and_the_chain_still_persists(tmp_path):
-    from dagent.harness_runtime.conversation_resources import ConversationResourceStore
-    from dagent.schemas import ConversationState
-
+async def test_missing_earlier_record_degrades_compaction_without_failing(tmp_path):
     assembler = ContextAssembler(context_window_tokens=8192)
     meter = ReadMeter()
     workspace = tmp_path / "run"
     first = await engine(workspace, assembler, meter).compact(None, (UserMessage(id="a", content="first"),), 256)
-    # Deleted mid-run, after the run start restored it.
+    # Lost from the workspace (deleted, or a continuation elsewhere).
     (workspace / first.compaction_record.path).unlink()
     compactor = engine(workspace, assembler, meter)
     second = await compactor.compact(first, (UserMessage(id="b", content="second"),), 256)
     record = record_for(compactor, second)
-    assert record.previous_record is None and record.prior_coverage == "unknown"
+    # The link is kept as written; the lost history is marked unresolved.
+    assert record.previous_record == first.compaction_record and record.prior_coverage == "unknown"
     assert record.has_unresolved_history and "[DEGRADED_CONTEXT]" in second.content
-    # The archive chain names no missing file, so the run end can carry it.
-    ConversationResourceStore(tmp_path, ".runtime").persist(ConversationState(summary=second), workspace_path=workspace)
 
 
 @pytest.mark.asyncio
@@ -155,9 +151,8 @@ async def test_archive_chain_is_read_regardless_of_the_model_read_boundary(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_failed_records_that_cannot_be_read_are_dropped_from_saved_state(tmp_path):
+async def test_sources_of_failed_records_that_cannot_be_read_are_summarized_again(tmp_path):
     import dagent
-    from dagent.harness_runtime.conversation_resources import ConversationResourceStore
     from dagent.providers.model_io import ModelTokenCount
     from dagent.providers.openai_compatible import ProviderTokenCountError
 
@@ -209,13 +204,11 @@ async def test_failed_records_that_cannot_be_read_are_dropped_from_saved_state(t
     for path in missing:
         (tmp_path / "run" / path).unlink()
     # The lost replacements cannot be reused, so their sources are summarized
-    # again, and the saved state names only records that exist.
+    # again instead of staying blocked.
     again = await failed_state(saved)
     assert paid == 4
-    kept = {failure.record.path for failure in again.compaction_state.failed_records}
-    assert len(kept) == 2 and not missing & kept
-    assert all((tmp_path / "run" / path).is_file() for path in kept)
-    ConversationResourceStore(tmp_path, ".runtime").persist(again, workspace_path=tmp_path / "run")
+    fresh = {failure.record.path for failure in again.compaction_state.failed_records} - missing
+    assert len(fresh) == 2 and all((tmp_path / "run" / path).is_file() for path in fresh)
 
 
 @pytest.mark.asyncio

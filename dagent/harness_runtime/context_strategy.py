@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass, field, replace
-from typing import Any, Collection, Sequence
+from typing import Any, Sequence
 
 from dagent.harness_runtime.context import (
     ContextAssembler, PreparedModelContext, _atomic_groups, _context_results,
@@ -59,9 +59,6 @@ class _CompactionProgress:
     failed: set[str] = field(init=False)
     failed_records: list[FailedCompaction] = field(init=False)
     staged_records: list[FailedCompaction] = field(default_factory=list)
-    # Record paths the compactor could not read; saved state drops them so
-    # the archives carried across runs never name a missing file.
-    unreadable: Collection[str] = ()
 
     def __post_init__(self) -> None:
         state = self.conversation.compaction_state
@@ -73,8 +70,7 @@ class _CompactionProgress:
             return self.conversation
         keys = self.failed | {key for record in self.staged_records for key in record.source_keys}
         records = tuple({record.record.sha256: record for record in
-                         [*self.failed_records, *self.staged_records]
-                         if record.record.path not in self.unreadable}.values())
+                         [*self.failed_records, *self.staged_records]}.values())
         state = CompactionState(failed_sources=tuple(sorted(keys)), failed_records=records)
         return self.conversation.model_copy(update={
             "compaction_state": state, "revision": self.conversation.revision + 1,
@@ -143,7 +139,6 @@ async def prepare_context(
     compactor: Any,
 ) -> PreparedModelContext:
     progress = _CompactionProgress(conversation)
-    progress.unreadable = getattr(compactor, "unreadable_records", ())
     outcome = "failed"
     try:
         prepared = await _prepare_context(
@@ -458,7 +453,7 @@ async def _prepare_context(
                     if cached_summary is not None:
                         selected = (start, end)
                         break
-                    if record.record.path in compaction_progress.unreadable:
+                    if record.record.path in getattr(compactor, "unreadable_records", ()):
                         # The paid or failed attempt is lost with its record,
                         # so its source may be summarized again.
                         failed.difference_update(record.source_keys)
@@ -746,9 +741,7 @@ async def _prepare_context(
     retained_failed = tuple(source_key(item) for item in working.items if source_key(item) in failed)
     if summary_key() in failed:
         retained_failed += (summary_key(),)
-    retained_records = tuple(record for record in failed_records
-                             if set(record.source_keys) & set(retained_failed)
-                             and record.record.path not in compaction_progress.unreadable)
+    retained_records = tuple(record for record in failed_records if set(record.source_keys) & set(retained_failed))
     compaction_state = CompactionState(failed_sources=retained_failed, failed_records=retained_records) if retained_failed else None
     if compaction_state != working.compaction_state:
         working = working.model_copy(update={"compaction_state": compaction_state, "revision": working.revision + 1})
