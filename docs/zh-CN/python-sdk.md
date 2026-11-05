@@ -50,7 +50,8 @@ import dagent
 | Providers | `Provider`；`dagent.providers` 也导出 `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ModelRequest`, `PreparedModelCall`, `ProviderReprepareRequired`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于能力查看、custom providers 和 tests |
 
 在 **Unreleased** SDK 中，`ContentReference.sha256` 改为可选：工具输出溢出文件、大值和产物均为 `None`，
-压缩归档仍带摘要。`FrozenResultDisplay.recovery` 在完整展示结果时为 `None`。详见
+压缩归档仍带摘要。没有文件保存未展示文本时，`FrozenResultDisplay.recovery` 为 `None`。
+新上传附件的 `Attachment.sha256` 为 `None`。详见
 [工具结果恢复](tool-result-recovery.md)和 [未发布版本的迁移说明](migration.md#未发布)。
 
 自 0.10.0 起，显式缓存统计为现有 `ModelTokenUsage` 增加可空的 `cached_input_tokens`。

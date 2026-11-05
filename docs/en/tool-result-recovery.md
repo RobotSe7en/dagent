@@ -30,7 +30,9 @@ In the **Unreleased** SDK, a result is shortened only for a model that can open 
 
 Overflow files are best-effort. The SDK writes them atomically but stores no
 digest (`ContentReference.sha256` is `None`), never checks or rereads them, and
-does not copy them into another run workspace. A file that was later changed is
+does not copy them into another workspace. A conversation's runs share one
+workspace, so later turns can read the overflow files of earlier turns. A file
+that was later changed is
 read as it is; a deleted one is reported by the file tool as missing. Compaction
 neither checks nor copies them. Large structured values, binary values and MCP
 artifacts are data rather than display text: they are still stored by size,
@@ -159,10 +161,10 @@ from model-generated summary prose. `result_archive_incomplete` explicitly marks
 an archival failure. Later compactions retain access to earlier index entries.
 If an earlier index can no longer be opened, the new index leaves its entries
 out and sets `result_archive_incomplete` instead of failing compaction.
-Compaction archives (records, sources and this index) are the part of history
-the SDK keeps across run workspaces. They hold the compacted messages and the
-results as they were, so a result that had an overflow file is archived with
-its path only; the file itself stays best-effort.
+Compaction archives (records, sources and this index) stay in the workspace
+where they were written. They hold the compacted messages and the results as
+they were, so a result that had an overflow file is archived with its path only;
+the file itself stays best-effort.
 
 `CapabilityResult.retention` and `ToolResultMessage.retention` contain typed
 source completeness, continuation and storage warnings. Their types live in
@@ -171,9 +173,9 @@ source completeness, continuation and storage warnings. Their types live in
 `ContextUsage` distinguishes result body/metadata tokens, source truncation and
 unavailable recovery. References alone do not count as body truncation.
 
-Keep the workspace with a checkpoint when resuming elsewhere, and reuse the
-same `workspace_path` when overflow files should stay readable in later turns.
-Hosts own copying,
+Keep the workspace with a checkpoint when resuming elsewhere. A continuation
+that you move to another `workspace_path` cannot read earlier overflow files or
+archives unless you copy them there. Hosts own copying,
 retention periods, cleanup, redaction and disk quotas. More eager preservation
 uses disk space and can persist sensitive tool output; files are not automatically
 deleted when the runner closes.

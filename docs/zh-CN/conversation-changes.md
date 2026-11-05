@@ -143,16 +143,44 @@ for resource in batch.resources:
     await host.save_file(path, resource.reference)
 ```
 
-交付时通知的文件已写完，通知不扫描整个目录。通知的文件有两类：
+资源通知只带引用，不带文件内容：宿主要按路径自己读取文件，因此需要能访问 run workspace
+（同一台机器或共享卷）。交付时通知的文件已写完，通知不扫描整个目录。通知的文件有三类：
 
-- **压缩归档**（源归档和压缩记录，带 `sha256`）。如果宿主在 SDK 存储之外保存历史，
-  应在确认批次前保存这些字节。压缩归档恢复到其他 workspace 时，即使逻辑路径不变也会在
-  该 workspace 再通知一次；仅此变化不增加会话 revision。
-- **工具输出溢出文件**（不带 `sha256`）。在 **Unreleased** SDK 中尽力保存：SDK 不校验，宿主可以不存。
-  它们不会恢复到之后的 workspace，宿主之后还需要时应自行保留副本。
+- **压缩归档**（源归档、压缩记录和旧版结果索引，带 `sha256`），保存被压缩消息的原文；
+- **工具输出溢出文件**（不带 `sha256`），尽力保存，SDK 不校验；
+- **上传附件**（`Attachment`），在 **Unreleased** SDK 中新上传的附件不带摘要。
 
-绝对 runtime 目录下，引用仍使用逻辑路径。SDK backing store 负责跨 workspace 携带压缩归档；
-本能力不新增宿主文件恢复 API，也不迁移旧文件。可变附件继续采用现有上传时元数据语义。
+在 **Unreleased** SDK 中，这些文件宿主都可以不存。同一会话的 run 共用 workspace，之后的
+轮次在原处就能找到之前写的文件，SDK 不在 workspace 之间复制任何文件。绝对 runtime 目录下，
+引用仍使用逻辑路径。可变附件继续采用现有上传时元数据语义。
+
+## 把会话移到另一个 workspace
+
+在另一个 workspace 续聊（显式传入与之前不同的 `workspace_path`）时，之前的文件都不在。
+续聊照常进行：会话状态和摘要都在，但压缩会把读不到的历史标为未完全覆盖，模型也打不开
+之前的归档。需要保留时，在收到通知时保存压缩归档，并在新 workspace 第一次运行前写回原
+逻辑路径：
+
+```python
+async def on_change(batch):
+    for resource in batch.resources:
+        reference = resource.reference
+        if isinstance(reference, dagent.ContentReference) and reference.sha256:
+            path = runner.resolve_runtime_path(
+                reference.path,
+                workspace_path=resource.workspace_path,
+                runtime_directory=resource.runtime_directory,
+            )
+            await host.save_archive(conversation_id, reference.path, path.read_bytes())
+
+# 在新 workspace 第一次运行前：
+for logical_path, data in await host.load_archives(conversation_id):
+    target = runner.resolve_runtime_path(logical_path, workspace_path=new_workspace)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+```
+
+需要上传文件和溢出文件时，按同样方式复制。SDK 不提供恢复 API，也不改写路径。
 
 ## 处理保存失败
 

@@ -8,11 +8,23 @@
 
 ## 未发布
 
-### 破坏性变更：工具输出文件改为尽力保存
+### 破坏性变更：按会话固定 workspace，文件改为尽力保存
 
-本版本调整超限工具输出的存储方式：溢出文件只为能读取它的模型写入，从不校验，也不带到
-之后的 run workspace。压缩归档仍带摘要，会话 backing store 在 run 边界保存和恢复归档时
-仍会校验；压缩过程中读取归档则不再校验。升级前请确认以下行为变化：
+本版本调整运行目录和 SDK 存储文件的方式：同一会话的所有 run 共用一个 workspace，SDK 不再在
+workspace 之间复制、恢复或校验文件。溢出文件只为能读取它的模型写入，从不校验。新上传的附件
+不带摘要。升级前请确认以下行为变化：
+
+- **每个会话一个 workspace。** 不传 `workspace_path` 时，run 改为使用
+  `<workspace_root>/conversation_<key>`（`<key>` 为 `ConversationState.id` 的 SHA-256 前 32 位
+  十六进制），不再每个 run 新建 `<workspace_root>/<run_id>`。不传 `conversation` 的 run 会开启
+  新会话，因此得到新目录；静态 DAG run 仍使用 `<workspace_root>/<run_id>`。显式的
+  `workspace_path`、审批续跑和 checkpoint 不变。影响：某一轮中工具、上传和溢出写入的文件在
+  之后几轮仍然可见；之后上传同名文件会覆盖之前的文件；同一会话并发 run 共用目录，不加锁；
+  目录按会话累积，而不是按 run。
+- **不再跨 workspace 搬运文件。** SDK 不再在 `<runtime_directory>/conversations` 中保存压缩
+  归档副本，Run 开始时不再恢复到新 workspace，结束时也不再校验。归档留在压缩写入的位置，
+  也就是该会话下一次 run 读取的位置。`dagent.ConversationResourceError` 已删除，归档缺失或
+  被改也不再导致 Run 失败。已有的 `conversations/` 目录不再读写，可以删除。
 
 - **溢出文件需要 `read_file`。** 超过展示上限的结果仍会截断。只有读取结果的模型能打开
   溢出文件时，完整文本才写入溢出文件：模型具备内置 `read_file` 工具，且 ToolAgent 的读取
@@ -24,9 +36,6 @@
   `None`。读取时不再校验大小、摘要或文件身份，不再拒绝被改过的文件，也不再回读刚写的
   文件。文件被改后读到改后的内容；被删除时由读取工具报告不存在。静态 DAG 下游读取上游值时
   不再报大小或校验和不符。溢出文件名不再包含内容 hash。
-- **不跨 workspace 携带。** 会话 backing store 只保存和恢复压缩归档链；工具输出文件不复制、
-  不恢复、不改写路径，文件缺失也不再导致下一次 Run 失败。使用默认的每轮新 workspace 时，
-  之后几轮读不到前几轮的溢出文件。
 - **Shell 输出。** 未超过 shell 内联上限（100,000 字节且 2,000 行）的输出完整返回，不再
   写文件。更大的输出只在具备 `read_file` 时流式写入一个溢出文件；否则，或输出中含 NUL
   时，只保留尾部，并标 `[SOURCE_TRUNCATED]`。
@@ -40,35 +49,46 @@
   `CompactionSourceV1.refs` 不再列出工具输出引用。读取所需的上一条压缩记录时不校验摘要，
   也不套用模型的读取边界。旧版结果索引原样归档结果，不再为每条结果单独写文件。引用回退
   需要 `read_file` 工具，且读取边界允许 runtime 文件。
-- **归档缺失时降级。** 读不到上一条压缩记录不再导致压缩失败：新记录不链接它，记为
-  `prior_coverage="unknown"` 并标记历史未完全覆盖，摘要带 `[DEGRADED_CONTEXT]`。读不到的
-  失败记录会从 `compaction_state` 中移除。打不开的上一份旧版结果索引不再并入新索引，并设置
-  `result_archive_incomplete`。因此 run 结束保存时不会引用缺失的归档。run 中途被删、
-  且压缩从未读取的归档，仍会让这次保存失败；下一次 Run 开始时归档缺失仍会明确报错。
+- **归档缺失时降级。** 读不到上一条压缩记录不再导致压缩失败：它覆盖的历史标为未完全覆盖，
+  摘要带 `[DEGRADED_CONTEXT]`。保存了可复用替换结果的失败记录读不到时，对应来源可以重新压缩。
+  打不开的上一份旧版结果索引不再并入新索引，并设置 `result_archive_incomplete`。
 - **展示标记。** 不再输出 `[RECOVERY_UNAVAILABLE: read_file unavailable, path denied or
   missing]`。没有文件的截断结果标 `[RECOVERY_UNAVAILABLE: no saved original]`（模型无法打开
   文件、写入失败或没有工具的验证器）；之前已保存、但模型打不开的结果标
   `[RECOVERY_UNAVAILABLE: read_file unavailable]`。
-- **会话变化。** 工具输出资源不带摘要，宿主可以不存；不再为之后的 workspace 通知。
-  压缩归档的通知不变。
+- **会话变化。** 压缩归档仍在写入时通知；由于不再恢复，不会再在其他 workspace 中重复通知。
+  工具输出资源不带摘要。所有通知的文件宿主都可以不存。
+- **上传。** `Attachment.sha256` 改为可选，新上传的附件为 `None`，仍记录 `byte_length`。
+  上传只写入一次，不再回读校验；写入字节数不足时仍抛出 `OSError`。新附件给模型的描述为
+  `(<媒体类型>, <n> bytes)`。早期版本的附件保留摘要，描述文字不变。
 
 ### 迁移步骤
 
 - 读取 `ContentReference.sha256` 或 `FrozenResultDisplay.recovery` 的宿主代码需接受 `None`。
 - 希望模型能找回截断内容的 agent，加上 `tool.read_file` 能力，并让读取边界包含 runtime 目录。
   否则展示仍然有界，但省略的内容不会保存。
-- 希望之后几轮仍能读取溢出文件时，每个会话复用同一个 `workspace_path`，或通过
-  `on_conversation_change` 由宿主自行保存副本。
+- 如果依赖每个 run 一个新目录，请为每个 run 自行传入 `workspace_path`。如果每次 run 后删除
+  run 目录，请在会话可能继续期间保留该会话的目录。
+- 在不同的 `workspace_path` 中续聊时，由宿主把需要的文件复制过去；压缩归档的做法见
+  [把会话移到另一个 workspace](conversation-changes.md#把会话移到另一个-workspace)。不复制时，
+  run 照常继续，但历史会降级。
+- 升级后，不传 `workspace_path` 续聊已有会话时，第一次 run 会落在新的会话目录中，里面没有
+  之前的归档（它们在旧的按 run 建的目录和 `conversations/` 里）。除非用
+  `runner.resolve_runtime_path` 把归档复制到相同的逻辑路径，这次压缩会降级一次。
+- 删除对 `dagent.ConversationResourceError`、`HarnessRuntime.conversation_resources`，以及
+  上下文失败时可能带有的 `recovery_error` 属性的处理，它们都已不存在。
+- 为下一轮重建会话时保留 `ConversationState.id`：共用的 workspace 由它决定。
+- `Attachment.sha256` 需接受 `None`；如果用它给上传文件去重或校验，请改由宿主自行计算。
 - 若此前依赖 SDK 的完整性报错来发现结果文件被改，请改由宿主实现。
 - 若此前依赖 `OSError` 在展示文件写不进去时停止 `chunked` 或 `cache_aware` Run，请改为
   监听 `tool_result_storage_warning` 事件（`Runner.stream` 中为
   `capability.result.storage_warning`）或检查 `retention.storage_warnings`。
 
 无需迁移记录。ConversationState V4、RunState V6 和 RunCheckpoint V9 记录原样加载，包括
-带摘要的引用、早期版本的冻结展示，以及 backing store 中已有的归档。保持不变的部分：
-压缩归档的摘要及会话 backing store 在 run 边界的校验、上传写入校验、runtime 路径包含检查和外置 runtime 目录映射，以及
-`ResultStoragePolicy` 的全部字段。回归测试覆盖 ToolAgent、DagAgent 与验证器的
-`read_file` 规则、shell 溢出、冻结展示、压缩、跨 workspace 续聊和会话变化。
+带摘要的引用，以及早期版本的冻结展示和附件。保持不变的部分：压缩归档的内容寻址文件名
+和摘要、runtime 路径包含检查和外置 runtime 目录映射，以及 `ResultStoragePolicy` 的全部
+字段。回归测试覆盖 ToolAgent、DagAgent 与验证器的 `read_file` 规则、shell 溢出、冻结展示、
+压缩、会话 workspace、在其他 workspace 续聊、上传和会话变化。
 
 ## 0.10.4
 

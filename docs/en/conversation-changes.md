@@ -172,23 +172,55 @@ for resource in batch.resources:
     await host.save_file(path, resource.reference)
 ```
 
-Notified files are complete when the batch is delivered, and are notified
-without scanning directories. Two kinds of file are notified:
+A resource carries only the reference, never the file's contents: the host
+reads the file at that path, so it needs access to the run workspace (the same
+machine or a shared volume). Notified files are complete when the batch is
+delivered, and are notified without scanning directories. Three kinds of file
+are notified:
 
-- **Compaction archives** (sources and records, which carry a `sha256`). Save
-  these before acknowledging the batch if the host keeps history outside the
-  SDK store. A compaction archive restored into another workspace is notified
-  there even when its logical path is unchanged; this alone does not increase
-  the conversation revision.
-- **Tool-output overflow files** (no `sha256`). These are best-effort in the
-  **Unreleased** SDK: the SDK does not check them, and saving them is optional.
-  They are not restored into later workspaces, so a host that wants them later
-  must keep its own copy.
+- **Compaction archives** (sources, records and legacy result indexes, which
+  carry a `sha256`). They hold the original text of compacted messages.
+- **Tool-output overflow files** (no `sha256`). They are best-effort: the SDK
+  does not check them.
+- **Uploaded attachments** (`Attachment`). In the **Unreleased** SDK new
+  uploads carry no digest.
 
-References remain logical even with an absolute external runtime directory. The
-SDK backing store carries compaction archives across workspaces; this feature
-does not add a host file-restoration API or relocate existing data. Mutable
-attachments retain their existing upload-time metadata semantics.
+In the **Unreleased** SDK, saving any of them is optional. A conversation's runs
+share its workspace, so later turns find these files where earlier turns wrote
+them, and the SDK copies nothing between workspaces. References remain logical
+even with an absolute external runtime directory. Mutable attachments retain
+their existing upload-time metadata semantics.
+
+## Move a conversation to another workspace
+
+A continuation in another workspace (an explicit `workspace_path` that differs
+from the earlier one) finds none of the earlier files. It still runs: the
+conversation state and its summary are intact, but compaction marks history it
+can no longer read as unresolved, and the model cannot open earlier archives.
+To keep them, save the compaction archives as they are notified and write them
+back to the same logical paths in the new workspace before its first run:
+
+```python
+async def on_change(batch):
+    for resource in batch.resources:
+        reference = resource.reference
+        if isinstance(reference, dagent.ContentReference) and reference.sha256:
+            path = runner.resolve_runtime_path(
+                reference.path,
+                workspace_path=resource.workspace_path,
+                runtime_directory=resource.runtime_directory,
+            )
+            await host.save_archive(conversation_id, reference.path, path.read_bytes())
+
+# Before the first run in the new workspace:
+for logical_path, data in await host.load_archives(conversation_id):
+    target = runner.resolve_runtime_path(logical_path, workspace_path=new_workspace)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+```
+
+Copy uploads and overflow files the same way when they are needed. The SDK
+provides no restoration API and does not rewrite paths.
 
 ## Handle persistence failures
 

@@ -795,23 +795,18 @@ explicit unresolved ranges without repeating a model request for that source.
 Compaction writes its new source archive and record without first reading or
 verifying earlier history or any tool-output file. It reads only what it needs,
 the latest record and its own new source, without checking digests and without
-applying the model's read boundary. An earlier record it cannot read is not
-linked from the new record, which records `prior_coverage="unknown"` and
-unresolved history; the summary then carries `[DEGRADED_CONTEXT]`. Failed
-records that cannot be read are dropped from `compaction_state`, so the archive
-chain saved at the end of the Run names no missing file. An archive deleted
-during a Run that compaction never reads still fails that save.
+applying the model's read boundary. An earlier record it cannot read leaves the
+history it covered unresolved: the new record still links it, and the summary
+carries `[DEGRADED_CONTEXT]`. When a failed record that held a reusable
+replacement cannot be read, its source may be summarized again.
 
-At Run boundaries, every Run of one `Runner` uses the same conversation resource
-store, which saves the compaction-archive chain (records, sources and legacy
-result indexes) after a Run and restores it before the next. Tool-output files
-are not saved, restored or rewritten; their paths stay unchanged. The store
-records, in bounded memory, the archive files it has verified, so unchanged
-archives are not reread when a continued conversation is persisted or restored
-again. Changed archives are verified again, a deleted stored copy is rewritten,
-and a missing or corrupt archive still fails the next Run clearly. A new
-`Runner` or process verifies its archives afresh. These run-boundary checks are
-the only digest checks on compaction archives.
+Archives stay in the run workspace where they were written. In the
+**Unreleased** SDK a conversation's runs share one workspace, so later turns
+read them in place; the SDK no longer copies archives into a store or restores
+them into another workspace, and a missing archive no longer fails a Run. A
+continuation in another workspace runs without the earlier archives unless the
+host copies them there (see
+[conversation changes](conversation-changes.md#move-a-conversation-to-another-workspace)).
 
 ### Failure snapshots and cache verification
 

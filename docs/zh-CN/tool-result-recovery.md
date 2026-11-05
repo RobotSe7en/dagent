@@ -21,7 +21,8 @@
   被截断的内联结果标 `[RECOVERY_UNAVAILABLE: no saved original]`。
 
 溢出文件尽力写入。SDK 原子写入，但不保存摘要（`ContentReference.sha256` 为 `None`），
-不校验、不回读，也不复制到其他 run workspace。文件之后被改，读到的就是改后的内容；
+不校验、不回读，也不复制到其他 workspace。同一会话的 run 共用一个 workspace，所以之后的
+轮次能读到之前轮次的溢出文件。文件之后被改，读到的就是改后的内容；
 被删除时，由文件工具报告不存在。压缩既不检查也不复制这些文件。大的结构化值、二进制值
 和 MCP 产物属于数据而非展示文本，仍按大小写入文件，同样不带摘要；静态 DAG 节点读取
 上游值时，只有文件读不到才报错。
@@ -114,9 +115,9 @@ SDK 不会自动下载远端资源。
 `ContextSummary.result_manifest` 指向不可变的逐行索引，包含较早的工具结果和调用。
 运行时独立保留该入口，不依赖摘要模型记住路径。`result_archive_incomplete` 明确标记归档失败。
 后续压缩继续保留之前的索引条目；之前的索引已打不开时，新索引不含其条目，并设置
-`result_archive_incomplete`，压缩不会因此失败。压缩归档（压缩记录、源归档和该索引）是 SDK 跨 run
-workspace 保留的那部分历史，其中保存被压缩的消息和原样的结果；带溢出文件的结果只归档
-其路径，文件本身仍是尽力保存。
+`result_archive_incomplete`，压缩不会因此失败。压缩归档（压缩记录、源归档和该索引）留在
+写入它的 workspace 中，其中保存被压缩的消息和原样的结果；带溢出文件的结果只归档其路径，
+文件本身仍是尽力保存。
 
 `CapabilityResult.retention` 和 `ToolResultMessage.retention` 包含类型化的源头完整性、
 继续读取参数和存储告警，类型位于 `dagent.schemas.retention`。
@@ -124,8 +125,8 @@ workspace 保留的那部分历史，其中保存被压缩的消息和原样的�
 `ContextUsage` 区分结果正文/元信息 tokens、源头截断和恢复不可用数量；
 仅包含引用不算正文截断。
 
-跨环境恢复 checkpoint 时，需要同时保留工作区；希望之后几轮仍能读取溢出文件时，每个会话
-复用同一个 `workspace_path`。复制、保留期限、清理、脱敏和磁盘配额由宿主负责。
+跨环境恢复 checkpoint 时，需要同时保留工作区。把续聊移到另一个 `workspace_path` 时，除非
+自行复制过去，否则读不到之前的溢出文件和归档。复制、保留期限、清理、脱敏和磁盘配额由宿主负责。
 更积极的原文保存会增加磁盘占用，也可能保存敏感工具输出；关闭 Runner 不会自动删除这些文件。
 
 离线示例：`uv run python -m examples.tool_result_recovery`。

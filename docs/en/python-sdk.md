@@ -53,9 +53,10 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 
 In the **Unreleased** SDK, `ContentReference.sha256` is optional and is `None` for tool-output
 overflow files, large values and artifacts; compaction archives keep a digest.
-`FrozenResultDisplay.recovery` is `None` for a display that shows the complete
-result. See [tool result recovery](tool-result-recovery.md) and the
-[unreleased migration notes](migration.md#unreleased).
+`FrozenResultDisplay.recovery` is `None` when no file holds the undisplayed text.
+`Attachment.sha256` is `None` for new uploads. See [tool result
+recovery](tool-result-recovery.md) and the [unreleased migration
+notes](migration.md#unreleased).
 
 Since 0.10.0, opt-in prompt-cache statistics extend the existing `ModelTokenUsage`
 with nullable `cached_input_tokens`. See

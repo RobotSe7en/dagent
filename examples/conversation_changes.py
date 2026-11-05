@@ -1,4 +1,4 @@
-"""Persist change batches, resume a review, and continue without result snapshots.
+"""Persist change batches, resume a review, and continue in place or elsewhere.
 
 Run: uv run python -m examples.conversation_changes
 
@@ -32,9 +32,11 @@ class HostJournal:
     async def save(self, batch: dagent.ConversationChangeBatch) -> None:
         if batch.batch_id in self.receipts:
             return
-        # Copy notified files before acknowledging the batch. Tool-output files
-        # are best-effort: the SDK does not check them and a missing one is
-        # skipped. Compaction archives keep using the SDK backing store too.
+        # Copy notified files before acknowledging the batch. A batch carries
+        # only references, so the host reads each file itself. Files are
+        # best-effort: the SDK does not check them and a missing one is skipped.
+        # The SDK copies nothing between workspaces, so these copies are what
+        # a host writes back when it moves the conversation (see restore).
         for resource in batch.resources:
             source = self.runner.resolve_runtime_path(
                 resource.reference.path, workspace_path=resource.workspace_path,
@@ -49,6 +51,17 @@ class HostJournal:
             await asyncio.to_thread(target.write_bytes, data)
         await asyncio.to_thread(self._append, batch.model_dump_json())
         self.apply(batch)
+
+    def restore(self, workspace: Path) -> None:
+        # Write saved files back to their logical paths in another workspace.
+        saved = self.directory / "files"
+        for source in saved.rglob("*"):
+            if source.is_file():
+                target = self.runner.resolve_runtime_path(
+                    source.relative_to(saved).as_posix(), workspace_path=workspace,
+                )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
 
     def _append(self, line: str) -> None:
         # Keep full batches: terminal tool observations remain useful even
@@ -106,8 +119,8 @@ async def main() -> None:
     provider = MockProvider([
         ChatResponse(tool_calls=[ToolCall(id="report", name="tool_report", arguments={})]),
         ChatResponse(content="The approved report is ready."),
-        ChatResponse(content="The earlier report remains available."),
-        ChatResponse(content="Continued from the saved conversation in a new workspace."),
+        ChatResponse(content="The earlier report remains available in place."),
+        ChatResponse(content="Continued from the saved conversation in a moved workspace."),
     ])
     with TemporaryDirectory(prefix="dagent-changes-") as temporary:
         root = Path(temporary)
@@ -128,16 +141,22 @@ async def main() -> None:
                 if event.type == "run.finished":
                     assert journal.state == event.data.result.conversation
 
-            # Continue twice in fresh workspaces. Saved tool output keeps its
-            # original path and is not copied there; the host kept its copy.
-            for workspace in (root / "second", root / "third"):
+            # Continue twice. Without workspace_path the run uses the
+            # conversation's own workspace, where every earlier file still is.
+            # A moved conversation finds nothing there unless the host writes
+            # its saved copies back first.
+            saved = next(item.content for item in journal.state.items if isinstance(item, dagent.ToolResultMessage))
+            for workspace in (None, root / "moved"):
                 restored = journal.reload()
+                if workspace is not None:
+                    restored.restore(workspace)
                 result = await runner.run(
                     agent, input="Continue from the saved report.", conversation=restored.state,
                     workspace_path=workspace, on_conversation_change=restored.save,
                 )
                 assert restored.state == result.conversation
                 assert restored.reload().state == result.conversation
+                assert runner.resolve_runtime_path(saved.path, workspace_path=result.workspace_path).is_file()
             print(result.output_text)
             print(f"Replayed {len(restored.receipts)} batches; revision={restored.state.revision}")
 
