@@ -1259,6 +1259,8 @@ class DAGAgentLoop:
                         on_token=on_token,
                         on_event=on_event,
                         result_files=result_files,
+                        # Only a dynamic DAG's planner records node values.
+                        detach_values=record.kind == "dynamic_dag",
                     )
                 except StaticAgentReviewRequired:
                     raise

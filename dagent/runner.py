@@ -1387,7 +1387,12 @@ class Runner:
         usage_tracker = ExecutionUsageTracker()
         async with self._conversation_changes_scope(
             on_conversation_change, conversation, usage_tracker, resolved_execution,
-        ):
+        ) as publisher:
+            if publisher is not None and publisher.conversation is not None:
+                # The run works on the publisher's own copy, so the host's
+                # objects are never shared and unchanged messages are the same
+                # objects in the live state and the published baseline.
+                conversation = publisher.conversation
             with (
                 self._run_scope(
                     resolved_execution,

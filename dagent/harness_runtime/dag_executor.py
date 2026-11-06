@@ -156,6 +156,9 @@ class DAGExecutor:
         self.extra_system_prompt = extra_system_prompt
         # Set per layer: whether oversized display output may overflow to files.
         self.result_files = True
+        # Set per layer: whether node arguments and results are conversation
+        # records (dynamic DAGs) that nodes must only see copies of.
+        self.detach_values = True
 
     def configure_spec(
         self,
@@ -192,16 +195,19 @@ class DAGExecutor:
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         result_files: bool = True,
+        detach_values: bool = True,
     ) -> RunTrace:
         """Execute the next currently-ready DAG layer and return cumulative run trace.
 
         ``result_files`` is false when the model reading node results has no
         read_file capability; oversized display output is then kept inline,
         with a bounded display, instead of overflowing to a file. A
-        static DAG has no such model and keeps the default.
+        static DAG has no such model and keeps the default. ``detach_values``
+        is false for a static DAG, which keeps its own value handling.
         """
         self.partial_node_traces = {}
         self.result_files = result_files
+        self.detach_values = detach_values
         normalized = self.normalize(dag)
         validate_dag(normalized)
         self._enforce_review_gate(normalized)
@@ -514,6 +520,7 @@ class DAGExecutor:
                     policy=self.result_storage_policy,
                     on_event=on_event,
                     result_files=self.result_files,
+                    detach_value=self.detach_values,
                 )
                 capability_result = normalized.result
                 stored_content = normalized.content
@@ -725,6 +732,7 @@ class DAGExecutor:
                                 policy=self.result_storage_policy,
                                 on_event=on_event,
                                 result_files=self.result_files,
+                                detach_value=self.detach_values,
                             )
                         except ResultStorageError as exc:
                             failed_storage_node = RunTraceNode.capability_call(
@@ -883,6 +891,7 @@ class DAGExecutor:
                     on_token=on_token,
                     on_event=child_on_event,
                     result_files=self.result_files,
+                    detach_values=self.detach_values,
                 )
                 if trace.root.status == "completed":
                     break
@@ -929,6 +938,7 @@ class DAGExecutor:
             runtime_directory=self.runtime_directory,
             max_shell_output_bytes=self.result_storage_policy.max_shell_output_bytes,
             result_files=self.result_files,
+            detach_values=self.detach_values,
             task_id=dag.task_id,
             dag_id=dag.dag_id,
             spec_id=self.spec_id,

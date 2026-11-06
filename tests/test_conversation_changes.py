@@ -871,11 +871,19 @@ async def test_map_save_failure_retains_all_inflight_effects(tmp_path):
         assert all(child.status == "completed" for child in children)
 
 
+def call_item_updated(batch, state):
+    calls = {item.id for item in state.items if isinstance(item, dagent.AssistantMessage) and item.tool_calls}
+    return bool(calls & set(batch.context.updated_item_ids))
+
+
 @pytest.mark.asyncio
-async def test_nested_argument_mutation_is_replayed_and_continued(tmp_path):
+async def test_nested_argument_mutation_stays_in_the_tool_and_continues(tmp_path):
+    seen = []
+
     @dagent.tool
     def append(values: list) -> str:
         values.append("added")
+        seen.append(list(values))
         return "done"
 
     provider = MockProvider([
@@ -888,7 +896,10 @@ async def test_nested_argument_mutation_is_replayed_and_continued(tmp_path):
         result, _ = await invoke(runner, agent, host, False, input="append")
         assert host.state == result.conversation
         call = next(item for item in host.state.items if isinstance(item, dagent.AssistantMessage)).tool_calls[0]
-        assert call.arguments == {"values": ["original", "added"]}
+        # The tool changed its own copy; the call stays as the model made it.
+        assert seen == [["original", "added"]]
+        assert call.arguments == {"values": ["original"]}
+        assert not any(batch.context and call_item_updated(batch, host.state) for batch in host.batches)
         restored = dagent.ConversationState.model_validate_json(host.state.model_dump_json())
         await invoke(runner, agent, host, False, input="continue", conversation=restored)
         first_call = next(message for message in provider.requests[1]["messages"] if message.get("tool_calls"))

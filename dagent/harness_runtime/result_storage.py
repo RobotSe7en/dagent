@@ -35,6 +35,7 @@ from dagent.schemas.retention import ResultRetention, ResultStorageWarning
 from dagent.schemas.common import Boundary
 from dagent.capabilities.tools.boundary import enforce_path_allowed
 from dagent.capabilities.tools.runtime_paths import RuntimePaths
+from dagent.harness_runtime.capability_executor import detach_containers
 from dagent.harness_runtime.result_projection import file_readable_text, result_references
 
 
@@ -332,6 +333,7 @@ def normalize_capability_result(
     policy: ResultStoragePolicy,
     on_event: Callable[[dict[str, Any]], None] | None = None,
     result_files: bool = True,
+    detach_value: bool = True,
 ) -> NormalizedCapabilityResult:
     """Return a checkpoint-safe result plus model/audit content references.
 
@@ -489,7 +491,9 @@ def normalize_capability_result(
             "content": normalized_content,
             "content_reference": content_reference,
             "retention": retention,
-            "value": normalized_value,
+            # Recorded as returned: a tool that keeps and later changes the
+            # object does not change a conversation's result.
+            "value": detach_containers(normalized_value) if detach_value else normalized_value,
             "artifacts": normalized_artifacts,
             **normalized_text_fields,
         }
