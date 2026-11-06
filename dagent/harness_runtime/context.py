@@ -70,7 +70,9 @@ class HeuristicTokenCounter:
     def count_text(self, text: str) -> int:
         if not text:
             return 0
-        ascii_count = sum(ord(character) < 128 for character in text)
+        # Encoding drops every non-ASCII character, so this counts ASCII
+        # characters exactly, without a per-character Python loop.
+        ascii_count = len(text.encode("ascii", "ignore"))
         non_ascii_count = len(text) - ascii_count
         byte_estimate = math.ceil(len(text.encode("utf-8")) / 4)
         language_estimate = math.ceil(ascii_count / 4) + non_ascii_count

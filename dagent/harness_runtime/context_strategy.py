@@ -77,7 +77,7 @@ class _CompactionProgress:
         })
 
 
-def _source_key(item: Any, policy: ContextPolicy, namespace: str = "") -> str:
+def _source_key(item: Any, policy_view: dict[str, Any], namespace: str = "") -> str:
     # A new tail must not make a failed, unchanged old source eligible again.
     if isinstance(item, AssistantMessage):
         view = (item.content, item.refusal, [call.model_dump(mode="json") for call in item.tool_calls])
@@ -87,8 +87,17 @@ def _source_key(item: Any, policy: ContextPolicy, namespace: str = "") -> str:
     else:
         view = (item.call_id, item.name, item.status, item.model_display.text if item.model_display
                 else stored_content_text(item.content))
-    value = {"id": item.id, "view": view, "policy": policy.model_dump(), "namespace": namespace, "v": 1}
+    # policy_view is ContextPolicy.model_dump(); keys are persisted, so this
+    # value must stay byte-identical.
+    value = {"id": item.id, "view": view, "policy": policy_view, "namespace": namespace, "v": 1}
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def _payload_tokens(assembler: ContextAssembler, prepared: PreparedModelCall, request: ModelRequest) -> int:
+    """Local estimate of one prepared call's wire payload."""
+
+    tokens = assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
+    return tokens + 4 * len(request.items) + 8 * len(request.tools)
 
 
 def _eligible_slices(
@@ -196,11 +205,12 @@ async def _prepare_context(
     failure_snapshot = compaction_progress.snapshot
     source_keys: dict[int, tuple[Any, str]] = {}
     source_namespace = ""
+    policy_view = policy.model_dump()
 
     def source_key(item: Any) -> str:
         identity = id(item)
         if identity not in source_keys:
-            source_keys[identity] = (item, _source_key(item, policy, source_namespace))
+            source_keys[identity] = (item, _source_key(item, policy_view, source_namespace))
         return source_keys[identity][1]
     # Results are always shortened to their display budget. Overflow files are
     # written only when the model can open them: it has read_file and its read
@@ -240,6 +250,9 @@ async def _prepare_context(
         prepared = None
         count = None
         rejected = False
+        # The rough estimate and the call it was taken from; the final estimate
+        # reuses it while the call is unchanged, since the formula is the same.
+        rough_call = None
         if assembler.request_preparer is not None:
             prepared = frozen_call or await assembler.request_preparer(request, stream=stream)
             output = prepared.effective_max_output_tokens
@@ -248,8 +261,8 @@ async def _prepare_context(
             known_limits = [value for value in (assembler.configured_context_window_tokens,
                 assembler.server_max_model_len, assembler.model_context_window_tokens) if value is not None]
             known_window = min(known_limits) if known_limits else assembler.context_window_tokens
-            rough = assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
-            rough += 4 * len(request.items) + 8 * len(request.tools)
+            rough = _payload_tokens(assembler, prepared, request)
+            rough_call = prepared
             # The local estimate can overcount (for example CJK text) by more
             # than its safety margin, so it replaces an available count only
             # for a planning candidate far beyond any such overcount. The
@@ -317,8 +330,7 @@ async def _prepare_context(
             estimate = raw if exact else math.ceil(raw * (1 + policy.token_safety_margin))
         else:
             if prepared is not None:
-                raw = assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
-                raw += 4 * len(request.items) + 8 * len(request.tools)
+                raw = rough if prepared is rough_call else _payload_tokens(assembler, prepared, request)
             else:
                 raw = assembler.token_counter.count_request(model_request_to_chat(request, reasoning_field="reasoning"), request.tools)
             estimate = math.ceil(raw * (1 + policy.token_safety_margin))
@@ -741,9 +753,10 @@ async def _prepare_context(
             and not state.render_rejected and assembler.prepared_token_counter is not None):
         state = await project(force_count=True, frozen_call=state.call)
 
-    # Persist only markers that still refer to retained source items.
-    retained_failed = tuple(source_key(item) for item in working.items if source_key(item) in failed)
-    if summary_key() in failed:
+    # Persist only markers that still refer to retained source items. With
+    # no failure there is nothing to keep, so no item needs its key.
+    retained_failed = tuple(source_key(item) for item in working.items if source_key(item) in failed) if failed else ()
+    if failed and summary_key() in failed:
         retained_failed += (summary_key(),)
     retained_records = tuple(record for record in failed_records if set(record.source_keys) & set(retained_failed))
     compaction_state = CompactionState(failed_sources=retained_failed, failed_records=retained_records) if retained_failed else None

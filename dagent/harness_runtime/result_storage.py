@@ -122,7 +122,7 @@ class ResultStore:
         return _write_reference(
             self.workspace, root, target.name, data,
             media_type="text/plain; charset=utf-8", preview=_head_tail_preview(text),
-            paths=self.paths, hashed=True,
+            paths=self.paths, sha256=digest,
         )
 
     def text_reference(
@@ -585,11 +585,11 @@ def _write_reference(
     media_type: str,
     preview: str,
     paths: RuntimePaths | None = None,
-    hashed: bool = False,
+    sha256: str | None = None,
 ) -> ContentReference:
     return _write_chunks(
         workspace, root, filename, (data,), media_type=media_type, preview=preview,
-        paths=paths, hashed=hashed,
+        paths=paths, sha256=sha256,
     )
 
 
@@ -603,12 +603,14 @@ def _write_chunks(
     preview: str,
     paths: RuntimePaths | None = None,
     hashed: bool = False,
+    sha256: str | None = None,
 ) -> ContentReference:
     """Write one file atomically.
 
-    Only compaction archives are ``hashed``; their digest names and links them.
-    Tool output and data files carry no digest. An unnamed file is a hashed
-    result manifest.
+    Only compaction archives carry a digest; it names and links them. Pass a
+    digest the caller already has as ``sha256``, or ``hashed`` to compute it
+    while writing. Tool output and data files carry no digest. An unnamed file
+    is a hashed result manifest.
     """
 
     if filename is None and not hashed:
@@ -646,7 +648,7 @@ def _write_chunks(
         path=relative,
         media_type=media_type,
         byte_length=length,
-        sha256=digest.hexdigest() if digest is not None else None,
+        sha256=digest.hexdigest() if digest is not None else sha256,
         preview=preview,
     )
     note_resource(reference, workspace, (paths or RuntimePaths.current(workspace)).directory)
