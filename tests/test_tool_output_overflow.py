@@ -586,3 +586,16 @@ async def test_planner_without_read_file_sees_saved_observations_bounded_and_unr
     assert HeuristicTokenCounter().count_text(saved.preview) > 1000
     assert "[TRUNCATED]" in shown and "[RECOVERY_UNAVAILABLE: read_file unavailable]" in shown
     assert prepared.usage.unrecoverable_tool_results == 1
+
+
+@pytest.mark.parametrize("separator", ["\\\\r", "\\\\r\\\\n", "\\\\u2028"], ids=["cr", "crlf", "line_separator"])
+def test_shell_lines_split_by_any_line_break_overflow_to_a_complete_file(tmp_path, separator):
+    # The display counts lines like str.splitlines(); capture must count the
+    # same breaks, or lines past the limit are cut without being saved.
+    code = f"import sys; sys.stdout.write(''.join('line ' + str(i) + '{separator}' for i in range(3000)))"
+    output = _shell(tmp_path, _python(code), files=True)
+    reference = output.content_reference
+    assert reference is not None
+    saved = (tmp_path / reference["path"]).read_text(encoding="utf-8")
+    assert saved.splitlines()[2] == "line 0" and "line 2999" in saved
+    assert output.retention["source_completeness"] == "complete"

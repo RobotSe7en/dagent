@@ -619,6 +619,10 @@ async def _prepare_context(
                         root_key = summary_key()
                     else:
                         working, state = before, before_state
+                elif record.path in getattr(compactor, "unreadable_records", ()):
+                    # The earlier attempt is lost with its record, so the
+                    # current root may be tightened again.
+                    failed.discard(root_key)
         if (callable(tighten) and not tightened_root and not summarizer_unavailable and working.summary is not None
                 and root_key not in failed and state.estimate > state.input_budget):
             current_tokens = assembler.token_counter.count_text(working.summary.content)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import codecs
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import tempfile
@@ -17,6 +18,10 @@ from dagent.capabilities.tools.runtime_paths import RuntimePaths
 
 
 _TAIL_BYTES = 100_000
+# Every break str.splitlines() honours, so the inline line limit counts lines
+# the same way the shell display later truncates them. A CRLF split across two
+# reads counts twice, which only makes output overflow to its file sooner.
+_LINE_BREAKS = re.compile("\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
 # Room for the exit-status prefix and stream separators around the output, so
 # output kept inline is never shortened again by the caller's display limits.
 _INLINE_BYTE_MARGIN = 1024
@@ -108,12 +113,13 @@ def collect_output(
                 chunk = pipe.read(8192)
             except (OSError, ValueError):
                 break
-            data = decoder.decode(chunk or b"", final=not chunk).encode("utf-8")
+            text = decoder.decode(chunk or b"", final=not chunk)
+            data = text.encode("utf-8")
             with lock:
                 if closed:
                     break
                 received += len(data)
-                newlines += data.count(b"\n")
+                newlines += len(_LINE_BREAKS.findall(text))
                 binary = binary or b"\0" in data
                 tails[index].extend(data)
                 if overflowed:
