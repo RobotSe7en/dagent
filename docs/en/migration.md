@@ -7,6 +7,151 @@ that may require action when upgrading.
 
 The current stable package version is `0.10.4`.
 
+## Unreleased
+
+### Breaking changes: conversation workspaces and best-effort files
+
+This release changes where runs work and how the SDK stores files. All runs of a
+conversation now share one workspace, and the SDK no longer copies, restores or
+verifies files between workspaces. Overflow files are written only for a model
+that can read them and are never checked. New uploads carry no digest. Review
+these behavior changes before upgrading:
+
+- **One workspace per conversation.** Without `workspace_path`, a run now uses
+  `<workspace_root>/conversation_<key>`, where `<key>` is the first 32 hex
+  digits of the SHA-256 of `ConversationState.id`, instead of a new
+  `<workspace_root>/<run_id>` per run. A run without `conversation` starts a new
+  conversation and so gets a new directory; static DAG runs keep
+  `<workspace_root>/<run_id>`. Explicit `workspace_path` values, review
+  continuations and checkpoints are unchanged. Consequences: files that tools,
+  uploads and overflow write in one turn remain visible in later turns; a later
+  upload with the same file name overwrites the earlier one; concurrent runs of
+  one conversation share the directory without a lock; directories accumulate
+  per conversation instead of per run.
+- **No file carrying between workspaces.** The SDK no longer keeps copies of
+  compaction archives in `<runtime_directory>/conversations` and no longer
+  restores them into a new workspace at the start of a Run or verifies them at
+  its end. Archives stay where compaction wrote them, which is where the
+  conversation's next run reads them. `dagent.ConversationResourceError` is
+  removed, and a missing or changed archive no longer fails a Run. The existing
+  `conversations/` directory is no longer read or written and can be deleted.
+
+- **Overflow files require `read_file`.** A result longer than its display
+  limit is still shortened. Its full text is written to an overflow file only
+  when the model reading it can open that file: it has the built-in `read_file`
+  tool and, for a ToolAgent, its read boundary admits the runtime `results/` and
+  `history/` folders (for a DagAgent, `tool.read_file` in its capabilities).
+  Otherwise no file is written and the shortened display is marked
+  `[RECOVERY_UNAVAILABLE: no saved original]`. Text containing NUL, which
+  `read_file` cannot open, is handled the same way even with `read_file`.
+  `ValidatorAgent` and other tool-less profiled agents also shorten without
+  writing files. Static DAGs still store large values by size.
+- **No digest and no checks.** `ContentReference.sha256` is now optional and is
+  `None` for tool output, large values and artifacts. The SDK no longer verifies
+  size, digest or file identity when reading them, no longer rejects a changed
+  file, and no longer rereads a file it just wrote. A changed file is read as it
+  is; a missing one is reported by the reading tool. Static DAG dependents no
+  longer raise size or checksum mismatch errors for upstream values. Overflow
+  file names no longer contain a content hash.
+- **Shell output.** Output within the shell's inline limits (100,000 bytes and
+  2,000 lines) is returned whole and no longer written to a file. Larger output
+  is streamed to one overflow file only with `read_file`; without it, or when
+  the output contains NUL, only the tail is kept and marked `[SOURCE_TRUNCATED]`.
+- **Frozen displays (`chunked`, `cache_aware`).** `FrozenResultDisplay.recovery`
+  is now optional and is `None` for a display that shows the complete result,
+  or that was shortened for a model that cannot open files; no file is written
+  for it. A result already saved when received reuses that
+  file instead of a second snapshot. A missing recovery file no longer raises
+  `ResultBudgetExceeded`. The emergency transition reads no file, no longer
+  writes `previous_display`, and is made only when the model can open files;
+  otherwise every display stays as it is. A display file that cannot be written
+  no longer fails the Run with `OSError`: the result keeps a storage warning,
+  and a display shortened without its file is marked
+  `[RECOVERY_UNAVAILABLE: no saved original]`.
+- **Compaction.** Compaction no longer reads or verifies tool-output files,
+  no longer walks earlier archives before writing a new one, and no longer
+  lists tool-output references in `CompactionSourceV1.refs`. It reads the
+  earlier compaction record it needs without checking its digest and without
+  applying the model's read boundary. Legacy result manifests archive results
+  as they are instead of writing a file per result. Reference fallback requires
+  the `read_file` tool and a read boundary that admits the runtime files.
+- **Missing archives degrade.** An earlier record that compaction cannot read
+  no longer fails it: the history it covered is marked unresolved and the
+  summary carries `[DEGRADED_CONTEXT]`. When a failed record that held a
+  reusable replacement cannot be read, its source may be summarized again. An
+  earlier legacy result manifest that cannot be opened is left out of the new
+  one, which sets `result_archive_incomplete`.
+- **Display markers.** `[RECOVERY_UNAVAILABLE: read_file unavailable, path denied
+  or missing]` is no longer emitted. A shortened result with no file is marked
+  `[RECOVERY_UNAVAILABLE: no saved original]` (a model that cannot open files, a
+  failed write, or a tool-less validator); a result saved earlier that the model
+  cannot open is marked `[RECOVERY_UNAVAILABLE: read_file unavailable]`.
+- **Conversation changes.** Compaction archives are notified when written, as
+  before; they are no longer notified again when restored into another
+  workspace, since nothing is restored. Tool-output resources carry no digest.
+  Saving any notified file is optional.
+- **Uploads.** `Attachment.sha256` is now optional and is `None` for new
+  uploads; `byte_length` is still recorded. Uploads are written once and no
+  longer read back and checked; a short write still raises `OSError`. The model
+  sees `(<media type>, <n> bytes)` for a new attachment. Attachments from earlier
+  versions keep their digest, and their text is unchanged.
+- **Tools work on copies.** A capability handler called by a tool agent or a
+  dynamic DAG receives its own copy of the plain dicts, lists and tuples in its
+  arguments, and its result value is recorded as returned. A tool that changes
+  its arguments, or a returned object it still holds, no longer changes the
+  recorded call or result, and a dynamic DAG node that changes its arguments no
+  longer changes the planner's observation. Other objects are still shared;
+  static DAG runs are unchanged. With `on_conversation_change`, `run`
+  and `stream` use the SDK's own copy of the `conversation` you pass, so later
+  changes to your objects no longer reach it, and published messages are no
+  longer reported as updated because they were changed in place. Delivery no
+  longer copies the whole conversation for every batch.
+
+### Migration steps
+
+- Accept `None` wherever host code reads `ContentReference.sha256` or
+  `FrozenResultDisplay.recovery`.
+- Give agents that should recover shortened results the `tool.read_file`
+  capability and a read boundary that includes the runtime directory. Without
+  them the displays stay bounded, but the omitted text is not saved.
+- If you relied on a fresh directory per run, pass your own `workspace_path`
+  per run. If you deleted run directories after each run, keep the
+  conversation's directory for as long as the conversation may continue.
+- If you continue a conversation in a different `workspace_path`, copy the
+  files it needs there yourself; for compaction archives see [moving a
+  conversation to another workspace](conversation-changes.md#move-a-conversation-to-another-workspace).
+  Without them the run continues with degraded history.
+- After upgrading, the first continuation of an existing conversation without
+  `workspace_path` starts in its new conversation directory, which does not
+  hold the earlier archives (they are in the old per-run directories and in
+  `conversations/`). That compaction degrades once unless you copy the archives
+  to the same logical paths with `runner.resolve_runtime_path`.
+- Remove handling of `dagent.ConversationResourceError`, of
+  `HarnessRuntime.conversation_resources`, and of the `recovery_error` attribute
+  that context failures could carry; none of them exists any more.
+- Keep `ConversationState.id` when you rebuild a conversation for the next turn:
+  the shared workspace is chosen by it.
+- Accept `None` for `Attachment.sha256`, and compute a digest yourself if you
+  deduplicated or verified uploads with it.
+- If a tool passed information back by changing its arguments, return it
+  instead. Treat the `conversation` you pass as read-only while a run uses it.
+- If you relied on SDK integrity errors to detect changed result files, enforce
+  that in the host.
+- If you relied on `OSError` to stop a `chunked` or `cache_aware` Run when a
+  display file cannot be written, watch `tool_result_storage_warning` events
+  (`capability.result.storage_warning` in `Runner.stream`) or
+  `retention.storage_warnings` instead.
+
+No record migration is required. ConversationState V4, RunState V6 and
+RunCheckpoint V9 records load unchanged, including references that carry a
+digest, frozen displays and attachments from earlier versions. Unchanged:
+compaction archives keep their content-addressed names and digests,
+runtime-path containment and external runtime directory mapping, and all
+`ResultStoragePolicy` fields. Regression coverage includes the `read_file` rule
+for ToolAgent, DagAgent and validators, shell overflow, frozen displays,
+compaction, conversation workspaces, continuation in another workspace, uploads
+and conversation changes.
+
 ## 0.10.4
 
 Install with `pip install --upgrade 'dagent-ai==0.10.4'`.

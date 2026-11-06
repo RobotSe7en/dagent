@@ -155,7 +155,7 @@ async def test_parallel_results_do_not_share_the_deprecated_total_budget(total_b
         max_tool_result_tokens=1024, max_total_tool_result_tokens=total_budget,
     ).model_dump_json())
     prepared = await ContextAssembler().prepare(
-        system_message={"content": "Inspect"}, conversation=conversation, policy=policy,
+        system_message={"content": "Inspect"}, conversation=conversation, tools=[READ_TOOL], policy=policy,
     )
     assert prepared.usage.tool_result_tokens == 3072
     assert prepared.usage.compacted_items == 0

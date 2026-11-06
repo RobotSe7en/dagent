@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import codecs
-import hashlib
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import tempfile
@@ -17,6 +17,17 @@ from dagent.capabilities.tools.registry import ToolOutput
 from dagent.capabilities.tools.runtime_paths import RuntimePaths
 
 
+_TAIL_BYTES = 100_000
+# Every break str.splitlines() honours, so the inline line limit counts lines
+# the same way the shell display later truncates them. A CRLF split across two
+# reads counts twice, which only makes output overflow to its file sooner.
+_LINE_BREAKS = re.compile("\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+# Room for the exit-status prefix and stream separators around the output, so
+# output kept inline is never shortened again by the caller's display limits.
+_INLINE_BYTE_MARGIN = 1024
+_INLINE_LINE_MARGIN = 8
+
+
 def collect_output(
     process: Any,
     *,
@@ -26,7 +37,21 @@ def collect_output(
     timeout: int,
     cancel: threading.Event | None,
     stop: Callable[[], None],
+    files: bool = True,
+    inline_bytes: int = _TAIL_BYTES,
+    inline_lines: int = 2000,
 ) -> tuple[ToolOutput, str | None]:
+    """Collect stdout/stderr with bounded memory.
+
+    Output within ``inline_bytes``/``inline_lines`` is returned whole and no
+    file is written. Beyond them, with ``files`` the complete output (up to
+    ``max_bytes``) is streamed to one overflow file whose path is reported but
+    never checked; without ``files`` only an in-memory tail of each stream is
+    kept and the result is marked partial. Output containing NUL is never
+    saved to a file, since read_file cannot open it; beyond the limits only
+    its tail is kept, as without ``files``.
+    """
+
     relative = PurePosixPath(runtime_directory)
     if ".." in relative.parts and not relative.is_absolute():
         raise ValueError("Invalid result directory.")
@@ -35,12 +60,14 @@ def collect_output(
     root = (runtime_paths.root / "results").resolve()
     root.relative_to(runtime_paths.boundary)
     lock = threading.Lock()
+    # Each tail holds its complete stream until the inline limits are crossed.
+    inline_bytes = min(inline_bytes, _TAIL_BYTES)
     tails = [bytearray(), bytearray()]
     handles: list[Any] = [None, None]
     paths: list[Path] = []
     failures: list[dict[str, str]] = []
-    received = retained = 0
-    closed = False
+    received = retained = newlines = 0
+    overflowed = closed = binary = False
 
     def warn(exc: OSError) -> None:
         if not failures:
@@ -52,41 +79,57 @@ def collect_output(
                 }
             )
 
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        for index in range(2):
-            fd, path = tempfile.mkstemp(prefix=".shell-", dir=root)
-            handles[index] = os.fdopen(fd, "wb")
-            paths.append(Path(path))
-    except OSError as exc:
-        warn(exc)
+    def write(index: int, data: bytes) -> None:
+        nonlocal retained
+        allowed = max(0, max_bytes - retained)
+        if handles[index] is None or failures or binary or not allowed:
+            return
+        # Cut only on a UTF-8 character boundary.
+        saved = data[:allowed].decode("utf-8", errors="ignore").encode("utf-8")
+        try:
+            handles[index].write(saved)
+            retained += len(saved)
+        except OSError as exc:
+            warn(exc)
+
+    def open_files() -> None:
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            for index in range(2):
+                fd, path = tempfile.mkstemp(prefix=".shell-", dir=root)
+                handles[index] = os.fdopen(fd, "wb")
+                paths.append(Path(path))
+        except OSError as exc:
+            warn(exc)
+            return
+        for index, tail in enumerate(tails):
+            write(index, bytes(tail))
 
     def drain(index: int, pipe: Any) -> None:
-        nonlocal received, retained
+        nonlocal received, newlines, overflowed, binary
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         while True:
             try:
                 chunk = pipe.read(8192)
             except (OSError, ValueError):
                 break
-            data = decoder.decode(chunk or b"", final=not chunk).encode("utf-8")
+            text = decoder.decode(chunk or b"", final=not chunk)
+            data = text.encode("utf-8")
             with lock:
                 if closed:
                     break
                 received += len(data)
+                newlines += len(_LINE_BREAKS.findall(text))
+                binary = binary or b"\0" in data
                 tails[index].extend(data)
-                del tails[index][:-100_000]
-                allowed = max(0, max_bytes - retained)
-                if handles[index] is not None and not failures and allowed:
-                    # Cut only on a UTF-8 character boundary.
-                    saved = (
-                        data[:allowed].decode("utf-8", errors="ignore").encode("utf-8")
-                    )
-                    try:
-                        handles[index].write(saved)
-                        retained += len(saved)
-                    except OSError as exc:
-                        warn(exc)
+                if overflowed:
+                    write(index, data)
+                elif (received + _INLINE_BYTE_MARGIN > inline_bytes
+                        or newlines + _INLINE_LINE_MARGIN > inline_lines):
+                    overflowed = True
+                    if files and not binary:
+                        open_files()
+                del tails[index][:-_TAIL_BYTES]
             if not chunk:
                 break
 
@@ -127,6 +170,7 @@ def collect_output(
     prefix = f"exit_code={process.returncode}"
     if reason:
         prefix = reason + "\n" + prefix
+    # Within the inline limits each tail still holds its complete stream.
     preview = "\n".join(
         part
         for part in (
@@ -135,9 +179,17 @@ def collect_output(
         )
         if part
     )
-    partial = received > retained or unfinished or bool(reason)
+    saved = overflowed and len(paths) == 2 and not failures and not binary
+    if not overflowed:
+        kept = received
+    elif saved:
+        kept = retained
+    else:
+        kept = sum(len(tail) for tail in tails)
+    limited = received > kept
+    partial = limited or unfinished or bool(reason)
     reference = None
-    if not failures:
+    if saved:
         target: Path | None = None
         try:
             fd, name = tempfile.mkstemp(prefix="shell-", suffix=".txt", dir=root)
@@ -151,19 +203,11 @@ def collect_output(
                     output.write(b"\n")
                 output.flush()
                 os.fsync(output.fileno())
-            digest = hashlib.sha256()
-            with target.open("rb") as source:
-                for chunk in iter(lambda: source.read(65536), b""):
-                    digest.update(chunk)
-            final = root / f"shell-{digest.hexdigest()}.txt"
-            os.replace(target, final)
-            target = final
             reference = {
                 "type": "dagent_content_reference",
                 "path": runtime_paths.relative(target),
                 "media_type": "text/plain; charset=utf-8",
                 "byte_length": target.stat().st_size,
-                "sha256": digest.hexdigest(),
                 "preview": preview,
             }
         except OSError as exc:
@@ -188,14 +232,14 @@ def collect_output(
                 else reason
                 or (
                     "capture_limit"
-                    if received > retained
+                    if limited
                     else "open_pipe"
                     if unfinished
                     else None
                 )
             ),
             "received_bytes": received,
-            "retained_bytes": retained,
+            "retained_bytes": kept,
             "storage_warnings": failures,
             "exit_code": process.returncode,
         },

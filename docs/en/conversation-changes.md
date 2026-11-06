@@ -123,6 +123,19 @@ conversation and its existing resources when enabling delivery on an established
 conversation. System prompts are generated separately and are not history.
 Internal audit is not a replacement for an internal model-thread checkpoint.
 
+### Object ownership
+
+Every batch, including a failed batch reported by `ConversationChangeError`, is
+a copy: the host may change what it receives without affecting the run. For
+`run` and `stream`, the SDK copies the `conversation` you pass once when
+delivery starts and runs on that copy, so changing your own objects during the
+run does not reach it either; a review continuation runs on its checkpoint, so
+treat the checkpoint as read-only while `resume` uses it. The SDK never changes
+a published message in place: tools of a tool agent or dynamic DAG work on
+copies of their arguments, and results are recorded as returned. That is
+what lets delivery keep earlier states by reference instead of copying the whole
+conversation for every batch.
+
 ## Correlate streams and preserve interruption evidence
 
 When enabled, response start, content/reasoning delta, and finish events carry
@@ -172,15 +185,55 @@ for resource in batch.resources:
     await host.save_file(path, resource.reference)
 ```
 
-Save required file bytes before acknowledging references. SDK-created result
-files, received/display snapshots, compaction sources/records, and newly
-materialized references are notified without scanning directories. A restored
-workspace location is notified even when its logical path is unchanged; this
-alone does not increase the conversation revision. References
-remain logical even with an absolute external runtime directory. Existing SDK
-backing-store restoration remains responsible for cross-workspace continuation;
-this feature does not add a host file-restoration API or relocate existing data.
-Mutable attachments retain their existing upload-time metadata semantics.
+A resource carries only the reference, never the file's contents: the host
+reads the file at that path, so it needs access to the run workspace (the same
+machine or a shared volume). Notified files are complete when the batch is
+delivered, and are notified without scanning directories. Three kinds of file
+are notified:
+
+- **Compaction archives** (sources, records and legacy result indexes, which
+  carry a `sha256`). They hold the original text of compacted messages.
+- **Tool-output overflow files** (no `sha256`). They are best-effort: the SDK
+  does not check them.
+- **Uploaded attachments** (`Attachment`). In the **Unreleased** SDK new
+  uploads carry no digest.
+
+In the **Unreleased** SDK, saving any of them is optional. A conversation's runs
+share its workspace, so later turns find these files where earlier turns wrote
+them, and the SDK copies nothing between workspaces. References remain logical
+even with an absolute external runtime directory. Mutable attachments retain
+their existing upload-time metadata semantics.
+
+## Move a conversation to another workspace
+
+A continuation in another workspace (an explicit `workspace_path` that differs
+from the earlier one) finds none of the earlier files. It still runs: the
+conversation state and its summary are intact, but compaction marks history it
+can no longer read as unresolved, and the model cannot open earlier archives.
+To keep them, save the compaction archives as they are notified and write them
+back to the same logical paths in the new workspace before its first run:
+
+```python
+async def on_change(batch):
+    for resource in batch.resources:
+        reference = resource.reference
+        if isinstance(reference, dagent.ContentReference) and reference.sha256:
+            path = runner.resolve_runtime_path(
+                reference.path,
+                workspace_path=resource.workspace_path,
+                runtime_directory=resource.runtime_directory,
+            )
+            await host.save_archive(conversation_id, reference.path, path.read_bytes())
+
+# Before the first run in the new workspace:
+for logical_path, data in await host.load_archives(conversation_id):
+    target = runner.resolve_runtime_path(logical_path, workspace_path=new_workspace)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+```
+
+Copy uploads and overflow files the same way when they are needed. The SDK
+provides no restoration API and does not rewrite paths.
 
 ## Handle persistence failures
 

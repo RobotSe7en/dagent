@@ -22,7 +22,6 @@ from dagent.harness_runtime.runtime import HarnessRuntime, RuntimeMode
 from dagent.harness_runtime.capability_executor import CapabilityExecutionError, CapabilityExecutor
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
-from dagent.harness_runtime.conversation_resources import ConversationResourceError
 from dagent.schemas import (
     LoopOutcome,
     ValidationIssue,
@@ -51,7 +50,6 @@ __all__ = [
     "HarnessRuntime",
     "CapabilityExecutionError",
     "CapabilityExecutor",
-    "ConversationResourceError",
     "RuntimeMode",
     "inspect_dag_spec",
     "validate_dag_spec",

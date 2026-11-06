@@ -103,6 +103,15 @@ previous_state = dagent.ConversationState(
 继续传入现有 `conversation=`。在已有会话上开始订阅时，应保留初始状态及其现有引用
 文件。system prompt 每次独立生成，不进入历史。内部审计不能代替内部线程 checkpoint。
 
+### 对象所有权
+
+每个批次（包括 `ConversationChangeError` 报告的失败批次）都是拷贝：宿主可以随意修改收到的
+对象，不会影响 run。对 `run` 和 `stream`，开始交付时 SDK 会把传入的 `conversation` 复制一次，
+并在这份拷贝上运行，所以 run 期间修改宿主自己的对象也不会影响 SDK；审批续跑在 checkpoint
+上运行，`resume` 使用期间请把 checkpoint 当作只读。SDK 不会原地修改已发布的消息：tool agent
+和动态 DAG 的工具拿到的是参数的拷贝，结果按返回那一刻记录。正因
+如此，交付时才能按引用保存之前的状态，而不必每个批次都复制整个会话。
+
 ## 关联流式内容和保留中断证据
 
 启用后，响应开始、正文/推理增量和响应结束事件携带生成前分配的 SDK `message_id`。
@@ -143,11 +152,44 @@ for resource in batch.resources:
     await host.save_file(path, resource.reference)
 ```
 
-确认引用前保存需要的文件字节。SDK 新形成的工具结果、接收/展示快照、压缩源归档和
-压缩记录，以及新物化的引用位置均会通知，不扫描整个目录。即使逻辑路径不变，新恢复的
-workspace 文件位置也会通知；仅此变化不增加会话 revision。绝对 runtime 目录下，
-引用仍使用逻辑路径。跨 workspace 续接继续使用已有 SDK backing store；本能力不
-新增宿主文件恢复 API，也不迁移旧文件。可变附件继续采用现有上传时元数据语义。
+资源通知只带引用，不带文件内容：宿主要按路径自己读取文件，因此需要能访问 run workspace
+（同一台机器或共享卷）。交付时通知的文件已写完，通知不扫描整个目录。通知的文件有三类：
+
+- **压缩归档**（源归档、压缩记录和旧版结果索引，带 `sha256`），保存被压缩消息的原文；
+- **工具输出溢出文件**（不带 `sha256`），尽力保存，SDK 不校验；
+- **上传附件**（`Attachment`），在 **Unreleased** SDK 中新上传的附件不带摘要。
+
+在 **Unreleased** SDK 中，这些文件宿主都可以不存。同一会话的 run 共用 workspace，之后的
+轮次在原处就能找到之前写的文件，SDK 不在 workspace 之间复制任何文件。绝对 runtime 目录下，
+引用仍使用逻辑路径。可变附件继续采用现有上传时元数据语义。
+
+## 把会话移到另一个 workspace
+
+在另一个 workspace 续聊（显式传入与之前不同的 `workspace_path`）时，之前的文件都不在。
+续聊照常进行：会话状态和摘要都在，但压缩会把读不到的历史标为未完全覆盖，模型也打不开
+之前的归档。需要保留时，在收到通知时保存压缩归档，并在新 workspace 第一次运行前写回原
+逻辑路径：
+
+```python
+async def on_change(batch):
+    for resource in batch.resources:
+        reference = resource.reference
+        if isinstance(reference, dagent.ContentReference) and reference.sha256:
+            path = runner.resolve_runtime_path(
+                reference.path,
+                workspace_path=resource.workspace_path,
+                runtime_directory=resource.runtime_directory,
+            )
+            await host.save_archive(conversation_id, reference.path, path.read_bytes())
+
+# 在新 workspace 第一次运行前：
+for logical_path, data in await host.load_archives(conversation_id):
+    target = runner.resolve_runtime_path(logical_path, workspace_path=new_workspace)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+```
+
+需要上传文件和溢出文件时，按同样方式复制。SDK 不提供恢复 API，也不改写路径。
 
 ## 处理保存失败
 

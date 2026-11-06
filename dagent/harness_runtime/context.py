@@ -10,11 +10,13 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from dagent.harness_runtime.result_storage import ResultStore
-from dagent.harness_runtime.conversation_resources import ConversationResourceIndex
 from dagent.harness_runtime.result_projection import (
     ResultBudgetExceeded,
+    ResultOverflow,
+    file_readable_text,
     project_result,
     project_results,
+    read_file_available,
     result_references,
 )
 
@@ -37,6 +39,7 @@ from dagent.schemas.context import (
 )
 from dagent.schemas.conversation import (
     AssistantMessage,
+    ContentReference,
     ContextSummary,
     ConversationItem,
     ConversationState,
@@ -67,7 +70,9 @@ class HeuristicTokenCounter:
     def count_text(self, text: str) -> int:
         if not text:
             return 0
-        ascii_count = sum(ord(character) < 128 for character in text)
+        # Encoding drops every non-ASCII character, so this counts ASCII
+        # characters exactly, without a per-character Python loop.
+        ascii_count = len(text.encode("ascii", "ignore"))
         non_ascii_count = len(text) - ascii_count
         byte_estimate = math.ceil(len(text.encode("utf-8")) / 4)
         language_estimate = math.ceil(ascii_count / 4) + non_ascii_count
@@ -129,6 +134,10 @@ def _context_results(items: Sequence[ConversationItem]) -> list[ToolResultMessag
     return results
 
 
+def _file_readable_result(item: ToolResultMessage | ResultObservation) -> bool:
+    return isinstance(item.content, ContentReference) or file_readable_text(item.content.text)
+
+
 def _store_results(
     conversation: ConversationState,
     result_ids: set[str],
@@ -142,7 +151,8 @@ def _store_results(
             item = store.ensure(item)
         elif isinstance(item, UserMessage) and item.result_observations:
             item = item.model_copy(update={"result_observations": tuple(
-                store.ensure(result) if f"{item.id}/{result.id}" in result_ids else result
+                store.ensure(result, identity=f"{item.id}/{result.id}")
+                if f"{item.id}/{result.id}" in result_ids else result
                 for result in item.result_observations
             )})
         saved.append(item)
@@ -214,7 +224,6 @@ class ContextAssembler:
         self.request_preparer = request_preparer
         self.prepared_token_counter = prepared_token_counter
         self.estimator = "custom" if token_counter is not None else "heuristic"
-        self._compaction_resource_index: ConversationResourceIndex | None = None
 
     async def prepare(
         self,
@@ -233,7 +242,17 @@ class ContextAssembler:
         result_store: ResultStore | None = None,
         history_compactor: Any = None,
         enable_new_strategy: bool = False,
+        result_overflow: ResultOverflow | None = None,
     ) -> PreparedModelContext:
+        """Assemble one model request.
+
+        ``result_overflow`` says how tool results beyond their display budget
+        are handled; when omitted it is ``"file"`` if the model can open saved
+        files (``tools`` include read_file and the store's read boundary admits
+        them) and ``"truncate"`` otherwise. The new strategies always follow
+        ``tools``.
+        """
+
         if enable_new_strategy and policy.compaction_strategy != "legacy":
             from dagent.harness_runtime.context_strategy import prepare_context
 
@@ -256,32 +275,40 @@ class ContextAssembler:
             requested=max_output_tokens,
         )
 
-        read_enabled = any("read_file" in str(tool.get("function", tool).get("name", "")) for tool in tools)
-        def can_read_result(item: ToolResultMessage | ResultObservation) -> bool:
-            return read_enabled and (result_store is None or result_store.can_read(item))
-        # Materialize only results actually being shortened. Persist the updated
-        # typed items before the next projection so retries reuse the reference.
-        if result_store is not None:
+        files = read_file_available(tools) and (result_store is None or result_store.files_readable())
+        overflow = result_overflow or ("file" if files else "truncate")
+        # Write overflow files only for results actually being shortened, and
+        # only when the model can read them. Persist the updated typed items
+        # before the next projection so retries reuse the reference. Text with
+        # NUL gets no file, since read_file could not open it.
+        if result_store is not None and overflow == "file":
             results = _context_results(working.items)
             to_save: set[str] = set()
             for item in results:
+                if not _file_readable_result(item):
+                    continue
                 try:
                     projected = project_result(
                         item, policy.max_tool_result_tokens, self.token_counter,
-                        read_available=can_read_result(item),
+                        read_available=True,
                     )
                     if projected.truncated:
                         to_save.add(item.id)
                 except ResultBudgetExceeded:
                     to_save.add(item.id)
             working = _store_results(working, to_save, result_store)
-        readable_result_ids = frozenset(item.id for item in _context_results(working.items) if can_read_result(item))
+        # Every result is shortened to its display budget; one without a
+        # file is marked as having no saved original. Without file access,
+        # saved files are marked as ones the model cannot open.
+        can_open_files = overflow == "file"
+        readable_result_ids = frozenset(item.id for item in _context_results(working.items))
         def read_available(item: ToolResultMessage | ResultObservation) -> bool:
             return item.id in readable_result_ids
         while True:
             try:
                 project_results(_context_results(working.items),
-                                policy, self.token_counter, read_available=read_available)
+                                policy, self.token_counter, read_available=read_available,
+                                can_open_files=can_open_files)
                 break
             except ResultBudgetExceeded as exc:
                 groups = _atomic_groups(working.items, start=0, end=len(working.items))
@@ -311,6 +338,7 @@ class ContextAssembler:
                 reasoning_effort=reasoning_effort,
                 purpose=purpose,
                 readable_result_ids=readable_result_ids,
+                can_open_files=can_open_files,
             )
             estimate, exact_count = await self._safe_estimate(request, policy, stream=stream)
             return request, projection, estimate, exact_count
@@ -553,9 +581,13 @@ class ContextAssembler:
         archive_incomplete = conversation.summary.result_archive_incomplete if conversation.summary else False
         if result_store:
             try:
-                manifest = result_store.archive(conversation.summary, compactable)
+                manifest, earlier_lost = result_store.archive(conversation.summary, compactable)
             except OSError:
                 archive_incomplete = True
+            else:
+                # An earlier manifest that could not be opened leaves its
+                # results out of the new one instead of failing compaction.
+                archive_incomplete = archive_incomplete or earlier_lost
         elif _context_results(compactable):
             archive_incomplete = True
         summary_limit, _ = self.compaction_limits(policy.summary_max_tokens)
@@ -620,6 +652,7 @@ class ContextAssembler:
         purpose: Literal["generation", "compaction"],
         readable_result_ids: frozenset[str] = frozenset(),
         strict_context_budget: bool = False,
+        can_open_files: bool | None = None,
     ) -> tuple[ModelRequest, "_ProjectionUsage"]:
         items: list[ModelUserInput | ModelAssistantTurn | ModelToolResultInput] = []
         summary_tokens = 0
@@ -646,6 +679,7 @@ class ContextAssembler:
             _context_results(conversation.items),
             policy, self.token_counter,
             read_available=lambda item: item.id in readable_result_ids,
+            can_open_files=can_open_files,
         )
 
         for item in conversation.items:
@@ -988,8 +1022,10 @@ def user_content_for_model(item: UserMessage) -> str:
         *[
             (
                 f"- {attachment.path} "
-                f"({attachment.media_type}, {attachment.byte_length} bytes, "
-                f"sha256={attachment.sha256})"
+                f"({attachment.media_type}, {attachment.byte_length} bytes"
+                # Only uploads from earlier versions carry a digest; it stays
+                # in their text so existing history renders unchanged.
+                + (f", sha256={attachment.sha256})" if attachment.sha256 else ")")
             )
             for attachment in item.attachments
         ],

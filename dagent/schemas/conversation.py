@@ -33,7 +33,11 @@ class InlineContent(BaseModel):
 
 
 class ContentReference(BaseModel):
-    """Workspace-relative reference to normalized run output."""
+    """Workspace-relative reference to normalized run output.
+
+    Tool output and data files are written best-effort without a digest, so
+    ``sha256`` is ``None`` for them; compaction archives still carry one.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -41,7 +45,7 @@ class ContentReference(BaseModel):
     path: str = Field(min_length=1)
     media_type: str = "application/octet-stream"
     byte_length: int = Field(ge=0)
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     preview: str = ""
 
     @model_validator(mode="after")
@@ -68,12 +72,18 @@ class ToolCallItem(BaseModel):
 
 
 class FrozenResultDisplay(BaseModel):
-    """Exact model-visible result text and its immutable received snapshot."""
+    """Exact model-visible result text and the file holding undisplayed text.
+
+    ``recovery`` is ``None`` when no file holds the undisplayed text: the
+    display shows the complete result, or it was shortened without a file
+    (the model cannot open files, the text contains NUL, or the write
+    failed). Only ``displayed_spans`` and the display text tell these apart.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     text: str
-    recovery: ContentReference
+    recovery: ContentReference | None = None
     displayed_spans: tuple[tuple[int, int], ...] = ()
     revision: Literal[0, 1] = 0
     previous_display: ContentReference | None = None
@@ -120,8 +130,10 @@ class ResultObservation(_OptionalDisplay):
 class Attachment(BaseModel):
     """Upload-time metadata for a mutable, workspace-relative user file.
 
-    Size and digest describe the received bytes, not the current file. Hosts
-    own file continuation and original snapshots; historical paths may be absent.
+    The size describes the received bytes, not the current file. New uploads
+    carry no digest (``sha256`` is ``None``); records from earlier versions
+    keep theirs. Hosts own file continuation and original snapshots;
+    historical paths may be absent.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -131,7 +143,7 @@ class Attachment(BaseModel):
     path: str = Field(min_length=1)
     media_type: str = "application/octet-stream"
     byte_length: int = Field(ge=0)
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_path(self) -> "Attachment":

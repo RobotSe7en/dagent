@@ -22,10 +22,9 @@ from dagent.harness_runtime.compaction import (
 )
 from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.frozen_results import (
-    RecoveryAccess, freeze_result_displays, reference_frozen_result_displays,
-    validate_frozen_result_recovery,
+    freeze_result_displays, reference_frozen_result_displays,
 )
-from dagent.harness_runtime.result_projection import ResultBudgetExceeded
+from dagent.harness_runtime.result_projection import ResultBudgetExceeded, read_file_available
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import StructuredOutputFormat
 from dagent.providers.model_io import (
@@ -78,7 +77,7 @@ class _CompactionProgress:
         })
 
 
-def _source_key(item: Any, policy: ContextPolicy, namespace: str = "") -> str:
+def _source_key(item: Any, policy_view: dict[str, Any], namespace: str = "") -> str:
     # A new tail must not make a failed, unchanged old source eligible again.
     if isinstance(item, AssistantMessage):
         view = (item.content, item.refusal, [call.model_dump(mode="json") for call in item.tool_calls])
@@ -88,8 +87,17 @@ def _source_key(item: Any, policy: ContextPolicy, namespace: str = "") -> str:
     else:
         view = (item.call_id, item.name, item.status, item.model_display.text if item.model_display
                 else stored_content_text(item.content))
-    value = {"id": item.id, "view": view, "policy": policy.model_dump(), "namespace": namespace, "v": 1}
+    # policy_view is ContextPolicy.model_dump(); keys are persisted, so this
+    # value must stay byte-identical.
+    value = {"id": item.id, "view": view, "policy": policy_view, "namespace": namespace, "v": 1}
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def _payload_tokens(assembler: ContextAssembler, prepared: PreparedModelCall, request: ModelRequest) -> int:
+    """Local estimate of one prepared call's wire payload."""
+
+    tokens = assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
+    return tokens + 4 * len(request.items) + 8 * len(request.tools)
 
 
 def _eligible_slices(
@@ -197,14 +205,17 @@ async def _prepare_context(
     failure_snapshot = compaction_progress.snapshot
     source_keys: dict[int, tuple[Any, str]] = {}
     source_namespace = ""
+    policy_view = policy.model_dump()
 
     def source_key(item: Any) -> str:
         identity = id(item)
         if identity not in source_keys:
-            source_keys[identity] = (item, _source_key(item, policy, source_namespace))
+            source_keys[identity] = (item, _source_key(item, policy_view, source_namespace))
         return source_keys[identity][1]
-    access = RecoveryAccess.from_tools(result_store, tools) if result_store else None
-    validate_frozen_result_recovery(working, access)
+    # Results are always shortened to their display budget. Overflow files are
+    # written only when the model can open them: it has read_file and its read
+    # boundary admits the runtime result folders.
+    files = read_file_available(tools) and (result_store is None or result_store.files_readable())
     requested_output = max_output_tokens if max_output_tokens is not None else assembler.max_output_tokens
     automatic_output = requested_output is None
     if requested_output is None:
@@ -215,11 +226,11 @@ async def _prepare_context(
     unprojected = working
     new_ids = {item.id for item in _context_results(working.items) if item.model_display is None}
     if new_ids:
-        if result_store is None or access is None:
+        if result_store is None:
             raise ValueError("The new context strategy requires result storage for tool results.")
         working = freeze_result_displays(
             unprojected, result_store=result_store, policy=policy,
-            counter=assembler.token_counter, recovery_access=access,
+            counter=assembler.token_counter, files=files,
             total_budget_tokens=2**60,
         )
 
@@ -227,19 +238,21 @@ async def _prepare_context(
                       candidate: ConversationState | None = None):
         nonlocal requested_output
         projected = working if candidate is None else candidate
-        readable = frozenset(item.id for item in _context_results(projected.items)
-                             if access and (access.can_read(item.model_display.recovery)
-                                            if item.model_display else result_store.can_read(item)))
+        readable = (frozenset(item.id for item in _context_results(projected.items))
+                    if files else frozenset())
         request, projection = assembler._project(
             system_message=system_message, conversation=projected, tools=tools,
             policy=policy, active_run_id=active_run_id, omitted_reasoning_ids=omitted,
             response_format=response_format, max_output_tokens=requested_output,
             reasoning_effort=reasoning_effort, purpose=purpose,
-            readable_result_ids=readable, strict_context_budget=True,
+            readable_result_ids=readable, strict_context_budget=True, can_open_files=files,
         )
         prepared = None
         count = None
         rejected = False
+        # The rough estimate and the call it was taken from; the final estimate
+        # reuses it while the call is unchanged, since the formula is the same.
+        rough_call = None
         if assembler.request_preparer is not None:
             prepared = frozen_call or await assembler.request_preparer(request, stream=stream)
             output = prepared.effective_max_output_tokens
@@ -248,8 +261,8 @@ async def _prepare_context(
             known_limits = [value for value in (assembler.configured_context_window_tokens,
                 assembler.server_max_model_len, assembler.model_context_window_tokens) if value is not None]
             known_window = min(known_limits) if known_limits else assembler.context_window_tokens
-            rough = assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
-            rough += 4 * len(request.items) + 8 * len(request.tools)
+            rough = _payload_tokens(assembler, prepared, request)
+            rough_call = prepared
             # The local estimate can overcount (for example CJK text) by more
             # than its safety margin, so it replaces an available count only
             # for a planning candidate far beyond any such overcount. The
@@ -317,8 +330,7 @@ async def _prepare_context(
             estimate = raw if exact else math.ceil(raw * (1 + policy.token_safety_margin))
         else:
             if prepared is not None:
-                raw = assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
-                raw += 4 * len(request.items) + 8 * len(request.tools)
+                raw = rough if prepared is rough_call else _payload_tokens(assembler, prepared, request)
             else:
                 raw = assembler.token_counter.count_request(model_request_to_chat(request, reasoning_field="reasoning"), request.tools)
             estimate = math.ceil(raw * (1 + policy.token_safety_margin))
@@ -453,6 +465,10 @@ async def _prepare_context(
                     if cached_summary is not None:
                         selected = (start, end)
                         break
+                    if record.record.path in getattr(compactor, "unreadable_records", ()):
+                        # The paid or failed attempt is lost with its record,
+                        # so its source may be summarized again.
+                        failed.difference_update(record.source_keys)
             for start, end in ranges if selected is None else ():
                 # Split only between complete atomic exchanges. New work can be
                 # summarized without repeatedly sending a failed unchanged span.
@@ -615,6 +631,10 @@ async def _prepare_context(
                         root_key = summary_key()
                     else:
                         working, state = before, before_state
+                elif record.path in getattr(compactor, "unreadable_records", ()):
+                    # The earlier attempt is lost with its record, so the
+                    # current root may be tightened again.
+                    failed.discard(root_key)
         if (callable(tighten) and not tightened_root and not summarizer_unavailable and working.summary is not None
                 and root_key not in failed and state.estimate > state.input_budget):
             current_tokens = assembler.token_counter.count_text(working.summary.content)
@@ -672,7 +692,7 @@ async def _prepare_context(
 
         # If the latest newly received batch still does not fit, adjust only its
         # provisional displays. A displayed historical batch stays byte-identical.
-        if state.estimate > state.input_budget and new_ids and result_store and access:
+        if state.estimate > state.input_budget and new_ids and result_store:
             baseline = working
             original_by_id = {item.id: item for item in unprojected.items}
             originals = tuple(original_by_id.get(item.id, item) if item.id in original_by_id and (
@@ -684,14 +704,14 @@ async def _prepare_context(
                 local_budget = max(0, min(local_budget - 1, local_budget - math.ceil((state.estimate - state.input_budget) / (1 + policy.token_safety_margin))))
                 try:
                     working = freeze_result_displays(unfrozen, result_store=result_store, policy=policy,
-                        counter=assembler.token_counter, recovery_access=access, total_budget_tokens=local_budget)
+                        counter=assembler.token_counter, files=files, total_budget_tokens=local_budget)
                 except ResultBudgetExceeded as exc:
                     # An aggressive estimate may cross the metadata floor even
                     # though that exact floor still fits the final wire request.
                     minimum = exc.minimum_tokens
                     if minimum is not None:
                         working = freeze_result_displays(unfrozen, result_store=result_store, policy=policy,
-                            counter=assembler.token_counter, recovery_access=access, total_budget_tokens=minimum)
+                            counter=assembler.token_counter, files=files, total_budget_tokens=minimum)
                     else:
                         working = baseline
                     state = await project()
@@ -702,16 +722,18 @@ async def _prepare_context(
                 if not local_budget:
                     break
 
-        if state.estimate > state.input_budget and result_store and access:
+        if state.estimate > state.input_budget and result_store:
             groups = _atomic_groups(working.items, start=0, end=len(working.items))
             latest = _context_results(working.items[groups[-1][0]:]) if groups else []
             emergency_ids = {item.id for item in latest if item.model_display and item.model_display.revision == 0 and item.id not in new_ids}
             if emergency_ids:
                 try:
-                    working = reference_frozen_result_displays(working, result_store=result_store,
-                        recovery_access=access, result_ids=emergency_ids)
-                    state = await project()
-                    prefix_break = "emergency_result_reference"
+                    referenced = reference_frozen_result_displays(working, result_store=result_store,
+                        files=files, result_ids=emergency_ids)
+                    if referenced is not working:
+                        working = referenced
+                        state = await project()
+                        prefix_break = "emergency_result_reference"
                 except ResultBudgetExceeded:
                     pass
 
@@ -731,9 +753,10 @@ async def _prepare_context(
             and not state.render_rejected and assembler.prepared_token_counter is not None):
         state = await project(force_count=True, frozen_call=state.call)
 
-    # Persist only markers that still refer to retained source items.
-    retained_failed = tuple(source_key(item) for item in working.items if source_key(item) in failed)
-    if summary_key() in failed:
+    # Persist only markers that still refer to retained source items. With
+    # no failure there is nothing to keep, so no item needs its key.
+    retained_failed = tuple(source_key(item) for item in working.items if source_key(item) in failed) if failed else ()
+    if failed and summary_key() in failed:
         retained_failed += (summary_key(),)
     retained_records = tuple(record for record in failed_records if set(record.source_keys) & set(retained_failed))
     compaction_state = CompactionState(failed_sources=retained_failed, failed_records=retained_records) if retained_failed else None

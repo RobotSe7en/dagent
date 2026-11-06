@@ -1,18 +1,22 @@
-"""Choose model result displays once, retaining immutable recovery snapshots."""
+"""Choose model result displays once; undisplayed text goes to a file.
+
+A display that shows a result completely has no file. When the model can open
+files, a shortened display points to the file that holds the full text: an
+overflow file written when the result was received, or one written here when
+the display shortens an inline result. Otherwise the display is shortened
+without a file and says so. These files are written best-effort and never
+opened again here.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
-import hashlib
-import os
 from typing import Any
 
-from dagent.capabilities.tools.boundary import BoundaryViolation, enforce_path_allowed
 from dagent.harness_runtime.result_projection import (
     ResultBudgetExceeded,
     ResultItem,
     TextCounter,
+    file_readable_text,
     project_result,
 )
 from dagent.harness_runtime.result_storage import ResultStore
@@ -22,49 +26,11 @@ from dagent.schemas.conversation import (
     ConversationState,
     FrozenResultDisplay,
     InlineContent,
-    ResultObservation,
     ToolResultMessage,
     UserMessage,
+    stored_content_text,
 )
-
-
-@dataclass(frozen=True)
-class RecoveryAccess:
-    """Actual file-tool availability and its existing checked read boundary."""
-
-    result_store: ResultStore
-    read_file_enabled: bool = False
-
-    @classmethod
-    def from_tools(cls, result_store: ResultStore, tools: Sequence[dict[str, Any]]) -> RecoveryAccess:
-        enabled = False
-        for tool in tools:
-            function = tool.get("function", tool)
-            properties = function.get("parameters", {}).get("properties", {})
-            if function.get("name") == "tool_read_file" and {
-                "path", "offset_chars", "limit_chars",
-            }.issubset(properties):
-                enabled = True
-                break
-        return cls(result_store, read_file_enabled=enabled)
-
-    def can_read(self, reference: ContentReference, *, received_text: str | None = None) -> bool:
-        if not self.read_file_enabled:
-            return False
-        if received_text is not None and "\0" in received_text:
-            return False
-        store = self.result_store
-        try:
-            path = store.paths.resolve(reference.path)
-            if store.read_boundary is not None:
-                enforce_path_allowed(reference.path, store.read_boundary, store.workspace)
-            if not path.is_file() or not os.access(path, os.R_OK):
-                return False
-            if not store.is_text_reference(reference):
-                return False
-        except (BoundaryViolation, ValueError, OSError):
-            return False
-        return True
+from dagent.schemas.retention import ResultRetention
 
 
 def _results(conversation: ConversationState) -> list[tuple[str, ResultItem]]:
@@ -92,31 +58,6 @@ def _replace_results(conversation: ConversationState, updates: dict[str, ResultI
     return conversation.model_copy(update={"items": tuple(items), "revision": conversation.revision + 1})
 
 
-def validate_frozen_result_recovery(
-    conversation: ConversationState,
-    recovery_access: RecoveryAccess | None,
-) -> None:
-    """Reject hidden historical evidence when its recovery is unavailable.
-
-    A complete raw result is the display's suffix, so its stored byte length
-    and digest prove completeness without parsing metadata or rereading the
-    snapshot. This also handles old receipts without displayed spans.
-    """
-
-    for identity, item in _results(conversation):
-        display = item.model_display
-        if display is None or (recovery_access is not None and recovery_access.can_read(display.recovery)):
-            continue
-        shown = display.text.encode("utf-8")
-        length = display.recovery.byte_length
-        body = shown[-length:] if length else b""
-        if len(shown) >= length and hashlib.sha256(body).hexdigest() == display.recovery.sha256:
-            continue
-        raise ResultBudgetExceeded(
-            f"Frozen result {identity} has undisplayed text but its recovery reference is unavailable."
-        )
-
-
 def _display_item(item: ResultItem, text: str, recovery: ContentReference) -> ResultItem:
     updates: dict[str, Any] = {"content": InlineContent(text=text), "model_display": None}
     if isinstance(item, ToolResultMessage):
@@ -126,19 +67,30 @@ def _display_item(item: ResultItem, text: str, recovery: ContentReference) -> Re
     return item.model_copy(update=updates)
 
 
+def _with_storage_warning(item: ResultItem, store: ResultStore, identity: str, exc: OSError) -> ResultItem:
+    retention = item.retention or ResultRetention()
+    warning = store.warning(identity, "content", exc)
+    return item.model_copy(update={"retention": retention.model_copy(
+        update={"storage_warnings": (*retention.storage_warnings, warning)},
+    )})
+
+
 def freeze_result_displays(
     conversation: ConversationState,
     *,
     result_store: ResultStore,
     policy: ContextPolicy,
     counter: TextCounter,
-    recovery_access: RecoveryAccess,
+    files: bool,
     total_budget_tokens: int,
 ) -> ConversationState:
     """Water-fill a new result batch; existing displays are never redistributed.
 
-    ``total_budget_tokens`` belongs only to displays without a receipt. The
-    caller has already reserved fixed input, existing displays and model output.
+    ``files`` is whether the model can read saved files. Without it, or for
+    text containing NUL, an inline result is shortened without a file.
+    ``total_budget_tokens`` belongs only to displays without a
+    receipt. The caller has already reserved fixed input, existing
+    displays and model output.
     """
 
     pending = [(identity, item) for identity, item in _results(conversation) if item.model_display is None]
@@ -146,27 +98,41 @@ def freeze_result_displays(
         return conversation
     candidates = []
     for identity, item in pending:
-        text = (result_store.read_reference(item.content).decode("utf-8")
-                if isinstance(item.content, ContentReference) else item.content.text)
-        recovery = result_store.snapshot_text(text)
-        readable = recovery_access.can_read(recovery, received_text=text)
-        shown = _display_item(item, text, recovery)
+        planned: ContentReference | None = None
+        # Tokens of the complete inline display, which needs no file.
+        complete_tokens: int | None = None
+        if isinstance(item.content, ContentReference):
+            # Already saved when received: show its stored preview. Whether
+            # the model can open the file only changes the recovery notice.
+            shown, shorten = item, True
+        elif files and file_readable_text(item.content.text):
+            planned = result_store.text_reference(identity, item.content.text)
+            shown, shorten = _display_item(item, item.content.text, planned), True
+            complete_tokens = counter.count_text(project_result(item, 2**60, counter, read_available=False).text)
+        else:
+            # The model cannot open files, or read_file could not open this
+            # text (it contains NUL): shorten in memory, write nothing.
+            shown, shorten = item, True
+            complete_tokens = counter.count_text(project_result(item, 2**60, counter, read_available=False).text)
         minimum = project_result(
-            shown, 2**60, counter, read_available=readable,
-            max_body_chars=0 if readable else None, recovery_reference=recovery,
+            shown, 2**60, counter, read_available=shorten,
+            max_body_chars=0 if shorten else None, recovery_reference=planned, can_open_files=files,
         )
         floor = counter.count_text(minimum.text)
-        wanted = project_result(
-            shown, floor + policy.max_tool_result_tokens, counter,
-            read_available=readable, recovery_reference=recovery,
-        ) if readable else minimum
-        wanted_tokens = counter.count_text(wanted.text)
+        if complete_tokens is not None and complete_tokens <= floor + policy.max_tool_result_tokens:
+            wanted_tokens = complete_tokens
+        else:
+            wanted = project_result(
+                shown, floor + policy.max_tool_result_tokens, counter,
+                read_available=shorten, recovery_reference=planned, can_open_files=files,
+            ) if shorten else minimum
+            wanted_tokens = counter.count_text(wanted.text)
         # A complete tiny result can cost less than a reference-only display,
         # whose truncation notice is deliberately explicit.
         floor = min(floor, wanted_tokens)
-        candidates.append((identity, item, shown, recovery, readable, floor, wanted_tokens))
+        candidates.append((identity, item, shown, planned, shorten, complete_tokens, floor, wanted_tokens))
 
-    floors = [candidate[5] for candidate in candidates]
+    floors = [candidate[6] for candidate in candidates]
     if sum(floors) > total_budget_tokens:
         raise ResultBudgetExceeded(
             f"Minimum information for {len(candidates)} new results requires {sum(floors)} tokens; "
@@ -174,25 +140,51 @@ def freeze_result_displays(
         )
     allocations = list(floors)
     remaining = total_budget_tokens - sum(allocations)
-    active = [i for i, candidate in enumerate(candidates) if candidate[6] > allocations[i]]
+    active = [i for i, candidate in enumerate(candidates) if candidate[7] > allocations[i]]
     while remaining and active:
         share = max(1, remaining // len(active))
         for i in active:
-            added = min(share, candidates[i][6] - allocations[i], remaining)
+            added = min(share, candidates[i][7] - allocations[i], remaining)
             allocations[i] += added
             remaining -= added
-        active = [i for i in active if allocations[i] < candidates[i][6]]
+        active = [i for i in active if allocations[i] < candidates[i][7]]
 
     updates = {}
     for candidate, allocation in zip(candidates, allocations):
-        identity, item, shown, recovery, readable, _, _ = candidate
+        identity, item, shown, planned, shorten, complete_tokens, _, _ = candidate
+        if complete_tokens is not None and complete_tokens <= allocation:
+            # The whole text fits, so no file is needed or mentioned.
+            projection = project_result(item, 2**60, counter, read_available=False)
+            display = FrozenResultDisplay(text=projection.text, displayed_spans=projection.displayed_spans)
+            updates[identity] = item.model_copy(update={"model_display": display})
+            continue
         projection = project_result(
-            shown, allocation, counter, read_available=readable, recovery_reference=recovery,
+            shown, allocation, counter, read_available=shorten, recovery_reference=planned,
+            can_open_files=files,
         )
-        display = FrozenResultDisplay(
-            text=projection.text, recovery=recovery, displayed_spans=projection.displayed_spans,
-        )
-        updates[identity] = item.model_copy(update={"content": recovery, "model_display": display})
+        if isinstance(item.content, ContentReference):
+            # The preview is an excerpt with its own coordinates, so no
+            # displayed source range can be stated for the saved file.
+            display = FrozenResultDisplay(text=projection.text, recovery=item.content)
+            updates[identity] = item.model_copy(update={"model_display": display})
+            continue
+        if planned is not None:
+            try:
+                saved = result_store.write_text(planned, item.content.text)
+            except OSError as exc:
+                failed = _with_storage_warning(item, result_store, identity, exc)
+                projection = project_result(failed, allocation, counter, read_available=True)
+                display = FrozenResultDisplay(text=projection.text, displayed_spans=projection.displayed_spans)
+                updates[identity] = failed.model_copy(update={"model_display": display})
+                continue
+            display = FrozenResultDisplay(
+                text=projection.text, recovery=saved, displayed_spans=projection.displayed_spans,
+            )
+            updates[identity] = item.model_copy(update={"content": saved, "model_display": display})
+            continue
+        # No file: shortened and marked as having no saved original.
+        display = FrozenResultDisplay(text=projection.text, displayed_spans=projection.displayed_spans)
+        updates[identity] = item.model_copy(update={"model_display": display})
     return _replace_results(conversation, updates)
 
 
@@ -200,32 +192,45 @@ def reference_frozen_result_displays(
     conversation: ConversationState,
     *,
     result_store: ResultStore,
-    recovery_access: RecoveryAccess,
+    files: bool,
     result_ids: set[str],
 ) -> ConversationState:
-    """Make the explicit one-way emergency transition, preserving the old text."""
+    """Make the explicit one-way emergency transition to reference-only displays.
 
+    No saved file is read. The transition removes displayed text, so it is
+    made only when the model can read files; otherwise every display stays as
+    it is. A complete display without a file gets one, unless its text
+    contains NUL, which read_file could not open.
+    """
+
+    from dagent.harness_runtime.context import HeuristicTokenCounter
+
+    if not files:
+        return conversation
     updates = {}
     for identity, item in _results(conversation):
         display = item.model_display
         if identity not in result_ids or display is None or display.revision == 1:
             continue
-        if not recovery_access.can_read(display.recovery):
-            raise ResultBudgetExceeded(f"Cannot replace result {identity} with an unreadable recovery reference.")
-        previous = result_store.snapshot_text(display.text)
-        text = result_store.read_reference(display.recovery).decode("utf-8")
-        shown = _display_item(item, text, display.recovery)
+        recovery = display.recovery
+        if recovery is None:
+            if not file_readable_text(stored_content_text(item.content)):
+                continue
+            try:
+                recovery = result_store.save_text(identity, stored_content_text(item.content))
+            except OSError as exc:
+                result_store.warning(identity, "content", exc)
+                continue
+            item = item.model_copy(update={"content": recovery})
+        shown = _display_item(item, stored_content_text(item.content), recovery)
         # The emergency projection contains no body; only real status, source
-        # completeness, references and checked recovery cursors survive.
-        from dagent.harness_runtime.context import HeuristicTokenCounter
-
+        # completeness, references and recovery cursors survive.
         projection = project_result(
             shown, 2**60, HeuristicTokenCounter(), read_available=True,
-            max_body_chars=0, recovery_reference=display.recovery,
+            max_body_chars=0, recovery_reference=recovery,
         )
         updated = display.model_copy(update={
-            "text": projection.text, "displayed_spans": (), "revision": 1,
-            "previous_display": previous,
+            "text": projection.text, "recovery": recovery, "displayed_spans": (), "revision": 1,
         })
         updates[identity] = item.model_copy(update={"model_display": updated})
     return _replace_results(conversation, updates)

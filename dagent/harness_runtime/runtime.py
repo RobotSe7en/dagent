@@ -14,7 +14,6 @@ from dagent.review import CapabilityReviewDecision
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping
-import hashlib
 import mimetypes
 from typing import Any, Literal
 from pathlib import Path
@@ -45,12 +44,11 @@ from dagent.harness_runtime.result_storage import ResultStore
 from dagent.schemas.conversation import ResultObservation, ToolResultMessage
 from dagent.harness_runtime.dag_builder import validate_dag_input
 from dagent.harness_runtime.dag_executor import DAGExecutor
-from dagent.harness_runtime.conversation_resources import ConversationResourceStore
 from dagent.harness_runtime.execution_usage import record_model_turn
 from dagent.harness_runtime.llm_retry import run_with_llm_retries
 from dagent.harness_runtime.artifacts import (
     ArtifactUpload,
-    create_run_workspace,
+    conversation_workspace,
     materialize_workbench_uploads,
 )
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
@@ -135,10 +133,6 @@ class HarnessRuntime:
         if capability_catalog is None and capability_executor is not None:
             capability_catalog = capability_executor.catalog
         self.capability_catalog = capability_catalog or CapabilityCatalog()
-        self.conversation_resources = ConversationResourceStore(
-            self.capability_catalog.workspace_root,
-            self.runtime_directory,
-        )
         if capability_executor is not None and capability_executor.catalog is not self.capability_catalog:
             raise ValueError("HarnessRuntime capability_catalog must match capability_executor.catalog.")
         self.capability_executor = capability_executor or CapabilityExecutor(self.capability_catalog)
@@ -479,20 +473,16 @@ class HarnessRuntime:
         resolved_run_id = run_id or _new_run_id_for_mode(resolved_mode)
         if route_item is not None:
             route_item = route_item.model_copy(update={"run_id": resolved_run_id})
+        initial_conversation = conversation or ConversationState()
         resolved_workspace_path = self._workspace_path_for_run(
             workspace_root,
-            resolved_run_id,
+            initial_conversation.id,
             workspace_path=workspace_path,
         )
-        initial_conversation = conversation or ConversationState()
         changes = current_changes()
         if changes is not None:
             changes.publisher.bind(resolved_run_id, _state_kind_for_mode(resolved_mode),
                                    resolved_workspace_path, self.runtime_directory, initial_conversation)
-        base_conversation = self.conversation_resources.materialize(
-            initial_conversation,
-            workspace_path=resolved_workspace_path,
-        )
         materialized_uploads = materialize_workbench_uploads(
             input_uploads or [],
             workspace_path=resolved_workspace_path,
@@ -506,7 +496,7 @@ class HarnessRuntime:
             ),
         )
         run_conversation = _append_conversation_item(
-            base_conversation,
+            initial_conversation,
             input_item,
         )
         _emit_run_started(on_event, run_id=resolved_run_id, kind=_state_kind_for_mode(resolved_mode))
@@ -979,11 +969,6 @@ class HarnessRuntime:
             )
             conversation = _append_conversation_item(conversation, answer)
             new_items.append(answer)
-        if conversation is not None and outcome.state.workspace_path:
-            self.conversation_resources.persist(
-                conversation,
-                workspace_path=outcome.state.workspace_path,
-            )
         update: dict[str, Any] = {
             "kind": _state_kind_for_mode(mode),
             "status": outcome.state.status,
@@ -1081,7 +1066,7 @@ class HarnessRuntime:
     def _workspace_path_for_run(
         self,
         workspace_root: str | Path,
-        run_id: str,
+        conversation_id: str,
         *,
         workspace_path: str | Path | None = None,
     ) -> Path:
@@ -1089,7 +1074,9 @@ class HarnessRuntime:
             path = Path(workspace_path).expanduser().resolve()
             path.mkdir(parents=True, exist_ok=True)
             return path
-        return create_run_workspace(self._resolve_run_workspace_root(workspace_root), run_id=run_id)
+        # Every run of a conversation shares one workspace, so the files it
+        # wrote, compaction archives included, stay where the next run reads them.
+        return conversation_workspace(self._resolve_run_workspace_root(workspace_root), conversation_id)
 
     def _dag_executor_for_run(self, workspace_path: str | Path | None) -> DAGExecutor:
         base = self.dag_agent.loop.dag_executor
@@ -1173,7 +1160,6 @@ def _workbench_attachments(
                 path=Path(relative_path).as_posix(),
                 media_type=media_type,
                 byte_length=len(data),
-                sha256=hashlib.sha256(data).hexdigest(),
             )
         )
     return tuple(attachments)

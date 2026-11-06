@@ -49,22 +49,36 @@ explicitly and may put the workspace on tmpfs when runtime data should remain
 memory-backed. `Runner.from_config(...)` uses the same runtime-path defaults;
 they are not loaded from YAML.
 
-Each run records its own directory under `<workspace>/runs/<run_id>`. In
-ToolAgent and DagAgent message runs, built-in file and shell tool relative paths
-resolve from the current run workspace. SDK-private data is isolated under the
-chosen relative directory:
+In the **Unreleased** SDK, all runs of one conversation share one workspace,
+`<workspace>/runs/conversation_<key>`, where `<key>` is the first 32 hex digits
+of the SHA-256 of `ConversationState.id`. Pass the preceding
+`ConversationState` back, with its `id`, to keep using that directory; a state
+rebuilt with a new id gets a new one. A run without a `conversation` starts a
+new conversation and so gets a new directory. Static DAG runs, which have no
+conversation, still use `<workspace>/runs/<run_id>`. In ToolAgent and DagAgent
+message runs, built-in file and shell tool relative paths resolve from the
+current run workspace. SDK-private data is isolated under the chosen relative
+directory:
 
-- `<workspace>/<runtime_directory>/conversations` stores content-addressed
-  externalized results needed by later conversation turns.
-- `<run-workspace>/<runtime_directory>/results` stores externalized tool and MCP
-  output.
-- `<run-workspace>/<runtime_directory>/history` holds result resources restored into a
-  new run workspace.
+- `<run-workspace>/<runtime_directory>/results` stores tool and MCP output that
+  overflowed its display limit, plus large values and binary artifacts.
+- `<run-workspace>/<runtime_directory>/history` stores compaction archives
+  (records, sources and legacy result indexes).
 
 These directories are lazy. Constructing a runner or running text-only turns
-does not create them. Tool execution can save even a small result for recovery;
-shell execution saves its output regardless of size. Uploaded attachments alone
-do not create a conversation backing store or history directory.
+does not create them. Display output overflows to a file only when the model
+that reads it has the built-in `read_file` tool; otherwise the display is still
+shortened, but no file is written. Shell output is written to a file only when it
+exceeds the shell's own inline limits (100,000 bytes or 2,000 lines). Overflow
+files are written best-effort, carry no digest, and are never checked or
+reread by the SDK. See [tool result recovery](tool-result-recovery.md).
+Uploaded attachments alone do not create a history directory.
+
+The SDK copies nothing between workspaces. Because a conversation's runs share
+its workspace, later turns read the files earlier turns wrote, compaction
+archives included. Earlier versions also kept copies of compaction archives in
+`<workspace>/<runtime_directory>/conversations` and restored them into each new
+run workspace; that directory is no longer written or read and can be deleted.
 
 ### Store private runtime files outside the workspace
 
@@ -79,7 +93,7 @@ runner = dagent.Runner(
 )
 ```
 
-The store contains `conversations/` and `runs/<workspace-key>/{results,history}/`.
+The store contains `runs/<workspace-key>/{results,history}/`.
 `workspace-key` is the SHA-256 of the resolved run workspace path, so separate
 workspaces do not share their result files. Reusing the same workspace reuses
 its storage namespace. A relative value keeps the existing layout; relative
@@ -104,29 +118,39 @@ saved_path = runner.resolve_runtime_path(
 )
 ```
 
-Continue conversations with the same absolute store. Existing stored files are
-not automatically moved when this setting changes; resume old checkpoints with
-their frozen storage setting. Hosts remain responsible for preserving the store
-and persisting conversation/checkpoint records.
+Continue conversations with the same absolute store and the same workspace
+path, so the files of earlier turns, compaction archives included, stay
+available: they live in the workspace's namespace, and a continuation in
+another workspace keeps their paths but cannot read them. Existing stored files
+are not automatically moved when this setting changes; resume old checkpoints
+with their frozen storage setting. Hosts remain responsible for preserving the
+store and persisting conversation/checkpoint records.
 
 An absolute directory changes storage location, not process permissions.
 Local shell commands retain the host process's access. Docker execution mounts
 only the runner workspace's and current run workspace's
 `runs/<workspace-key>/` directories read-write for tool workers; it does not mount
-the shared `runs/` parent or `conversations/`. Sandbox startup creates the mounted
-namespaces when needed.
+the shared `runs/` parent. Sandbox startup creates the mounted namespaces when
+needed.
 Use host permissions and sandbox policy when deletion must be prevented.
 
 ### Choose a run workspace
 
 When an application already owns the execution directory, pass
 `workspace_path=...` to `Runner.run(...)` or `Runner.stream(...)`. This uses that
-exact directory for the run instead of creating a `<run_id>` subdirectory. This
-is a runtime workspace selection feature, not persistence; the caller remains
-responsible for storing conversation and review state outside the SDK. A
-conversation continuation is a new run and may select a different workspace.
+exact directory for the run instead of the conversation's directory under
+`workspace_root`. This is a runtime workspace selection feature, not
+persistence; the caller remains responsible for storing conversation and review
+state outside the SDK. A conversation continuation is a new run and may select a
+different workspace; see [moving a conversation to another
+workspace](conversation-changes.md#move-a-conversation-to-another-workspace).
 A review continuation uses the workspace frozen in its `RunCheckpoint`;
 `Runner.resume(...)` does not accept a replacement workspace.
+
+Runs of one conversation that execute at the same time share its workspace. The
+SDK does not lock it; overflow and archive file names never collide, but files
+that tools write can. Workspaces accumulate per conversation; deleting them is
+the host's decision.
 
 For profile-backed model calls, the SDK also adds a dynamic `Runtime Context`
 section to the system prompt with the resolved workspace root and tells the
@@ -138,10 +162,11 @@ substituted into profile content. Lower-level profile-backed helpers such as
 `workspace_path`.
 
 The model receives the resolved run workspace in that system section. Attachment
-records and externalized results use workspace-relative paths without exposing
-the runner-level conversation backing store. An attachment's byte count and
-digest describe its upload-time contents; a result reference describes the saved
-result that its integrity checks protect.
+records and externalized results use workspace-relative paths. An attachment's
+byte count describes its upload-time contents; attachments from earlier versions
+also keep their upload-time digest. A tool-output reference only reports
+where an overflow file was written; it has no digest and the file is not
+checked, so a later read returns whatever the file contains then.
 
 `extra_system_prompt` adds one literal, runner-wide instruction string without
 replacing the agent profile or `Runtime Context`. The SDK assembles profile,
@@ -165,24 +190,26 @@ runner's later configuration, has a different `extra_system_prompt`.
 ### Editing uploaded files
 
 Pass `input_uploads=[dagent.ArtifactUpload(filename="note.txt", content=b"draft")]`
-to a message run to write `uploads/note.txt` inside its workspace. Both message
-uploads and static DAG artifact uploads are read back immediately after writing
-and checked against the received bytes' size and SHA-256. A write or verification
-failure raises `OSError` before agent execution. This checks SDK ingestion; it
-does not verify a client-declared digest across HTTP transport.
+to a message run to write `uploads/note.txt` inside its workspace. Message
+uploads and static DAG artifact uploads are written once; a short write raises
+`OSError` before agent execution. In the **Unreleased** SDK the written file is
+not read back, and new `Attachment` records carry no digest (`sha256` is
+`None`). Only the byte count is recorded.
 
 After upload, tools may modify, overwrite, or delete the working file. The SDK
-does not recheck historical attachment size/digest during review, completion, or
+does not recheck historical attachment metadata during review, completion, or
 conversation continuation. `Attachment` retains upload-time metadata; it does
 not assert that the file still exists or has those contents. A tool reading a
-deleted file reports its normal file-access error.
+deleted file reports its normal file-access error. Because a conversation's runs
+share its workspace, a later upload with the same file name overwrites the
+earlier file, whose attachment record then describes contents that are gone.
 
-For continued editing, pass the same `workspace_path` and the preceding
-`conversation` to the next run. If you select another workspace, the caller must
-copy the desired working files there: the SDK does not copy historical uploads,
-restore deleted attachments, or rebase their paths. Keep original versions in
-independent host-managed snapshots when needed. Saved tool/MCP result references
-retain their existing integrity checks and cross-workspace restoration.
+For continued editing, pass the preceding `conversation` to the next run; it
+uses the same workspace, or pass the same `workspace_path` when you choose one.
+If you select another workspace, the caller must copy the desired working files
+there: the SDK does not copy historical uploads, overflow files or compaction
+archives, restore deleted attachments, or rebase paths. Keep original versions
+in independent host-managed snapshots when needed.
 
 Run [the editable uploads example](../../examples/editable_uploads.py) for an
 offline upload, edit, and continuation using one explicit workspace.

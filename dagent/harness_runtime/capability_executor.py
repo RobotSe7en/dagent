@@ -20,6 +20,25 @@ class CapabilityExecutionError(RuntimeError):
     """Raised when a capability cannot be executed."""
 
 
+def detach_containers(value: Any) -> Any:
+    """Copy the plain dicts, lists and tuples in ``value``; share everything else.
+
+    Conversation records hold tool arguments and results that user code must
+    not change in place. Copying the plain containers isolates JSON data
+    completely; other objects, including container subclasses such as named
+    tuples, keep their type and identity.
+    """
+
+    kind = type(value)
+    if kind is dict:
+        return {key: detach_containers(item) for key, item in value.items()}
+    if kind is list:
+        return [detach_containers(item) for item in value]
+    if kind is tuple:
+        return tuple(detach_containers(item) for item in value)
+    return value
+
+
 @dataclass(frozen=True)
 class CapabilityExecutionContext:
     """Runtime context supplied to context-aware capability handlers."""
@@ -38,6 +57,14 @@ class CapabilityExecutionContext:
     approved_boundary_invocation_id: str | None = None
     runtime_directory: str = ".dagent"
     max_shell_output_bytes: int = 64 * 1024 * 1024
+    # False when the model reading the results cannot open saved files: oversized
+    # display output is then kept inline (its display is still bounded) instead
+    # of overflowing to a file.
+    result_files: bool = True
+    # True when the call's arguments and result belong to a conversation
+    # record (tool agents, dynamic DAGs): the handler then works on copies of
+    # their plain containers. Static DAG runs keep their own value handling.
+    detach_values: bool = True
 
 
 @dataclass(frozen=True)
@@ -87,6 +114,10 @@ class CapabilityExecutor:
                     "run under execution='sandbox', which currently supports only built-in tool "
                     "capabilities. Use execution='local'."
                 )
+            # The handler gets its own copy of the arguments, so a tool that
+            # changes them leaves the recorded call as the model made it.
+            if context is None or context.detach_values:
+                invocation = invocation.model_copy(update={"arguments": detach_containers(invocation.arguments)})
             if entry.supports_context:
                 args = (invocation,)
                 kwargs = {

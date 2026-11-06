@@ -118,6 +118,7 @@ from dagent.schemas.value import iter_artifact_exprs
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.harness_runtime.context import ContextAssembler, user_content_for_model
 from dagent.schemas.conversation import inline_content, ResultObservation
+from dagent.harness_runtime.result_projection import READ_FILE_CAPABILITY_ID
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.schemas.results import _StaticDagAgentContinuation
 
@@ -509,6 +510,12 @@ class DAGAgentLoop:
             capability_ids=capability_ids,
         )
 
+    def _reads_result_files(self, capability_ids: Sequence[str] | None) -> bool:
+        """Whether the planner can schedule read_file to open saved results."""
+
+        return any(definition.id == READ_FILE_CAPABILITY_ID
+                   for definition in self.available_capabilities(capability_ids))
+
     async def _request_dag(
         self,
         *,
@@ -561,6 +568,8 @@ class DAGAgentLoop:
             policy=self.context_policy,
             active_run_id=resolved_task_id,
             response_format=response_format,
+            result_overflow=("file" if self._reads_result_files(capability_scope.capability_ids)
+                             else "truncate"),
             compact=lambda summary, items, limit: self._compact_history(
                 summary,
                 items,
@@ -1216,6 +1225,9 @@ class DAGAgentLoop:
                 "conversation": changes.publisher.conversation, "trace": trace,
             })
         active_executor = dag_executor or self.dag_executor
+        # A static DAG has no planner reading its results; it stores by size.
+        result_files = (record.kind != "dynamic_dag"
+                        or self._reads_result_files(record.capability_scope.capability_ids))
         if record.kind == "dynamic_dag" and record.dag_spec is not None:
             active_executor.configure_spec(
                 record.dag_spec,
@@ -1246,6 +1258,9 @@ class DAGAgentLoop:
                         skills=record.capability_scope.skills,
                         on_token=on_token,
                         on_event=on_event,
+                        result_files=result_files,
+                        # Only a dynamic DAG's planner records node values.
+                        detach_values=record.kind == "dynamic_dag",
                     )
                 except StaticAgentReviewRequired:
                     raise

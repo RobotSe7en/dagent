@@ -87,6 +87,18 @@ def response_recording_scope(response: ResponseRecorder | None) -> Iterator[None
 
 
 class ConversationChangePublisher:
+    """Publish incremental conversation changes to a host callback.
+
+    Ownership: the initial conversation is copied once. ``Runner.run`` and
+    ``Runner.stream`` run on that copy; a review continuation runs on its
+    checkpoint, which the host must leave unchanged meanwhile. The SDK never
+    changes a published message in place (tools get
+    copies of their arguments and results are recorded as returned), so later
+    states are kept by reference and unchanged messages are recognized by
+    identity. Each batch is copied before the host receives it, so the host
+    may change what it gets without affecting the SDK.
+    """
+
     def __init__(self, callback: ConversationChangeHandler, initial: ConversationState | None):
         self.callback = callback
         self.delivery_id = f"delivery_{uuid4().hex}"
@@ -102,8 +114,8 @@ class ConversationChangePublisher:
         self.usage_factory = None
         self._lock = asyncio.Lock()
         self._resource_lock = Lock()
-        self._resources: dict[tuple[str, str, str, str], ConversationResourceReady] = {}
-        self._seen_resources: set[tuple[str, str, str, str]] = set()
+        self._resources: dict[tuple[str, str, str], ConversationResourceReady] = {}
+        self._seen_resources: set[tuple[str, str, str]] = set()
         self._messages: dict[tuple[str, str], ConversationMessageChange] = {}
         if self.conversation is not None:
             origin = ConversationMessageOrigin(id=self.conversation.id)
@@ -122,7 +134,7 @@ class ConversationChangePublisher:
     def note_resource(self, reference: ContentReference | Attachment,
                       workspace: str | Path, runtime_directory: str) -> None:
         location = str(Path(workspace).resolve())
-        key = (location, runtime_directory, reference.path, reference.sha256)
+        key = (location, runtime_directory, reference.path)
         with self._resource_lock:
             if key not in self._seen_resources:
                 self._resources[key] = ConversationResourceReady(
@@ -145,9 +157,10 @@ class ConversationChangePublisher:
                 raise RuntimeError("Conversation publisher must be bound before publication.")
             before = self.conversation
             context = None
-            records = [record.model_copy(deep=True) for record in messages]
+            # Records and states are shared, not copied: the batch below is
+            # copied once for the host, and SDK messages are never changed.
+            records = list(messages)
             if state is not None:
-                state = state.model_copy(deep=True)
                 if before is None or before.id != state.id:
                     raise RuntimeError("Published conversation identity does not match its initial state.")
                 context, changed = _state_changes(before, state)
@@ -199,8 +212,9 @@ class ConversationChangePublisher:
                             raise
                         cancelled = True
             except (Exception, asyncio.CancelledError) as cause:
+                # The failure reaches the host too, so it gets its own copy.
                 self.failure = ConversationDeliveryFailure(cause, ConversationChangeFailure(
-                    failed_batch=batch, acknowledged_sequence=self.acknowledged_sequence,
+                    failed_batch=batch.model_copy(deep=True), acknowledged_sequence=self.acknowledged_sequence,
                     acknowledged_revision=self.acknowledged_revision,
                 ))
                 raise self.failure from cause
@@ -213,8 +227,13 @@ class ConversationChangePublisher:
                 raise asyncio.CancelledError
 
 
+def _changed(previous: ConversationItem, item: ConversationItem) -> bool:
+    # Unchanged messages are the same objects; only replaced ones are compared.
+    return previous is not item and previous != item
+
+
 def _state_changes(before: ConversationState, after: ConversationState) -> tuple[ConversationContextChange | None, tuple[ConversationItem, ...]]:
-    if before == after:
+    if before is after or before == after:
         return None, ()
     old = {item.id: item for item in before.items}
     new = {item.id: item for item in after.items}
@@ -229,13 +248,13 @@ def _state_changes(before: ConversationState, after: ConversationState) -> tuple
         added=tuple(ConversationItemPlacement(item_id=item.id, index=index)
                     for index, item in enumerate(after.items) if item.id not in old),
         updated_item_ids=tuple(item.id for item in after.items
-                               if item.id in old and item != old[item.id]),
+                               if item.id in old and _changed(old[item.id], item)),
         deactivated_item_ids=() if summary is not None else removed,
         summary_change=summary,
         compaction_state_change=(ConversationCompactionStateReplacement(value=after.compaction_state)
                                  if before.compaction_state != after.compaction_state else None),
     )
-    return context, tuple(item for item in after.items if old.get(item.id) != item)
+    return context, tuple(item for item in after.items if item.id not in old or _changed(old[item.id], item))
 
 
 async def publish_state(state: ConversationState, items: Sequence[ConversationItem] = (),
