@@ -157,7 +157,8 @@ def test_identity_shortcut_finds_the_same_changes_as_full_comparison():
     assert context.summary_change.replaced_item_ids == tuple(f"m{i}" for i in range(10))
 
 
-def test_host_changes_to_its_conversation_during_a_run_do_not_reach_the_sdk(tmp_path):
+@pytest.mark.parametrize("mode", ["run", "stream"])
+def test_host_changes_to_its_conversation_during_a_run_do_not_reach_the_sdk(tmp_path, mode):
     conversation = dagent.ConversationState(items=(
         dagent.UserMessage(id="task", content="Run the tool."),
         dagent.AssistantMessage(id="call", tool_calls=(dagent.ToolCallItem(
@@ -178,10 +179,20 @@ def test_host_changes_to_its_conversation_during_a_run_do_not_reach_the_sdk(tmp_
         ChatResponse(tool_calls=[ToolCall(id="c2", name="tool_noop", arguments={})]),
         ChatResponse(content="done"),
     ])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[noop])
+    options = {"input": "again", "conversation": conversation, "on_conversation_change": save}
+
+    async def collect(runner):
+        if mode == "run":
+            return await runner.run(agent, **options)
+        events = [event async for event in runner.stream(agent, **options)]
+        return events[-1].data.result
+
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        result = run(runner.run(dagent.ToolAgent(profile="conversation", capabilities=[noop]), input="again",
-                                conversation=conversation, on_conversation_change=save))
+        result = run(collect(runner))
     assert result.status == "completed"
+    assert conversation.items[1].tool_calls[0].arguments["values"][0] == "original"
+    assert "host" in conversation.items[1].tool_calls[0].arguments["values"]
     sent = next(message for message in provider.requests[-1]["messages"]
                 if message.get("tool_calls") and message["tool_calls"][0]["id"] == "c1")
     assert sent["tool_calls"][0]["function"]["arguments"] == '{"values":["original"]}'

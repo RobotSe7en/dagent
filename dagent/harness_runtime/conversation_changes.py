@@ -89,8 +89,10 @@ def response_recording_scope(response: ResponseRecorder | None) -> Iterator[None
 class ConversationChangePublisher:
     """Publish incremental conversation changes to a host callback.
 
-    Ownership: the initial conversation is copied once, and a Runner runs on
-    that copy. The SDK never changes a published message in place (tools get
+    Ownership: the initial conversation is copied once. ``Runner.run`` and
+    ``Runner.stream`` run on that copy; a review continuation runs on its
+    checkpoint, which the host must leave unchanged meanwhile. The SDK never
+    changes a published message in place (tools get
     copies of their arguments and results are recorded as returned), so later
     states are kept by reference and unchanged messages are recognized by
     identity. Each batch is copied before the host receives it, so the host
