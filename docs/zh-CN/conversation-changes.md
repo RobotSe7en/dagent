@@ -103,6 +103,15 @@ previous_state = dagent.ConversationState(
 继续传入现有 `conversation=`。在已有会话上开始订阅时，应保留初始状态及其现有引用
 文件。system prompt 每次独立生成，不进入历史。内部审计不能代替内部线程 checkpoint。
 
+### 对象所有权
+
+每个批次（包括 `ConversationChangeError` 报告的失败批次）都是拷贝：宿主可以随意修改收到的
+对象，不会影响 run。对 `run` 和 `stream`，开始交付时 SDK 会把传入的 `conversation` 复制一次，
+并在这份拷贝上运行，所以 run 期间修改宿主自己的对象也不会影响 SDK；审批续跑在 checkpoint
+上运行，`resume` 使用期间请把 checkpoint 当作只读。SDK 不会原地修改已发布的消息：tool agent
+和动态 DAG 的工具拿到的是参数的拷贝，结果按返回那一刻记录。正因
+如此，交付时才能按引用保存之前的状态，而不必每个批次都复制整个会话。
+
 ## 关联流式内容和保留中断证据
 
 启用后，响应开始、正文/推理增量和响应结束事件携带生成前分配的 SDK `message_id`。

@@ -95,6 +95,17 @@ these behavior changes before upgrading:
   longer read back and checked; a short write still raises `OSError`. The model
   sees `(<media type>, <n> bytes)` for a new attachment. Attachments from earlier
   versions keep their digest, and their text is unchanged.
+- **Tools work on copies.** A capability handler called by a tool agent or a
+  dynamic DAG receives its own copy of the plain dicts, lists and tuples in its
+  arguments, and its result value is recorded as returned. A tool that changes
+  its arguments, or a returned object it still holds, no longer changes the
+  recorded call or result, and a dynamic DAG node that changes its arguments no
+  longer changes the planner's observation. Other objects are still shared;
+  static DAG runs are unchanged. With `on_conversation_change`, `run`
+  and `stream` use the SDK's own copy of the `conversation` you pass, so later
+  changes to your objects no longer reach it, and published messages are no
+  longer reported as updated because they were changed in place. Delivery no
+  longer copies the whole conversation for every batch.
 
 ### Migration steps
 
@@ -122,6 +133,8 @@ these behavior changes before upgrading:
   the shared workspace is chosen by it.
 - Accept `None` for `Attachment.sha256`, and compute a digest yourself if you
   deduplicated or verified uploads with it.
+- If a tool passed information back by changing its arguments, return it
+  instead. Treat the `conversation` you pass as read-only while a run uses it.
 - If you relied on SDK integrity errors to detect changed result files, enforce
   that in the host.
 - If you relied on `OSError` to stop a `chunked` or `cache_aware` Run when a

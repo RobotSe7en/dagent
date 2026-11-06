@@ -123,6 +123,19 @@ conversation and its existing resources when enabling delivery on an established
 conversation. System prompts are generated separately and are not history.
 Internal audit is not a replacement for an internal model-thread checkpoint.
 
+### Object ownership
+
+Every batch, including a failed batch reported by `ConversationChangeError`, is
+a copy: the host may change what it receives without affecting the run. For
+`run` and `stream`, the SDK copies the `conversation` you pass once when
+delivery starts and runs on that copy, so changing your own objects during the
+run does not reach it either; a review continuation runs on its checkpoint, so
+treat the checkpoint as read-only while `resume` uses it. The SDK never changes
+a published message in place: tools of a tool agent or dynamic DAG work on
+copies of their arguments, and results are recorded as returned. That is
+what lets delivery keep earlier states by reference instead of copying the whole
+conversation for every batch.
+
 ## Correlate streams and preserve interruption evidence
 
 When enabled, response start, content/reasoning delta, and finish events carry

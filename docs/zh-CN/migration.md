@@ -61,6 +61,13 @@ workspace 之间复制、恢复或校验文件。溢出文件只为能读取它�
 - **上传。** `Attachment.sha256` 改为可选，新上传的附件为 `None`，仍记录 `byte_length`。
   上传只写入一次，不再回读校验；写入字节数不足时仍抛出 `OSError`。新附件给模型的描述为
   `(<媒体类型>, <n> bytes)`。早期版本的附件保留摘要，描述文字不变。
+- **工具操作的是拷贝。** tool agent 或动态 DAG 调用的 capability 处理函数，拿到的是参数里
+  普通 dict、list 和 tuple 的拷贝，结果值按返回那一刻记录。工具修改参数，或修改仍持有的
+  返回对象，都不再改变记录下来的调用和结果；动态 DAG 节点修改参数，不再改变规划器看到的
+  观察。其他对象仍然共享；静态 DAG 的运行方式不变。开启
+  `on_conversation_change` 时，`run` 和 `stream` 使用 SDK 自己那份传入 `conversation` 的拷贝，
+  之后修改宿主自己的对象不会再影响它；已发布的消息也不会再因为被原地修改而报告为已更新。
+  交付时不再为每个批次复制整个会话。
 
 ### 迁移步骤
 
@@ -79,6 +86,8 @@ workspace 之间复制、恢复或校验文件。溢出文件只为能读取它�
   上下文失败时可能带有的 `recovery_error` 属性的处理，它们都已不存在。
 - 为下一轮重建会话时保留 `ConversationState.id`：共用的 workspace 由它决定。
 - `Attachment.sha256` 需接受 `None`；如果用它给上传文件去重或校验，请改由宿主自行计算。
+- 如果工具通过修改参数把信息传回，请改为通过返回值传回。run 使用传入的 `conversation` 期间，
+  请把它当作只读。
 - 若此前依赖 SDK 的完整性报错来发现结果文件被改，请改由宿主实现。
 - 若此前依赖 `OSError` 在展示文件写不进去时停止 `chunked` 或 `cache_aware` Run，请改为
   监听 `tool_result_storage_warning` 事件（`Runner.stream` 中为
