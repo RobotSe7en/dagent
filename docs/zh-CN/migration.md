@@ -14,7 +14,9 @@
 结果的保留信息和文件引用只同步到对应调用，审批续跑和 steer 不再覆盖已完成的同 id 调用。
 公开 invocation id 和 trace 记录结构不变。恢复 checkpoint 后，仅为无歧义的 call id
 重建历史结果对应关系；之后上下文准备替换结果消息时，有歧义的历史节点保留已保存的元数据。
-同一模型轮次内的重复 id 仍无法分别审批。
+同一条模型回复内出现重复 call id 时仍会被拒绝，行为与之前相同：`Runner.run` 抛出
+`pydantic.ValidationError`（`Pending tool batch requires unique call ids`），
+`Runner.stream` 以 `run.failed` 结束。
 
 ### 破坏性变更：按会话固定 workspace，文件改为尽力保存
 

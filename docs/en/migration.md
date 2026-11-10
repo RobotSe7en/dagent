@@ -17,8 +17,10 @@ own execution; review continuation and steering no longer overwrite a completed
 call with the same id. Public invocation ids and trace record shapes are unchanged.
 After checkpoint restoration, historical result associations are rebuilt only
 for unambiguous call ids; ambiguous historical nodes retain their saved metadata
-when context preparation subsequently replaces result messages. Duplicate ids
-within one model round still cannot receive independent review decisions.
+when context preparation subsequently replaces result messages. A model reply
+that repeats a call id within itself is still rejected, as before: `Runner.run`
+raises `pydantic.ValidationError` (`Pending tool batch requires unique call
+ids`) and `Runner.stream` ends with `run.failed`.
 
 ### Breaking changes: conversation workspaces and best-effort files
 
