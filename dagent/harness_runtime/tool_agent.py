@@ -556,6 +556,7 @@ class ToolAgentLoop:
 
         async def apply_steers(steers: tuple[QueuedSteer, ...]) -> None:
             nonlocal loop_conversation
+            steer_items: list[ConversationItem] = []
             for steer in steers:
                 item = UserMessage(
                     id=steer.steer_id,
@@ -564,7 +565,8 @@ class ToolAgentLoop:
                 )
                 loop_conversation = _append_item(loop_conversation, item)
                 new_items.append(item)
-            await publish_state(loop_conversation, tuple(new_items))
+                steer_items.append(item)
+            await publish_state(loop_conversation, tuple(steer_items))
             if steering is not None:
                 steering.emit_applied(resolved_run_id, steers)
 
@@ -834,9 +836,14 @@ class ToolAgentLoop:
                     if node is not None:
                         _sync_tool_result(node, updated)
             loop_conversation = value.conversation
-            new_items[:] = [updated_items.get(item.id, item) for item in new_items]
+            replaced_items: list[ConversationItem] = []
+            for index, item in enumerate(new_items):
+                updated = updated_items.get(item.id, item)
+                if updated is not item:
+                    new_items[index] = updated
+                    replaced_items.append(updated)
             context_usages.append(value.usage)
-            await publish_state(loop_conversation, tuple(new_items))
+            await publish_state(loop_conversation, tuple(replaced_items))
             if on_event is not None and value.usage.compaction_method != "none":
                 on_event(
                     {
@@ -857,7 +864,9 @@ class ToolAgentLoop:
             tool_definitions = self._llm_tool_definitions(capability_ids=capability_ids)
             while True:
                 if steering is not None:
-                    await apply_steers(steering.drain(resolved_run_id))
+                    pending_steers = steering.drain(resolved_run_id)
+                    if pending_steers:
+                        await apply_steers(pending_steers)
                 if result_store is None or context_policy.compaction_strategy == "legacy":
                     result_store = ResultStore(workspace, self.runtime_directory, on_event, read_boundary=boundary)
                 compactor = None
