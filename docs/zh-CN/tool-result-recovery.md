@@ -20,6 +20,10 @@
 - `ValidatorAgent` 等 profiled agent 没有工具：仍截断以保持上下文有界，但不为它们写文件，
   被截断的内联结果标 `[RECOVERY_UNAVAILABLE: no saved original]`。
 
+没有文件而被截断的结果，完整文本仍内联保留在会话记录中。使用 `legacy` 策略时，生成摘要和
+估算保留量读取的是与已保存结果相同的有界预览（首尾两段，共 8,192 字符），因此长结果不会
+把其余历史挤出摘要请求。
+
 溢出文件尽力写入。SDK 原子写入，但不保存摘要（`ContentReference.sha256` 为 `None`），
 不校验、不回读，也不复制到其他 workspace。同一会话的 run 共用一个 workspace，所以之后的
 轮次能读到之前轮次的溢出文件。文件之后被改，读到的就是改后的内容；

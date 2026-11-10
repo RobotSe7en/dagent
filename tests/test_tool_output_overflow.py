@@ -5,20 +5,24 @@ from __future__ import annotations
 import asyncio
 from contextlib import closing
 from pathlib import Path
+import re
 import sys
 
 import pytest
 
 import dagent
 from dagent.capabilities.tools.shell_tools import shell
-from dagent.harness_runtime.context import ContextAssembler
+from dagent.harness_runtime.context import ContextAssembler, compaction_source
 from dagent.harness_runtime.result_storage import ResultStore, normalize_capability_result
-from dagent.providers import ChatResponse, MockProvider
+from dagent.providers import ChatResponse, MockProvider, ToolCall
+from dagent.providers.model_io import ModelResponse
 from dagent.schemas import CapabilityInvocation, CapabilityResult
 from dagent.schemas.context import ContextPolicy
 from dagent.schemas.conversation import (
-    AssistantMessage, ContentReference, ConversationState, ToolCallItem, ToolResultMessage, inline_content,
+    AssistantMessage, ContentReference, ContextSummary, ConversationState, ResultObservation, ToolCallItem,
+    ToolResultMessage, UserMessage, inline_content,
 )
+from dagent.schemas.retention import ResultCursor, ResultRetention, ResultStorageWarning
 from tests.planner_helpers import capability_plan_response, final_answer_response
 
 
@@ -599,3 +603,137 @@ def test_shell_lines_split_by_any_line_break_overflow_to_a_complete_file(tmp_pat
     saved = (tmp_path / reference["path"]).read_text(encoding="utf-8")
     assert saved.splitlines()[2] == "line 0" and "line 2999" in saved
     assert output.retention["source_completeness"] == "complete"
+
+
+READ_FILE_TOOL = {"type": "function", "function": {"name": "tool_read_file"}}
+
+
+def _long_result(index, rows=1500):
+    # Longer than the display limit and than the preview a saved result carries.
+    return f"FACT_{index}=value{index}\n" + f"row {index} evidence\n" * rows + f"END_{index}"
+
+
+async def _legacy_summary_sources(store, texts, *, tools, shape="runs", retention=None, policy=ContextPolicy()):
+    """Prepare a legacy context over ``texts`` and return it with the text of each summary request.
+
+    ``shape`` is "runs" (one earlier run per tool result) or "planner" (one
+    run whose observations carry the results, like a DagAgent planner thread).
+    """
+
+    items = []
+    for index, text in enumerate(texts, start=1):
+        if shape == "runs":
+            items += [
+                UserMessage(run_id=f"run_{index}", content=f"Collect page {index}."),
+                AssistantMessage(run_id=f"run_{index}", tool_calls=(ToolCallItem(id=f"call_{index}", name="tool_data"),)),
+                ToolResultMessage(run_id=f"run_{index}", call_id=f"call_{index}", name="tool_data",
+                                  status="completed", content=inline_content(text), retention=retention),
+            ]
+        else:
+            items += [
+                AssistantMessage(run_id="active", content=f"Plan {index}."),
+                UserMessage(run_id="active", content=f"Observation {index}.", result_observations=(
+                    ResultObservation(id=f"node_{index}", name="node", status="completed",
+                                      content=inline_content(text), retention=retention),)),
+            ]
+    task = UserMessage(run_id="active", content="Continue.")
+    items = [*items, task] if shape == "runs" else [task, *items]
+    sources = []
+
+    async def compact(previous, compacted, limit):
+        sources.append(compaction_source(previous, compacted))
+        return ContextSummary(content="summary", source_item_count=len(compacted))
+
+    prepared = await ContextAssembler(context_window_tokens=16384, max_output_tokens=512).prepare(
+        system_message={"content": "Inspect"}, conversation=ConversationState(items=tuple(items)),
+        tools=tools, policy=policy, result_store=store, compact=compact, active_run_id="active",
+    )
+    return prepared, sources
+
+
+@pytest.mark.parametrize("shape", ["runs", "planner"])
+@pytest.mark.asyncio
+async def test_legacy_summary_reads_long_results_alike_with_and_without_read_file(tmp_path, shape):
+    texts = [_long_result(index) for index in range(1, 7)]
+    saved, saved_sources = await _legacy_summary_sources(
+        ResultStore(tmp_path / "saved", ".runtime"), texts, tools=[READ_FILE_TOOL], shape=shape)
+    inline, inline_sources = await _legacy_summary_sources(
+        ResultStore(tmp_path / "inline", ".runtime"), texts, tools=[], shape=shape)
+    # Without read_file the shortened results stay inline, in full.
+    assert not any(isinstance(result.content, ContentReference)
+                   for item in inline.conversation.items
+                   for result in ([item] if isinstance(item, ToolResultMessage)
+                                  else getattr(item, "result_observations", ())))
+    # The summary still reads the bounded preview a saved result carries, so
+    # long results do not push the rest of the history out of its request.
+    assert inline_sources and inline_sources == [
+        "\n\n".join(part for part in source.split("\n\n") if not part.startswith("Stored result: "))
+        for source in saved_sources
+    ]
+    assert all(text not in source for source in inline_sources for text in texts)
+    # The retention estimate reads the same text, so the same turns are kept.
+    kept = [(type(item).__name__, item.run_id) for item in inline.conversation.items]
+    assert kept == [(type(item).__name__, item.run_id) for item in saved.conversation.items]
+    if shape == "runs":
+        assert ("ToolResultMessage", "run_6") in kept
+
+
+@pytest.mark.parametrize("case", ["shown_completely", "no_result_store", "file_window", "storage_warning"])
+@pytest.mark.asyncio
+async def test_legacy_summary_keeps_the_full_text_of_results_that_are_never_saved(tmp_path, case):
+    # As in 0.10.4, these results contribute their whole text to the summary.
+    texts = [_long_result(index) for index in range(1, 7)]
+    store, retention, policy = ResultStore(tmp_path, ".runtime"), None, ContextPolicy()
+    if case == "shown_completely":
+        policy = ContextPolicy(max_tool_result_tokens=8192)
+    elif case == "no_result_store":
+        store = None
+    elif case == "file_window":
+        retention = ResultRetention(window_start=0, window_length=len(texts[0]), continuation=ResultCursor(
+            tool="read_file", path="notes.txt", offset=len(texts[0])))
+    else:
+        retention = ResultRetention(storage_warnings=(
+            ResultStorageWarning(field="content", error_type="OSError", message="disk full"),))
+    _, sources = await _legacy_summary_sources(store, texts, tools=[], retention=retention, policy=policy)
+    assert len(sources) == 1 and all(text in sources[0] for text in texts)
+
+
+@pytest.mark.parametrize("read_file", [False, True])
+def test_legacy_summary_covers_every_compacted_step_of_a_long_run(tmp_path, read_file):
+    class Provider:
+        context_window_tokens = 32768
+        max_output_tokens = 512
+
+        def __init__(self):
+            self.steps = 0
+            self.sources = []
+
+        async def complete(self, request):
+            if request.purpose == "compaction":
+                self.sources.append(request.items[0].content)
+                return ModelResponse(content="summary")
+            self.steps += 1
+            if self.steps > 12:
+                return ModelResponse(content="done")
+            return ModelResponse(tool_calls=(
+                ToolCall(id=f"call_{self.steps}", name="tool_report", arguments={"index": self.steps}),))
+
+    @dagent.tool
+    def report(index: int) -> str:
+        return _long_result(index, rows=4000)
+
+    provider = Provider()
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        agent = dagent.ToolAgent(
+            profile="conversation", capabilities=[report, *(["tool.read_file"] if read_file else [])],
+            max_steps=20, context=ContextPolicy(max_tool_result_tokens=4096),
+        )
+        result = asyncio.run(runner.run(agent, input="Collect every page."))
+    assert result.status == "completed"
+    compacted = [usage.compacted_items for usage in result.state.context_usage if usage.compacted_items]
+    assert compacted and len(provider.sources) == len(compacted)
+    for source, items in zip(provider.sources, compacted):
+        # Each compacted step is one assistant call and its result; the fact
+        # at the head of every one of them reaches the summary request.
+        assert len(set(re.findall(r"FACT_\d+=", source))) == items // 2
+    assert not result.conversation.summary.source_truncated

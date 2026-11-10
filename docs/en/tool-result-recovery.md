@@ -28,6 +28,12 @@ In the **Unreleased** SDK, a result is shortened only for a model that can open 
   bounded by shortening results, but no file is written for them and a shortened
   inline result is marked `[RECOVERY_UNAVAILABLE: no saved original]`.
 
+A result shortened without a file keeps its full text inline in the
+conversation record. With the `legacy` strategy, summaries and the retention
+estimate read it through the same bounded preview a saved result carries (the
+first and last parts, 8,192 characters in total), so long results do not push
+the rest of the history out of the summary request.
+
 Overflow files are best-effort. The SDK writes them atomically but stores no
 digest (`ContentReference.sha256` is `None`), never checks or rereads them, and
 does not copy them into another workspace. A conversation's runs share one

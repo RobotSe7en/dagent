@@ -9,7 +9,7 @@ import math
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
-from dagent.harness_runtime.result_storage import ResultStore
+from dagent.harness_runtime.result_storage import ResultStore, _head_tail_preview
 from dagent.harness_runtime.result_projection import (
     ResultBudgetExceeded,
     ResultOverflow,
@@ -43,6 +43,7 @@ from dagent.schemas.conversation import (
     ContextSummary,
     ConversationItem,
     ConversationState,
+    InlineContent,
     ToolResultMessage,
     UserMessage,
     ResultObservation,
@@ -162,6 +163,46 @@ def _store_results(
     return conversation.model_copy(update={
         "items": saved_items, "revision": conversation.revision + 1,
     })
+
+
+def _summary_items(
+    items: Sequence[ConversationItem], policy: ContextPolicy, counter: TokenCounter,
+) -> tuple[ConversationItem, ...]:
+    """Items as a summary request and the retention estimate read them.
+
+    A result saved to a file contributes the bounded preview its reference
+    carries. One that is shortened for the model but kept inline (the model
+    cannot open files, or the text contains NUL) contributes the same preview
+    here; otherwise a few long results fill the summary request and the rest
+    of the history is cut from it. Results shown completely are unchanged, and
+    so are those ``ResultStore.ensure`` never saves: file windows and results
+    with a storage warning.
+    """
+
+    def bounded(result: ToolResultMessage | ResultObservation) -> ToolResultMessage | ResultObservation:
+        retention = result.retention
+        if not isinstance(result.content, InlineContent) or (
+                retention and (retention.storage_warnings or retention.window_start is not None)):
+            return result
+        preview = _head_tail_preview(result.content.text)
+        if preview == result.content.text:
+            return result
+        try:
+            shortened = project_result(
+                result, policy.max_tool_result_tokens, counter, read_available=True).truncated
+        except ResultBudgetExceeded:
+            shortened = True
+        return result.model_copy(update={"content": InlineContent(text=preview)}) if shortened else result
+
+    viewed: list[ConversationItem] = []
+    for item in items:
+        if isinstance(item, ToolResultMessage):
+            item = bounded(item)
+        elif isinstance(item, UserMessage) and item.result_observations:
+            item = item.model_copy(update={"result_observations": tuple(
+                bounded(result) for result in item.result_observations)})
+        viewed.append(item)
+    return tuple(viewed)
 
 
 @dataclass(frozen=True)
@@ -366,13 +407,20 @@ class ContextAssembler:
         trigger = max(1, math.floor(input_budget * policy.compaction_trigger_ratio))
         retain = max(1, math.floor(input_budget * policy.compaction_retain_ratio))
 
+        def summary_items() -> tuple[ConversationItem, ...]:
+            # Retention is estimated on the text a summary would read. Without
+            # a result store nothing was ever saved, so nothing is bounded.
+            return (_summary_items(working.items, policy, self.token_counter)
+                    if result_store is not None else working.items)
+
+        # Estimated only under pressure, so an ordinary turn pays nothing.
         compactable = _compaction_prefix(
-            working.items,
+            summary_items(),
             active_run_id=active_run_id,
             retain_tokens=retain,
             counter=self.token_counter,
-        )
-        if estimate > trigger and compactable:
+        ) if estimate > trigger else ()
+        if compactable:
             working, method, reason = await self._compact_slice(
                 working,
                 start=0,
@@ -419,12 +467,13 @@ class ContextAssembler:
         # and tool schemas still causes a hard overflow, compact the oldest
         # retained cross-run groups before touching the active run.
         while estimate > input_budget:
+            retained_items = summary_items()
             retained_item_tokens = sum(
                 _conversation_item_tokens(item, self.token_counter)
-                for item in working.items
+                for item in retained_items
             )
             compactable = _compaction_prefix(
-                working.items,
+                retained_items,
                 active_run_id=active_run_id,
                 retain_tokens=max(
                     0,
@@ -590,6 +639,10 @@ class ContextAssembler:
                 archive_incomplete = archive_incomplete or earlier_lost
         elif _context_results(compactable):
             archive_incomplete = True
+        # The archive above keeps results as they are; the summary reads long
+        # shortened ones through their preview.
+        summarized = (_summary_items(compactable, policy, self.token_counter)
+                      if result_store else compactable)
         summary_limit, _ = self.compaction_limits(policy.summary_max_tokens)
         await flush_resources()
         try:
@@ -597,7 +650,7 @@ class ContextAssembler:
                 raise RuntimeError("No model compactor is configured.")
             summary = await compact(
                 conversation.summary,
-                compactable,
+                summarized,
                 summary_limit,
             )
             method = "model"
@@ -607,7 +660,7 @@ class ContextAssembler:
         except Exception as exc:
             summary = _deterministic_summary(
                 conversation.summary,
-                compactable,
+                summarized,
                 summary_limit,
                 self.token_counter,
                 reason=f"{type(exc).__name__}: {exc}",
