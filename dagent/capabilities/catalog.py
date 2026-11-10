@@ -144,8 +144,13 @@ class CapabilityCatalog:
         return restored_ids
 
     def get(self, capability_id: str) -> CapabilityDefinition | None:
+        definition = self._get_definition(capability_id)
+        return definition.model_copy(deep=True) if definition is not None else None
+
+    def _get_definition(self, capability_id: str) -> CapabilityDefinition | None:
+        """Borrow a stored definition for internal reads; never mutate or expose it."""
         entry = self._entries.get(capability_id)
-        return entry.definition.model_copy(deep=True) if entry is not None else None
+        return entry.definition if entry is not None else None
 
     def get_entry(self, capability_id: str) -> CapabilityEntry | None:
         entry = self._entries.get(capability_id)
