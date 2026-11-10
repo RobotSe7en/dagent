@@ -517,11 +517,16 @@ class RunCheckpoint(BaseModel):
                 if item.invocation is not None and scope is not None and item.invocation.capability_id not in scope:
                     raise ValueError("Checkpoint pending capability is outside the resolved scope.")
             thread = tool_state.model_thread or tool_state.conversation
-            assistant = next((item for item in reversed(thread.items if thread else ())
-                              if isinstance(item, AssistantMessage)), None)
+            thread_items = thread.items if thread else ()
+            assistant_index = next((index for index in range(len(thread_items) - 1, -1, -1)
+                                    if isinstance(thread_items[index], AssistantMessage)), None)
+            assistant = None if assistant_index is None else thread_items[assistant_index]
             if assistant is None or assistant.tool_calls != tuple(item.call for item in batch.calls):
                 raise ValueError("Checkpoint tool batch does not match its model reply.")
-            results = [item.call_id for item in (thread.items if thread else ())
+            # Only results after this batch's reply belong to its cursor.
+            # Providers can reuse call ids from earlier model rounds.
+            assert assistant_index is not None
+            results = [item.call_id for item in thread_items[assistant_index + 1:]
                        if isinstance(item, ToolResultMessage) and item.call_id in {c.call.id for c in batch.calls}]
             if results != [item.call.id for item in batch.calls[:batch.next_index]]:
                 raise ValueError("Checkpoint tool results do not match its batch cursor.")

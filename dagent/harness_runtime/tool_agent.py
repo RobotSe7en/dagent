@@ -520,6 +520,7 @@ class ToolAgentLoop:
         steering = current_run_steering_control(resolved_run_id)
         trace = (resume_state.trace.model_copy(deep=True) if resume_state and resume_state.trace
                  else RunTrace(run_id=resolved_run_id, root=RunTraceNode.run(run_id=resolved_run_id)))
+        result_nodes = _restore_result_nodes(trace, conversation) if resume_state else {}
         execution_context = _execution_context(
             capability_context,
             task_id=resolved_run_id,
@@ -799,6 +800,8 @@ class ToolAgentLoop:
                     if node.capability_execution is not None:
                         node.capability_execution.invocation = invocation
                         node.capability_execution.result = result
+                    result_nodes[tool_item.id] = node
+                    _sync_tool_result(node, tool_item)
                     if denied:
                         node.error = RunTraceError(message="Human reviewer denied this capability call.", code="review_denied")
                     elif result is not None and result.error:
@@ -823,21 +826,15 @@ class ToolAgentLoop:
 
         async def adopt_context(value: PreparedModelContext) -> None:
             nonlocal loop_conversation
+            updated_items = {item.id: item for item in value.conversation.items}
+            for item in loop_conversation.items:
+                updated = updated_items.get(item.id)
+                if updated is not None and updated is not item and isinstance(updated, ToolResultMessage):
+                    node = result_nodes.get(item.id)
+                    if node is not None:
+                        _sync_tool_result(node, updated)
             loop_conversation = value.conversation
-            updated_items = {item.id: item for item in loop_conversation.items}
             new_items[:] = [updated_items.get(item.id, item) for item in new_items]
-            result_items = {item.call_id: item for item in loop_conversation.items
-                            if isinstance(item, ToolResultMessage)}
-            for node in trace.root.children:
-                execution = node.capability_execution
-                if execution is None or execution.result is None:
-                    continue
-                item = result_items.get(execution.invocation.invocation_id)
-                if item is not None:
-                    execution.result = execution.result.model_copy(update={
-                        "retention": item.retention,
-                        "content_reference": item.content if isinstance(item.content, ContentReference) else None,
-                    })
             context_usages.append(value.usage)
             await publish_state(loop_conversation, tuple(new_items))
             if on_event is not None and value.usage.compaction_method != "none":
@@ -1486,13 +1483,38 @@ def _exception_message(exc: Exception) -> str:
 
 
 def _find_capability_node(node: RunTraceNode, invocation_id: str) -> RunTraceNode | None:
-    if node.kind == "capability_call" and node.ref.get("invocation_id") == invocation_id:
-        return node
-    for child in node.children:
-        found = _find_capability_node(child, invocation_id)
-        if found is not None:
-            return found
+    # This loop owns the root's direct capability children. Nested agents own
+    # their own calls, and a completed call id may be reused by the provider.
+    for child in reversed(node.children):
+        if (child.kind == "capability_call" and child.ended_at is None
+                and child.ref.get("invocation_id") == invocation_id):
+            return child
     return None
+
+
+def _restore_result_nodes(trace: RunTrace, conversation: ConversationState) -> dict[str, RunTraceNode]:
+    """Rebuild only unambiguous checkpoint associations without changing records."""
+    nodes: dict[str, RunTraceNode | None] = {}
+    for node in trace.root.children:
+        execution = node.capability_execution
+        if execution is not None:
+            call_id = execution.invocation.invocation_id
+            nodes[call_id] = None if call_id in nodes else node
+    items: dict[str, ToolResultMessage | None] = {}
+    for item in conversation.items:
+        if isinstance(item, ToolResultMessage) and item.run_id in (None, trace.run_id):
+            items[item.call_id] = None if item.call_id in items else item
+    return {item.id: node for call_id, item in items.items()
+            if item is not None and (node := nodes.get(call_id)) is not None}
+
+
+def _sync_tool_result(node: RunTraceNode, item: ToolResultMessage) -> None:
+    execution = node.capability_execution
+    if execution is not None and execution.result is not None:
+        execution.result = execution.result.model_copy(update={
+            "retention": item.retention,
+            "content_reference": item.content if isinstance(item.content, ContentReference) else None,
+        })
 
 
 def _execution_context(

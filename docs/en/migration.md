@@ -9,6 +9,17 @@ The current stable package version is `0.10.4`.
 
 ## Unreleased
 
+### Tool-call trace fixes
+
+ToolAgent now keeps separate trace nodes when a provider reuses a call id across
+model rounds. Each result's retention and file reference stay associated with its
+own execution; review continuation and steering no longer overwrite a completed
+call with the same id. Public invocation ids and trace record shapes are unchanged.
+After checkpoint restoration, historical result associations are rebuilt only
+for unambiguous call ids; ambiguous historical nodes retain their saved metadata
+when context preparation subsequently replaces result messages. Duplicate ids
+within one model round still cannot receive independent review decisions.
+
 ### Breaking changes: conversation workspaces and best-effort files
 
 This release changes where runs work and how the SDK stores files. All runs of a
