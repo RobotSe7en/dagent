@@ -1025,12 +1025,18 @@ def _atomic_groups(
     return groups
 
 
+def user_compaction_label(item: UserMessage) -> str:
+    if item.purpose == "response_retry":
+        return "Runtime response recovery hint (not a lasting task requirement):\n"
+    return "User:\n"
+
+
 def compaction_source(previous: ContextSummary | None, items: tuple[ConversationItem, ...]) -> str:
     """Summary input with tool identities and recovery provenance, never reasoning."""
     sections = ["Previous summary:\n" + previous.content] if previous else []
     for item in items:
         if isinstance(item, UserMessage):
-            sections.append("User:\n" + user_content_for_model(item))
+            sections.append(user_compaction_label(item) + user_content_for_model(item))
             for result in item.result_observations:
                 sections.append(f"Result {result.name} ({result.status}):\n" + stored_content_text(result.content))
         elif isinstance(item, AssistantMessage):

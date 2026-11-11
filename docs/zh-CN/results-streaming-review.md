@@ -375,3 +375,15 @@ cache-aware 维护以带 `compaction_id` 的 `context.compaction.started` 开始
 同一回复内的重复 call id 以 `invalid_tool_call` 失败。原始调用保留在模型 trace
 节点的 `provider_details` 中；不执行工具，会话不含悬空调用。流式以携带失败结果的
 `run.finished` 结束。不同回复之间仍然允许复用 call id。
+
+## 被丢弃的响应和流式 token
+
+开启响应重试后，`response.finished` 仍表示一次模型调用结束。实际重试时，失败观察被
+确认之后、恢复提示发布之前，新增 `response.discarded`。其类型化数据包括
+`response_id`、`model_step`、`error`、`retry`（每段连续失败从 1 开始），以及可用的
+`message_id` 和子 agent 关联信息。下一次 `response.started` 使用新响应身份。
+次数或模型步数耗尽时不发出丢弃事件。
+
+已发出的 token 是临时输出。只用 `on_token` 的消费者无法撤销内容，需要结合响应事件
+或会话变化确定有效结果。被丢弃的回复不进入会话和 `new_items`，模型 trace 节点及
+usage 仍保留。参见[离线失败示例](../../examples/model_failure.py)。

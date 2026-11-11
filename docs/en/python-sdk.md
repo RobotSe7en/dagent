@@ -182,3 +182,12 @@ Since 0.10.1, provider wrappers can request budget-checked re-preparation and
 explicit effort omission. `Runner(context_observability=True)` enables request
 observations and summary progress. These extensions live in `dagent.providers`;
 see [provider wrappers and observations](model-context-and-reasoning.md#provider-wrappers-and-observations).
+
+## Optional response recovery
+
+`ToolAgent` and `AutoAgent` append the optional `response_retries=0` setting.
+`ResolvedRunPlan` persists nonzero values for review recovery and fingerprints;
+default values preserve released plan/checkpoint serialization and schema version.
+`UserMessage.purpose` defaults to omission. `response.discarded` is a typed stream
+event; event data classes live in `dagent.result`. See [Agents](agents.md) and
+[Results and streaming](results-streaming-review.md).

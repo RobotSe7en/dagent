@@ -122,6 +122,7 @@ class ResolvedRunPlan(BaseModel):
     max_output_tokens: int | None = Field(default=None, ge=1)
     extra_system_prompt: str | None = None
     fingerprint: str = ""
+    response_retries: int = Field(default=0, ge=0, strict=True)
 
     @field_validator(
         "tool_profile",
@@ -208,6 +209,8 @@ class ResolvedRunPlan(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_current_execution_fields(self, serializer):
         payload = serializer(self)
+        if self.response_retries == 0:
+            payload.pop("response_retries", None)
         if self.runtime_kind == "static_dag" and self.max_steps is None:
             payload.pop("max_steps", None)
         return payload

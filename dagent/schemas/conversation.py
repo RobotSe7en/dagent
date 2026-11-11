@@ -164,6 +164,14 @@ class UserMessage(BaseModel):
     result_observations: tuple[ResultObservation, ...] = ()
     scope: ModelScope = "conversation"
     visibility: ItemVisibility = "user"
+    purpose: Literal["response_retry"] | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_purpose(self, serializer):
+        payload = serializer(self)
+        if self.purpose is None:
+            payload.pop("purpose", None)
+        return payload
 
     @model_validator(mode="after")
     def validate_observation_ids(self) -> "UserMessage":

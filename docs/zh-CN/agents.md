@@ -255,3 +255,19 @@ result = await runner.run(
 ```
 
 持久化和 review-safe resume flow 见[结果、流式输出和 Review](results-streaming-review.md)。
+
+## 重试不完整的模型回复
+
+`ToolAgent(response_retries=0)` 和 `AutoAgent(response_retries=0)` 保持原有行为。
+可设置非负整数，限制每段连续坏回复允许额外生成的次数。每次生成均占一个
+`max_steps`，最后一步不能重试；有效回复会重置计数。AutoAgent 仅在选择工具循环时
+应用此设置，子 agent 使用自己的配置；规划器、validator 和压缩器的逻辑不变。
+
+可重试：空回复、仅推理、`max_output_tokens`、缺少结束标记或终态回复、
+`invalid_tool_call`，以及自定义 provider 明确返回的 `incomplete`。请求失败、拒答、
+内容过滤、未知错误和笼统的 `failed` 不触发响应重试；结构化原因优先于状态。
+运行时不会自动增加输出预算。
+
+被丢弃的回复保留诊断和 usage，不执行工具。运行时加入固定的内部恢复提示，不复制
+坏回复、推理和参数。次数耗尽保留原错误码和最终 assistant 消息，不可执行的调用仅在
+诊断中保留。零重试时保留已有的失败消息行为。

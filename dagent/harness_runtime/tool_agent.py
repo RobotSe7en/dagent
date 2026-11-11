@@ -160,6 +160,29 @@ _STEER_STEP_LIMIT_FAILURE_DIAGNOSTIC = (
 SkillPromptResolver = Callable[[tuple[str, ...] | None], Sequence[PromptSkill]]
 
 
+_RETRYABLE_RESPONSE_ERRORS = frozenset({
+    "empty_response", "reasoning_only_response", "max_output_tokens",
+    "missing_finish_reason", "missing_terminal_response", "invalid_tool_call",
+})
+
+
+def _can_retry_response(error: RunTraceError, response: ChatResponse) -> bool:
+    if response.refusal.strip():
+        return False
+    return error.code in _RETRYABLE_RESPONSE_ERRORS or (
+        error.code == "model_response_failed" and response.status == "incomplete"
+    )
+
+
+def _response_recovery_hint(error: RunTraceError) -> str:
+    correction = (
+        "Shorten the output or split the work into smaller tool calls."
+        if error.code == "max_output_tokens" else
+        "Return a complete response with final content or valid tool calls with unique ids."
+    )
+    return f"Runtime response recovery ({error.code}). {correction}"
+
+
 class ToolAgent:
     """Profile-backed tool agent facade used by the runtime."""
 
@@ -177,6 +200,7 @@ class ToolAgent:
         context_assembler: ContextAssembler | None = None,
         prompt_context: str = "",
         context_observability: bool = False,
+        response_retries: int = 0,
     ) -> None:
         self.context_observability = context_observability
         loop.context_observability = context_observability
@@ -184,6 +208,7 @@ class ToolAgent:
         self.profile = profile
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_steps = max_steps
+        self.response_retries = response_retries
         self.extra_system_prompt = extra_system_prompt
         self.skill_prompt_resolver = skill_prompt_resolver
         self.context_policy = context_policy or ContextPolicy()
@@ -379,6 +404,7 @@ class ToolAgent:
                 run_id=run_id,
                 boundary=boundary,
                 max_steps=self.max_steps,
+                response_retries=self.response_retries,
                 system_message=system_message,
                 context_policy=self.context_policy,
                 result_storage_policy=self.result_storage_policy,
@@ -496,6 +522,7 @@ class ToolAgentLoop:
         run_id: str | None = None,
         boundary: Boundary,
         max_steps: int = 888,
+        response_retries: int = 0,
         system_message: dict[str, Any],
         context_policy: ContextPolicy,
         result_storage_policy: ResultStoragePolicy,
@@ -860,6 +887,7 @@ class ToolAgentLoop:
             from dagent.harness_runtime.compaction import CompactionRunState
 
             compaction_run_state = CompactionRunState()
+        consecutive_failures = 0
         for step in range(1, max_steps + 1):
             tool_definitions = self._llm_tool_definitions(capability_ids=capability_ids)
             while True:
@@ -954,7 +982,7 @@ class ToolAgentLoop:
                 await adopt_context(fresh)
                 return fresh.prepared_call
 
-            response_record = (None if current_changes() is None else
+            response_record = (None if current_changes() is None and response_retries == 0 else
                                ResponseRecorder(run_id=resolved_run_id, step=step))
             model_error: RunTraceError | None = None
             provider_details: Any = None
@@ -994,14 +1022,28 @@ class ToolAgentLoop:
                     }
                     response = replace(response, tool_calls=[], status="failed")
 
+            retry_response = (model_error is not None and response_retries > consecutive_failures
+                              and step < max_steps and _can_retry_response(model_error, response))
+            if response_retries and model_error is not None and response.tool_calls:
+                # A failed generation cannot supply executable calls. Keep the
+                # original calls in diagnostics even when no retries remain.
+                provider_details = {
+                    **(provider_details if isinstance(provider_details, dict) else {}),
+                    "reason": model_error.code, "message": model_error.message,
+                    "tool_calls": [{"id": call.id, "name": call.name, "arguments": call.arguments}
+                                   for call in response.tool_calls],
+                }
+                response = replace(response, tool_calls=[])
+
             assistant_message = self._assistant_message(
                 response, message_id=None if response_record is None else response_record.message_id,
             )
             assistant_message = assistant_message.model_copy(
                 update={"run_id": resolved_run_id}
             )
-            loop_conversation = _append_item(loop_conversation, assistant_message)
-            new_items.append(assistant_message)
+            if not retry_response:
+                loop_conversation = _append_item(loop_conversation, assistant_message)
+                new_items.append(assistant_message)
             trace.root.children.append(
                 RunTraceNode(
                     parent_id=trace.root.id,
@@ -1028,15 +1070,29 @@ class ToolAgentLoop:
                 await response_record.finish(
                     assistant_message, state=loop_conversation,
                     status="failed" if model_error is not None else "completed",
-                    partial=response.status != "completed",
+                    partial=retry_response or response.status != "completed",
                 )
-            else:
+            elif not retry_response:
                 await publish_state(loop_conversation, (assistant_message,))
+
+            if retry_response:
+                consecutive_failures += 1
+                assert response_record is not None and model_error is not None
+                if on_event is not None:
+                    on_event({"type": "response_discarded", **response_record.context.payload(),
+                              "error": model_error.model_dump(mode="json"), "retry": consecutive_failures})
+                hint = UserMessage(run_id=resolved_run_id, content=_response_recovery_hint(model_error),
+                                   visibility="internal", purpose="response_retry")
+                loop_conversation = _append_item(loop_conversation, hint)
+                new_items.append(hint)
+                await publish_state(loop_conversation, (hint,))
+                continue
 
             if model_error is not None:
                 trace.root.error = model_error
                 return failed_outcome()
 
+            consecutive_failures = 0
             if not response.tool_calls:
                 pending_steers = (
                     ()

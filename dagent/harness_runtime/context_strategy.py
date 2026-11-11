@@ -90,6 +90,8 @@ def _source_key(item: Any, policy_view: dict[str, Any], namespace: str = "") -> 
     # policy_view is ContextPolicy.model_dump(); keys are persisted, so this
     # value must stay byte-identical.
     value = {"id": item.id, "view": view, "policy": policy_view, "namespace": namespace, "v": 1}
+    if isinstance(item, UserMessage) and item.purpose is not None:
+        value["purpose"] = item.purpose
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
@@ -122,7 +124,8 @@ def _eligible_slices(
         group = conversation.items[start:end]
         # Every live user steer stays verbatim. A later steer is not superseded
         # simply because more tools ran after it.
-        if any(isinstance(item, UserMessage) and item.run_id == active_run_id for item in group):
+        if any(isinstance(item, UserMessage) and item.run_id == active_run_id
+               and item.purpose != "response_retry" for item in group):
             continue
         if eligible and eligible[-1][1] == start:
             eligible[-1] = (eligible[-1][0], end)

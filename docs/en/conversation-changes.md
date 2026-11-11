@@ -255,3 +255,18 @@ The new callback is disabled by default. `result.conversation`, `new_items`,
 review checkpoints, and full `run.finished` results remain supported. The
 incremental-size guarantee concerns the new notifications, not the existing full
 terminal result. Filter frontend transport in the host when necessary.
+
+## Response recovery observations
+
+An actual response retry publishes the failed assistant as an observation with
+`partial=True` and response status `failed`, without a context membership
+position. It is audit data, not effective conversation history. Acknowledgment
+precedes `response.discarded` and the next generation; callback failure or
+cancellation stops generation.
+
+The recovery prompt is a `UserMessage` with `visibility="internal"` and
+`purpose="response_retry"`. The purpose is omitted by default and is not sent as
+an extra provider field. Chunked and cache-aware compaction may summarize these
+current-run hints; real user messages, steers and other internal inputs retain
+their existing rules. Both summary paths label hints as runtime recovery data,
+not lasting task requirements.

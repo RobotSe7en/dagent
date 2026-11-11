@@ -164,3 +164,11 @@ Provider 配置类型 `ProviderConfig` 和 `ReasoningMapping` 位于 `dagent.con
 自 0.10.1 起，包装 provider 可以请求重新准备并校验预算，或显式省略思考强度。
 `Runner(context_observability=True)` 开启请求观测与摘要进度。扩展契约位于
 `dagent.providers`，见[Provider 扩展与观测](model-context-and-reasoning.md#provider-包装与观测)。
+
+## 可选响应恢复
+
+`ToolAgent`、`AutoAgent` 在配置末尾增加可选的 `response_retries=0`。
+`ResolvedRunPlan` 保存非零值并纳入指纹，用于审批恢复；默认值保留已发布 plan、
+checkpoint 的序列化形状和 schema version。`UserMessage.purpose` 默认省略。
+`response.discarded` 是类型化流事件，事件数据类位于 `dagent.result`。
+参见 [Agents](agents.md) 和[结果与流式](results-streaming-review.md)。

@@ -96,6 +96,7 @@ from dagent.result import (
     ResultStorageWarningData,
     DagUpdatedData,
     ResponseFinishedData,
+    ResponseDiscardedData,
     ResponseStartedData,
     ReviewRequiredData,
     RunExecutionError,
@@ -1825,6 +1826,7 @@ class Runner:
             context_window_tokens=context_window_snapshot or context_assembler.context_window_tokens,
             max_output_tokens=context_assembler.max_output_tokens,
             extra_system_prompt=runtime.tool_agent.extra_system_prompt,
+            response_retries=runtime.tool_agent.response_retries,
         )
         finalized = replace(
             result,
@@ -2254,6 +2256,7 @@ class Runner:
             ),
             tool_profile=plan.tool_profile,
             max_steps=plan.effective_max_steps(),
+            response_retries=plan.response_retries,
             dag_profile=plan.planner_profile,
             validator=validator,
             enable_validation=plan.validation_enabled,
@@ -2280,6 +2283,7 @@ class Runner:
             self._runtime,
             tool_profile=agent.profile,
             max_steps=agent.max_steps,
+            response_retries=agent.response_retries,
             dag_profile=agent.planner_profile,
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
@@ -2295,6 +2299,7 @@ class Runner:
             self._runtime,
             tool_profile=agent.profile,
             max_steps=agent.max_steps,
+            response_retries=agent.response_retries,
             dag_profile="dag_agent",
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
@@ -2499,6 +2504,7 @@ class Runner:
             "profile": _resolve_profile(agent.profile, profile_root=self.profile_root),
             "description": agent.description,
             "max_steps": agent.max_steps,
+            "response_retries": agent.response_retries,
             "context_policy": agent.context,
             "result_storage_policy": self.result_storage_policy,
             "skills": _agent_skills(agent),
@@ -2590,6 +2596,7 @@ def _assemble_runtime(
     max_output_tokens: int | None | object = _UNSET_MODEL_LIMIT,
     extra_system_prompt: str | None = None,
     context_observability: bool = False,
+    response_retries: int = 0,
     skill_prompt_resolver: Callable[
         [tuple[str, ...] | None], tuple[PromptSkill, ...]
     ]
@@ -2620,6 +2627,7 @@ def _assemble_runtime(
         ),
         profile=_resolve_profile(tool_profile, profile_root=profile_root),
         max_steps=max_steps,
+        response_retries=response_retries,
         extra_system_prompt=extra_system_prompt,
         context_observability=context_observability,
         skill_prompt_resolver=skill_prompt_resolver,
@@ -2755,6 +2763,7 @@ def _runtime_from_existing(
     context_policy: ContextPolicy,
     extra_system_prompt: str | None,
     context_observability: bool = False,
+    response_retries: int = 0,
 ) -> HarnessRuntime:
     runtime = _assemble_runtime(
         provider=base.provider,
@@ -2763,6 +2772,7 @@ def _runtime_from_existing(
         tool_adapter=_tool_adapter(base.capability_catalog, visible_capability_ids),
         tool_profile=tool_profile,
         max_steps=max_steps,
+        response_retries=response_retries,
         dag_profile=dag_profile,
         validator=base.validator,
         enable_validation=base.enable_validation,
@@ -2929,6 +2939,13 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
         return RunStreamEvent(
             type="response.finished",
             data=ResponseFinishedData(**_response_event_context(data)),
+        )
+
+    if event_type == "response_discarded":
+        return RunStreamEvent(
+            type="response.discarded",
+            data=ResponseDiscardedData(error=data["error"], retry=data["retry"],
+                                       **_response_event_context(data)),
         )
 
     if event_type == "tool_result_storage_warning":

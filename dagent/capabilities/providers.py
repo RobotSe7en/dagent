@@ -237,6 +237,7 @@ class AgentCapabilityProvider:
                     "execution_fingerprint": _agent_config_fingerprint(
                         profile=profile,
                         max_steps=int(config.get("max_steps", 888)),
+                        response_retries=config.get("response_retries", 0),
                         context_policy=_context_policy_from_config(config),
                         result_storage_policy=_result_storage_policy_from_config(config),
                         capability_ids=capability_ids,
@@ -336,6 +337,7 @@ class AgentCapabilityProvider:
             prompt_builder=self.prompt_builder,
             context_observability=config.get("context_observability", False),
             max_steps=max_steps,
+            response_retries=config.get("response_retries", 0),
             extra_system_prompt=None if context is None else context.extra_system_prompt,
             skill_prompt_resolver=self.skill_prompt_resolver,
             context_policy=context_policy,
@@ -469,6 +471,7 @@ def _agent_config_fingerprint(
     *,
     profile: AgentProfile,
     max_steps: int,
+    response_retries: int = 0,
     context_policy: ContextPolicy,
     result_storage_policy: ResultStoragePolicy,
     capability_ids: tuple[str, ...],
@@ -484,6 +487,8 @@ def _agent_config_fingerprint(
         "skills": skills,
         "enabled_toolsets": enabled_toolsets,
     }
+    if response_retries:
+        payload["response_retries"] = response_retries
     canonical = json.dumps(
         payload,
         ensure_ascii=False,

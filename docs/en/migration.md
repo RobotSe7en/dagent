@@ -9,6 +9,19 @@ The current stable package version is `0.10.4`.
 
 ## Unreleased
 
+### Optional response retries
+
+Response retries are additive and disabled by default. Nonzero
+`ToolAgent.response_retries` / `AutoAgent.response_retries` enter resolved plans
+and subagent execution fingerprints and survive checkpoint recovery. Default
+fields are omitted individually; schema version remains 9. Configure child
+agents separately. Stream hosts using the feature should handle
+`response.discarded` and treat token output as provisional. See [Agents](agents.md).
+
+When an agent has no `tool.read_file`, full tool text remains in messages and
+trace; results and checkpoints can become substantially larger. Hosts that need
+to control size should give the agent `tool.read_file`.
+
 ### Tool-call trace fixes
 
 ToolAgent now keeps separate trace nodes when a provider reuses a call id across

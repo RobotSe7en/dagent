@@ -43,6 +43,7 @@ RunStreamEventType = Literal[
     "response.reasoning.delta",
     "response.content.delta",
     "response.finished",
+    "response.discarded",
     "capability.call.started",
     "capability.call.completed",
     "capability.call.failed",
@@ -259,6 +260,21 @@ class ResponseFinishedData(_OptionalConversationFields):
 
 
 @dataclass(frozen=True, config=_STRICT)
+class ResponseDiscardedData(_OptionalConversationFields):
+    """A failed response was discarded and another model step will be attempted."""
+
+    response_id: str
+    error: RunTraceError
+    retry: int = PydanticField(ge=1)
+    model_step: int | None = None
+    run_id: str | None = None
+    dag_id: str | None = None
+    node_id: str | None = None
+    parent_capability_id: str | None = None
+    message_id: str | None = None
+
+
+@dataclass(frozen=True, config=_STRICT)
 class DagUpdatedData:
     dag: DAG
 
@@ -432,6 +448,7 @@ RunStreamEventData = (
     | ResponseStartedData
     | TextDeltaData
     | ResponseFinishedData
+    | ResponseDiscardedData
     | DagUpdatedData
     | TraceUpdatedData
     | ReviewRequiredData
@@ -494,6 +511,7 @@ _EVENT_DATA_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "response.reasoning.delta": TypeAdapter(TextDeltaData),
     "response.content.delta": TypeAdapter(TextDeltaData),
     "response.finished": TypeAdapter(ResponseFinishedData),
+    "response.discarded": TypeAdapter(ResponseDiscardedData),
     "capability.call.started": TypeAdapter(CapabilityCallStartedData),
     "capability.call.completed": TypeAdapter(CapabilityCallCompletedData),
     "capability.call.failed": TypeAdapter(CapabilityCallFailedData),

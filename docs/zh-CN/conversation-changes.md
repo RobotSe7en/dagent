@@ -209,3 +209,14 @@ for logical_path, data in await host.load_archives(conversation_id):
 默认不启用新回调。`result.conversation`、`new_items`、审核 checkpoint 和完整的
 `run.finished` 结果继续支持。增量大小保证针对新增通知，不包含原有完整终态结果；
 需要精简前端传输时，由宿主筛选。
+
+## 响应恢复观察
+
+实际重试时，失败的 assistant 以 `partial=True`、响应状态 `failed` 的观察消息交付，
+不分配有效会话成员位置。这是审计数据。确认后才发出 `response.discarded` 并继续；
+回调拒收或取消会停止后续生成。
+
+恢复提示是 `visibility="internal"`、`purpose="response_retry"` 的 `UserMessage`。
+用途字段默认省略，也不会作为额外字段发给 provider。chunked、cache_aware 可以压缩
+当前 run 的这类提示；真实用户输入、steer 和其他内部消息保持原规则。两处摘要来源
+均标注它是运行时恢复数据，不是长期任务要求。

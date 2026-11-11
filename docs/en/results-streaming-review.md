@@ -431,3 +431,19 @@ Duplicate call ids within one response fail with `invalid_tool_call`. The raw
 calls remain in the model trace node’s `provider_details`; no tools execute and
 no dangling calls enter the conversation. Streaming ends with `run.finished`
 carrying the failed result. Reusing an id across responses remains supported.
+
+## Discarded responses and streamed tokens
+
+With response retries enabled, `response.finished` still marks the end of a model
+call. An actual retry adds `response.discarded` after the failed observation is
+acknowledged and before the recovery hint is published. Its typed data includes
+`response_id`, `model_step`, `error`, `retry` (starting at 1 for each consecutive
+failure sequence), and available `message_id` and subagent attribution. The next
+`response.started` has a new response identity. No discard event is emitted when
+retries or model steps are exhausted.
+
+Already emitted tokens are temporary output. An `on_token` consumer alone cannot
+retract them; use response events or conversation changes to decide which output
+is effective. The discarded response is absent from the conversation and
+`new_items`; its model trace node and usage remain. See
+[the offline failure example](../../examples/model_failure.py).

@@ -729,13 +729,17 @@ class HistoryCompactor:
                     if item.source_id == target_ids[-1])
         prefix = request.items[:last + 1]
         positions = []
+        recovery_ids = {item.id for item in items if isinstance(item, UserMessage)
+                        and item.purpose == "response_retry"}
         kinds = {"ModelUserInput": "user", "ModelAssistantTurn": "assistant", "ModelToolResultInput": "tool"}
         for index, item in enumerate(prefix, start=1):
             if item.source_id == "context_summary":
                 position = f"checkpoint {aliases.previous_alias}"
             else:
                 source = aliases.by_id.get(item.source_id, "background")
-                position = f"{kinds[type(item).__name__]} {source}"
+                label = ("Runtime response recovery hint (not a lasting task requirement)"
+                         if item.source_id in recovery_ids else kinds[type(item).__name__])
+                position = f"{label} {source}"
             positions.append(f"{index} {position}")
         instruction = (_summary_rules(max_tokens, aliases.previous_alias)
                        + "\nSources to summarize: " + ", ".join(aliases.by_alias)
@@ -1273,12 +1277,12 @@ def _parse_checkpoint(text: str, aliases: _SourceAliases, inherited: set[str],
 
 def _source_texts(previous: ContextSummary | None,
                   items: tuple[ConversationItem, ...]) -> dict[str, str]:
-    from dagent.harness_runtime.context import user_content_for_model
+    from dagent.harness_runtime.context import user_content_for_model, user_compaction_label
 
     sources = {_previous_source_id(items): previous.content} if previous else {}
     for item in items:
         if isinstance(item, UserMessage):
-            text = "User:\n" + user_content_for_model(item)
+            text = user_compaction_label(item) + user_content_for_model(item)
             for observation in item.result_observations:
                 text += "\n" + (observation.model_display.text if observation.model_display
                                  else stored_content_text(observation.content))

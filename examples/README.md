@@ -92,3 +92,5 @@ repository root, `run`, `python`, `-m`, `examples.local_test_mcp`. The test
 server's `echo` tool intentionally waits 130 seconds before returning so MCP
 tool timeout handling can be verified by setting `tool_timeout` below 130
 seconds.
+
+`model_failure.py` also demonstrates `invalid_tool_call` diagnostics and opt-in response retries with `response.discarded`; see [Agents](../docs/en/agents.md) and [Results and streaming](../docs/en/results-streaming-review.md).

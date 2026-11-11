@@ -8,6 +8,17 @@
 
 ## 未发布
 
+### 可选响应重试
+
+响应重试是默认关闭的增量功能。非零 `ToolAgent.response_retries` /
+`AutoAgent.response_retries` 纳入 plan 和子 agent 执行指纹，并在 checkpoint 恢复后
+继续生效。默认字段逐项省略，schema version 保持 9。子 agent 需单独配置。
+使用该功能的流式宿主应处理 `response.discarded`，并将 token 输出视为临时内容。
+参见 [Agents](agents.md)。
+
+没有 `tool.read_file` 时，工具全文留在消息和 trace 中，结果对象及 checkpoint 会
+明显变大。需要控制体积的宿主应给 agent 配上 `tool.read_file`。
+
 ### 工具调用 trace 修复
 
 当 provider 在不同模型轮次复用 call id 时，ToolAgent 现在为每次调用保留独立 trace 节点。
