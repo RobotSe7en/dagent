@@ -12,9 +12,9 @@
   及失败事件回调字段；删除 DAG 回调专用钩子。其他默认执行、结果、provider 和 V4/V6/V9
   持久化契约保持，V1 批次仍可读取。参见[迁移说明](migration.md#未发布)。
 
-验证覆盖实际 Chat Completions/Responses 请求一致性、由改造前未修改源码捕获的普通 API
-基线、审核恢复、重试/压缩、保存失败、慢消费者及内存释放。运行 Python 全量测试，以及
-[持久化指南](conversation-changes.md)中的离线示例和基准。
+验证覆盖实际 Chat Completions/Responses 请求一致性、公开结果与续聊契约、审核恢复、
+重试/压缩、保存失败、慢消费者及内存释放。运行 Python 全量测试，以及
+[持久化指南](conversation-changes.md)中的离线示例。
 
 边界：展示增量之外仍交付最终权威消息；V9 审核 checkpoint 保留完整状态及已有重复字段；
 不拆帧、不承诺固定帧上限。普通无限保留和防重放 ID 增长仍显式存在。

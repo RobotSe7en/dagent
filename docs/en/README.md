@@ -47,7 +47,6 @@ Simplified Chinese documentation is available at
 
 - [Troubleshooting](troubleshooting.md): common setup, provider, MCP,
   capability, DAG validation, and review issues.
-- [ToolLoop persistence benchmark](toolloop-persistence-benchmark.md): measured wire/heap costs and reproduction.
 - [Release Notes](release-notes.md): additions, authorized callback removal and verification.
 - [Migration Notes](migration.md): released-surface changes and upgrade notes.
 - [Dynamic DAG Generation Plan](dynamic-dag-generation-plan.md): staged

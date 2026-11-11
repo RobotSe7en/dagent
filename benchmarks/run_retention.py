@@ -7,7 +7,6 @@ Results are JSON. No requests, batches, events or old results are accumulated.
 from __future__ import annotations
 
 import argparse
-from examples.conversation_changes import HostJournal
 import asyncio
 from contextlib import closing
 import gc
@@ -19,7 +18,6 @@ import subprocess
 import sys
 import tempfile
 import tracemalloc
-from time import perf_counter
 from typing import Any
 
 import dagent
@@ -29,23 +27,14 @@ from dagent.providers import ChatResponse, MockProvider, ToolCall
 class SyntheticProvider(MockProvider):
     """Only integer counters survive a request; MockProvider's log stays empty."""
 
-    def __init__(self, steps: int, delegate: bool = False):
+    def __init__(self, steps: int):
         super().__init__()
         self.steps = steps
         self.round = 0
-        self.delegate = delegate
-        self.parent_round = 0
-        self.hold_reviews = False
 
     async def chat(self, messages, tools=None, *, response_format=None):
         if messages[0]["content"].startswith("Summarize earlier conversation data"):
             return ChatResponse(content="Earlier evidence collected; continue.")
-        if self.delegate and any(tool.get("function", {}).get("name") == "agent_helper" for tool in tools or []):
-            self.parent_round = 1 - self.parent_round
-            return (ChatResponse(tool_calls=[ToolCall(id="delegate", name="agent_helper", arguments={"prompt": "Collect evidence."})])
-                    if self.parent_round else ChatResponse(content="done"))
-        if self.hold_reviews:
-            return ChatResponse(tool_calls=[ToolCall(id="pending", name="tool_evidence", arguments={"index": 1})])
         self.round = (self.round + 1) % (self.steps + 1)
         if self.round == 0:
             return ChatResponse(content="done")
@@ -94,84 +83,47 @@ def owned_bytes(*roots: Any) -> int:
 
 
 async def measure(*, workspace: Path, runs: int, limit: int | None, mode: str,
-                  steps: int, output_chars: int, persistent: bool, same_conversation: bool = False,
-                  delegate: bool = False, hold_reviews: bool = False, ack_delay: float = 0) -> dict[str, Any]:
-    @dagent.tool(risk="medium" if hold_reviews else "low")
+                  steps: int, output_chars: int, persistent: bool) -> dict[str, Any]:
+    @dagent.tool
     def evidence(index: int) -> str:
         return f"page {index}: " + "e" * output_chars
 
-    provider = SyntheticProvider(steps, delegate)
-    provider.hold_reviews = hold_reviews
-    provider.configured_context_window_tokens = 8192
-    provider.max_output_tokens = 512
-    samples, sizes = [], {}
-    transmitted = 0
-    serialization_seconds = 0.0
-    batches = 0
-    queue_peak = 0
-    conversation = None
+    provider = SyntheticProvider(steps)
+    samples = []
+    sizes = {}
     tracemalloc.start()
     try:
         with closing(dagent.Runner(provider=provider, workspace=workspace, skill_roots=[], max_retained_runs=limit)) as runner:
-            agent = dagent.ToolAgent(profile="conversation", name="helper", capabilities=[evidence],
-                                     review="careful" if hold_reviews else "fast")
-            target = agent
-            if delegate:
-                runner.add_agent(agent)
-                target = dagent.ToolAgent(profile="conversation", capabilities=[], agents=["agent.helper"])
+            agent = dagent.ToolAgent(profile="conversation", name="helper", capabilities=[evidence])
+            target: dagent.ToolAgent | dagent.Dag = agent
             if mode == "dag":
                 target = dagent.Dag("child_cache")
                 target.add_node(dagent.Node("worker", target=agent, inputs={"prompt": "Collect evidence."}))
-            journal = HostJournal(workspace / "host", runner)
             for index in range(runs):
                 kwargs = {"run_id": f"sample_{index}"}
                 if mode == "tool":
-                    kwargs.update(input="Collect evidence.", conversation=conversation if same_conversation else None)
-                journal.state = conversation if same_conversation else None
-                journal.records = {} if journal.state is None else {(journal.state.id, i.id): i for i in journal.state.items}
+                    kwargs["input"] = "Collect evidence."
                 async for event in runner.stream(target, persistence=dagent.StreamPersistenceOptions() if persistent else None, **kwargs):
-                    serialization_started = perf_counter()
-                    event_size = wire_size(event)
-                    serialization_seconds += perf_counter() - serialization_started
-                    transmitted += event_size["utf8_bytes"]
                     if event.type == "conversation.changed":
                         batch = event.data
-                        journal.apply(batch)
-                        batches += 1
-                        # This benchmark measures SDK memory, not the host's
-                        # journal/index: retain only the materialized context.
-                        journal.records = {(journal.state.id, i.id): i for i in journal.state.items}
-                        journal.receipts.clear()
-                        if ack_delay:
-                            await asyncio.sleep(ack_delay)
-                        controller = runner._persistent_deliveries[event.run_id]
-                        queue_peak = max(queue_peak, controller.peak_ready_events)
                         await runner.acknowledge_changes(event.run_id, batch.batch_id)
                         if batch.status is not None:
-                            if batch.status not in {"completed", "awaiting_review"}:
-                                raise RuntimeError(str(batch.error))
-                            conversation = journal.state if same_conversation else None
+                            if batch.status != "completed":
+                                raise RuntimeError(f"Benchmark run failed: {batch.error}")
                             if index == runs - 1:
-                                sizes = {"terminal_batch": event_size}
-                                if batch.checkpoint is not None:
-                                    sizes["checkpoint"] = wire_size(batch.checkpoint)
+                                sizes = {"terminal_batch": wire_size(event)}
                         del batch
                     elif event.type == "run.finished":
                         result = event.data.result
-                        if result.status not in {"completed", "awaiting_review"}:
-                            raise RuntimeError(str(result.error))
-                        conversation = result.conversation if same_conversation else None
+                        if result.status != "completed":
+                            raise RuntimeError(f"Benchmark run failed: {result.error}")
                         if index == runs - 1:
                             sizes = {"RunState": wire_size(result.state), "checkpoint": wire_size(result.checkpoint),
-                                     "run.finished": event_size}
+                                     "run.finished": wire_size(event)}
                         del result
                     elif event.type == "run.failed":
                         raise RuntimeError(event.data.message)
                 del event
-                journal.terminal = None
-                if not same_conversation:
-                    journal.state, journal.records = None, {}
-                journal.sequences.clear()
                 assert not provider.requests
                 gc.collect()
                 current, peak = tracemalloc.get_traced_memory()
@@ -185,10 +137,7 @@ async def measure(*, workspace: Path, runs: int, limit: int | None, mode: str,
                            "combined_unique_bytes": owned_bytes(runner.runtime.runs, runner._run_checkpoints, *caches)}
     finally:
         tracemalloc.stop()
-    return {"mode": mode, "persistent": persistent, "same_conversation": same_conversation,
-            "delegate": delegate, "hold_reviews": hold_reviews, "ack_delay": ack_delay,
-            "max_retained_runs": limit, "wire_sizes_last_result": sizes,
-            "transmitted_utf8_bytes": transmitted, "serialization_seconds": serialization_seconds, "batches": batches, "ready_queue_peak": queue_peak,
+    return {"mode": mode, "max_retained_runs": limit, "wire_sizes_last_result": sizes,
             "retained_object_graph": attribution, "samples": samples}
 
 
@@ -198,13 +147,7 @@ async def main() -> None:
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--output-chars", type=int, default=32768)
     parser.add_argument("--persistent", action="store_true")
-    parser.add_argument("--same-conversation", action="store_true")
-    parser.add_argument("--delegate", action="store_true")
-    parser.add_argument("--hold-reviews", action="store_true")
-    parser.add_argument("--ack-delay", type=float, default=0)
     args = parser.parse_args()
-    if args.ack_delay < 0:
-        parser.error("--ack-delay must be nonnegative")
     if args.runs < 1 or args.steps < 1 or args.output_chars < 1:
         parser.error("--runs, --steps and --output-chars must be positive")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -213,20 +156,17 @@ async def main() -> None:
         source.update(str(path).encode() + b"\0" + path.read_bytes() + b"\0")
     report = {"revision": revision, "working_tree_differs": bool(subprocess.check_output(["git", "status", "--porcelain"], text=True)),
               "sdk_source_sha256": source.hexdigest(),
-              "harness_source_sha256": hashlib.sha256(Path(__file__).read_bytes() + Path("examples/conversation_changes.py").read_bytes()).hexdigest(),
               "python": platform.python_version(), "configuration": vars(args),
               "data": "Fresh text tool results; no read_file; legacy context; offline synthetic provider.",
               "references": "Provider logs remain empty; host only acknowledges; events are drained; old results are released.",
               "json_counting": "Containers and scalar values included; object keys excluded.",
               "measurements": []}
     with tempfile.TemporaryDirectory(prefix="dagent-retention-bench-") as directory:
-        for mode in (("tool",) if args.persistent or args.same_conversation or args.delegate or args.hold_reviews else ("tool", "dag")):
+        for mode in (("tool",) if args.persistent else ("tool", "dag")):
             for limit in (None, 2, 0):
                 report["measurements"].append(await measure(workspace=Path(directory) / f"{mode}_{limit}",
                     runs=args.runs, limit=limit, mode=mode, steps=args.steps,
-                    output_chars=args.output_chars, persistent=args.persistent,
-                    same_conversation=args.same_conversation, delegate=args.delegate,
-                    hold_reviews=args.hold_reviews, ack_delay=args.ack_delay))
+                    output_chars=args.output_chars, persistent=args.persistent))
     print(json.dumps(report, indent=2))
 
 

@@ -20,9 +20,9 @@
   remain supported. See [migration](migration.md#unreleased).
 
 Verification covers actual Chat Completions/Responses request equivalence,
-normal API snapshots captured from the unmodified pre-change source, review
+public result and continuation contracts, review
 recovery, retry/compaction, failure boundaries, slow consumers and memory release.
-Run the Python test suite and offline example/benchmarks listed in
+Run the Python test suite and offline example listed in
 [the persistence guide](conversation-changes.md).
 
 Limits: authoritative final messages still accompany display deltas; review V9

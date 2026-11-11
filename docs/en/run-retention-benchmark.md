@@ -1,6 +1,6 @@
 # Run retention heap and wire baseline
 
-For the current unreleased V2 measurements and commands, see [ToolLoop persistence benchmarks](toolloop-persistence-benchmark.md). The tables below are historical snapshots; the `--onchange` command requires their recorded source revision.
+The tables below are historical snapshots; the `--onchange` command requires their recorded source revision.
 
 Measured on 2026-11-11 with Python 3.11.14, package 0.10.4, from
 `2626349daf48ae3c38b1850d8ba6642c3c484234` plus the retention implementation in this change.

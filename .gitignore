@@ -19,3 +19,6 @@ web/vite.*.log
 # Full compatibility snapshots are local; contract hashes remain tracked.
 /tests/fixtures/response_baseline_*.json
 /tests/fixtures/response_baseline_*.json.gz
+
+# Generated benchmark reports stay local.
+/benchmarks/*_report.json

@@ -42,7 +42,6 @@
 
 - [故障排查](troubleshooting.md)：常见安装、provider、MCP、capability、DAG
   validation 和 review 问题。
-- [ToolLoop 持久化基准](toolloop-persistence-benchmark.md)：传输、内存测量及复现。
 - [版本说明](release-notes.md)：新增能力、旧回调移除及验证。
 - [迁移说明](migration.md)：已发布接口变化和升级说明。
 - [动态 DAG 生成计划](dynamic-dag-generation-plan.md)：类型化 planner spec 和受限
