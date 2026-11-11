@@ -32,7 +32,7 @@ credentials.
 | `static_dag_artifact_files.py` | Materialize input artifact uploads and fan their safe file metadata out with a `MapNode`. | [Static DAGs](../docs/en/static-dag.md) |
 | `static_rag.py` | Feed retrieval output into an agent node through optional reference content. | [Static DAGs](../docs/en/static-dag.md) |
 | `control_flow.py` | Use an exclusive condition node, map fan-out, an embedded subgraph, and a bounded loop in one static DAG. | [Static DAGs](../docs/en/static-dag.md) |
-| `conversation_changes.py` | Persist typed changes and ready files, resume review, replay a host journal, continue in the conversation's own workspace, and move it to another workspace by writing saved files back. | [Conversation Changes](../docs/en/conversation-changes.md) |
+| `conversation_changes.py` | Read persistent ToolLoop events with an independent writer/ACK task, resume a trace-free review in a fresh Runner, replay a host journal and restore files into a moved workspace. | [Conversation Changes](../docs/en/conversation-changes.md) |
 | `streaming.py` | Consume `Runner.stream(...)` typed events, final results, and failure audit snapshots. | [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
 | `steering.py` | Queue guidance for an active root `ToolAgent` and observe typed steer events. | [Results, Streaming, and Review](../docs/en/results-streaming-review.md#steer-an-active-tool-agent-run) |
 | `runtime_registration_and_skills.py` | Add tools and skill roots at runtime, then use `SkillStore` directly. | [Runner and Configuration](../docs/en/runner-and-configuration.md), [Skills](../docs/en/skills.md) |

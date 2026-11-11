@@ -13,12 +13,17 @@ class HarnessRuntimeSession:
         self._review_index: dict[str, str] = {}
 
     def save_run_state(self, state: RunState) -> RunState:
-        stored = state.model_copy(deep=True)
+        from dagent.harness_runtime.conversation_changes import current_changes
+        persistent = current_changes() is not None
+        # Persistent runs own detached inputs; only detached batches leave the
+        # SDK. Share the active state internally instead of copying its complete
+        # conversation at every save. Public queries still return detached data.
+        stored = state if persistent else state.model_copy(deep=True)
         self.runs[stored.run_id] = stored
         self.discard_reviews_for_run(stored.run_id)
         if stored.pending_review is not None:
             self._review_index[stored.pending_review.review_id] = stored.run_id
-        return stored.model_copy(deep=True)
+        return stored if persistent else stored.model_copy(deep=True)
 
     def get_review_state(self, review_id: str) -> RunState | None:
         run_id = self._review_index.get(review_id)

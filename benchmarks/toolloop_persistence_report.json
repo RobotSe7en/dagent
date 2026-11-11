@@ -1,0 +1,5688 @@
+{
+  "revision": "4ac6bcdce2b198868e2daad4ceb9f635a7d7e783",
+  "working_tree_differs": true,
+  "sdk_source_sha256": "57058eea757a0c72cd3003a723cf891eae048ea49db483e2419b941ead412d4a",
+  "harness_source_sha256": "01d8a7974f9f007f36d575108bedcbbe92a025d98f8562942282c304d4e69f32",
+  "python": "3.11.14",
+  "json_counting": "Containers and scalar values included; object keys excluded.",
+  "measured_on": "2026-11-11",
+  "description": "Offline synthetic ToolLoop workloads; provider logs stay empty; events are drained; host keeps only the active projection. No DAG persistence is enabled.",
+  "cases": {
+    "normal": {
+      "configuration": {
+        "runs": 16,
+        "steps": 4,
+        "output_chars": 32768,
+        "persistent": false,
+        "same_conversation": false,
+        "delegate": false,
+        "hold_reviews": false,
+        "ack_delay": 0
+      },
+      "measurements": [
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": null,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 287422,
+              "json_values": 1112
+            },
+            "checkpoint": {
+              "utf8_bytes": 294279,
+              "json_values": 1160
+            },
+            "run.finished": {
+              "utf8_bytes": 422570,
+              "json_values": 1326
+            }
+          },
+          "transmitted_utf8_bytes": 8945316,
+          "serialization_seconds": 0.1505274303490296,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 2964837,
+            "checkpoints_bytes": 3111255,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 3728679
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 556874,
+              "heap_peak_bytes": 2084797,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 849057,
+              "heap_peak_bytes": 2191243,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 1143598,
+              "heap_peak_bytes": 2485840,
+              "run_states": 3,
+              "checkpoints": 3,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 1437166,
+              "heap_peak_bytes": 2779384,
+              "run_states": 4,
+              "checkpoints": 4,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 1731130,
+              "heap_peak_bytes": 3073292,
+              "run_states": 5,
+              "checkpoints": 5,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 2024758,
+              "heap_peak_bytes": 3366872,
+              "run_states": 6,
+              "checkpoints": 6,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 2318773,
+              "heap_peak_bytes": 3660823,
+              "run_states": 7,
+              "checkpoints": 7,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 2612224,
+              "heap_peak_bytes": 3954202,
+              "run_states": 8,
+              "checkpoints": 8,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 2905515,
+              "heap_peak_bytes": 4247446,
+              "run_states": 9,
+              "checkpoints": 9,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 3198463,
+              "heap_peak_bytes": 4540346,
+              "run_states": 10,
+              "checkpoints": 10,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 3492490,
+              "heap_peak_bytes": 4834407,
+              "run_states": 11,
+              "checkpoints": 11,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 3785546,
+              "heap_peak_bytes": 5127423,
+              "run_states": 12,
+              "checkpoints": 12,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 4078567,
+              "heap_peak_bytes": 5420404,
+              "run_states": 13,
+              "checkpoints": 13,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 4371671,
+              "heap_peak_bytes": 5713468,
+              "run_states": 14,
+              "checkpoints": 14,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 4665165,
+              "heap_peak_bytes": 6006906,
+              "run_states": 15,
+              "checkpoints": 15,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 4958159,
+              "heap_peak_bytes": 6299291,
+              "run_states": 16,
+              "checkpoints": 16,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 2,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 287419,
+              "json_values": 1112
+            },
+            "checkpoint": {
+              "utf8_bytes": 294276,
+              "json_values": 1160
+            },
+            "run.finished": {
+              "utf8_bytes": 422567,
+              "json_values": 1326
+            }
+          },
+          "transmitted_utf8_bytes": 8945268,
+          "serialization_seconds": 0.13942331122234464,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 380497,
+            "checkpoints_bytes": 401279,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 478671
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 427203,
+              "heap_peak_bytes": 1883220,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 722082,
+              "heap_peak_bytes": 2063399,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 725201,
+              "heap_peak_bytes": 2067094,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 728294,
+              "heap_peak_bytes": 2070195,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 730202,
+              "heap_peak_bytes": 2072063,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 733038,
+              "heap_peak_bytes": 2074859,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 735164,
+              "heap_peak_bytes": 2076937,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 737215,
+              "heap_peak_bytes": 2078940,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 739310,
+              "heap_peak_bytes": 2081011,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 741566,
+              "heap_peak_bytes": 2083243,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 743079,
+              "heap_peak_bytes": 2084814,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 744839,
+              "heap_peak_bytes": 2086566,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 745953,
+              "heap_peak_bytes": 2087680,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 747504,
+              "heap_peak_bytes": 2089231,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 748605,
+              "heap_peak_bytes": 2090332,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 750448,
+              "heap_peak_bytes": 2091567,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 0,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 287419,
+              "json_values": 1112
+            },
+            "checkpoint": {
+              "utf8_bytes": 294276,
+              "json_values": 1160
+            },
+            "run.finished": {
+              "utf8_bytes": 422567,
+              "json_values": 1326
+            }
+          },
+          "transmitted_utf8_bytes": 8945268,
+          "serialization_seconds": 0.1390102372970432,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 184,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 368
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 134963,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 138517,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 140850,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 143730,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 146148,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 148603,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 150589,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 151834,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 153337,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 155055,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 156428,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 157740,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 159560,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 160911,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 161972,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 163679,
+              "heap_peak_bytes": 1746019,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "dag",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": null,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 291978,
+              "json_values": 1374
+            },
+            "checkpoint": {
+              "utf8_bytes": 298936,
+              "json_values": 1424
+            },
+            "run.finished": {
+              "utf8_bytes": 292257,
+              "json_values": 1387
+            }
+          },
+          "transmitted_utf8_bytes": 11539076,
+          "serialization_seconds": 0.24521051859483123,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 3312691,
+            "checkpoints_bytes": 3375843,
+            "child_sessions_bytes": 1203665,
+            "combined_unique_bytes": 4409314
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 577531,
+              "heap_peak_bytes": 1897815,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 1
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 925140,
+              "heap_peak_bytes": 2124212,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 1272855,
+              "heap_peak_bytes": 2471966,
+              "run_states": 3,
+              "checkpoints": 3,
+              "child_sessions": 3
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 1620735,
+              "heap_peak_bytes": 2819767,
+              "run_states": 4,
+              "checkpoints": 4,
+              "child_sessions": 4
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 1968852,
+              "heap_peak_bytes": 3167868,
+              "run_states": 5,
+              "checkpoints": 5,
+              "child_sessions": 5
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 2316408,
+              "heap_peak_bytes": 3515408,
+              "run_states": 6,
+              "checkpoints": 6,
+              "child_sessions": 6
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 2663683,
+              "heap_peak_bytes": 3862667,
+              "run_states": 7,
+              "checkpoints": 7,
+              "child_sessions": 7
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 3010518,
+              "heap_peak_bytes": 4209478,
+              "run_states": 8,
+              "checkpoints": 8,
+              "child_sessions": 8
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 3357793,
+              "heap_peak_bytes": 4556737,
+              "run_states": 9,
+              "checkpoints": 9,
+              "child_sessions": 9
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 3704692,
+              "heap_peak_bytes": 4903620,
+              "run_states": 10,
+              "checkpoints": 10,
+              "child_sessions": 10
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 4052140,
+              "heap_peak_bytes": 5251091,
+              "run_states": 11,
+              "checkpoints": 11,
+              "child_sessions": 11
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 4398594,
+              "heap_peak_bytes": 5597592,
+              "run_states": 12,
+              "checkpoints": 12,
+              "child_sessions": 12
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 4745048,
+              "heap_peak_bytes": 5944046,
+              "run_states": 13,
+              "checkpoints": 13,
+              "child_sessions": 13
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 5091502,
+              "heap_peak_bytes": 6290445,
+              "run_states": 14,
+              "checkpoints": 14,
+              "child_sessions": 14
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 5437956,
+              "heap_peak_bytes": 6636899,
+              "run_states": 15,
+              "checkpoints": 15,
+              "child_sessions": 15
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 5785128,
+              "heap_peak_bytes": 6983463,
+              "run_states": 16,
+              "checkpoints": 16,
+              "child_sessions": 16
+            }
+          ]
+        },
+        {
+          "mode": "dag",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 2,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 291975,
+              "json_values": 1374
+            },
+            "checkpoint": {
+              "utf8_bytes": 298933,
+              "json_values": 1424
+            },
+            "run.finished": {
+              "utf8_bytes": 292254,
+              "json_values": 1387
+            }
+          },
+          "transmitted_utf8_bytes": 11539028,
+          "serialization_seconds": 0.2321404725080356,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 420945,
+            "checkpoints_bytes": 436455,
+            "child_sessions_bytes": 157203,
+            "combined_unique_bytes": 570234
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 493733,
+              "heap_peak_bytes": 1813158,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 1
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 841356,
+              "heap_peak_bytes": 2040312,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 843115,
+              "heap_peak_bytes": 2042199,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 845488,
+              "heap_peak_bytes": 2044685,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 847163,
+              "heap_peak_bytes": 2046360,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 849089,
+              "heap_peak_bytes": 2048341,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 850637,
+              "heap_peak_bytes": 2049944,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 852295,
+              "heap_peak_bytes": 2051492,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 853238,
+              "heap_peak_bytes": 2052435,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 854740,
+              "heap_peak_bytes": 2053937,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 855632,
+              "heap_peak_bytes": 2054868,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 856469,
+              "heap_peak_bytes": 2055705,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 857468,
+              "heap_peak_bytes": 2056704,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 858357,
+              "heap_peak_bytes": 2057648,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 859356,
+              "heap_peak_bytes": 2058592,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 860853,
+              "heap_peak_bytes": 2059481,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 2
+            }
+          ]
+        },
+        {
+          "mode": "dag",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 0,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 291975,
+              "json_values": 1374
+            },
+            "checkpoint": {
+              "utf8_bytes": 298933,
+              "json_values": 1424
+            },
+            "run.finished": {
+              "utf8_bytes": 292254,
+              "json_values": 1387
+            }
+          },
+          "transmitted_utf8_bytes": 11539028,
+          "serialization_seconds": 0.24068370647728443,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 184,
+            "child_sessions_bytes": 224,
+            "combined_unique_bytes": 592
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 145862,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 148575,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 150331,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 151989,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 154269,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 155519,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 156792,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 158615,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 160218,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 161445,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 162994,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 163938,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 165212,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 166376,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 167320,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 168982,
+              "heap_peak_bytes": 1618980,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        }
+      ]
+    },
+    "persistent": {
+      "configuration": {
+        "runs": 16,
+        "steps": 4,
+        "output_chars": 32768,
+        "persistent": true,
+        "same_conversation": false,
+        "delegate": false,
+        "hold_reviews": false,
+        "ack_delay": 0
+      },
+      "measurements": [
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": null,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 5053,
+              "json_values": 186
+            }
+          },
+          "transmitted_utf8_bytes": 2620090,
+          "serialization_seconds": 0.14657013106625527,
+          "batches": 352,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 1308961,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 1309025
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 367916,
+              "heap_peak_bytes": 975172,
+              "run_states": 1,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 471608,
+              "heap_peak_bytes": 981323,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 576497,
+              "heap_peak_bytes": 1084475,
+              "run_states": 3,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 680221,
+              "heap_peak_bytes": 1187272,
+              "run_states": 4,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 784834,
+              "heap_peak_bytes": 1291672,
+              "run_states": 5,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 889244,
+              "heap_peak_bytes": 1395634,
+              "run_states": 6,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 994061,
+              "heap_peak_bytes": 1500258,
+              "run_states": 7,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 1098015,
+              "heap_peak_bytes": 1603744,
+              "run_states": 8,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 1201728,
+              "heap_peak_bytes": 1707224,
+              "run_states": 9,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 1305873,
+              "heap_peak_bytes": 1811057,
+              "run_states": 10,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 1409904,
+              "heap_peak_bytes": 1914411,
+              "run_states": 11,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 1513539,
+              "heap_peak_bytes": 2018142,
+              "run_states": 12,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 1617036,
+              "heap_peak_bytes": 2121607,
+              "run_states": 13,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 1719861,
+              "heap_peak_bytes": 2224195,
+              "run_states": 14,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 1823123,
+              "heap_peak_bytes": 2327167,
+              "run_states": 15,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 1926503,
+              "heap_peak_bytes": 2430353,
+              "run_states": 16,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 2,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 5050,
+              "json_values": 186
+            }
+          },
+          "transmitted_utf8_bytes": 2619994,
+          "serialization_seconds": 0.15434274729341269,
+          "batches": 352,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 171833,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 171897
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 242745,
+              "heap_peak_bytes": 861420,
+              "run_states": 1,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 347750,
+              "heap_peak_bytes": 861420,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 351606,
+              "heap_peak_bytes": 957217,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 355017,
+              "heap_peak_bytes": 960548,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 358038,
+              "heap_peak_bytes": 963417,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 360152,
+              "heap_peak_bytes": 965280,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 361910,
+              "heap_peak_bytes": 967363,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 363392,
+              "heap_peak_bytes": 968484,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 364925,
+              "heap_peak_bytes": 970090,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 366869,
+              "heap_peak_bytes": 971868,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 368508,
+              "heap_peak_bytes": 973411,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 370865,
+              "heap_peak_bytes": 976072,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 372739,
+              "heap_peak_bytes": 977769,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 374744,
+              "heap_peak_bytes": 979659,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 376260,
+              "heap_peak_bytes": 981109,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 377889,
+              "heap_peak_bytes": 982743,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 0,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 5050,
+              "json_values": 186
+            }
+          },
+          "transmitted_utf8_bytes": 2619994,
+          "serialization_seconds": 0.14004254853352904,
+          "batches": 352,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 248
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 140782,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 143162,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 145258,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 147808,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 150975,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 152892,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 154656,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 156126,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 157623,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 159530,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 161397,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 163476,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 165138,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 166632,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 168606,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 170139,
+              "heap_peak_bytes": 862756,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        }
+      ]
+    },
+    "context_normal": {
+      "configuration": {
+        "runs": 24,
+        "steps": 4,
+        "output_chars": 32768,
+        "persistent": false,
+        "same_conversation": true,
+        "delegate": false,
+        "hold_reviews": false,
+        "ack_delay": 0
+      },
+      "measurements": [
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": true,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": null,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 287458,
+              "json_values": 1112
+            },
+            "checkpoint": {
+              "utf8_bytes": 294315,
+              "json_values": 1160
+            },
+            "run.finished": {
+              "utf8_bytes": 422606,
+              "json_values": 1326
+            }
+          },
+          "transmitted_utf8_bytes": 13444476,
+          "serialization_seconds": 0.23848252149764448,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 4442283,
+            "checkpoints_bytes": 4660493,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 5586765
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 570954,
+              "heap_peak_bytes": 2084230,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 879496,
+              "heap_peak_bytes": 2207735,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 1174188,
+              "heap_peak_bytes": 2502531,
+              "run_states": 3,
+              "checkpoints": 3,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 1468395,
+              "heap_peak_bytes": 2796690,
+              "run_states": 4,
+              "checkpoints": 4,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 1763285,
+              "heap_peak_bytes": 3091524,
+              "run_states": 5,
+              "checkpoints": 5,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 2057350,
+              "heap_peak_bytes": 3385541,
+              "run_states": 6,
+              "checkpoints": 6,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 2350991,
+              "heap_peak_bytes": 3679118,
+              "run_states": 7,
+              "checkpoints": 7,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 2645265,
+              "heap_peak_bytes": 3973324,
+              "run_states": 8,
+              "checkpoints": 8,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 2938575,
+              "heap_peak_bytes": 4266591,
+              "run_states": 9,
+              "checkpoints": 9,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 3232194,
+              "heap_peak_bytes": 4560162,
+              "run_states": 10,
+              "checkpoints": 10,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 3525817,
+              "heap_peak_bytes": 4853823,
+              "run_states": 11,
+              "checkpoints": 11,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 3819030,
+              "heap_peak_bytes": 5146996,
+              "run_states": 12,
+              "checkpoints": 12,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 4112169,
+              "heap_peak_bytes": 5440095,
+              "run_states": 13,
+              "checkpoints": 13,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 4405291,
+              "heap_peak_bytes": 5733177,
+              "run_states": 14,
+              "checkpoints": 14,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 4698264,
+              "heap_peak_bytes": 6026094,
+              "run_states": 15,
+              "checkpoints": 15,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 4991386,
+              "heap_peak_bytes": 6319152,
+              "run_states": 16,
+              "checkpoints": 16,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 5284311,
+              "heap_peak_bytes": 6612037,
+              "run_states": 17,
+              "checkpoints": 17,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 5577332,
+              "heap_peak_bytes": 6905018,
+              "run_states": 18,
+              "checkpoints": 18,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 5872059,
+              "heap_peak_bytes": 7199705,
+              "run_states": 19,
+              "checkpoints": 19,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 6164610,
+              "heap_peak_bytes": 7492216,
+              "run_states": 20,
+              "checkpoints": 20,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 6457463,
+              "heap_peak_bytes": 7785029,
+              "run_states": 21,
+              "checkpoints": 21,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 6751248,
+              "heap_peak_bytes": 8078774,
+              "run_states": 22,
+              "checkpoints": 22,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 7043753,
+              "heap_peak_bytes": 8371231,
+              "run_states": 23,
+              "checkpoints": 23,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 7337413,
+              "heap_peak_bytes": 8664293,
+              "run_states": 24,
+              "checkpoints": 24,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": true,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 2,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 287455,
+              "json_values": 1112
+            },
+            "checkpoint": {
+              "utf8_bytes": 294312,
+              "json_values": 1160
+            },
+            "run.finished": {
+              "utf8_bytes": 422603,
+              "json_values": 1326
+            }
+          },
+          "transmitted_utf8_bytes": 13444404,
+          "serialization_seconds": 0.2161775752902031,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 380627,
+            "checkpoints_bytes": 401409,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 478801
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 441438,
+              "heap_peak_bytes": 1882551,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 751715,
+              "heap_peak_bytes": 2078829,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 754983,
+              "heap_peak_bytes": 2082649,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 757589,
+              "heap_peak_bytes": 2085319,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 761181,
+              "heap_peak_bytes": 2088911,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 764247,
+              "heap_peak_bytes": 2091977,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 766076,
+              "heap_peak_bytes": 2093806,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 768705,
+              "heap_peak_bytes": 2096439,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 771583,
+              "heap_peak_bytes": 2099321,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 773843,
+              "heap_peak_bytes": 2101581,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 775846,
+              "heap_peak_bytes": 2103662,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 777821,
+              "heap_peak_bytes": 2105637,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 780417,
+              "heap_peak_bytes": 2108233,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 781780,
+              "heap_peak_bytes": 2109596,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 784024,
+              "heap_peak_bytes": 2111840,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 785440,
+              "heap_peak_bytes": 2113256,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 786640,
+              "heap_peak_bytes": 2114456,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 788524,
+              "heap_peak_bytes": 2116340,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 791286,
+              "heap_peak_bytes": 2119102,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 792430,
+              "heap_peak_bytes": 2120246,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 793778,
+              "heap_peak_bytes": 2121594,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 795059,
+              "heap_peak_bytes": 2122875,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 796527,
+              "heap_peak_bytes": 2124343,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 798514,
+              "heap_peak_bytes": 2125781,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": true,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 0,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 287455,
+              "json_values": 1112
+            },
+            "checkpoint": {
+              "utf8_bytes": 294312,
+              "json_values": 1160
+            },
+            "run.finished": {
+              "utf8_bytes": 422603,
+              "json_values": 1326
+            }
+          },
+          "transmitted_utf8_bytes": 13444404,
+          "serialization_seconds": 0.21701110992580652,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 184,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 368
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 216790,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 301782,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 304762,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 307260,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 309643,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 312568,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 314843,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 317061,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 318778,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 321149,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 323113,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 324483,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 325697,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 327280,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 328889,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 330243,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 331558,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 332701,
+              "heap_peak_bytes": 1746256,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 336914,
+              "heap_peak_bytes": 1749996,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 337848,
+              "heap_peak_bytes": 1750930,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 339825,
+              "heap_peak_bytes": 1752907,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 341386,
+              "heap_peak_bytes": 1754468,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 342017,
+              "heap_peak_bytes": 1755099,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 343359,
+              "heap_peak_bytes": 1755888,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        }
+      ]
+    },
+    "context_persistent": {
+      "configuration": {
+        "runs": 24,
+        "steps": 4,
+        "output_chars": 32768,
+        "persistent": true,
+        "same_conversation": true,
+        "delegate": false,
+        "hold_reviews": false,
+        "ack_delay": 0
+      },
+      "measurements": [
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": true,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": null,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 5068,
+              "json_values": 186
+            }
+          },
+          "transmitted_utf8_bytes": 4031463,
+          "serialization_seconds": 0.23228101839777082,
+          "batches": 574,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 1959423,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 1959487
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 384114,
+              "heap_peak_bytes": 975010,
+              "run_states": 1,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 502912,
+              "heap_peak_bytes": 1050802,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 608751,
+              "heap_peak_bytes": 1155160,
+              "run_states": 3,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 713346,
+              "heap_peak_bytes": 1259296,
+              "run_states": 4,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 819263,
+              "heap_peak_bytes": 1364738,
+              "run_states": 5,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 924727,
+              "heap_peak_bytes": 1469710,
+              "run_states": 6,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 1029601,
+              "heap_peak_bytes": 1574669,
+              "run_states": 7,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 1133378,
+              "heap_peak_bytes": 1677854,
+              "run_states": 8,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 1238728,
+              "heap_peak_bytes": 1783057,
+              "run_states": 9,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 1342922,
+              "heap_peak_bytes": 1886819,
+              "run_states": 10,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 1447816,
+              "heap_peak_bytes": 1991377,
+              "run_states": 11,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 1551254,
+              "heap_peak_bytes": 2094517,
+              "run_states": 12,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 1654974,
+              "heap_peak_bytes": 2198005,
+              "run_states": 13,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 1758397,
+              "heap_peak_bytes": 2301378,
+              "run_states": 14,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 1862513,
+              "heap_peak_bytes": 2405464,
+              "run_states": 15,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 1966431,
+              "heap_peak_bytes": 2509183,
+              "run_states": 16,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 2069749,
+              "heap_peak_bytes": 2612416,
+              "run_states": 17,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 2173577,
+              "heap_peak_bytes": 2715956,
+              "run_states": 18,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 2278581,
+              "heap_peak_bytes": 2821005,
+              "run_states": 19,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 2382996,
+              "heap_peak_bytes": 2925266,
+              "run_states": 20,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 2486666,
+              "heap_peak_bytes": 3028729,
+              "run_states": 21,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 2590186,
+              "heap_peak_bytes": 3132196,
+              "run_states": 22,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 2693602,
+              "heap_peak_bytes": 3235593,
+              "run_states": 23,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 2797392,
+              "heap_peak_bytes": 3339328,
+              "run_states": 24,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": true,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 2,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 5065,
+              "json_values": 186
+            }
+          },
+          "transmitted_utf8_bytes": 4031250,
+          "serialization_seconds": 0.24093711411114782,
+          "batches": 574,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 171963,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 172027
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 260299,
+              "heap_peak_bytes": 860472,
+              "run_states": 1,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 381491,
+              "heap_peak_bytes": 923028,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 384592,
+              "heap_peak_bytes": 1028425,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 387373,
+              "heap_peak_bytes": 1031453,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 390340,
+              "heap_peak_bytes": 1034687,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 392100,
+              "heap_peak_bytes": 1035877,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 394881,
+              "heap_peak_bytes": 1038966,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 396931,
+              "heap_peak_bytes": 1040827,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 398694,
+              "heap_peak_bytes": 1042773,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 401000,
+              "heap_peak_bytes": 1045019,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 403815,
+              "heap_peak_bytes": 1047749,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 405635,
+              "heap_peak_bytes": 1049784,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 407767,
+              "heap_peak_bytes": 1051663,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 409050,
+              "heap_peak_bytes": 1053011,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 410650,
+              "heap_peak_bytes": 1054663,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 413076,
+              "heap_peak_bytes": 1057103,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 414346,
+              "heap_peak_bytes": 1058490,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 415765,
+              "heap_peak_bytes": 1059780,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 419227,
+              "heap_peak_bytes": 1063247,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 420292,
+              "heap_peak_bytes": 1064313,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 421492,
+              "heap_peak_bytes": 1065622,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 422840,
+              "heap_peak_bytes": 1066860,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 424848,
+              "heap_peak_bytes": 1069031,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 425587,
+              "heap_peak_bytes": 1069542,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": true,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 0,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 5065,
+              "json_values": 186
+            }
+          },
+          "transmitted_utf8_bytes": 4031250,
+          "serialization_seconds": 0.21977576054632664,
+          "batches": 574,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 248
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 223737,
+              "heap_peak_bytes": 862163,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 309748,
+              "heap_peak_bytes": 886796,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 312630,
+              "heap_peak_bytes": 889937,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 315530,
+              "heap_peak_bytes": 892706,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 318123,
+              "heap_peak_bytes": 895489,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 320423,
+              "heap_peak_bytes": 897970,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 322484,
+              "heap_peak_bytes": 899920,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 324311,
+              "heap_peak_bytes": 901674,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 326682,
+              "heap_peak_bytes": 904119,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 329148,
+              "heap_peak_bytes": 906391,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 330809,
+              "heap_peak_bytes": 908013,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 332604,
+              "heap_peak_bytes": 909899,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 334464,
+              "heap_peak_bytes": 911837,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 336060,
+              "heap_peak_bytes": 913483,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 337372,
+              "heap_peak_bytes": 914870,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 338473,
+              "heap_peak_bytes": 915713,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 339707,
+              "heap_peak_bytes": 917192,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 340850,
+              "heap_peak_bytes": 918206,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 343405,
+              "heap_peak_bytes": 920581,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 344476,
+              "heap_peak_bytes": 921974,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 345370,
+              "heap_peak_bytes": 922668,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 346674,
+              "heap_peak_bytes": 923979,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 347735,
+              "heap_peak_bytes": 925137,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 348797,
+              "heap_peak_bytes": 925998,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        }
+      ]
+    },
+    "delegate_normal": {
+      "configuration": {
+        "runs": 16,
+        "steps": 4,
+        "output_chars": 32768,
+        "persistent": false,
+        "same_conversation": false,
+        "delegate": true,
+        "hold_reviews": false,
+        "ack_delay": 0
+      },
+      "measurements": [
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": true,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": null,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 153820,
+              "json_values": 1043
+            },
+            "checkpoint": {
+              "utf8_bytes": 160689,
+              "json_values": 1092
+            },
+            "run.finished": {
+              "utf8_bytes": 155326,
+              "json_values": 1122
+            }
+          },
+          "transmitted_utf8_bytes": 4697990,
+          "serialization_seconds": 0.12166133616119623,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 3162835,
+            "checkpoints_bytes": 3310077,
+            "child_sessions_bytes": 64,
+            "combined_unique_bytes": 3960461
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 544647,
+              "heap_peak_bytes": 1557884,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 818645,
+              "heap_peak_bytes": 1714398,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 1093381,
+              "heap_peak_bytes": 1989006,
+              "run_states": 3,
+              "checkpoints": 3,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 1368462,
+              "heap_peak_bytes": 2263823,
+              "run_states": 4,
+              "checkpoints": 4,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 1643212,
+              "heap_peak_bytes": 2538349,
+              "run_states": 5,
+              "checkpoints": 5,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 1917375,
+              "heap_peak_bytes": 2812312,
+              "run_states": 6,
+              "checkpoints": 6,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 2191736,
+              "heap_peak_bytes": 3086457,
+              "run_states": 7,
+              "checkpoints": 7,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 2466093,
+              "heap_peak_bytes": 3360534,
+              "run_states": 8,
+              "checkpoints": 8,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 2740245,
+              "heap_peak_bytes": 3634471,
+              "run_states": 9,
+              "checkpoints": 9,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 3013718,
+              "heap_peak_bytes": 3907744,
+              "run_states": 10,
+              "checkpoints": 10,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 3288271,
+              "heap_peak_bytes": 4182197,
+              "run_states": 11,
+              "checkpoints": 11,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 3562229,
+              "heap_peak_bytes": 4455947,
+              "run_states": 12,
+              "checkpoints": 12,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 3836198,
+              "heap_peak_bytes": 4729740,
+              "run_states": 13,
+              "checkpoints": 13,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 4109888,
+              "heap_peak_bytes": 5003326,
+              "run_states": 14,
+              "checkpoints": 14,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 4383655,
+              "heap_peak_bytes": 5277013,
+              "run_states": 15,
+              "checkpoints": 15,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 4658706,
+              "heap_peak_bytes": 5558778,
+              "run_states": 16,
+              "checkpoints": 16,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": true,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 2,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 153817,
+              "json_values": 1043
+            },
+            "checkpoint": {
+              "utf8_bytes": 160686,
+              "json_values": 1092
+            },
+            "run.finished": {
+              "utf8_bytes": 155323,
+              "json_values": 1122
+            }
+          },
+          "transmitted_utf8_bytes": 4697942,
+          "serialization_seconds": 0.12359975220169872,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 404499,
+            "checkpoints_bytes": 425433,
+            "child_sessions_bytes": 64,
+            "combined_unique_bytes": 507001
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 415383,
+              "heap_peak_bytes": 1423087,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 691443,
+              "heap_peak_bytes": 1584375,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 694229,
+              "heap_peak_bytes": 1587481,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 696451,
+              "heap_peak_bytes": 1589703,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 700635,
+              "heap_peak_bytes": 1593839,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 703079,
+              "heap_peak_bytes": 1596243,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 705861,
+              "heap_peak_bytes": 1598977,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 708651,
+              "heap_peak_bytes": 1601719,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 710386,
+              "heap_peak_bytes": 1603430,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 712200,
+              "heap_peak_bytes": 1605220,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 714019,
+              "heap_peak_bytes": 1607091,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 716637,
+              "heap_peak_bytes": 1609701,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 718800,
+              "heap_peak_bytes": 1611864,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 720227,
+              "heap_peak_bytes": 1613291,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 722189,
+              "heap_peak_bytes": 1615253,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 724276,
+              "heap_peak_bytes": 1624150,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": true,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 0,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 153817,
+              "json_values": 1043
+            },
+            "checkpoint": {
+              "utf8_bytes": 160686,
+              "json_values": 1092
+            },
+            "run.finished": {
+              "utf8_bytes": 155323,
+              "json_values": 1122
+            }
+          },
+          "transmitted_utf8_bytes": 4697942,
+          "serialization_seconds": 0.11913264123722911,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 184,
+            "child_sessions_bytes": 64,
+            "combined_unique_bytes": 432
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 142826,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 146555,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 149560,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 153033,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 156368,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 158529,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 161177,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 163418,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 166043,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 167982,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 170248,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 171974,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 173869,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 174911,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 176350,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 178398,
+              "heap_peak_bytes": 1315729,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        }
+      ]
+    },
+    "delegate": {
+      "configuration": {
+        "runs": 16,
+        "steps": 4,
+        "output_chars": 32768,
+        "persistent": true,
+        "same_conversation": false,
+        "delegate": true,
+        "hold_reviews": false,
+        "ack_delay": 0
+      },
+      "measurements": [
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": true,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": null,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 2436,
+              "json_values": 90
+            }
+          },
+          "transmitted_utf8_bytes": 2638118,
+          "serialization_seconds": 0.14751396316569299,
+          "batches": 448,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 129298,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 64,
+            "combined_unique_bytes": 129426
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 291992,
+              "heap_peak_bytes": 1035607,
+              "run_states": 1,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 309735,
+              "heap_peak_bytes": 1035607,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 327266,
+              "heap_peak_bytes": 1035607,
+              "run_states": 3,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 345411,
+              "heap_peak_bytes": 1035607,
+              "run_states": 4,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 365090,
+              "heap_peak_bytes": 1035607,
+              "run_states": 5,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 384094,
+              "heap_peak_bytes": 1035607,
+              "run_states": 6,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 401882,
+              "heap_peak_bytes": 1041402,
+              "run_states": 7,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 419711,
+              "heap_peak_bytes": 1058826,
+              "run_states": 8,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 438636,
+              "heap_peak_bytes": 1077273,
+              "run_states": 9,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 456043,
+              "heap_peak_bytes": 1094283,
+              "run_states": 10,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 474257,
+              "heap_peak_bytes": 1111988,
+              "run_states": 11,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 491992,
+              "heap_peak_bytes": 1129802,
+              "run_states": 12,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 509626,
+              "heap_peak_bytes": 1146993,
+              "run_states": 13,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 527349,
+              "heap_peak_bytes": 1164432,
+              "run_states": 14,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 544247,
+              "heap_peak_bytes": 1181319,
+              "run_states": 15,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 562124,
+              "heap_peak_bytes": 1198955,
+              "run_states": 16,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": true,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 2,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 2433,
+              "json_values": 90
+            }
+          },
+          "transmitted_utf8_bytes": 2638022,
+          "serialization_seconds": 0.151855779113248,
+          "batches": 448,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 23228,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 64,
+            "combined_unique_bytes": 23356
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 165576,
+              "heap_peak_bytes": 918121,
+              "run_states": 1,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 185609,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 189233,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 191119,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 194078,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 197420,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 198862,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 200306,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 202430,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 204182,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 205510,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 206973,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 208440,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 209450,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 210819,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 212447,
+              "heap_peak_bytes": 918121,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": true,
+          "hold_reviews": false,
+          "ack_delay": 0,
+          "max_retained_runs": 0,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 2433,
+              "json_values": 90
+            }
+          },
+          "transmitted_utf8_bytes": 2638022,
+          "serialization_seconds": 0.1595100611448288,
+          "batches": 448,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 64,
+            "combined_unique_bytes": 312
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 148921,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 151747,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 154097,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 156185,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 159343,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 161225,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 163398,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 165446,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 166878,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 168429,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 170486,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 171602,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 173307,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 175128,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 176993,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 178731,
+              "heap_peak_bytes": 918072,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        }
+      ]
+    },
+    "review_normal": {
+      "configuration": {
+        "runs": 24,
+        "steps": 4,
+        "output_chars": 32768,
+        "persistent": false,
+        "same_conversation": false,
+        "delegate": false,
+        "hold_reviews": true,
+        "ack_delay": 0
+      },
+      "measurements": [
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": true,
+          "ack_delay": 0,
+          "max_retained_runs": null,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 6474,
+              "json_values": 305
+            },
+            "checkpoint": {
+              "utf8_bytes": 13333,
+              "json_values": 353
+            },
+            "run.finished": {
+              "utf8_bytes": 7176,
+              "json_values": 345
+            }
+          },
+          "transmitted_utf8_bytes": 194828,
+          "serialization_seconds": 0.045744617003947496,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 384900,
+            "checkpoints_bytes": 603097,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 897497
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 288207,
+              "heap_peak_bytes": 664621,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 347486,
+              "heap_peak_bytes": 664621,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 407763,
+              "heap_peak_bytes": 687898,
+              "run_states": 3,
+              "checkpoints": 3,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 467592,
+              "heap_peak_bytes": 747583,
+              "run_states": 4,
+              "checkpoints": 4,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 527488,
+              "heap_peak_bytes": 807351,
+              "run_states": 5,
+              "checkpoints": 5,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 587482,
+              "heap_peak_bytes": 867345,
+              "run_states": 6,
+              "checkpoints": 6,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 646563,
+              "heap_peak_bytes": 926154,
+              "run_states": 7,
+              "checkpoints": 7,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 707297,
+              "heap_peak_bytes": 986704,
+              "run_states": 8,
+              "checkpoints": 8,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 766572,
+              "heap_peak_bytes": 1045860,
+              "run_states": 9,
+              "checkpoints": 9,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 825697,
+              "heap_peak_bytes": 1104865,
+              "run_states": 10,
+              "checkpoints": 10,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 885010,
+              "heap_peak_bytes": 1164094,
+              "run_states": 11,
+              "checkpoints": 11,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 943800,
+              "heap_peak_bytes": 1222756,
+              "run_states": 12,
+              "checkpoints": 12,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 1002422,
+              "heap_peak_bytes": 1281266,
+              "run_states": 13,
+              "checkpoints": 13,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 1061789,
+              "heap_peak_bytes": 1340553,
+              "run_states": 14,
+              "checkpoints": 14,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 1120563,
+              "heap_peak_bytes": 1399215,
+              "run_states": 15,
+              "checkpoints": 15,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 1179657,
+              "heap_peak_bytes": 1458181,
+              "run_states": 16,
+              "checkpoints": 16,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 1238439,
+              "heap_peak_bytes": 1516883,
+              "run_states": 17,
+              "checkpoints": 17,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 1296931,
+              "heap_peak_bytes": 1575295,
+              "run_states": 18,
+              "checkpoints": 18,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 1356958,
+              "heap_peak_bytes": 1635242,
+              "run_states": 19,
+              "checkpoints": 19,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 1415961,
+              "heap_peak_bytes": 1694165,
+              "run_states": 20,
+              "checkpoints": 20,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 1474501,
+              "heap_peak_bytes": 1752633,
+              "run_states": 21,
+              "checkpoints": 21,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 1533434,
+              "heap_peak_bytes": 1811502,
+              "run_states": 22,
+              "checkpoints": 22,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 1591682,
+              "heap_peak_bytes": 1869670,
+              "run_states": 23,
+              "checkpoints": 23,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 1650831,
+              "heap_peak_bytes": 1942350,
+              "run_states": 24,
+              "checkpoints": 24,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": true,
+          "ack_delay": 0,
+          "max_retained_runs": 2,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 6471,
+              "json_values": 305
+            },
+            "checkpoint": {
+              "utf8_bytes": 13330,
+              "json_values": 353
+            },
+            "run.finished": {
+              "utf8_bytes": 7173,
+              "json_values": 345
+            }
+          },
+          "transmitted_utf8_bytes": 194756,
+          "serialization_seconds": 0.045110093778930604,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 384828,
+            "checkpoints_bytes": 603025,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 897425
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 194289,
+              "heap_peak_bytes": 586052,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 254733,
+              "heap_peak_bytes": 586052,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 313924,
+              "heap_peak_bytes": 591670,
+              "run_states": 3,
+              "checkpoints": 3,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 374423,
+              "heap_peak_bytes": 652161,
+              "run_states": 4,
+              "checkpoints": 4,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 434467,
+              "heap_peak_bytes": 712205,
+              "run_states": 5,
+              "checkpoints": 5,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 493398,
+              "heap_peak_bytes": 771256,
+              "run_states": 6,
+              "checkpoints": 6,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 553221,
+              "heap_peak_bytes": 830959,
+              "run_states": 7,
+              "checkpoints": 7,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 612522,
+              "heap_peak_bytes": 890260,
+              "run_states": 8,
+              "checkpoints": 8,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 671270,
+              "heap_peak_bytes": 949008,
+              "run_states": 9,
+              "checkpoints": 9,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 730158,
+              "heap_peak_bytes": 1007896,
+              "run_states": 10,
+              "checkpoints": 10,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 790142,
+              "heap_peak_bytes": 1067908,
+              "run_states": 11,
+              "checkpoints": 11,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 849169,
+              "heap_peak_bytes": 1126935,
+              "run_states": 12,
+              "checkpoints": 12,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 907996,
+              "heap_peak_bytes": 1185762,
+              "run_states": 13,
+              "checkpoints": 13,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 967292,
+              "heap_peak_bytes": 1245058,
+              "run_states": 14,
+              "checkpoints": 14,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 1026974,
+              "heap_peak_bytes": 1304740,
+              "run_states": 15,
+              "checkpoints": 15,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 1086325,
+              "heap_peak_bytes": 1364091,
+              "run_states": 16,
+              "checkpoints": 16,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 1144603,
+              "heap_peak_bytes": 1422369,
+              "run_states": 17,
+              "checkpoints": 17,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 1203009,
+              "heap_peak_bytes": 1480775,
+              "run_states": 18,
+              "checkpoints": 18,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 1263614,
+              "heap_peak_bytes": 1541380,
+              "run_states": 19,
+              "checkpoints": 19,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 1322318,
+              "heap_peak_bytes": 1600084,
+              "run_states": 20,
+              "checkpoints": 20,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 1381075,
+              "heap_peak_bytes": 1658841,
+              "run_states": 21,
+              "checkpoints": 21,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 1440267,
+              "heap_peak_bytes": 1718033,
+              "run_states": 22,
+              "checkpoints": 22,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 1498628,
+              "heap_peak_bytes": 1776394,
+              "run_states": 23,
+              "checkpoints": 23,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 1557488,
+              "heap_peak_bytes": 1848873,
+              "run_states": 24,
+              "checkpoints": 24,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": false,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": true,
+          "ack_delay": 0,
+          "max_retained_runs": 0,
+          "wire_sizes_last_result": {
+            "RunState": {
+              "utf8_bytes": 6471,
+              "json_values": 305
+            },
+            "checkpoint": {
+              "utf8_bytes": 13330,
+              "json_values": 353
+            },
+            "run.finished": {
+              "utf8_bytes": 7173,
+              "json_values": 345
+            }
+          },
+          "transmitted_utf8_bytes": 194756,
+          "serialization_seconds": 0.045542479143477976,
+          "batches": 0,
+          "ready_queue_peak": 0,
+          "retained_object_graph": {
+            "run_states_bytes": 384828,
+            "checkpoints_bytes": 603025,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 897425
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 193430,
+              "heap_peak_bytes": 585113,
+              "run_states": 1,
+              "checkpoints": 1,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 254399,
+              "heap_peak_bytes": 585113,
+              "run_states": 2,
+              "checkpoints": 2,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 313870,
+              "heap_peak_bytes": 591608,
+              "run_states": 3,
+              "checkpoints": 3,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 374475,
+              "heap_peak_bytes": 652213,
+              "run_states": 4,
+              "checkpoints": 4,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 434677,
+              "heap_peak_bytes": 712415,
+              "run_states": 5,
+              "checkpoints": 5,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 495008,
+              "heap_peak_bytes": 772866,
+              "run_states": 6,
+              "checkpoints": 6,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 554940,
+              "heap_peak_bytes": 832678,
+              "run_states": 7,
+              "checkpoints": 7,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 614498,
+              "heap_peak_bytes": 892236,
+              "run_states": 8,
+              "checkpoints": 8,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 673330,
+              "heap_peak_bytes": 951068,
+              "run_states": 9,
+              "checkpoints": 9,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 732460,
+              "heap_peak_bytes": 1010198,
+              "run_states": 10,
+              "checkpoints": 10,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 791783,
+              "heap_peak_bytes": 1069549,
+              "run_states": 11,
+              "checkpoints": 11,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 850653,
+              "heap_peak_bytes": 1128419,
+              "run_states": 12,
+              "checkpoints": 12,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 909318,
+              "heap_peak_bytes": 1187084,
+              "run_states": 13,
+              "checkpoints": 13,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 967957,
+              "heap_peak_bytes": 1245723,
+              "run_states": 14,
+              "checkpoints": 14,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 1026843,
+              "heap_peak_bytes": 1304609,
+              "run_states": 15,
+              "checkpoints": 15,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 1085757,
+              "heap_peak_bytes": 1363523,
+              "run_states": 16,
+              "checkpoints": 16,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 1144679,
+              "heap_peak_bytes": 1422445,
+              "run_states": 17,
+              "checkpoints": 17,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 1203006,
+              "heap_peak_bytes": 1480772,
+              "run_states": 18,
+              "checkpoints": 18,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 1262975,
+              "heap_peak_bytes": 1540741,
+              "run_states": 19,
+              "checkpoints": 19,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 1321717,
+              "heap_peak_bytes": 1599483,
+              "run_states": 20,
+              "checkpoints": 20,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 1380025,
+              "heap_peak_bytes": 1657791,
+              "run_states": 21,
+              "checkpoints": 21,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 1438977,
+              "heap_peak_bytes": 1716743,
+              "run_states": 22,
+              "checkpoints": 22,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 1497038,
+              "heap_peak_bytes": 1774804,
+              "run_states": 23,
+              "checkpoints": 23,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 1555949,
+              "heap_peak_bytes": 1847334,
+              "run_states": 24,
+              "checkpoints": 24,
+              "child_sessions": 0
+            }
+          ]
+        }
+      ]
+    },
+    "review": {
+      "configuration": {
+        "runs": 24,
+        "steps": 4,
+        "output_chars": 32768,
+        "persistent": true,
+        "same_conversation": false,
+        "delegate": false,
+        "hold_reviews": true,
+        "ack_delay": 0
+      },
+      "measurements": [
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": true,
+          "ack_delay": 0,
+          "max_retained_runs": null,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 12196,
+              "json_values": 284
+            },
+            "checkpoint": {
+              "utf8_bytes": 10660,
+              "json_values": 227
+            }
+          },
+          "transmitted_utf8_bytes": 379168,
+          "serialization_seconds": 0.06650527671445161,
+          "batches": 96,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 248
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 223188,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 226004,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 229161,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 230862,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 233776,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 236744,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 238370,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 240080,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 241752,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 244125,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 246115,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 248598,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 250418,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 251430,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 252927,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 254126,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 256058,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 257041,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 259891,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 260541,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 262521,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 264206,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 266116,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 267901,
+              "heap_peak_bytes": 653913,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": true,
+          "ack_delay": 0,
+          "max_retained_runs": 2,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 12190,
+              "json_values": 284
+            },
+            "checkpoint": {
+              "utf8_bytes": 10657,
+              "json_values": 227
+            }
+          },
+          "transmitted_utf8_bytes": 379024,
+          "serialization_seconds": 0.062172243488021195,
+          "batches": 96,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 248
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 140725,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 144271,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 146524,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 148844,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 151728,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 153751,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 155917,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 158392,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 159758,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 161648,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 163381,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 164926,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 167011,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 168189,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 170087,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 171552,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 172757,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 174008,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 176260,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 177074,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 178799,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 180055,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 181400,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 182861,
+              "heap_peak_bytes": 569415,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": true,
+          "ack_delay": 0,
+          "max_retained_runs": 0,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 12190,
+              "json_values": 284
+            },
+            "checkpoint": {
+              "utf8_bytes": 10657,
+              "json_values": 227
+            }
+          },
+          "transmitted_utf8_bytes": 379024,
+          "serialization_seconds": 0.06636847765184939,
+          "batches": 96,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 248
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 140226,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 143336,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 145702,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 147930,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 150695,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 152861,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 154911,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 156627,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 158551,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 160492,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 161978,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 163353,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 165125,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 166836,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 168052,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 169253,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 17,
+              "heap_current_bytes": 170567,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 18,
+              "heap_current_bytes": 171886,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 19,
+              "heap_current_bytes": 174764,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 20,
+              "heap_current_bytes": 176167,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 21,
+              "heap_current_bytes": 177527,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 22,
+              "heap_current_bytes": 178644,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 23,
+              "heap_current_bytes": 179713,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 24,
+              "heap_current_bytes": 181247,
+              "heap_peak_bytes": 568852,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        }
+      ]
+    },
+    "slow": {
+      "configuration": {
+        "runs": 16,
+        "steps": 4,
+        "output_chars": 32768,
+        "persistent": true,
+        "same_conversation": false,
+        "delegate": false,
+        "hold_reviews": false,
+        "ack_delay": 0.001
+      },
+      "measurements": [
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0.001,
+          "max_retained_runs": null,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 5053,
+              "json_values": 186
+            }
+          },
+          "transmitted_utf8_bytes": 2620090,
+          "serialization_seconds": 0.1308324687415734,
+          "batches": 352,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 1308961,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 1309025
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 366834,
+              "heap_peak_bytes": 974025,
+              "run_states": 1,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 470901,
+              "heap_peak_bytes": 980687,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 575022,
+              "heap_peak_bytes": 1083206,
+              "run_states": 3,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 679971,
+              "heap_peak_bytes": 1187158,
+              "run_states": 4,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 784413,
+              "heap_peak_bytes": 1291133,
+              "run_states": 5,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 888766,
+              "heap_peak_bytes": 1395238,
+              "run_states": 6,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 993008,
+              "heap_peak_bytes": 1499272,
+              "run_states": 7,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 1096377,
+              "heap_peak_bytes": 1602058,
+              "run_states": 8,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 1200401,
+              "heap_peak_bytes": 1705659,
+              "run_states": 9,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 1304497,
+              "heap_peak_bytes": 1809562,
+              "run_states": 10,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 1408845,
+              "heap_peak_bytes": 1913794,
+              "run_states": 11,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 1512540,
+              "heap_peak_bytes": 2016949,
+              "run_states": 12,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 1617449,
+              "heap_peak_bytes": 2121794,
+              "run_states": 13,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 1721014,
+              "heap_peak_bytes": 2225227,
+              "run_states": 14,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 1824358,
+              "heap_peak_bytes": 2328410,
+              "run_states": 15,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 1928097,
+              "heap_peak_bytes": 2431742,
+              "run_states": 16,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0.001,
+          "max_retained_runs": 2,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 5050,
+              "json_values": 186
+            }
+          },
+          "transmitted_utf8_bytes": 2619994,
+          "serialization_seconds": 0.1255320814670995,
+          "batches": 352,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 171833,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 171897
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 243608,
+              "heap_peak_bytes": 862294,
+              "run_states": 1,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 349224,
+              "heap_peak_bytes": 862294,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 352352,
+              "heap_peak_bytes": 957864,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 355437,
+              "heap_peak_bytes": 960790,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 358105,
+              "heap_peak_bytes": 963423,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 361519,
+              "heap_peak_bytes": 966884,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 362758,
+              "heap_peak_bytes": 967930,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 364529,
+              "heap_peak_bytes": 969679,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 365889,
+              "heap_peak_bytes": 970999,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 367699,
+              "heap_peak_bytes": 972622,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 368959,
+              "heap_peak_bytes": 973884,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 370334,
+              "heap_peak_bytes": 975217,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 371492,
+              "heap_peak_bytes": 976474,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 372518,
+              "heap_peak_bytes": 977430,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 373570,
+              "heap_peak_bytes": 978547,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 374805,
+              "heap_peak_bytes": 979539,
+              "run_states": 2,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        },
+        {
+          "mode": "tool",
+          "persistent": true,
+          "same_conversation": false,
+          "delegate": false,
+          "hold_reviews": false,
+          "ack_delay": 0.001,
+          "max_retained_runs": 0,
+          "wire_sizes_last_result": {
+            "terminal_batch": {
+              "utf8_bytes": 5050,
+              "json_values": 186
+            }
+          },
+          "transmitted_utf8_bytes": 2619994,
+          "serialization_seconds": 0.12967110448516905,
+          "batches": 352,
+          "ready_queue_peak": 2,
+          "retained_object_graph": {
+            "run_states_bytes": 184,
+            "checkpoints_bytes": 64,
+            "child_sessions_bytes": 0,
+            "combined_unique_bytes": 248
+          },
+          "samples": [
+            {
+              "run": 1,
+              "heap_current_bytes": 140115,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 2,
+              "heap_current_bytes": 143363,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 3,
+              "heap_current_bytes": 147021,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 4,
+              "heap_current_bytes": 148806,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 5,
+              "heap_current_bytes": 151153,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 6,
+              "heap_current_bytes": 153323,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 7,
+              "heap_current_bytes": 155101,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 8,
+              "heap_current_bytes": 156940,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 9,
+              "heap_current_bytes": 158692,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 10,
+              "heap_current_bytes": 160202,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 11,
+              "heap_current_bytes": 162280,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 12,
+              "heap_current_bytes": 163481,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 13,
+              "heap_current_bytes": 165191,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 14,
+              "heap_current_bytes": 167076,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 15,
+              "heap_current_bytes": 168562,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            },
+            {
+              "run": 16,
+              "heap_current_bytes": 171021,
+              "heap_peak_bytes": 862233,
+              "run_states": 0,
+              "checkpoints": 0,
+              "child_sessions": 0
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

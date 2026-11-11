@@ -1,5 +1,7 @@
 # run 保留的堆内存和序列化基线
 
+当前未发布 V2 的测量和命令见 [ToolLoop 持久化基准](toolloop-persistence-benchmark.md)。下文为历史快照，`--onchange` 命令仅适用于报告记录的旧源码版本。
+
 测量日期 2026-11-11，Python 3.11.14，包版本 0.10.4；代码为
 `2626349daf48ae3c38b1850d8ba6642c3c484234` 加本轮保留上限实现。三份原始报告明确记录
 `working_tree_differs=true`，精确 SDK 源码 SHA-256 为

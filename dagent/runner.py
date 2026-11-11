@@ -8,7 +8,7 @@ import json
 import threading
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import aclosing, contextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
@@ -70,10 +70,11 @@ from dagent.harness_runtime.execution_usage import (
     execution_usage_scope,
 )
 from dagent.harness_runtime.conversation_changes import (
-    ConversationChangePublisher, ConversationDeliveryFailure, conversation_change_scope,
+    ConversationChangePublisher, conversation_change_scope,
     current_changes, publish_messages,
 )
-from dagent.schemas.conversation_changes import ConversationChangeHandler
+from dagent.schemas.streaming import StreamPersistenceOptions
+from dagent.harness_runtime.stream_delivery import StreamDelivery, PersistenceDeliveryError
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.dag_design import design_dag as design_dag_candidate
 from dagent.harness_runtime.planner_skill import load_dag_generation_skill
@@ -102,7 +103,6 @@ from dagent.result import (
     ResponseStartedData,
     ReviewRequiredData,
     RunExecutionError,
-    ConversationChangeError,
     RunFailedData,
     RunFinishedData,
     RunResult,
@@ -224,6 +224,7 @@ class Runner:
         self._registered_agent_configs: dict[str, ToolAgent] = {}
         self._registered_agent_runtime_configs: dict[str, dict[str, Any]] = {}
         self._run_checkpoints: dict[str, RunCheckpoint] = {}
+        self._persistent_deliveries: dict[str, StreamDelivery] = {}
         self._active_run_tasks: dict[str, asyncio.Task[RunResult]] = {}
         self._active_run_cancellation_events: dict[str, threading.Event] = {}
         self._active_run_steering_controls: dict[str, RunSteeringControl] = {}
@@ -333,6 +334,9 @@ class Runner:
     def close(self) -> None:
         if self._closed:
             return
+        for delivery in self._persistent_deliveries.values():
+            delivery.close()
+        self._persistent_deliveries.clear()
         for event in self._active_run_cancellation_events.values():
             event.set()
         for task in self._active_run_tasks.values():
@@ -1404,7 +1408,6 @@ class Runner:
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-        on_conversation_change: ConversationChangeHandler | None = None,
     ) -> RunResult:
         self._ensure_open()
         if run_id is not None:
@@ -1447,112 +1450,56 @@ class Runner:
             )
         usage_tracker = ExecutionUsageTracker()
         with self._run_retention_scope() as retain:
-            async with self._conversation_changes_scope(
-                on_conversation_change, conversation, usage_tracker, resolved_execution,
-            ) as publisher:
-                if publisher is not None and publisher.conversation is not None:
-                    # The run works on the publisher's own copy, so the host's
-                    # objects are never shared and unchanged messages are the same
-                    # objects in the live state and the published baseline.
-                    conversation = publisher.conversation
-                with (
-                    self._run_scope(
-                        resolved_execution,
-                        skill_names=skill_names,
-                        runtime_workspaces=runtime_workspaces,
-                    ),
-                    execution_usage_scope(usage_tracker),
-                    self._steering_scope(on_event, on_bound=retain) as steering_on_event,
-                ):
-                    try:
-                        result = await self._run_dispatch(
-                            target,
-                            input=input,
-                            conversation=conversation,
-                            graph_input=graph_input,
-                            review=review,
-                            dynamic_adjust=dynamic_adjust,
-                            usage_tracker=usage_tracker,
-                            workspace_root=workspace_root,
-                            workspace_path=resolved_workspace_path,
-                            run_id=run_id,
-                            input_uploads=input_uploads,
-                            artifact_uploads=artifact_uploads,
-                            on_token=on_token,
-                            on_event=steering_on_event,
-                        )
-                        await self._finish_conversation_changes(result)
-                        return result
-                    except ToolResultStorageFailure as exc:
-                        raise self._storage_failure_error(
-                            exc,
-                            usage=usage_tracker.snapshot(),
-                            execution=resolved_execution,
-                            user_request=input if isinstance(input, str) else "",
-                            review_level=review or exc.outcome.state.review_level,
-                        ) from exc.cause
-                    except ToolContextFailure as exc:
-                        raise self._context_failure_error(
-                            exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
-                            user_request=input if isinstance(input, str) else "",
-                            review_level=review or exc.outcome.state.review_level,
-                        ) from exc
-
-    @asynccontextmanager
-    async def _conversation_changes_scope(self, callback, initial, usage_tracker, execution):
-        publisher = None if callback is None else ConversationChangePublisher(callback, initial)
-        if publisher is not None and usage_tracker is not None:
-            publisher.usage_factory = usage_tracker.snapshot
-        with conversation_change_scope(publisher):
-            try:
-                yield publisher
-            except BaseException as error:
-                if publisher is None:
-                    raise
-                failure = error if isinstance(error, ConversationDeliveryFailure) else publisher.failure
-                if failure is None and publisher.run_id:
-                    try:
-                        result = getattr(error, "result", None)
-                        if isinstance(result, RunResult):
-                            await self._finish_conversation_changes(result)
-                        elif publisher.state_factory is not None:
-                            state = publisher.state_factory()
-                            await publisher.publish(state=state.conversation)
-                        else:
-                            await publisher.publish()
-                    except ConversationDeliveryFailure as delivery_error:
-                        failure = delivery_error
-                if failure is not None:
-                    state = (publisher.state_factory() if publisher.state_factory is not None else RunState(
-                        run_id=publisher.run_id, kind=publisher.kind, status="failed",
-                        conversation=publisher.conversation, workspace_path=publisher.workspace_path,
-                        runtime_mode={"tool": "tool", "dynamic_dag": "dag", "static_dag": "dag_spec"}[publisher.kind],
-                    ))
-                    state = state.model_copy(deep=True, update={
-                        "status": "failed", "conversation": publisher.conversation,
-                        "pending_review": None, "pending_tool_batch": None,
-                        "static_agent_continuation": None, "execution": execution,
-                    })
-                    from dagent.schemas.run_trace import RunTraceError, RunTraceNode
-                    if state.trace is None:
-                        state.trace = RunTrace(run_id=state.run_id, root=RunTraceNode.run(run_id=state.run_id))
-                    state.trace.root.status = "failed"
-                    state.trace.root.error = RunTraceError(code="ConversationChangeError", message=str(failure))
-                    self._run_checkpoints.pop(state.run_id, None)
-                    self._runtime.session.save_run_state(state)
-                    usage = publisher.usage_factory() if publisher.usage_factory is not None else ExecutionUsage()
-                    raise ConversationChangeError(str(failure), result=RunResult(state=state, usage=usage),
-                                                  failure=failure.failure) from failure.cause
-                raise
-
-    async def _finish_conversation_changes(self, result: RunResult) -> None:
-        scope = current_changes()
-        if scope is None:
-            return
-        publisher = scope.publisher
-        await publisher.publish(state=result.conversation)
-        known = publisher.recorded_item_ids()
-        await publish_messages(tuple(item for item in result.new_items if item.id not in known))
+            changes = current_changes()
+            publisher = None if changes is None else changes.publisher
+            if publisher is not None:
+                publisher.usage_tracker = usage_tracker
+            if publisher is not None and publisher.conversation is not None:
+                # The run works on the publisher's own copy, so the host's
+                # objects are never shared and unchanged messages are the same
+                # objects in the live state and the published baseline.
+                conversation = publisher.conversation
+            with (
+                self._run_scope(
+                    resolved_execution,
+                    skill_names=skill_names,
+                    runtime_workspaces=runtime_workspaces,
+                ),
+                execution_usage_scope(usage_tracker),
+                self._steering_scope(on_event, on_bound=retain) as steering_on_event,
+            ):
+                try:
+                    result = await self._run_dispatch(
+                        target,
+                        input=input,
+                        conversation=conversation,
+                        graph_input=graph_input,
+                        review=review,
+                        dynamic_adjust=dynamic_adjust,
+                        usage_tracker=usage_tracker,
+                        workspace_root=workspace_root,
+                        workspace_path=resolved_workspace_path,
+                        run_id=run_id,
+                        input_uploads=input_uploads,
+                        artifact_uploads=artifact_uploads,
+                        on_token=on_token,
+                        on_event=steering_on_event,
+                    )
+                    return result
+                except ToolResultStorageFailure as exc:
+                    raise self._storage_failure_error(
+                        exc,
+                        usage=usage_tracker.snapshot(),
+                        execution=resolved_execution,
+                        user_request=input if isinstance(input, str) else "",
+                        review_level=review or exc.outcome.state.review_level,
+                    ) from exc.cause
+                except ToolContextFailure as exc:
+                    raise self._context_failure_error(
+                        exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
+                        user_request=input if isinstance(input, str) else "",
+                        review_level=review or exc.outcome.state.review_level,
+                    ) from exc
 
     async def _run_dispatch(
         self,
@@ -1575,7 +1522,8 @@ class Runner:
         if isinstance(target, AutoAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for AutoAgent targets.")
-            run_input = _require_input(input, "AutoAgent")
+            run_input = (None if input is None and conversation is not None and current_changes() is not None
+                         else _require_input(input, "AutoAgent"))
             resolved = self._runtime_for_auto_agent(target)
             review_level = review or target.review
             resolved_dynamic_adjust = (
@@ -1584,7 +1532,7 @@ class Runner:
             result = await resolved.runtime.handle_input(
                 run_input,
                 conversation=conversation,
-                mode="auto",
+                mode="tool" if run_input is None else "auto",
                 review_level=review_level,
                 dynamic_adjust=resolved_dynamic_adjust,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
@@ -1611,7 +1559,8 @@ class Runner:
         if isinstance(target, ToolAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for ToolAgent targets.")
-            run_input = _require_input(input, "ToolAgent")
+            run_input = (None if input is None and conversation is not None and current_changes() is not None
+                         else _require_input(input, "ToolAgent"))
             resolved = self._runtime_for_tool_agent(target)
             review_level = review or target.review
             result = await resolved.runtime.handle_input(
@@ -1840,6 +1789,9 @@ class Runner:
             ),
         })
         state = self._runtime.session.save_run_state(state)
+        if current_changes() is not None and state.status != "awaiting_review":
+            self._run_checkpoints.pop(state.run_id, None)
+            return replace(result, state=state, usage=usage, new_items=())
         validator_profile = (
             runtime.validator.agent.profile.model_copy(deep=True)
             if runtime.validator is not None
@@ -1901,7 +1853,8 @@ class Runner:
                 self._run_checkpoints.pop(state.run_id, None)
                 return finalized
             raise RuntimeError("SDK run result did not produce a checkpoint.")
-        self._run_checkpoints[state.run_id] = checkpoint.model_copy(deep=True)
+        if current_changes() is None:
+            self._run_checkpoints[state.run_id] = checkpoint.model_copy(deep=True)
         return finalized
 
     def _resolve_skill_ids(self, names: tuple[str, ...] | None) -> tuple[str, ...]:
@@ -1946,10 +1899,14 @@ class Runner:
         run_id: str | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
-        on_conversation_change: ConversationChangeHandler | None = None,
+        persistence: StreamPersistenceOptions | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Run a target and yield typed stream events."""
 
+        if persistence is not None and not isinstance(persistence, StreamPersistenceOptions):
+            raise TypeError("persistence must be StreamPersistenceOptions or None.")
+        if persistence is not None and not isinstance(target, (ToolAgent, AutoAgent)):
+            raise ValueError("Persistent delivery supports ToolLoop only.")
         if run_id is not None:
             validate_run_id(run_id)
         self._ensure_new_run_id_available(run_id)
@@ -1969,11 +1926,11 @@ class Runner:
                 input_uploads=input_uploads,
                 artifact_uploads=artifact_uploads,
                 on_event=on_event,
-                on_conversation_change=on_conversation_change,
             )
 
-        async for event in self._stream_run(run_target):
-            yield event
+        async with aclosing(self._stream_run(run_target, persistence=persistence, conversation=conversation)) as events:
+            async for event in events:
+                yield event
 
     async def cancel(self, run_id: str) -> bool:
         """Cancel an active streamed run and signal blocking capabilities to stop."""
@@ -1986,6 +1943,8 @@ class Runner:
             return False
         event.set()
         task.cancel()
+        if run_id in self._persistent_deliveries:
+            return True
         with suppress(asyncio.CancelledError):
             await task
         return True
@@ -2015,9 +1974,17 @@ class Runner:
         *,
         checkpoint: RunCheckpoint,
         execution: RunExecution = "local",
-        on_conversation_change: ConversationChangeHandler | None = None,
+        persistence: StreamPersistenceOptions | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Resume a pending review and yield typed stream events."""
+
+        if persistence is not None and not isinstance(persistence, StreamPersistenceOptions):
+            raise TypeError("persistence must be StreamPersistenceOptions or None.")
+        if persistence is not None:
+            checkpoint = checkpoint.model_copy(update={
+                "state": checkpoint.state.model_copy(update={"trace": None}),
+            })
+            self.validate_checkpoint(checkpoint)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             result = await self.resume(
@@ -2025,19 +1992,131 @@ class Runner:
                 checkpoint=checkpoint,
                 execution=execution,
                 on_event=on_event,
-                on_conversation_change=on_conversation_change,
             )
             if result is None:
                 raise LookupError("Review session not found.")
             return result
 
-        async for event in self._stream_run(run_target):
-            yield event
+        async with aclosing(self._stream_run(run_target, persistence=persistence, conversation=checkpoint.state.conversation)) as events:
+            async for event in events:
+                yield event
+
+    async def acknowledge_changes(self, run_id: str, batch_id: str) -> bool:
+        delivery = self._persistent_deliveries.get(run_id)
+        return delivery is not None and delivery.acknowledge(run_id, batch_id)
+
+    async def reject_changes(self, run_id: str, batch_id: str, *, message: str) -> bool:
+        delivery = self._persistent_deliveries.get(run_id)
+        return delivery is not None and delivery.reject(run_id, batch_id, message)
+
+    def validate_checkpoint(self, checkpoint: RunCheckpoint) -> None:
+        """Validate a root ToolLoop checkpoint without consuming its review."""
+        self._ensure_open()
+        restored = RunCheckpoint.model_validate(checkpoint.model_dump(mode="python"))
+        if restored.state.kind != "tool":
+            raise ValueError("This operation requires a root ToolLoop checkpoint.")
+        self._validate_checkpoint_runtime(restored)
+
+    def _release_persistent_review(self, run_id: str) -> None:
+        self._runtime.session.runs.pop(run_id, None)
+        self._runtime.session.discard_reviews_for_run(run_id)
+        self._run_checkpoints.pop(run_id, None)
+        self._retained_run_ids.pop(run_id, None)
+        for store in self._agent_session_stores.values():
+            store.discard_task(run_id)
+
+    async def _persistent_stream(self, run_target, options, conversation):
+        from dagent.schemas.run_trace import RunTraceError
+
+        delivery = StreamDelivery(options)
+        publisher = ConversationChangePublisher(delivery, conversation)
+        cancellation_event = threading.Event()
+        failure_event = None
+        sequence = 0
+
+        def emit(event):
+            typed = _stream_event_from_runtime(event)
+            if typed.type == "run.started":
+                existing = self._persistent_deliveries.get(typed.run_id)
+                active = self._active_run_tasks.get(typed.run_id)
+                if existing is not None and existing is not delivery and active is not None and not active.done():
+                    raise ValueError(f"Run '{typed.run_id}' already has an active delivery.")
+                delivery.run_id = typed.run_id
+                self._persistent_deliveries[typed.run_id] = delivery
+                self._active_run_tasks[typed.run_id] = task
+                self._active_run_cancellation_events[typed.run_id] = cancellation_event
+            delivery.emit(typed)
+
+        async def guarded():
+            nonlocal failure_event
+            try:
+                with conversation_change_scope(publisher), run_cancellation_context(cancellation_event):
+                    try:
+                        result = await run_target(emit)
+                    except asyncio.CancelledError:
+                        if (not delivery.closed and publisher.run_id
+                                and self._persistent_deliveries.get(delivery.run_id) is delivery):
+                            await publisher.finish(status="cancelled")
+                        return
+                    except PersistenceDeliveryError:
+                        raise
+                    except Exception as exc:
+                        result = getattr(exc, "result", None)
+                        if publisher.run_id and self._persistent_deliveries.get(delivery.run_id) is delivery:
+                            await publisher.finish(result, status="failed", error=RunTraceError(
+                                code=(result.error.code if result is not None and result.error else type(exc).__name__),
+                                message=str(exc),
+                            ))
+                            return
+                        raise
+                    await publisher.finish(result)
+                    if result.status == "awaiting_review":
+                        self._release_persistent_review(result.run_id)
+            except Exception as exc:
+                failure_event = RunStreamEvent(type="run.failed", run_id=delivery.run_id, data=RunFailedData(
+                    message=str(exc), error_type=exc.code if isinstance(exc, PersistenceDeliveryError) else type(exc).__name__,
+                    delivery_id=delivery.delivery_id, failed_batch_id=delivery.failed_batch_id,
+                    acknowledged_sequence=delivery.acknowledged_sequence,
+                    acknowledged_revision=delivery.acknowledged_revision,
+                ))
+                if self._persistent_deliveries.get(delivery.run_id) is delivery:
+                    self._release_persistent_review(delivery.run_id)
+            finally:
+                if self._closed and delivery.run_id is not None:
+                    self._release_persistent_review(delivery.run_id)
+                delivery.finish()
+
+        task = asyncio.create_task(guarded())
+        try:
+            while (event := await delivery.receive()) is not None:
+                sequence += 1
+                yield replace(event, sequence=sequence, run_id=event.run_id or delivery.run_id)
+            await task
+            if failure_event is not None:
+                sequence += 1
+                yield replace(failure_event, sequence=sequence)
+        finally:
+            delivery.close()
+            if not task.done():
+                cancellation_event.set()
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if self._persistent_deliveries.get(delivery.run_id) is delivery:
+                self._persistent_deliveries.pop(delivery.run_id, None)
+                self._active_run_tasks.pop(delivery.run_id, None)
+                self._active_run_cancellation_events.pop(delivery.run_id, None)
 
     async def _stream_run(
         self,
         run_target: Callable[[LoopEventHandler], Awaitable[RunResult]],
+        *, persistence: StreamPersistenceOptions | None = None,
+        conversation: ConversationState | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
+        if persistence is not None:
+            async with aclosing(self._persistent_stream(run_target, persistence, conversation)) as events:
+                async for event in events:
+                    yield event
+            return
         stream_done = object()
         queue: asyncio.Queue[RunStreamEvent | object] = asyncio.Queue()
         sequence = 0
@@ -2091,10 +2170,9 @@ class Runner:
                     type="run.failed",
                     data=RunFailedData(
                         message=str(exc),
-                        conversation_change_failure=(exc.failure if isinstance(exc, ConversationChangeError) else None),
                         error_type=(
                             type(exc.__cause__).__name__
-                            if isinstance(exc, RunExecutionError) and not isinstance(exc, ConversationChangeError) and exc.__cause__ is not None
+                            if isinstance(exc, RunExecutionError) and exc.__cause__ is not None
                             else type(exc).__name__
                         ),
                         result=(getattr(exc, "result", None)
@@ -2110,7 +2188,7 @@ class Runner:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
-            if run_id is not None:
+            if run_id is not None and self._active_run_tasks.get(run_id) is task:
                 self._active_run_tasks.pop(run_id, None)
                 self._active_run_cancellation_events.pop(run_id, None)
 
@@ -2122,24 +2200,21 @@ class Runner:
         execution: RunExecution = "local",
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-        on_conversation_change: ConversationChangeHandler | None = None,
     ) -> RunResult | None:
+        active = self._active_run_tasks.get(checkpoint.state.run_id)
+        if active is not None and not active.done():
+            raise ValueError(f"Run '{checkpoint.state.run_id}' still has an active execution or delivery.")
         with self._run_retention_scope(is_resume=True) as retain:
-            async with self._conversation_changes_scope(
-                on_conversation_change, checkpoint.state.conversation, None, execution,
-            ):
-                with self._steering_scope(on_event) as steering_on_event:
-                    result = await self._resume_checkpoint(
-                        decision,
-                        checkpoint,
-                        execution=execution,
-                        on_token=on_token,
-                        on_event=steering_on_event,
-                        on_started=retain,
-                    )
-                    if result is not None:
-                        await self._finish_conversation_changes(result)
-                    return result
+            with self._steering_scope(on_event) as steering_on_event:
+                result = await self._resume_checkpoint(
+                    decision,
+                    checkpoint,
+                    execution=execution,
+                    on_token=on_token,
+                    on_event=steering_on_event,
+                    on_started=retain,
+                )
+                return result
 
     async def _resume_checkpoint(
         self,
@@ -2152,7 +2227,7 @@ class Runner:
         on_started: Callable[[str], None] | None = None,
     ) -> RunResult | None:
         checkpoint = RunCheckpoint.model_validate(
-            checkpoint.model_dump(mode="python")
+            checkpoint.model_dump(mode="python", exclude={"state": {"trace"}} if current_changes() is not None else None)
         )
         self._validate_checkpoint_runtime(checkpoint)
         decision = _decision_for_resume_state(decision, checkpoint.state)
@@ -2180,7 +2255,7 @@ class Runner:
         usage_tracker = ExecutionUsageTracker(restored.usage)
         changes = current_changes()
         if changes is not None:
-            changes.publisher.usage_factory = usage_tracker.snapshot
+            changes.publisher.usage_tracker = usage_tracker
         resolved_execution = _resolve_run_execution(execution, resume_state)
         self._consumed_review_ids.add(decision.review_id)
         if on_started is not None:
@@ -2235,7 +2310,7 @@ class Runner:
                 exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
                 user_request=resume_state.user_request, review_level=review_level,
             ) from exc
-        except ConversationDeliveryFailure:
+        except PersistenceDeliveryError:
             runtime.session.discard_review(decision.review_id)
             raise
         except BaseException:
@@ -2256,6 +2331,9 @@ class Runner:
                 failed_update["trace"] = runtime.tool_agent.trace
             failed_state = resume_state.model_copy(update=failed_update)
             failed_state = self._runtime.session.save_run_state(failed_state)
+            if current_changes() is not None:
+                self._run_checkpoints.pop(failed_state.run_id, None)
+                raise
             failed_checkpoint = RunCheckpoint(
                 schema_version=plan.schema_version,
                 state=failed_state,

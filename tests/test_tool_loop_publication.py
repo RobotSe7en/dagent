@@ -11,7 +11,7 @@ import pytest
 import dagent
 from dagent.harness_runtime import tool_agent
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from tests.test_conversation_changes import Host, invoke
+from tests.test_conversation_changes import Host, invoke, resume_invoke
 from tests.test_steering import GatedProvider
 
 
@@ -144,12 +144,7 @@ async def test_incremental_and_cumulative_submissions_deliver_identical_batches(
                                          run_id="publication", workspace_path=tmp_path / "work")
                 if result.requires_review:
                     checkpoint = dagent.RunCheckpoint.model_validate_json(result.checkpoint.model_dump_json())
-                    if stream:
-                        events = [event async for event in runner.resume_stream(result.review.approve(), checkpoint=checkpoint,
-                                                                                on_conversation_change=host.save)]
-                        result = events[-1].data.result
-                    else:
-                        result = await runner.resume(result.review.approve(), checkpoint=checkpoint, on_conversation_change=host.save)
+                    result, _ = await resume_invoke(runner, result.review.approve(), checkpoint, host)
                 assert result.status == "completed"
                 assert host.state == result.conversation
                 if scenario == "overflow":

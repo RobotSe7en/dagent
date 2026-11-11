@@ -650,3 +650,7 @@ provider/宿主日志和单次 run 的 `new_items` 也可能占用内存。参�
 [离线示例](../../examples/run_retention.py)和[堆内存/序列化基准](../../benchmarks/run_retention.py)。
 
 堆内存与序列化体积实测见 [run 保留基准](run-retention-benchmark.md)。
+
+ToolLoop 持久化流的审核 checkpoint 由宿主持有：审核最终批次 ACK 后立即释放本地重状态，
+不受普通保留上限影响。普通持久化终态不缓存 checkpoint。宿主持有历史时配置
+`max_retained_runs=0`。参见[持久化流](conversation-changes.md)。

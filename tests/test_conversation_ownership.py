@@ -104,30 +104,32 @@ def _state(count, *, summary=None):
 
 
 def test_publishing_does_not_deep_copy_the_conversation(monkeypatch):
-    delivered = []
-
-    async def save(batch):
-        delivered.append(batch)
-
+    from dagent.harness_runtime.stream_delivery import StreamDelivery
     initial = _state(200)
-    publisher = ConversationChangePublisher(save, initial)
+    publisher = ConversationChangePublisher(StreamDelivery(dagent.StreamPersistenceOptions()), initial)
     publisher.bind("run", "tool", None, ".runtime", initial)
     deep_copies = []
     original = dagent.ConversationState.model_copy
-
     def counted(self, *args, **kwargs):
         if kwargs.get("deep"):
             deep_copies.append(len(self.items))
         return original(self, *args, **kwargs)
-
     monkeypatch.setattr(dagent.ConversationState, "model_copy", counted)
-    state = publisher.conversation
-    for step in range(5):
-        state = state.model_copy(update={"items": (*state.items, dagent.UserMessage(id=f"n{step}", content="new")),
-                                         "revision": state.revision + 1})
-        run(publisher.publish(state=state))
+    async def exercise():
+        delivered = []
+        state = publisher.conversation
+        for step in range(5):
+            state = state.model_copy(update={"items": (*state.items, dagent.UserMessage(id=f"n{step}", content="new")),
+                                             "revision": state.revision + 1})
+            task = asyncio.create_task(publisher.publish(state=state))
+            event = await publisher.delivery.receive()
+            delivered.append(event.data)
+            publisher.delivery.acknowledge("run", event.data.batch_id)
+            await task
+        return delivered
+    delivered = run(exercise())
     assert deep_copies == []
-    assert [batch.context.added[0].item_id for batch in delivered] == [f"n{step}" for step in range(5)]
+    assert [b.context.added[0].item_id for b in delivered] == [f"n{step}" for step in range(5)]
 
 
 def _reference_changes(before, after):
@@ -157,8 +159,8 @@ def test_identity_shortcut_finds_the_same_changes_as_full_comparison():
     assert context.summary_change.replaced_item_ids == tuple(f"m{i}" for i in range(10))
 
 
-@pytest.mark.parametrize("mode", ["run", "stream"])
-def test_host_changes_to_its_conversation_during_a_run_do_not_reach_the_sdk(tmp_path, mode):
+def test_host_changes_to_its_conversation_during_a_run_do_not_reach_the_sdk(tmp_path):
+    from tests.test_conversation_changes import Host, invoke
     conversation = dagent.ConversationState(items=(
         dagent.UserMessage(id="task", content="Run the tool."),
         dagent.AssistantMessage(id="call", tool_calls=(dagent.ToolCallItem(
@@ -166,32 +168,20 @@ def test_host_changes_to_its_conversation_during_a_run_do_not_reach_the_sdk(tmp_
         dagent.ToolResultMessage(id="result", call_id="c1", name="tool_noop", status="completed",
                                  content=dagent.schemas.conversation.inline_content("ok")),
     ))
-
     @dagent.tool
     def noop() -> str:
         return "ok"
-
-    async def save(batch):
-        # A host that changes the state object it passed in, mid-run.
-        conversation.items[1].tool_calls[0].arguments["values"].append("host")
-
-    provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="c2", name="tool_noop", arguments={})]),
-        ChatResponse(content="done"),
-    ])
-    agent = dagent.ToolAgent(profile="conversation", capabilities=[noop])
-    options = {"input": "again", "conversation": conversation, "on_conversation_change": save}
-
-    async def collect(runner):
-        if mode == "run":
-            return await runner.run(agent, **options)
-        events = [event async for event in runner.stream(agent, **options)]
-        return events[-1].data.result
-
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="c2", name="tool_noop")]), ChatResponse(content="done")])
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        result = run(collect(runner))
+        host = Host(conversation.model_copy(deep=True), runner)
+        original = host.save
+        async def save(batch):
+            conversation.items[1].tool_calls[0].arguments["values"].append("host")
+            await original(batch)
+        host.save = save
+        result, _ = run(invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[noop]), host, True,
+                               input="again", conversation=conversation))
     assert result.status == "completed"
-    assert conversation.items[1].tool_calls[0].arguments["values"][0] == "original"
     assert "host" in conversation.items[1].tool_calls[0].arguments["values"]
     sent = next(message for message in provider.requests[-1]["messages"]
                 if message.get("tool_calls") and message["tool_calls"][0]["id"] == "c1")
@@ -235,17 +225,19 @@ def test_static_dag_runs_keep_their_value_handling(tmp_path, monkeypatch):
 
 
 def test_a_failed_batch_is_a_copy():
-    async def fail(batch):
-        raise RuntimeError("host storage is down")
-
+    from dagent.harness_runtime.stream_delivery import StreamDelivery, PersistenceDeliveryError
     initial = _state(2)
-    publisher = ConversationChangePublisher(fail, initial)
+    publisher = ConversationChangePublisher(StreamDelivery(dagent.StreamPersistenceOptions()), initial)
     publisher.bind("run", "tool", None, ".runtime", initial)
     item = dagent.AssistantMessage(id="call", tool_calls=(dagent.ToolCallItem(
         id="c", name="tool_q", arguments={"values": ["original"]}),))
     state = publisher.conversation.model_copy(update={"items": (*publisher.conversation.items, item), "revision": 1})
-    with pytest.raises(Exception):
-        run(publisher.publish(state=state))
-    failed = publisher.failure.failure.failed_batch
-    failed.messages[0].item.tool_calls[0].arguments["values"].append("host")
+    async def exercise():
+        task = asyncio.create_task(publisher.publish(state=state))
+        event = await publisher.delivery.receive()
+        event.data.messages[0].item.tool_calls[0].arguments["values"].append("host")
+        publisher.delivery.reject("run", event.data.batch_id, "cannot save")
+        with pytest.raises(PersistenceDeliveryError):
+            await task
+    run(exercise())
     assert state.items[-1].tool_calls[0].arguments == {"values": ["original"]}

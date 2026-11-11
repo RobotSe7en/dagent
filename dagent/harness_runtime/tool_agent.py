@@ -6,15 +6,16 @@ from dagent.harness_runtime.context import compaction_source
 import asyncio
 
 from dagent.harness_runtime.conversation_changes import (
-    ConversationDeliveryFailure, ResponseRecorder, current_changes, publish_state, flush_resources,
-    observe_tool, tool_observations,
+    ResponseRecorder, current_changes, publish_state, flush_resources,
+    observe_tool, tool_observations, delivery_checkpoint,
 )
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
+from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
 from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.capabilities.providers import check_tool_boundary_for_review
 from dagent.capabilities.workspace import current_workspace_root
@@ -22,7 +23,6 @@ from dagent.harness_runtime.dag_builder import (
     MAX_EXECUTION_CONTEXT_CHARS,
     context_excerpt,
 )
-from dagent.harness_runtime.dag_executor import _attach_agent_trace
 from dagent.harness_runtime.capability_executor import (
     CapabilityExecutionCallbacks,
     CapabilityExecutionContext,
@@ -106,6 +106,13 @@ from dagent.schemas.common import validate_runtime_directory
 from dagent.schemas.results import PendingCapabilityReviewItem, _PendingToolBatch, _PendingToolCall
 
 
+@dataclass
+class _ToolLoopState:
+    conversation: ConversationState
+    error: RunTraceError | None = None
+    checkpoint_eligible: bool = True
+
+
 class ToolResultStorageFailure(RuntimeError):
     """Carry the stopped loop snapshot to the public Runner boundary."""
 
@@ -125,8 +132,10 @@ class ToolContextFailure(RuntimeError):
 
 
 def _record_storage_failure(
-    trace: RunTrace, invocation: CapabilityInvocation, error: ResultStorageError,
+    trace: RunTrace | None, invocation: CapabilityInvocation, error: ResultStorageError,
 ) -> None:
+    if trace is None:
+        return
     node = _find_capability_node(trace.root, invocation.invocation_id)
     if node is None:
         node = RunTraceNode.capability_call(
@@ -539,15 +548,17 @@ class ToolAgentLoop:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
 
-        loop_conversation = conversation
+        loop_state = _ToolLoopState(conversation)
         new_items: list[ConversationItem] = []
         context_usages: list[ContextUsage] = list(resume_state.context_usage) if resume_state else []
         failure_diagnostic: str | None = None
         resolved_run_id = run_id or f"tool_run_{uuid4().hex}"
         steering = current_run_steering_control(resolved_run_id)
-        trace = (resume_state.trace.model_copy(deep=True) if resume_state and resume_state.trace
-                 else RunTrace(run_id=resolved_run_id, root=RunTraceNode.run(run_id=resolved_run_id)))
-        result_nodes = _restore_result_nodes(trace, conversation) if resume_state else {}
+        persistent = current_changes() is not None
+        trace = (None if persistent else
+                 resume_state.trace.model_copy(deep=True) if resume_state and resume_state.trace else
+                 RunTrace(run_id=resolved_run_id, root=RunTraceNode.run(run_id=resolved_run_id)))
+        result_nodes = _restore_result_nodes(trace, conversation) if resume_state and trace is not None else {}
         execution_context = _execution_context(
             capability_context,
             task_id=resolved_run_id,
@@ -572,17 +583,12 @@ class ToolAgentLoop:
 
         changes = current_changes()
         if changes is not None:
-            changes.trace = trace
-        if changes is not None and changes.public:
-            changes.publisher.state_factory = lambda: _tool_run_state(
-                run_id=resolved_run_id, status="failed", conversation=loop_conversation,
-                trace=trace, context_usage=context_usages, capability_scope=state_scope,
-                workspace_path=str(workspace),
-            )
-        await publish_state(loop_conversation)
+            changes.loop_state = loop_state
+            if changes.public:
+                changes.publisher.loop_state = loop_state
+        await publish_state(loop_state.conversation)
 
         async def apply_steers(steers: tuple[QueuedSteer, ...]) -> None:
-            nonlocal loop_conversation
             steer_items: list[ConversationItem] = []
             for steer in steers:
                 item = UserMessage(
@@ -590,37 +596,38 @@ class ToolAgentLoop:
                     run_id=resolved_run_id,
                     content=steer.content,
                 )
-                loop_conversation = _append_item(loop_conversation, item)
+                loop_state.conversation = _append_item(loop_state.conversation, item)
                 new_items.append(item)
                 steer_items.append(item)
-            await publish_state(loop_conversation, tuple(steer_items))
+            await publish_state(loop_state.conversation, tuple(steer_items))
             if steering is not None:
                 steering.emit_applied(resolved_run_id, steers)
 
         async def append_skipped(tool_calls: Sequence[ToolCall]) -> None:
-            nonlocal loop_conversation
-            loop_conversation, skipped_items = _append_skipped_tool_results(
-                loop_conversation,
+            loop_state.conversation, skipped_items = _append_skipped_tool_results(
+                loop_state.conversation,
                 tool_calls,
                 run_id=resolved_run_id,
                 content=_STEER_SKIPPED_TOOL_CONTENT,
             )
-            new_items.extend(skipped_items)
-            await publish_state(loop_conversation, skipped_items)
+            if not persistent:
+                new_items.extend(skipped_items)
+            await publish_state(loop_state.conversation, skipped_items)
             for call in tool_calls:
-                node = _find_capability_node(trace.root, call.id)
+                node = None if trace is None else _find_capability_node(trace.root, call.id)
                 if node is not None:
                     node.status = "skipped"
                     node.ended_at = datetime.now(timezone.utc)
 
         def failed_outcome() -> LoopOutcome:
-            trace.root.status = "failed"
+            if trace is not None:
+                trace.root.status = "failed"
             return LoopOutcome(
                 state=_tool_run_state(
                     run_id=resolved_run_id,
                     status="failed",
-                    conversation=loop_conversation,
-                    trace=trace,
+                    conversation=loop_state.conversation,
+                    trace=trace, loop_state=loop_state,
                     context_usage=context_usages,
                     capability_scope=state_scope,
                     workspace_path=(
@@ -631,7 +638,7 @@ class ToolAgentLoop:
                 ),
                 execution_context=(
                     failure_diagnostic
-                    or _format_capability_execution_context(loop_conversation)
+                    or _format_capability_execution_context(loop_state.conversation)
                 ),
                 new_items=tuple(new_items),
             )
@@ -664,7 +671,7 @@ class ToolAgentLoop:
             return True
 
         async def process_batch(batch: _PendingToolBatch, *, step: int) -> LoopOutcome | None:
-            nonlocal loop_conversation, boundary
+            nonlocal boundary
 
             def pending_outcome() -> LoopOutcome:
                 requirements = tuple(item.review for item in batch.calls[batch.next_index:]
@@ -678,8 +685,9 @@ class ToolAgentLoop:
                     payload=single.single_payload() if single else {},
                     queued_call_count=len(batch.calls) - batch.next_index - len(requirements),
                 )
-                trace.root.status = "awaiting_review"
-                for item in batch.calls[batch.next_index:]:
+                if trace is not None:
+                    trace.root.status = "awaiting_review"
+                for item in batch.calls[batch.next_index:] if trace is not None else ():
                     if item.invocation is None:
                         continue
                     node = _find_capability_node(trace.root, item.call.id)
@@ -688,7 +696,8 @@ class ToolAgentLoop:
                             parent_id=trace.root.id, invocation=item.invocation,
                             status="awaiting_review" if item.review and item.approved is None else "planned",
                         )
-                        trace.root.children.append(node)
+                        if trace is not None:
+                            trace.root.children.append(node)
                         if item.review is not None and not item.started:
                             self._emit_capability_event(on_event, item.invocation, "capability_call", run_id=resolved_run_id)
                             item.started = True
@@ -696,12 +705,12 @@ class ToolAgentLoop:
                         node.status = "awaiting_review" if item.review and item.approved is None else "planned"
                 return LoopOutcome(
                     state=_tool_run_state(
-                        run_id=resolved_run_id, status="awaiting_review", conversation=loop_conversation,
-                        trace=trace, context_usage=context_usages, pending_review=pending,
+                        run_id=resolved_run_id, status="awaiting_review", conversation=loop_state.conversation,
+                        trace=trace, loop_state=loop_state, context_usage=context_usages, pending_review=pending,
                         pending_tool_batch=batch, capability_scope=state_scope,
                         workspace_path=None if execution_context.workspace_path is None else str(execution_context.workspace_path),
                     ),
-                    execution_context=_format_capability_execution_context(loop_conversation),
+                    execution_context=_format_capability_execution_context(loop_state.conversation),
                     new_items=tuple(new_items),
                 )
 
@@ -718,7 +727,8 @@ class ToolAgentLoop:
                     return failed_outcome()
                 return pending_outcome()
 
-            trace.root.status = "running"
+            if trace is not None:
+                trace.root.status = "running"
             while batch.next_index < len(batch.calls):
                 item = batch.calls[batch.next_index]
                 tool_call = ToolCall(id=item.call.id, name=item.call.name, arguments=item.call.arguments)
@@ -749,10 +759,11 @@ class ToolAgentLoop:
 
                 invocation = item.invocation
                 result_files = files_readable(batch.boundary)
-                node = None if invocation is None else _find_capability_node(trace.root, item.call.id)
-                if invocation is not None and node is None:
+                node = None if invocation is None or trace is None else _find_capability_node(trace.root, item.call.id)
+                if trace is not None and invocation is not None and node is None:
                     node = RunTraceNode.capability_call(parent_id=trace.root.id, invocation=invocation, status="running")
-                    trace.root.children.append(node)
+                    if trace is not None:
+                        trace.root.children.append(node)
                 if invocation is not None and node is not None:
                     node.status = "running"
                     if not item.started:
@@ -775,12 +786,7 @@ class ToolAgentLoop:
                     await observe_tool(item.call.id, invocation.capability_id, "starting")
                     try:
                         result = await self.capability_executor.execute(invocation, context=call_context, callbacks=capability_callbacks)
-                    except ConversationDeliveryFailure as error:
-                        if node is not None and error.trace is not None:
-                            _attach_agent_trace(node, error.trace)
-                            node.status = "failed"
-                            node.error = RunTraceError(code="ConversationChangeError", message=str(error))
-                            node.ended_at = datetime.now(timezone.utc)
+                    except PersistenceDeliveryError:
                         raise
                     except asyncio.CancelledError:
                         await observe_tool(item.call.id, invocation.capability_id, "outcome_unknown")
@@ -796,9 +802,12 @@ class ToolAgentLoop:
                         )
                     except ResultStorageError as exc:
                         assert invocation is not None
+                        loop_state.error = RunTraceError(code="ResultStorageError", message=str(exc))
+                        loop_state.checkpoint_eligible = False
                         _record_storage_failure(trace, invocation, exc)
                         await observe_tool(item.call.id, invocation.capability_id,
-                                           "completed" if exc.audit_result.status == "completed" else "failed")
+                                           "completed" if exc.audit_result.status == "completed" else "failed",
+                                           retention=exc.audit_result.retention)
                         raise ToolResultStorageFailure(exc, failed_outcome()) from exc
                     result = normalized.result
                     stored_content = normalized.content
@@ -821,8 +830,9 @@ class ToolAgentLoop:
                 )
                 if separate_feedback and item.feedback and item.feedback.strip():
                     tool_item = tool_item.model_copy(update={"reviewer_feedback": item.feedback.strip()})
-                loop_conversation = _append_item(loop_conversation, tool_item)
-                new_items.append(tool_item)
+                loop_state.conversation = _append_item(loop_state.conversation, tool_item)
+                if not persistent:
+                    new_items.append(tool_item)
                 if node is not None and invocation is not None:
                     node.status = "completed" if status == "completed" else "failed"
                     node.ended_at = datetime.now(timezone.utc)
@@ -844,8 +854,10 @@ class ToolAgentLoop:
                 observations = (() if invocation is None or denied else tool_observations(
                     item.call.id, invocation.capability_id,
                     "completed" if result is not None and result.status == "completed" else "failed", tool_item.id,
+                    error=(RunTraceError(code=result.stop_reason or "CapabilityError", message=result.error)
+                           if result is not None and result.error else None),
                 ))
-                await publish_state(loop_conversation, (tool_item,), observations)
+                await publish_state(loop_state.conversation, (tool_item,), observations)
             return None
 
         if resume_state is not None and resume_state.pending_tool_batch is not None:
@@ -854,15 +866,14 @@ class ToolAgentLoop:
                 return resumed
 
         async def adopt_context(value: PreparedModelContext) -> None:
-            nonlocal loop_conversation
             updated_items = {item.id: item for item in value.conversation.items}
-            for item in loop_conversation.items:
+            for item in loop_state.conversation.items:
                 updated = updated_items.get(item.id)
                 if updated is not None and updated is not item and isinstance(updated, ToolResultMessage):
                     node = result_nodes.get(item.id)
                     if node is not None:
                         _sync_tool_result(node, updated)
-            loop_conversation = value.conversation
+            loop_state.conversation = value.conversation
             replaced_items: list[ConversationItem] = []
             for index, item in enumerate(new_items):
                 updated = updated_items.get(item.id, item)
@@ -870,7 +881,7 @@ class ToolAgentLoop:
                     new_items[index] = updated
                     replaced_items.append(updated)
             context_usages.append(value.usage)
-            await publish_state(loop_conversation, tuple(replaced_items))
+            await publish_state(loop_state.conversation, tuple(replaced_items))
             if on_event is not None and value.usage.compaction_method != "none":
                 on_event(
                     {
@@ -924,7 +935,7 @@ class ToolAgentLoop:
                     prepared = await context_assembler.prepare(
                         result_store=result_store,
                         system_message=system_message,
-                        conversation=loop_conversation,
+                        conversation=loop_state.conversation,
                         tools=tool_definitions,
                         policy=context_policy,
                         active_run_id=resolved_run_id,
@@ -939,12 +950,15 @@ class ToolAgentLoop:
                 except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError) as exc:
                     if context_policy.compaction_strategy == "legacy":
                         raise
-                    loop_conversation = getattr(exc, "_conversation", loop_conversation)
-                    await publish_state(loop_conversation, tuple(new_items))
+                    loop_state.conversation = getattr(exc, "_conversation", loop_state.conversation)
+                    await publish_state(loop_state.conversation, tuple(new_items))
                     if isinstance(exc, ContextWindowExceeded):
                         context_usages.append(exc.usage)
-                    trace.root.error = RunTraceError(code=type(exc).__name__, message=str(exc))
-                    trace.root.ended_at = datetime.now(timezone.utc)
+                    loop_state.error = RunTraceError(code=type(exc).__name__, message=str(exc))
+                    if trace is not None:
+                        trace.root.error = loop_state.error
+                    if trace is not None:
+                        trace.root.ended_at = datetime.now(timezone.utc)
                     raise ToolContextFailure(exc, failed_outcome()) from exc
                 await adopt_context(prepared)
                 late_steers = (
@@ -954,12 +968,12 @@ class ToolAgentLoop:
                     break
                 await apply_steers(late_steers)
             async def reprepare_generation():
-                nonlocal loop_conversation, prepared
+                nonlocal prepared
                 try:
                     fresh = await context_assembler.prepare(
                         result_store=result_store,
                         system_message=system_message,
-                        conversation=loop_conversation,
+                        conversation=loop_state.conversation,
                         tools=tool_definitions,
                         policy=context_policy,
                         active_run_id=resolved_run_id,
@@ -972,11 +986,14 @@ class ToolAgentLoop:
                         enable_new_strategy=True,
                     )
                 except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError) as exc:
-                    loop_conversation = getattr(exc, "_conversation", loop_conversation)
+                    loop_state.conversation = getattr(exc, "_conversation", loop_state.conversation)
                     if isinstance(exc, ContextWindowExceeded):
                         context_usages.append(exc.usage)
-                    trace.root.error = RunTraceError(code=type(exc).__name__, message=str(exc))
-                    trace.root.ended_at = datetime.now(timezone.utc)
+                    loop_state.error = RunTraceError(code=type(exc).__name__, message=str(exc))
+                    if trace is not None:
+                        trace.root.error = loop_state.error
+                    if trace is not None:
+                        trace.root.ended_at = datetime.now(timezone.utc)
                     raise ToolContextFailure(exc, failed_outcome()) from exc
                 prepared = fresh
                 await adopt_context(fresh)
@@ -1010,6 +1027,7 @@ class ToolAgentLoop:
                     reason = "reasoning_only_response" if response.reasoning_content.strip() else "empty_response"
                     model_error = RunTraceError(code=reason, message="Model response has no final content, tool calls, or refusal.")
 
+            observed_tool_calls = response.tool_calls
             if model_error is None:
                 call_ids = [call.id for call in response.tool_calls]
                 if len(call_ids) != len(set(call_ids)):
@@ -1041,39 +1059,50 @@ class ToolAgentLoop:
             assistant_message = assistant_message.model_copy(
                 update={"run_id": resolved_run_id}
             )
-            if not retry_response:
-                loop_conversation = _append_item(loop_conversation, assistant_message)
-                new_items.append(assistant_message)
-            trace.root.children.append(
-                RunTraceNode(
-                    parent_id=trace.root.id,
-                    kind="model_call",
-                    status="failed" if model_error is not None else "completed",
-                    error=model_error,
-                    label=f"model_step_{step}",
-                    ref={"step": str(step)},
-                    input={"context_usage": prepared.usage.model_dump(mode="json")},
-                    output={
-                        "content": response.content,
-                        "reasoning": response.reasoning_content,
-                        "refusal": response.refusal,
-                        "tool_calls": [call.model_dump(mode="json") for call in assistant_message.tool_calls],
-                        "usage": response.usage.model_dump(mode="json") if response.usage is not None else None,
-                        "model_call": response.metadata.model_dump(mode="json") if response.metadata is not None else None,
-                        "status": response.status,
-                        "provider_details": provider_details,
-                    },
+            if not retry_response and (not persistent or model_error is None):
+                loop_state.conversation = _append_item(loop_state.conversation, assistant_message)
+                if not persistent:
+                    new_items.append(assistant_message)
+            if trace is not None:
+                trace.root.children.append(
+                    RunTraceNode(
+                        parent_id=trace.root.id,
+                        kind="model_call",
+                        status="failed" if model_error is not None else "completed",
+                        error=model_error,
+                        label=f"model_step_{step}",
+                        ref={"step": str(step)},
+                        input={"context_usage": prepared.usage.model_dump(mode="json")},
+                        output={
+                            "content": response.content,
+                            "reasoning": response.reasoning_content,
+                            "refusal": response.refusal,
+                            "tool_calls": [call.model_dump(mode="json") for call in assistant_message.tool_calls],
+                            "usage": response.usage.model_dump(mode="json") if response.usage is not None else None,
+                            "model_call": response.metadata.model_dump(mode="json") if response.metadata is not None else None,
+                            "status": response.status,
+                            "provider_details": provider_details,
+                        },
+                    )
                 )
-            )
 
             if response_record is not None:
+                audit_message = assistant_message
+                if persistent and model_error is not None and observed_tool_calls:
+                    # Failed calls remain factual audit data, but can never
+                    # enter the active model context or tool dispatch.
+                    audit_message = assistant_message.model_copy(update={"tool_calls": tuple(
+                        ToolCallItem(id=call.id, name=call.name, arguments=call.arguments)
+                        for call in observed_tool_calls
+                    )})
                 await response_record.finish(
-                    assistant_message, state=loop_conversation,
+                    audit_message, state=loop_state.conversation,
                     status="failed" if model_error is not None else "completed",
-                    partial=retry_response or response.status != "completed",
+                    partial=retry_response or response.status != "completed" or (persistent and model_error is not None),
+                    error=model_error,
                 )
             elif not retry_response:
-                await publish_state(loop_conversation, (assistant_message,))
+                await publish_state(loop_state.conversation, (assistant_message,))
 
             if retry_response:
                 consecutive_failures += 1
@@ -1083,13 +1112,16 @@ class ToolAgentLoop:
                               "error": model_error.model_dump(mode="json"), "retry": consecutive_failures})
                 hint = UserMessage(run_id=resolved_run_id, content=_response_recovery_hint(model_error),
                                    visibility="internal", purpose="response_retry")
-                loop_conversation = _append_item(loop_conversation, hint)
-                new_items.append(hint)
-                await publish_state(loop_conversation, (hint,))
+                loop_state.conversation = _append_item(loop_state.conversation, hint)
+                if not persistent:
+                    new_items.append(hint)
+                await publish_state(loop_state.conversation, (hint,))
                 continue
 
             if model_error is not None:
-                trace.root.error = model_error
+                loop_state.error = model_error
+                if trace is not None:
+                    trace.root.error = model_error
                 return failed_outcome()
 
             consecutive_failures = 0
@@ -1106,13 +1138,14 @@ class ToolAgentLoop:
                     if await handle_pending_steers(pending_steers, step=step):
                         continue
                     return failed_outcome()
-                trace.root.status = "completed"
+                if trace is not None:
+                    trace.root.status = "completed"
                 return LoopOutcome(
                     state=_tool_run_state(
                         run_id=resolved_run_id,
                         status="completed",
-                        conversation=loop_conversation,
-                        trace=trace,
+                        conversation=loop_state.conversation,
+                        trace=trace, loop_state=loop_state,
                         context_usage=context_usages,
                         capability_scope=state_scope,
                         workspace_path=(
@@ -1121,7 +1154,7 @@ class ToolAgentLoop:
                             else str(execution_context.workspace_path)
                         ),
                     ),
-                    execution_context=_format_capability_execution_context(loop_conversation),
+                    execution_context=_format_capability_execution_context(loop_state.conversation),
                     output_text=response.content.strip() or response.refusal.strip(),
                     new_items=tuple(new_items),
                 )
@@ -1307,7 +1340,7 @@ class ToolAgentLoop:
             return normalize_chat_response(await run_with_llm_retries(
                 attempt, policy=self.llm_retry_policy, sleep=self.llm_retry_sleep,
                 should_retry=lambda _exc: not emitted))
-        except ConversationDeliveryFailure:
+        except PersistenceDeliveryError:
             raise
         except (ProviderRequestError, ProviderResponseError):
             if output is not None:
@@ -1319,7 +1352,7 @@ class ToolAgentLoop:
             if output is not None:
                 output.finish()
             if response_record is not None:
-                await response_record.interrupt(output, "cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
+                await response_record.interrupt(output, "cancelled" if isinstance(error, asyncio.CancelledError) else "failed", error=error)
             raise
         finally:
             if output is not None:
@@ -1492,14 +1525,15 @@ def _tool_run_state(
     run_id: str,
     status: str,
     conversation: ConversationState,
-    trace: RunTrace,
+    trace: RunTrace | None,
+    loop_state: _ToolLoopState | None = None,
     context_usage: list[ContextUsage],
     pending_review: PendingReview | None = None,
     pending_tool_batch: _PendingToolBatch | None = None,
     capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
     workspace_path: str | None = None,
 ) -> RunState:
-    return RunState(
+    state = RunState(
         run_id=run_id,
         kind="tool",
         status=status,  # type: ignore[arg-type]
@@ -1513,6 +1547,11 @@ def _tool_run_state(
         runtime_mode="tool",
         workspace_path=workspace_path,
     )
+
+    if loop_state is not None and trace is None:
+        state._terminal_error = loop_state.error
+        state._checkpoint_eligible = loop_state.checkpoint_eligible
+    return state
 
 
 def _state_capability_scope(

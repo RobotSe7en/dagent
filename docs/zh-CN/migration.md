@@ -8,6 +8,26 @@
 
 ## 未发布
 
+### ToolLoop 持久化：回调 V1 → 流 V2（破坏性变更）
+
+下一 SDK 版本删除四个执行入口的 `on_conversation_change`，同时删除
+`ConversationChangeHandler`、`ConversationChangeFailure`、`ConversationChangeError`
+及其根导出，以及 `RunFailedData.conversation_change_failure`。不保留回调适配或忽略参数。
+其他既有公开默认行为继续兼容。
+
+持久化改用 `stream(..., persistence=StreamPersistenceOptions())`，保存
+`conversation.changed` 批次后调用 `acknowledge_changes`，保存失败时调用
+`reject_changes`。展示与保存独立时使用读取和写入任务。持久化模式以最终 V2 批次代替
+完整 `run.finished`，交付失败通过 `run.failed` 报告确认位置，不携带完整结果。
+宿主自行重建 `ConversationState`，保留所有字段与顺序。只有审核需要最终批次中的
+现有无 trace V9 checkpoint，通过公开审核/调用视图检查并整体传回 `resume_stream`。
+审核状态 ACK 后释放，普通终态保留策略需显式配置。
+
+新交付只支持 ToolLoop。DAG 仅移除旧回调钩子，默认执行、结果和恢复不变。
+V1 批次仍可读取，会话/状态/checkpoint 格式仍为 V4/V6/V9，不新增 RunSummary。
+参见 [完整契约和迁移示例](conversation-changes.md)与[版本说明](release-notes.md)。
+下文 0.10.4 回调说明仅记录已移除的历史 API，不代表仍支持第二条运行路径。
+
 ### 可选已结束 run 保留上限
 
 `Runner(max_retained_runs=None)` 保持无限保留。`0` 或正整数按结束顺序释放已结束
@@ -95,7 +115,7 @@ workspace 之间复制、恢复或校验文件。溢出文件只为能读取它�
   普通 dict、list 和 tuple 的拷贝，结果值按返回那一刻记录。工具修改参数，或修改仍持有的
   返回对象，都不再改变记录下来的调用和结果；动态 DAG 节点修改参数，不再改变规划器看到的
   观察。其他对象仍然共享；静态 DAG 的运行方式不变。开启
-  `on_conversation_change` 时，`run` 和 `stream` 使用 SDK 自己那份传入 `conversation` 的拷贝，
+  持久化流 V2 时，`stream` 使用 SDK 自己那份传入 `conversation` 的拷贝，
   之后修改宿主自己的对象不会再影响它；已发布的消息也不会再因为被原地修改而报告为已更新。
   交付时不再为每个批次复制整个会话。
 

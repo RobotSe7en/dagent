@@ -1,9 +1,13 @@
-"""Released 030e6b8 wire/state snapshots, captured before retry/retention changes.
+"""Normal API wire/state snapshots captured from the pre-persistence revision.
+
+The removed callback is intentionally excluded. The original callback snapshot
+hashes remain unchanged in response_contract_hashes.json. New normal-mode hashes
+are captured from the unmodified Git parent, never from the implementation.
 
 UUID producers, UTC/elapsed clocks and prompt workspace labels are fixed before
 counting/hashing. Only temporary file paths are normalized after serialization;
 every other serialized field is compared.
-Only SHA-256 digests in fixtures/response_contract_hashes.json are tracked; full
+Only SHA-256 digests in fixtures/response_normal_contract_hashes.json are tracked; full
 snapshots are ignored local debugging artifacts. Mismatches save actual.json in
 tmp_path, plus expected.json when a local snapshot is available.
 Regenerate snapshots and digests deliberately with DAGENT_CAPTURE_BASELINE=1 on
@@ -25,14 +29,25 @@ import pytest
 
 import dagent
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from tests.test_conversation_changes import Host, invoke
+from tests.test_conversation_changes import Host
+
+
+async def invoke(runner, agent, host, stream, **kwargs):
+    if stream:
+        events = [event async for event in runner.stream(agent, **kwargs)]
+        result = events[-1].data.result
+    else:
+        result, events = await runner.run(agent, **kwargs), []
+    host.state = result.conversation
+    return result, events
+
 from tests.test_cache_usage import _completion, _usage
 from tests.test_reasoning_mapping import _endpoint
 from tests.test_compaction_strategy import checkpoint, request_aliases
 
 
 def assert_released_snapshot(payload: str, fixture: Path, tmp_path: Path) -> None:
-    hashes_path = fixture.with_name("response_contract_hashes.json")
+    hashes_path = fixture.with_name("response_normal_contract_hashes.json")
     hashes = json.loads(hashes_path.read_text(encoding="utf-8"))
     digest = hashlib.sha256(payload.encode()).hexdigest()
     compressed = fixture.suffix == ".gz"
@@ -123,6 +138,7 @@ async def test_released_response_contract(tmp_path, stable_clocks, scenario):
         host = Host(initial, runner)
 
         def capture(result, events):
+            host.state = result.conversation
             snapshots.append({
                 "result": result.model_dump(mode="json"),
                 "state": runner.run_state(result.run_id).model_dump(mode="json"),
@@ -139,7 +155,7 @@ async def test_released_response_contract(tmp_path, stable_clocks, scenario):
         capture(result, events)
         if scenario == "review":
             events = [event async for event in runner.resume_stream(result.review.approve(), checkpoint=result.checkpoint,
-                      on_conversation_change=host.save)]
+                      )]
             capture(events[-1].data.result, events)
         if scenario == "failed_continue":
             result, events = await invoke(runner, agent, host, True, input="continue", conversation=result.conversation,

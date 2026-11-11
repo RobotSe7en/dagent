@@ -1,222 +1,162 @@
-# 增量保存会话变化
+# 通过流式批次持久化 ToolLoop 会话
 
-此能力自 SDK **0.10.4** 起可用。`Runner.run`、`stream`、`resume` 和
-`resume_stream` 共用可选的 `on_conversation_change` 异步回调。省略它时，保持已有
-执行行为、事件序列化、模型请求、压缩策略及结果/checkpoint 格式。
+**未发布：批次契约 V2。** 在 `Runner.stream` 或 `resume_stream` 中传入
+`StreamPersistenceOptions` 启用。旧 `on_conversation_change` 回调及其专属异常已经移除，
+参见 [V1 到 V2 迁移](migration.md#未发布)。不传配置时，保持原完整结果流及 trace 行为。
 
-SDK 交付实际采用的状态变化。宿主持久化后构造现有 `ConversationState` 续聊，无需
-重写压缩算法或上下文组装。SDK 不管理数据库、权限、宿主事务或宿主文件存储。
+本模式支持 `ToolAgent`、已注册 tool agent 委派和 `AutoAgent` 的 tool 分支。
+明确的 DAG 目标会被拒绝；自动路由选择 DAG 时也在进入 DAG 执行前明确失败。
+DAG 原执行、事件和恢复保持不变，仅删除其旧回调专属钩子。
 
-## 订阅与确认保存
+宿主已提交的批次日志是长期权威来源。`ConversationState` 是有效模型上下文的投影，
+审核 `RunCheckpoint` 是可移植恢复记录。SDK 不管理数据库、宿主权限、事务或文件存储。
+
+## 读取、保存和确认
 
 ```python
 import dagent
 
-
-async def save_changes(batch: dagent.ConversationChangeBatch) -> None:
-    await host.save_batch(batch)  # 宿主提交成功后才返回。
-
-
-result = await runner.run(
-    agent,
-    input="继续调查。",
-    conversation=previous_state,
-    on_conversation_change=save_changes,
+options = dagent.StreamPersistenceOptions(
+    max_buffer_events=256,
+    max_buffer_bytes=1_048_576,
+    ack_timeout_seconds=None,
 )
+
+async for event in runner.stream(
+    agent, input="继续调查", conversation=previous_state, persistence=options,
+):
+    if event.type == "conversation.changed":
+        batch = event.data
+        await host.commit_batch(batch)  # 应用事务和必需文件均已保存
+        await runner.acknowledge_changes(batch.run_id, batch.batch_id)
+    elif event.type == "response.content.delta":
+        display(event.data.delta)
+    elif event.type == "run.failed":
+        handle_delivery_failure(event.data)
 ```
 
-这里的 `host.save_batch` 是应用代码。回调必须返回 awaitable。SDK 等它完成后才进入
-后续模型或工具执行。正文和推理仍通过现有流事件增量输出，不逐 token 回调整份消息。
-宿主可以在回调内部设置超时；SDK 不设置持久化超时，也不自动重试。文件保存等待不占用
-压缩器的超时预算。
-
-其他三个入口使用相同参数。审核续跑仍须另存并传入 `RunCheckpoint`，会话变化记录
-不提供任意中断点的执行恢复能力。
-
-离线运行示例：
+上例为便于阅读，串行处理读写。需要保存期间继续读取展示内容时，使用持续读取任务和一个
+有界写入任务。完整离线 [示例](../../examples/conversation_changes.py) 展示该方式、
+JSONL 重建、跨 Runner 审核恢复、文件保存和工作区迁移：
 
 ```bash
 uv run python -m examples.conversation_changes
 ```
 
-示例将批次写入宿主 JSONL 日志、复制通知的文件、保存普通审核 checkpoint、审核续跑，
-再读取日志重建状态并续聊，不额外保存 `result.conversation`。
+每个 delivery 同时最多一个待确认批次。输入变化和响应开始在模型派发前确认；接受的回复
+在工具派发前确认；工具开始在执行前确认；结果在后续派发前确认。token 不逐个确认，最终
+批次也需要 ACK。
 
-## 批次顺序与身份
+保存失败时调用 `reject_changes(run_id, batch_id, message=...)`。拒绝和超时会停止后续
+派发，不自动重放工具。活跃 delivery 内重复确认最近已确认批次是安全的；不匹配、过期或
+已关闭交付返回 `False`。提交可能成功而 ACK 丢失，宿主应根据批次身份去重。
 
-`ConversationChangeBatch` V1 包含：
+确认时限从消费者收到批次开始计算，`None` 不设持久化超时。缓冲预算限制就绪队列，另有
+一个有界的同步生产组；单个超大事件可以独占队列。这不是单帧大小上限。普通 SDK 生产等待
+容量，无法等待的同步生产突发超出边界时明确失败，不静默丢事件。
+
+## 公开批次契约
+
+`RunStreamEvent.type == "conversation.changed"` 的载荷直接是
+`ConversationChangeBatch`。新运行只发布 V2，已有 V1 日志继续由同一公开模型读取。
 
 | 字段 | 含义 |
 | --- | --- |
-| `delivery_id`、`sequence`、`batch_id` | 每次 run/resume 独立交付会话；序号从 1 开始；批次身份用于宿主去重 |
-| `run_id`、`conversation_id` | 运行与公开会话身份 |
-| `base_revision`、`revision` | 本批应用前后的 SDK revision，允许跳号 |
-| `conversation_schema_version` | 重建公开状态的版本，目前为 4 |
-| `messages` | 完整类型化消息，或明确标记的部分观察记录 |
-| `context` | 公开有效成员、摘要与压缩状态变化 |
-| `observations` | 响应生命周期和实际已知的工具执行事实 |
-| `resources` | 已写完的类型化文件引用与文件定位参数 |
+| `delivery_id / sequence / batch_id` | 每次 run/resume 一个交付，序号从 1 开始；身份用于宿主幂等 |
+| `run_id / conversation_id` | 执行和公开会话身份 |
+| `base_revision / revision` | 批次前后上下文版本，可跳跃或相等 |
+| `conversation_schema_version` | 公开会话格式，当前为 4 |
+| `messages` | 完整类型消息、来源、响应关联和 partial 标记 |
+| `context` | 有序成员、新增、更新、停用、摘要和压缩状态变化 |
+| `observations` | 响应和工具执行事实、错误和未知结果 |
+| `resources` | 公开文件引用及定位输入 |
+| `status` | 普通批次省略；终态为 completed、awaiting_review、failed 或 cancelled |
+| `usage / context_usage` | 当前 run 的累计操作用量及上下文使用记录 |
+| `error / workspace_path` | 公开 RunError 和已知工作区 |
+| `output_item_id / output_text` | 互斥的输出消息引用或兜底文本 |
+| `checkpoint` | 仅 awaiting_review 携带现有 V9 checkpoint，不含 trace |
 
-审核恢复保留 Run ID，但创建新的交付 ID。流事件序号与批次序号相互独立。仅审计或
-文件变化不增加会话 revision。原本没有公开会话的静态 DAG，其会话 ID、状态版本和
-两个 revision 均为 `None`，不产生公开 `context` 变化，但仍可保存内部审计和文件。
+审核恢复保留 run ID，产生新 delivery。事件序号和批次序号不同。只有观察的批次可以不改变
+会话 revision。恢复后的累计用量应替换旧值，不能再次相加。
 
-宿主按交付顺序应用批次，检查 `base_revision`，并在自身事务中保存变更与批次收据。
-回调成功返回才表示 SDK 收到保存确认。宿主可能已经提交，然后在返回前报错，因此
-交付失败不代表批次一定未落盘。同一会话的并发写入协调由宿主负责。
+工具观察新增 `assistant_message_id`，使用“assistant 消息＋call ID”关联，避免 provider
+跨轮复用 call ID 时串组。工具已经返回、但输出保存失败时，已知执行仍记录为完成；retention
+说明数据不可用，运行终态报告存储错误。取消中的工具可记录 outcome_unknown，不伪造工具结果。
 
-## 分别保存消息与有效成员
+## 自行组装下一轮上下文
 
-消息记录使用 `(origin.id, item.id)` 作为键，包含完整的 `UserMessage`、
-`AssistantMessage` 或 `ToolResultMessage`、来源、可选 `response_id` 和 `partial`
-标记。公开有效成员使用 `origin.id` 等于公开会话 ID 的记录。规划器、验证器和子
-agent 的审计来源独立，不自动成为公开历史。
+批次事实只追加一次。最新消息索引是投影，不能替代日志和消息版本。每批原子应用：
 
-存在 `context` 时，作为一次完整变化应用：
+1. 校验顺序、身份和 base_revision，保存消息及必需资源。
+2. 保存观察，应用成员变化、更新、摘要和压缩状态。
+3. 保存运行终态及 checkpoint，提交后 ACK。
 
-1. 将 `messages` upsert 到结构化记录表。
-2. 从有效顺序中移除 `deactivated_item_ids`，以及摘要变化中的
-   `summary_change.replaced_item_ids`。
-3. 根据 `updated_item_ids` 用完整公开记录替换原有效消息，位置不变。
-4. 按 `added` 顺序插入消息，使用前述操作后列表中的零基索引。
-5. 应用完整摘要、压缩状态替换和批次 revision。
+消息键为 `(origin.id, item.id)`。公开成员引用 `origin.id == conversation_id` 的消息。
+validator、compactor、router、subagent 属于审计来源；存在消息或 partial=True 都不代表
+它在根模型上下文中。摘要替换应移除 replaced_item_ids；替换值 None 表示清空摘要或压缩状态。
+保持保留条目顺序，按顺序插入新增位置。更新和重新激活可能需要宿主消息索引。
 
-退出有效上下文不会删除审计记录。摘要替换和对应消息退出在同一批次中交付。后来被
-撤销的内部压缩候选不会移除公开消息。单独收紧已有摘要时，被替代消息 ID 可以为空。
-
-`summary_change=None` 表示未变化；`summary_change.value=None` 表示明确清空。
-`compaction_state_change` 使用同样规则。允许只有 revision 变化。结果展示更新交付
-完整消息，包括冻结展示、恢复引用、retention 和审核反馈。未变化的历史消息不重发。
-
-从保存的有效记录构造：
+宿主自行创建现有输入：
 
 ```python
-previous_state = dagent.ConversationState(
-    id=conversation_id,
-    revision=saved_revision,
-    items=tuple(saved_active_items),
-    summary=saved_summary,
-    compaction_state=saved_compaction_state,
+state = dagent.ConversationState(
+    id=conversation_id, revision=revision, items=tuple(active_messages),
+    summary=summary, compaction_state=compaction_state,
 )
 ```
 
-继续传入现有 `conversation=`。在已有会话上开始订阅时，应保留初始状态及其现有引用
-文件。system prompt 每次独立生成，不进入历史。内部审计不能代替内部线程 checkpoint。
+原样保存 reasoning、refusal、usage、模型元数据、工具 ID 和参数、冻结展示、retention、
+引用和压缩状态。模型请求仍由 SDK 组装；持久化方式不改变提示词、工具、推理回放、压缩策略、
+结果外置阈值和 provider 参数优先级。回归测试对比重建前后的实际 Chat Completions 和
+Responses 请求内容。
 
-### 对象所有权
+普通最终输出解析 output_item_id，读取 `item.content.strip() or item.refusal.strip()`；
+仅有 output_text 时使用它。展示增量是临时内容，被重试丢弃的响应不是正式回复。
 
-每个批次（包括 `ConversationChangeError` 报告的失败批次）都是拷贝：宿主可以随意修改收到的
-对象，不会影响 run。对 `run` 和 `stream`，开始交付时 SDK 会把传入的 `conversation` 复制一次，
-并在这份拷贝上运行，所以 run 期间修改宿主自己的对象也不会影响 SDK；审批续跑在 checkpoint
-上运行，`resume` 使用期间请把 checkpoint 当作只读。SDK 不会原地修改已发布的消息：tool agent
-和动态 DAG 的工具拿到的是参数的拷贝，结果按返回那一刻记录。正因
-如此，交付时才能按引用保存之前的状态，而不必每个批次都复制整个会话。
+## 中断和审核恢复
 
-## 关联流式内容和保留中断证据
+普通下一轮或重试使用新 run ID 和重建会话。重试已保存的用户请求时传 `input=None`，
+避免重复追加；新问题或新上传应传新 input。`input=None` 复用已保存附件，不接受新的
+`input_uploads`。AutoAgent 重试继续 ToolLoop，不再次路由。持久化 ToolLoop 在模型派发前将尾部未闭合 assistant
+工具组及关联结果移出有效上下文，并发布停用变化等待确认。更早闭合轮次和用户消息保留，
+原始消息与已知、未知执行事实保留在日志中。不撤销副作用，不自动重放工具；孤立结果等格式
+错误明确拒绝，不猜测修复。
 
-启用后，响应开始、正文/推理增量和响应结束事件携带生成前分配的 SDK `message_id`。
-批次的响应观察记录和最终结构化消息使用同一身份及 `response_id`。工具调用保留自己
-的 ID，工具结果通过 `call_id` 关联。
-
-取消或意外流失败时，已经观察到的正文和推理作为一次部分消息及终态观察交付。是否
-进入有效上下文完全由 `context` 决定，并保留现有模型失败行为；宿主不能自动追加
-部分观察记录。
-如果连接失败时 SDK 失败消息没有包含已经输出的文字，终态观察通过
-`observed_content` / `observed_reasoning` 保留差异。应同时保存观察记录；这些字段用于
-展示和审计，不能覆盖 SDK 实际采用的有效消息。
-
-工具 `starting` 表示执行派发前已经保存的调用意图，不证明副作用已经发生。
-`completed` 和 `failed` 表示已知结果；派发被中断且没有返回值时，用
-`outcome_unknown` 保留不确定性。不补造工具结果，也不自动重放工具调用。
-`MapNode` 的每次调用遵循相同的确认和结果交付规则。保存失败阻止尚未派发的工作；
-已经执行中的调用仍可能完成，其执行证据会保留。
-如果工具已返回，但必需的结果文件保存失败，SDK 仍会在传播存储错误前交付已知的
-`completed` 或 `failed` 观察记录，DAG 节点和 Map 调用也遵循此规则。该观察记录
-不代表结果文件已保存；结果规范化失败时，不交付完整的工具结果消息。
-
-取消阻止后续推进，并等待正在执行的回调和必要收尾交付，因此可能等待宿主持久化。
-这不承诺进程崩溃时逐 token 持久化，也不回滚工具副作用。
-
-## 保存引用文件
-
-每个资源通知包含完整的 `ContentReference` 或 `Attachment`、`workspace_path` 和
-实际使用的 `runtime_directory`。交付时写入已结束。使用已有公共方法定位：
+审核继续原 run，需要现有公开 checkpoint：
 
 ```python
-for resource in batch.resources:
-    path = runner.resolve_runtime_path(
-        resource.reference.path,
-        workspace_path=resource.workspace_path,
-        runtime_directory=resource.runtime_directory,
-    )
-    await host.save_file(path, resource.reference)
+checkpoint = dagent.RunCheckpoint.model_validate_json(saved_checkpoint_json)
+runner.validate_checkpoint(checkpoint)  # 只读，不消费审核
+calls = checkpoint.pending_tool_invocations
+stream = runner.resume_stream(
+    checkpoint.review.approve(), checkpoint=checkpoint, persistence=options,
+)
 ```
 
-资源通知只带引用，不带文件内容：宿主要按路径自己读取文件，因此需要能访问 run workspace
-（同一台机器或共享卷）。交付时通知的文件已写完，通知不扫描整个目录。通知的文件有三类：
+先完成上一条流的交付，再恢复审核。重叠的活跃运行会在消费审核决定前被拒绝。
+整体保存 checkpoint，不组装私有 pending batch。pending_tool_invocations 返回隔离的、
+仍可能执行的剩余调用。SDK 检查结构、plan 指纹和已注册能力及 skill；企业策略仍由宿主检查。
+审核最终批次 ACK 后立即释放本地重状态和 checkpoint，不受普通无限保留设置影响。
+可在新 Runner 注册兼容能力后恢复。SDK 保留当前进程防重放 ID；跨 worker 审核去重由宿主事务负责。
 
-- **压缩归档**（源归档、压缩记录和旧版结果索引，带 `sha256`），保存被压缩消息的原文；
-- **工具输出溢出文件**（不带 `sha256`），尽力保存，SDK 不校验；
-- **上传附件**（`Attachment`），在 **Unreleased** SDK 中新上传的附件不带摘要。
+## 体积、内存与失败
 
-在 **Unreleased** SDK 中，这些文件宿主都可以不存。同一会话的 run 共用 workspace，之后的
-轮次在原处就能找到之前写的文件，SDK 不在 workspace 之间复制任何文件。绝对 runtime 目录下，
-引用仍使用逻辑路径。可变附件继续采用现有上传时元数据语义。
+持久化模式不构建 ToolLoop trace，包括子 ToolLoop。停止发送 trace 快照、重复工具正文、
+重复审核事件和完整 run.finished。普通终态不包含 conversation、model_thread、历史集合或
+checkpoint，也没有新增 RunSummary。展示增量与最终权威消息仍各传一次；真实消息更新可以
+提交新版本。审核 checkpoint 保留 V9 已有的完整状态和重复字段。
 
-## 把会话移到另一个 workspace
+宿主持有历史时配置 `Runner(max_retained_runs=0)`。普通终态缓存继续服从原设置，默认 None
+仍无限保留；普通持久化终态不缓存 checkpoint。有效上下文、当前响应、一个待确认批次及有界
+队列仍然必要。已使用的 run/review ID 持续增长，不承诺进程总内存绝对恒定。
 
-在另一个 workspace 续聊（显式传入与之前不同的 `workspace_path`）时，之前的文件都不在。
-续聊照常进行：会话状态和摘要都在，但压缩会把读不到的历史标为未完全覆盖，模型也打不开
-之前的归档。需要保留时，在收到通知时保存压缩归档，并在新 workspace 第一次运行前写回原
-逻辑路径：
+执行失败通过需要确认的 failed 终态批次报告。交付失败通过 run.failed 报告错误类型、消息、
+delivery、失败批次及最后确认序号/版本，不附完整结果、不重发失败批次。SDK 不能声称未确认
+终态已经保存。
 
-```python
-async def on_change(batch):
-    for resource in batch.resources:
-        reference = resource.reference
-        if isinstance(reference, dagent.ContentReference) and reference.sha256:
-            path = runner.resolve_runtime_path(
-                reference.path,
-                workspace_path=resource.workspace_path,
-                runtime_directory=resource.runtime_directory,
-            )
-            await host.save_archive(conversation_id, reference.path, path.read_bytes())
+持久化 cancel() 接受停止请求后不等待宿主保存；读取任务仍在时尝试提交 cancelled 终态，
+以 ACK 判断完成。关闭流会解除等待并取消工作；断连后根据已提交日志判断中断状态。
 
-# 在新 workspace 第一次运行前：
-for logical_path, data in await host.load_archives(conversation_id):
-    target = runner.resolve_runtime_path(logical_path, workspace_path=new_workspace)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
-```
-
-需要上传文件和溢出文件时，按同样方式复制。SDK 不提供恢复 API，也不改写路径。
-
-## 处理保存失败
-
-`run` 和 `resume` 抛出 `dagent.ConversationChangeError`，它是
-`RunExecutionError` 的子类，提供 `failed_batch`、`acknowledged_sequence`、
-`acknowledged_revision`、`failure` 和可审计的失败 `result`。原始保存错误保留在
-`__cause__`。该结果不产生可续跑 checkpoint。
-
-`stream` 和 `resume_stream` 发出一次 `run.failed`，其中
-`error_type="ConversationChangeError"`，`data.result` 提供失败结果，
-`data.conversation_change_failure` 提供同样的类型化交付失败信息。SDK 停止后续工作，
-包括质量验证重试。即使 Run 因保存失败而失败，已完成的工具仍在执行证据中如实保留。
-这也包括子图、循环体和委派 agent 内已经完成的调用。
-如果交付在质量验证重试期间失败，失败结果及保存的运行状态会保留之前各次尝试和
-当前重试的执行 trace。
-
-默认不启用新回调。`result.conversation`、`new_items`、审核 checkpoint 和完整的
-`run.finished` 结果继续支持。增量大小保证针对新增通知，不包含原有完整终态结果；
-需要精简前端传输时，由宿主筛选。
-
-## 响应恢复观察
-
-实际重试时，失败的 assistant 以 `partial=True`、响应状态 `failed` 的观察消息交付，
-不分配有效会话成员位置。这是审计数据。确认后才发出 `response.discarded` 并继续；
-回调拒收或取消会停止后续生成。
-
-恢复提示是 `visibility="internal"`、`purpose="response_retry"` 的 `UserMessage`。
-用途字段默认省略，也不会作为额外字段发给 provider。chunked、cache_aware 可以压缩
-当前 run 的这类提示；真实用户输入、steer 和其他内部消息保持原规则。两处摘要来源
-均标注它是运行时恢复数据，不是长期任务要求。
+资源只包含引用。宿主通过 Runner.resolve_runtime_path 读取并在 ACK 前保存必需字节，
+迁移工作区时自行恢复逻辑路径。SDK 不扫描或复制存储。可变附件与不可变结果、压缩归档继续
+保持不同语义。上传工具位于公开 dagent.artifacts，无需导入运行时私有模块。

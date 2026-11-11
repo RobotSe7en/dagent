@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import PurePosixPath
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import (
     BaseModel,
+    PrivateAttr,
     ConfigDict,
     Field,
     field_validator,
@@ -26,7 +27,7 @@ from dagent.schemas.common import (
 from dagent.schemas.dag import DAG, DAGSpec
 from dagent.schemas.artifact import ArtifactFileManifest
 from dagent.schemas.capability import CapabilityInvocation, CapabilityResult
-from dagent.schemas.run_trace import RunTrace
+from dagent.schemas.run_trace import RunTrace, RunTraceError
 from dagent.schemas.sandbox import RunExecution
 from dagent.schemas.context import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -41,6 +42,10 @@ from dagent.schemas.conversation import (
     ConversationItem,
     ConversationState,
 )
+
+
+if TYPE_CHECKING:
+    from dagent.review import ReviewHandle
 
 
 ReviewKind = Literal["initial_dag", "dag_replan", "capability_review"]
@@ -387,6 +392,9 @@ class RunState(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    _terminal_error: RunTraceError | None = PrivateAttr(default=None)
+    _checkpoint_eligible: bool = PrivateAttr(default=True)
+
     schema_version: Literal[6] = 6
     run_id: str
     kind: RunStateKind
@@ -450,6 +458,23 @@ class RunCheckpoint(BaseModel):
     state: RunState
     plan: ResolvedRunPlan
     usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
+
+    @property
+    def review(self) -> ReviewHandle | None:
+        """Public decisions for this checkpoint; no private batch access."""
+        from dagent.review import ReviewHandle
+        return None if self.state.pending_review is None else ReviewHandle(self.state.pending_review)
+
+    @property
+    def pending_tool_invocations(self) -> tuple[CapabilityInvocation, ...]:
+        """Detached remaining invocations of a root ToolLoop checkpoint."""
+        if self.state.kind != "tool":
+            raise ValueError("pending_tool_invocations requires a root tool checkpoint.")
+        batch = self.state.pending_tool_batch
+        return () if batch is None else tuple(
+            call.invocation.model_copy(deep=True) for call in batch.calls[batch.next_index:]
+            if call.invocation is not None and call.approved is not False
+        )
 
     @model_validator(mode="after")
     def validate_checkpoint_consistency(self) -> "RunCheckpoint":

@@ -43,9 +43,11 @@ from dagent.harness_runtime import (
 )
 from dagent.profiles import AgentProfile, ProfileStore, list_builtin_profiles, load_builtin_profile
 from dagent.providers import Provider
-from dagent.result import ConversationChangeError, RunExecutionError, RunResult, RunStreamEvent
+from dagent.result import RunExecutionError, RunResult, RunStreamEvent
 from dagent.review import CapabilityReviewDecision, ReviewDecision, ReviewHandle, ReviewLevel
 from dagent.runner import Runner
+from dagent.schemas.streaming import StreamPersistenceOptions
+from dagent.schemas.run_trace import RunTraceError as RunError
 from dagent.steering import (
     RunNotActiveError,
     RunNotSteerableError,
@@ -107,8 +109,9 @@ from dagent.schemas import (
 __version__ = "0.10.4"
 
 __all__ = [
+    "StreamPersistenceOptions",
+    "RunError",
     "ConversationChangeBatch",
-    "ConversationChangeError",
     "__version__",
     "AgentProfile",
     "AssistantMessage",

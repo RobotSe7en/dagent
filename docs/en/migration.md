@@ -9,6 +9,31 @@ The current stable package version is `0.10.4`.
 
 ## Unreleased
 
+### ToolLoop persistence: callback V1 → stream V2 (breaking)
+
+The next SDK version removes `on_conversation_change` from `run`, `stream`,
+`resume`, and `resume_stream`. `ConversationChangeHandler`, `ConversationChangeFailure`,
+`ConversationChangeError` (including its root export), and
+`RunFailedData.conversation_change_failure` are removed. There is no callback
+adapter or ignored keyword. Other existing public defaults remain compatible.
+
+Move persistence to `stream(..., persistence=StreamPersistenceOptions())`; save
+`conversation.changed` batches and call `acknowledge_changes` after committing,
+or `reject_changes` after failure. Use a reader and writer task for independent
+display. A terminal V2 batch replaces the persistent mode's full `run.finished`;
+`run.failed` reports delivery failures and confirmation position without a result.
+Reconstruct `ConversationState` yourself, preserving all fields and item order.
+Review alone needs the existing trace-free V9 checkpoint in the terminal batch;
+use its public review/pending invocation views and pass it whole to `resume_stream`.
+Review state is released after ACK; configure ordinary retention explicitly.
+
+New delivery is ToolLoop-only. DAG callback-only hooks are removed; default DAG
+execution/results/recovery are unchanged. V1 batches remain readable, and
+conversation/state/checkpoint formats remain V4/V6/V9. No `RunSummary` is added.
+See the [complete migration example and contract](conversation-changes.md) and
+[release notes](release-notes.md). The historical 0.10.4 callback description
+below describes the removed API, not a second supported path.
+
 ### Optional ended-run retention
 
 `Runner(max_retained_runs=None)` preserves unlimited retention. `0` and positive
@@ -139,8 +164,7 @@ these behavior changes before upgrading:
   its arguments, or a returned object it still holds, no longer changes the
   recorded call or result, and a dynamic DAG node that changes its arguments no
   longer changes the planner's observation. Other objects are still shared;
-  static DAG runs are unchanged. With `on_conversation_change`, `run`
-  and `stream` use the SDK's own copy of the `conversation` you pass, so later
+  static DAG runs are unchanged. With persistent stream V2, `stream` uses the SDK's own copy of the `conversation` you pass, so later
   changes to your objects no longer reach it, and published messages are no
   longer reported as updated because they were changed in place. Delivery no
   longer copies the whole conversation for every batch.

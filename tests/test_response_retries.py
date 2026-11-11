@@ -15,7 +15,7 @@ from dagent.harness_runtime.compaction import _source_texts
 from dagent.providers import ChatResponse, ChatStreamEvent, MockProvider, ProviderResponseError, ToolCall
 from dagent.providers.model_io import ModelResponse
 from dagent.result import ResponseDiscardedData
-from tests.test_conversation_changes import Host, invoke
+from tests.test_conversation_changes import Host, invoke, consume, resume_invoke
 from tests.test_reasoning_mapping import _endpoint
 from tests.test_cache_usage import _completion, _usage
 from tests.test_compaction_strategy import checkpoint, request_aliases
@@ -68,8 +68,9 @@ async def test_retryable_response_recovers_and_continues(tmp_path, stream, reaso
         assert hints[0].run_id == result.run_id
         assert "private thought" not in hints[0].content and "partial" not in hints[0].content
         assert "purpose" not in provider.requests[1]["messages"][-1]
-        nodes = result.trace.root.children
-        assert [node.status for node in nodes] == ["failed", "completed"]
+        outcomes = [o.status for b in host.batches for o in b.observations
+                    if o.type == "response" and o.status != "started"]
+        assert outcomes == ["failed", "completed"]
         assert result.usage.model_turns == 2
         discarded = [record for batch in host.batches for record in batch.messages
                      if record.item.type == "assistant" and record.item.content != "recovered"]
@@ -159,14 +160,15 @@ async def test_builtin_provider_response_retries(tmp_path, stream, protocol, kin
     def respond(request):
         nonlocal count
         count += 1
+        requested_stream = json.loads(request.content).get("stream", False)
         bad = count == 1
-        reply = _completion(protocol, stream, usage=_usage(protocol),
+        reply = _completion(protocol, requested_stream, usage=_usage(protocol),
             content="partial" if bad and kind == "length" else "" if bad else "done",
             reasoning="thought" if bad and kind == "reasoning" else "",
             calls=[ToolCall(id="duplicate", name="tool_echo")] * 2 if bad and kind == "duplicate" else (),
             status="incomplete" if bad and kind == "length" else "completed")
         if bad and kind == "length" and protocol == "responses":
-            if stream:
+            if requested_stream:
                 event = json.loads(reply.text.split("data: ")[1].split("\n")[0])
                 event["response"]["incomplete_details"] = {"reason": "max_output_tokens"}
                 return httpx.Response(200, headers={"content-type": "text/event-stream"},
@@ -199,24 +201,26 @@ def test_recovery_purpose_serialization_source_identity_and_labels():
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_failed_observation_must_be_acknowledged_before_retry(tmp_path, cancel):
     provider = MockProvider([ChatResponse(), ChatResponse(content="must not generate")])
-
-    async def reject(batch):
-        if any(record.partial for record in batch.messages):
-            if cancel:
-                raise asyncio.CancelledError
-            raise OSError("host unavailable")
-
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        with pytest.raises(dagent.ConversationChangeError):
-            await runner.run(dagent.ToolAgent(profile="conversation", response_retries=1), input="finish",
-                             on_conversation_change=reject)
+        stream = runner.stream(dagent.ToolAgent(profile="conversation", response_retries=1), input="finish",
+                               run_id="failure", persistence=dagent.StreamPersistenceOptions())
+        async for event in stream:
+            if event.type == "conversation.changed":
+                if any(r.partial for r in event.data.messages):
+                    if cancel:
+                        await stream.aclose()
+                        break
+                    assert await runner.reject_changes(event.run_id, event.data.batch_id, message="unavailable")
+                else:
+                    await runner.acknowledge_changes(event.run_id, event.data.batch_id)
+        if not cancel:
+            assert event.type == "run.failed" and event.data.error_type == "PersistenceRejected"
     assert len(provider.requests) == 1
 
 
 @pytest.mark.asyncio
 async def test_partial_stream_order_across_observation_discard_and_hint(tmp_path):
     order = []
-
     class PartialProvider(MockProvider):
         async def stream_chat(self, *args, **kwargs):
             if not self.requests:
@@ -225,44 +229,45 @@ async def test_partial_stream_order_across_observation_discard_and_hint(tmp_path
                 return
             async for event in super().stream_chat(*args, **kwargs):
                 yield event
-
-    async def save(batch):
-        await host.save(batch)
-        if any(record.partial for record in batch.messages):
-            order.append("observation")
-        if any(getattr(record.item, "purpose", None) == "response_retry" for record in batch.messages):
-            order.append("hint")
-
-    provider = PartialProvider([ChatResponse(content="done")])
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+    with closing(dagent.Runner(provider=PartialProvider([ChatResponse(content="done")]), workspace=tmp_path,
+                              skill_roots=[])) as runner:
         host = Host(runner=runner)
-        result = await runner.run(dagent.ToolAgent(profile="conversation", response_retries=1), input="finish",
-            on_conversation_change=save, on_event=lambda event: order.append(event["type"]))
-    assert result.status == "completed" and host.state == result.conversation
-    selected = [item for item in order if item in {"response_started", "response_finished", "response_discarded", "observation", "hint"}]
-    assert selected == ["response_started", "response_finished", "observation", "response_discarded", "hint",
-                        "response_started", "response_finished"]
+        async for event in runner.stream(dagent.ToolAgent(profile="conversation", response_retries=1), input="finish",
+                                         persistence=dagent.StreamPersistenceOptions()):
+            if event.type == "conversation.changed":
+                await host.save(event.data)
+                if any(r.partial for r in event.data.messages):
+                    order.append("observation")
+                if any(getattr(r.item, "purpose", None) for r in event.data.messages):
+                    order.append("hint")
+                await runner.acknowledge_changes(event.run_id, event.data.batch_id)
+            else:
+                order.append(event.type)
+        selected = [i for i in order if i in {"response.started", "response.finished", "response.discarded", "observation", "hint"}]
+        assert selected == ["response.started", "response.finished", "observation", "response.discarded", "hint",
+                            "response.started", "response.finished"]
 
 
 @pytest.mark.asyncio
 async def test_cancel_during_retry_hint_stops_generation(tmp_path):
-    reached = asyncio.Event()
-    release = asyncio.Event()
-
-    async def save(batch):
-        if any(getattr(record.item, "purpose", None) for record in batch.messages):
-            reached.set()
-            await release.wait()
-
+    reached, release = asyncio.Event(), asyncio.Event()
     provider = MockProvider([ChatResponse(), ChatResponse(content="must not generate")])
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        task = asyncio.create_task(runner.run(dagent.ToolAgent(profile="conversation", response_retries=1),
-            input="finish", on_conversation_change=save))
+        host = Host(runner=runner)
+        original = host.save
+        async def save(batch):
+            if any(getattr(r.item, "purpose", None) for r in batch.messages):
+                reached.set()
+                await release.wait()
+            await original(batch)
+        host.save = save
+        task = asyncio.create_task(invoke(runner, dagent.ToolAgent(profile="conversation", response_retries=1), host,
+                                         True, input="finish", run_id="retry_hint"))
         await asyncio.wait_for(reached.wait(), 5)
-        task.cancel()
+        assert await runner.cancel("retry_hint")
         release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        result, _ = await asyncio.wait_for(task, 5)
+        assert result.status == "cancelled"
     assert len(provider.requests) == 1
 
 
@@ -373,10 +378,10 @@ async def test_three_hundred_tools_with_retries_compaction_and_review(tmp_path, 
             reviews = 0
             while result.requires_review:
                 reviews += 1
-                assert runner.run_checkpoint(result.run_id) is not None
+                assert runner.run_checkpoint(result.run_id) is None
                 saved = dagent.RunCheckpoint.model_validate_json(result.checkpoint.model_dump_json())
                 assert saved.plan.response_retries == 1
-                result = await runner.resume(result.review.approve(), checkpoint=saved, on_conversation_change=host.save)
+                result, _ = await resume_invoke(runner, result.review.approve(), saved, host)
             assert result.status == "completed" and reviews == 4
             assert runner.run_state(result.run_id) is None
             assert runner.run_checkpoint(result.run_id) is None

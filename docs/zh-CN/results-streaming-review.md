@@ -37,8 +37,10 @@ Review resume 会恢复 checkpoint 中冻结的值。
 不要自行把 `result.new_items` 追加回会话。`new_items` 是当前 run 的审计增量；
 `result.conversation` 已经是下一轮应传入的完整有界状态。
 
-执行过程中需要增量保存时，四个执行入口共用可选的 `on_conversation_change`
-异步回调。批次顺序、状态重建、审计、文件和保存失败行为见
+ToolLoop 增量持久化使用 `stream(..., persistence=StreamPersistenceOptions())`，
+`resume_stream` 使用相同配置。该模式发布需要确认的 `conversation.changed` 批次和终态元数据，
+不构建 trace、不发送完整 `RunResult`。本页完整结果示例描述默认模式。
+旧 `on_conversation_change` 回调已移除。状态重建、ACK、审核恢复、文件和失败处理见
 [会话变化](conversation-changes.md)。
 
 ## 实际输入模型的内容

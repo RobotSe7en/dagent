@@ -36,14 +36,16 @@ async def test_custom_duplicate_ids_fail_without_dangling_calls(tmp_path, stream
         result, events = await invoke(runner, agent, host, stream, input="echo")
         assert result.status == "failed" and result.error.code == "invalid_tool_call"
         assert executed == [] and host.state == result.conversation
-        last = result.conversation.items[-1]
-        assert not last.tool_calls and last.content == "partial" and last.reasoning == "thought"
-        node = result.trace.root.children[-1]
-        assert node.output["usage"]["total_tokens"] == 5
-        assert node.output["provider_details"]["tool_calls"] == [
+        records = [r.item for b in host.batches for r in b.messages if r.partial]
+        assert len(records) == 1
+        assert [call.model_dump(include={"id", "name", "arguments"}) for call in records[0].tool_calls] == [
             {"id": call.id, "name": call.name, "arguments": call.arguments} for call in calls]
+        assert records[0].content == "partial" and records[0].reasoning == "thought"
+        assert records[0].usage.total_tokens == 5
+        assert all(not isinstance(i, dagent.AssistantMessage) for i in result.conversation.items)
+        assert any(o.error and o.error.code == "invalid_tool_call" for b in host.batches for o in b.observations if o.type == "response")
         if stream:
-            assert events[-1].type == "run.finished" and events[-1].data.result.status == "failed"
+            assert events[-1].type == "conversation.changed" and events[-1].data.status == "failed"
         continued, _ = await invoke(runner, agent, host, stream, input="continue", conversation=result.conversation)
         assert continued.status == "completed" and host.state == continued.conversation
         assert all(not item.get("tool_calls") for item in provider.requests[-1]["messages"])

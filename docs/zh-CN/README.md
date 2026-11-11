@@ -15,7 +15,7 @@
 
 ## 功能指南
 
-- [会话变化](conversation-changes.md)：可选异步保存、精确状态重建、消息关联、文件就绪与失败处理。
+- [会话变化](conversation-changes.md)：ToolLoop 持久化流 V2、显式 ACK、自主重建、无 trace 审核和文件。
 - [工具结果恢复](tool-result-recovery.md)：展示预算、原文保存、分页和存储故障。
 
 - [Runner 和配置](runner-and-configuration.md)：provider、`Runner(...)`、
@@ -42,6 +42,8 @@
 
 - [故障排查](troubleshooting.md)：常见安装、provider、MCP、capability、DAG
   validation 和 review 问题。
+- [ToolLoop 持久化基准](toolloop-persistence-benchmark.md)：传输、内存测量及复现。
+- [版本说明](release-notes.md)：新增能力、旧回调移除及验证。
 - [迁移说明](migration.md)：已发布接口变化和升级说明。
 - [动态 DAG 生成计划](dynamic-dag-generation-plan.md)：类型化 planner spec 和受限
   SDK builder 的分阶段开发路线；该页面不描述已发布行为。

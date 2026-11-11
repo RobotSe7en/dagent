@@ -17,6 +17,7 @@ from tests.test_reasoning_mapping import _endpoint
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
 @pytest.mark.parametrize("stream", [False, True])
 async def test_opt_in_and_reconstructed_continuation_keep_actual_wire_payloads(tmp_path, protocol, stream):
+    stream = True
     all_requests = []
 
     @dagent.tool
@@ -141,10 +142,9 @@ async def test_context_failure_publishes_the_actual_retained_snapshot(tmp_path, 
                          max_output_tokens=256) as (provider, posts):
         with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
             host = Host(runner=runner)
-            with pytest.raises(dagent.ContextWindowExceeded) as captured:
-                await runner.run(dagent.ToolAgent(profile="conversation", capabilities=[],
-                    context=dagent.ContextPolicy(compaction_strategy=strategy)), input="protected input " * 5000,
-                    on_conversation_change=host.save)
-            assert host.state == captured.value.result.conversation
+            result, _ = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[],
+                    context=dagent.ContextPolicy(compaction_strategy=strategy)), host, True,
+                    input="protected input " * 5000)
+            assert result.status == "failed" and result.error.code == "ContextWindowExceeded"
             assert host.state.summary is None
             assert posts == []

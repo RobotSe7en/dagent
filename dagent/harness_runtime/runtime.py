@@ -6,8 +6,9 @@ It does not know how loops execute internally; it only consumes LoopOutcome.
 
 from __future__ import annotations
 
+from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
 from dagent.harness_runtime.conversation_changes import (
-    ConversationDeliveryFailure, current_changes, publish_state, publish_messages, note_resource, ResponseRecorder, response_recording_scope,
+    current_changes, publish_state, publish_messages, note_resource, ResponseRecorder, response_recording_scope,
 )
 
 from dagent.review import CapabilityReviewDecision
@@ -241,11 +242,11 @@ class HarnessRuntime:
                     result_store=(ResultStore(loop_outcome.state.workspace_path, self.runtime_directory, on_event)
                                   if loop_outcome.state.workspace_path else None),
                 )
-        except ConversationDeliveryFailure:
+        except PersistenceDeliveryError:
             raise
         except BaseException as error:
             if response_record is not None:
-                await response_record.interrupt(None, "cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
+                await response_record.interrupt(None, "cancelled" if isinstance(error, asyncio.CancelledError) else "failed", error=error)
             raise
         audit_item = (
             None
@@ -352,20 +353,6 @@ class HarnessRuntime:
                         "new_items": (*audit_items, *failed.new_items),
                     })
                     raise
-                finally:
-                    changes = current_changes()
-                    if audit_trace is not None and changes is not None:
-                        # Retry loops own fresh traces. Keep delivery snapshots
-                        # cumulative on failure and before the next validation.
-                        if changes.trace is not None:
-                            changes.trace = audit_trace.merge(changes.trace)
-                        if changes.public and changes.publisher.state_factory is not None:
-                            delivery_state = changes.publisher.state_factory()
-                            if delivery_state.trace is not None:
-                                delivery_state = delivery_state.model_copy(update={
-                                    "trace": audit_trace.merge(delivery_state.trace),
-                                })
-                            changes.publisher.state_factory = lambda: delivery_state
                 loop_outcome = next_outcome
                 audit_items.extend(loop_outcome.new_items)
                 applied_steers.extend(
@@ -381,8 +368,8 @@ class HarnessRuntime:
 
             if loop_outcome.state.status == "awaiting_review" or (
                 loop_outcome.state.kind == "tool" and loop_outcome.state.status == "failed"
-                and loop_outcome.state.trace is not None
-                and loop_outcome.state.trace.root.error is not None
+                and (loop_outcome.state._terminal_error is not None or (loop_outcome.state.trace is not None
+                and loop_outcome.state.trace.root.error is not None))
             ):
                 set_run_steering_phase(
                     loop_outcome.state.run_id,
@@ -446,7 +433,7 @@ class HarnessRuntime:
 
     async def handle_input(
         self,
-        input: str,
+        input: str | None,
         *,
         conversation: ConversationState | None = None,
         mode: RuntimeMode = "auto",
@@ -462,14 +449,23 @@ class HarnessRuntime:
     ) -> RunResult:
         if run_id is not None:
             validate_run_id(run_id)
-        if not isinstance(input, str):
+        continuing = input is None and current_changes() is not None and conversation is not None
+        if not isinstance(input, str) and not continuing:
             raise TypeError("input must be a string.")
-        user_request = input
+        if continuing and input_uploads:
+            raise ValueError("input_uploads require a new input; input=None reuses the saved context and attachments.")
+        user_request = (next((item.content for item in reversed(conversation.items)
+                              if isinstance(item, UserMessage) and item.scope == "conversation"
+                              and item.visibility == "user" and item.purpose is None),
+                             conversation.summary.content if conversation.summary else "")
+                        if continuing else input)
         resolved_mode = mode
         route_item: AssistantMessage | None = None
         route_usage: ContextUsage | None = None
         if mode == "auto":
             resolved_mode, route_item, route_usage = await self._route(user_request)
+        if current_changes() is not None and resolved_mode != "tool":
+            raise ValueError("Persistent delivery supports ToolLoop only.")
         resolved_run_id = run_id or _new_run_id_for_mode(resolved_mode)
         if route_item is not None:
             route_item = route_item.model_copy(update={"run_id": resolved_run_id})
@@ -495,14 +491,15 @@ class HarnessRuntime:
                 materialized_uploads,
             ),
         )
-        run_conversation = _append_conversation_item(
-            initial_conversation,
-            input_item,
-        )
+        if changes is not None:
+            from dagent.harness_runtime.conversation_changes import repair_open_tool_group
+            initial_conversation = repair_open_tool_group(initial_conversation)
+        run_conversation = (initial_conversation if continuing else
+                            _append_conversation_item(initial_conversation, input_item))
         _emit_run_started(on_event, run_id=resolved_run_id, kind=_state_kind_for_mode(resolved_mode))
         for attachment in input_item.attachments:
             note_resource(attachment, resolved_workspace_path, self.runtime_directory)
-        await publish_state(run_conversation, (input_item,))
+        await publish_state(run_conversation, () if continuing else (input_item,))
         if route_item is not None:
             await publish_messages((route_item,))
 
@@ -608,7 +605,6 @@ class HarnessRuntime:
         if changes is not None:
             changes.publisher.bind(state.run_id, state.kind, state.workspace_path,
                                    self.runtime_directory, state.conversation)
-            changes.publisher.state_factory = lambda: state
         _emit_run_started(on_event, run_id=state.run_id, kind=state.kind)
         if state.kind == "static_dag" and pending_review.kind == "capability_review":
             if state.dag_spec is None:
@@ -951,8 +947,8 @@ class HarnessRuntime:
         final_answer = (
             ""
             if outcome.state.status == "awaiting_review"
-            or (mode == "tool" and outcome.state.status == "failed" and outcome.state.trace is not None
-                and outcome.state.trace.root.error is not None)
+            or (mode == "tool" and outcome.state.status == "failed" and (outcome.state._terminal_error is not None or (outcome.state.trace is not None
+                and outcome.state.trace.root.error is not None)))
             else outcome.output_text.strip() or _fallback_output_text(outcome)
         )
         conversation = outcome.state.conversation
@@ -991,8 +987,6 @@ class HarnessRuntime:
         state = outcome.state.model_copy(update=update)
         state = self.session.save_run_state(state)
         changes = current_changes()
-        if changes is not None:
-            changes.publisher.state_factory = lambda: state
         await publish_state(conversation)
         return RunResult(
             state=state,

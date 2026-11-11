@@ -40,10 +40,13 @@ previous tool output is retained in the conversation and trace, not used as a
 replacement answer. Inspect the last `AssistantMessage.model_call` for terminal
 metadata and retry attempts. See [model failures and token accounting](model-context-and-reasoning.md).
 
-For opt-in incremental persistence during execution, use the shared async
-`on_conversation_change` callback on `run`, `stream`, `resume`, and
-`resume_stream`. See [Conversation Changes](conversation-changes.md) for batch
-ordering, reconstruction, audit, files, and persistence failures.
+For opt-in ToolLoop persistence, use `stream(..., persistence=StreamPersistenceOptions())`
+or the same option on `resume_stream`. This mode emits acknowledged
+`conversation.changed` batches and terminal metadata without constructing trace
+or sending a full `RunResult`. The complete-result examples on this page describe
+the default mode. The old `on_conversation_change` callback has been removed.
+See [Conversation Changes](conversation-changes.md) for reconstruction, ACK,
+review recovery, files and delivery failures.
 
 ## What reaches the model
 

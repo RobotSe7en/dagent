@@ -757,3 +757,9 @@ provider/host logs and within-run `new_items` can also consume memory. See
 [heap/wire benchmark](../../benchmarks/run_retention.py).
 
 Measured heap and serialized-size results: [Run retention benchmark](run-retention-benchmark.md).
+
+For persistent ToolLoop streams, review checkpoints are host-owned: after the
+review terminal batch is acknowledged, local heavy review state is released
+regardless of the ordinary retention limit. Completed persistent runs do not cache
+checkpoints. Use `max_retained_runs=0` for host-owned ordinary history. See
+[persistent streams](conversation-changes.md).

@@ -53,10 +53,20 @@ async def measure_loop(steps, publish, snapshot):
         with closing(dagent.Runner(workspace=workspace, provider=LoopProvider(steps), skill_roots=[])) as runner:
             agent = dagent.ToolAgent(profile="conversation", capabilities=[echo], max_steps=steps + 1)
             started = perf_counter()
-            result = await runner.run(agent, input="repeat", run_id="benchmark",
-                                      on_conversation_change=save if publish else None)
+            if publish:
+                terminal = None
+                async for event in runner.stream(agent, input="repeat", run_id="benchmark",
+                                                  persistence=dagent.StreamPersistenceOptions()):
+                    if event.type == "conversation.changed":
+                        await save(event.data)
+                        await runner.acknowledge_changes(event.run_id, event.data.batch_id)
+                        if event.data.status is not None:
+                            terminal = event.data
+                assert terminal.status == "completed" and terminal.usage.capability_calls == steps
+            else:
+                result = await runner.run(agent, input="repeat", run_id="benchmark")
+                assert result.status == "completed" and result.usage.capability_calls == steps
             elapsed = perf_counter() - started
-            assert result.status == "completed" and result.usage.capability_calls == steps
     if snapshot:
         ids = {}
 

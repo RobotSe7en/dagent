@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dagent.harness_runtime.conversation_changes import ConversationDeliveryFailure, flush_resources
+from dagent.harness_runtime.conversation_changes import flush_resources
+from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
 
 import json
 import math
@@ -655,7 +656,7 @@ class ContextAssembler:
             )
             method = "model"
             reason = None
-        except ConversationDeliveryFailure:
+        except PersistenceDeliveryError:
             raise
         except Exception as exc:
             summary = _deterministic_summary(

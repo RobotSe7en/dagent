@@ -9,7 +9,7 @@ from typing import Any, Literal
 from pydantic import ConfigDict, Field as PydanticField, TypeAdapter, model_serializer
 from pydantic.dataclasses import dataclass
 
-from dagent.schemas.conversation_changes import ConversationChangeFailure
+from dagent.schemas.conversation_changes import ConversationChangeBatch
 
 from dagent.review import ReviewHandle
 from dagent.steering import SteerDiscardReason
@@ -38,6 +38,7 @@ from dagent.schemas import (
 
 RunResultKind = Literal["tool", "dynamic_dag", "static_dag"]
 RunStreamEventType = Literal[
+    "conversation.changed",
     "run.started",
     "response.started",
     "response.reasoning.delta",
@@ -117,7 +118,7 @@ class RunResult:
     def checkpoint(self) -> RunCheckpoint | None:
         """Portable checkpoint for SDK-produced results."""
 
-        if self.plan is None:
+        if self.plan is None or not self.state._checkpoint_eligible:
             return None
         nodes = [self.state.trace.root] if self.state.trace else []
         while nodes:
@@ -158,7 +159,7 @@ class RunResult:
     def error(self) -> RunTraceError | None:
         """Typed terminal failure, when the runtime recorded one."""
 
-        return self.trace.root.error if self.trace is not None else None
+        return self.state._terminal_error or (self.trace.root.error if self.trace is not None else None)
 
     @property
     def spec_id(self) -> str | None:
@@ -215,7 +216,7 @@ class _OptionalConversationFields:
     @model_serializer(mode="wrap")
     def serialize_conversation_fields(self, serializer):
         payload = serializer(self)
-        for key in ("message_id", "conversation_change_failure"):
+        for key in ("message_id", "delivery_id", "failed_batch_id", "acknowledged_sequence", "acknowledged_revision"):
             if payload.get(key) is None:
                 payload.pop(key, None)
         return payload
@@ -421,7 +422,10 @@ class RunFailedData(_OptionalConversationFields):
     message: str
     error_type: str
     result: RunResult | None = None
-    conversation_change_failure: ConversationChangeFailure | None = None
+    delivery_id: str | None = None
+    failed_batch_id: str | None = None
+    acknowledged_sequence: int | None = None
+    acknowledged_revision: int | None = None
 
 
 class RunExecutionError(RuntimeError):
@@ -432,19 +436,9 @@ class RunExecutionError(RuntimeError):
         self.result = result
 
 
-class ConversationChangeError(RunExecutionError):
-    """A host rejected a batch; execution stopped without replaying effects."""
-
-    def __init__(self, message: str, *, result: RunResult, failure: ConversationChangeFailure):
-        super().__init__(message, result=result)
-        self.failure = failure
-        self.failed_batch = failure.failed_batch
-        self.acknowledged_sequence = failure.acknowledged_sequence
-        self.acknowledged_revision = failure.acknowledged_revision
-
-
 RunStreamEventData = (
-    RunStartedData
+    ConversationChangeBatch
+    | RunStartedData
     | ResponseStartedData
     | TextDeltaData
     | ResponseFinishedData
@@ -506,6 +500,7 @@ class RunStreamEvent:
 
 _EVENT_ADAPTER = TypeAdapter(RunStreamEvent)
 _EVENT_DATA_ADAPTERS: dict[str, TypeAdapter[Any]] = {
+    "conversation.changed": TypeAdapter(ConversationChangeBatch),
     "run.started": TypeAdapter(RunStartedData),
     "response.started": TypeAdapter(ResponseStartedData),
     "response.reasoning.delta": TypeAdapter(TextDeltaData),

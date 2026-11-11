@@ -226,9 +226,20 @@ async def test_all_root_failure_exits_evict_after_error_state_is_saved(tmp_path,
         async def reject(batch):
             raise OSError("host rejected")
 
-        operation = (runner.resume(first.review.approve(), checkpoint=first.checkpoint,
-                     on_conversation_change=reject if failure == "delivery" else None) if first is not None else
-                     runner.run(agent, input="write", run_id="failed", on_conversation_change=reject if failure == "delivery" else None))
+        if failure == "delivery":
+            operation = (runner.resume_stream(first.review.approve(), checkpoint=first.checkpoint,
+                         persistence=dagent.StreamPersistenceOptions()) if first is not None else
+                         runner.stream(agent, input="write", run_id="failed", persistence=dagent.StreamPersistenceOptions()))
+            events = []
+            async for event in operation:
+                events.append(event)
+                if event.type == "conversation.changed":
+                    await runner.reject_changes(event.run_id, event.data.batch_id, message="host rejected")
+            assert events[-1].type == "run.failed"
+            assert runner.run_state("failed") is None and runner.run_checkpoint("failed") is None
+            return
+        operation = (runner.resume(first.review.approve(), checkpoint=first.checkpoint) if first is not None else
+                     runner.run(agent, input="write", run_id="failed"))
         if failure == "model":
             result = await operation
             assert result.status == "failed" and result.checkpoint is not None
