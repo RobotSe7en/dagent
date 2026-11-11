@@ -16,6 +16,8 @@
 - 持久化流读取慢时不再卡住模型流：就绪队列满时展示增量会合并，生产方只在批次和压缩
   请求边界等待；交付失败只在这些边界抛出。新增可选
   `StreamPersistenceOptions.stall_timeout_seconds`（`DeliveryStalled`）限制每次等待读取方的时间。
+- 审核最终批次确认后即可恢复，无需等待上一条流结束。
+- 用户消息之后的响应重试原样重发同一请求，不再插入第二条相邻的用户消息。
 - **已明确授权的破坏性变更：** 删除四个入口的 on_conversation_change、专属 Handler/Failure/Error
   及失败事件回调字段；删除 DAG 回调专用钩子。其他默认执行、结果、provider 和 V4/V6/V9
   持久化契约保持，V1 批次仍可读取。参见[迁移说明](migration.md#未发布)。

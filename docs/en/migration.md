@@ -53,7 +53,9 @@ Response retries are additive and disabled by default. Nonzero
 and subagent execution fingerprints and survive checkpoint recovery. Default
 fields are omitted individually; schema version remains 9. Configure child
 agents separately. Stream hosts using the feature should handle
-`response.discarded` and treat token output as provisional. See [Agents](agents.md).
+`response.discarded` and treat token output as provisional. A retry after a user
+message resends the same request; only a retry after a tool result adds an
+internal hint. See [Agents](agents.md).
 
 When an agent has no `tool.read_file`, full tool text remains in messages and
 trace; results and checkpoints can become substantially larger. Hosts that need
@@ -619,7 +621,8 @@ valid generation configuration in the checkpoint.
 See the [configuration, 128K/256K budgets, recovery boundaries, and vLLM cache
 verification guide](model-context-and-reasoning.md#bounded-toolagent-context-strategies).
 Render availability and standard cache statistics require the appropriate server
-version and flags; usage capture alone does not enable caching.
+version and flags; usage capture alone does not enable caching. Live self-hosted
+cache performance and server context-error rates have not been benchmarked.
 
 Verification: 1,804 Python tests passed with three environment-dependent skips.
 Coverage includes 200 tool executions with at least five compaction commits,
@@ -662,7 +665,8 @@ a 0.10.0-compatible reader; do not downgrade such records to an older reader.
 
 Known limitations: summaries are lossy; oversized mandatory input and unknown
 server limits can still cause context errors. Prefix-cache hits depend on the
-deployment, tokenizer and server cache state.
+deployment, tokenizer and server cache state. Real vLLM cache hit rates and the
+hour-long live soak were not benchmarked for this release.
 
 - Verification: 1,804 Python/MCP tests passed on Python 3.11, with three
   environment-dependent skips; 128 WebUI tests and the production build passed.

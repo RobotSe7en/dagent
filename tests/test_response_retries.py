@@ -52,41 +52,59 @@ def test_response_retry_configuration_is_strict(agent_type, value):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("after", ["user", "tool"])
 @pytest.mark.parametrize("reason", ["empty_response", "reasoning_only_response", "max_output_tokens",
     "missing_finish_reason", "missing_terminal_response", "invalid_tool_call", "incomplete", "duplicate"])
-async def test_retryable_response_recovers_and_continues(tmp_path, stream, reason):
-    provider = FaultProvider([failure(reason), ChatResponse(content="recovered"), ChatResponse(content="continued")])
+async def test_retryable_response_recovers_and_continues(tmp_path, stream, after, reason):
+    @dagent.tool
+    def echo() -> str:
+        return "evidence"
+
+    responses = [failure(reason), ChatResponse(content="recovered"), ChatResponse(content="continued")]
+    if after == "tool":
+        responses.insert(0, ChatResponse(tool_calls=[ToolCall(id="evidence", name="tool_echo")]))
+    first = 0 if after == "user" else 1
+    provider = FaultProvider(responses)
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
         host = Host(runner=runner)
-        result, events = await invoke(runner, dagent.ToolAgent(profile="conversation", response_retries=1),
+        result, events = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[echo], response_retries=1),
                                       host, stream, input="finish")
         assert result.status == "completed" and result.output_text == "recovered"
         assert host.state == result.conversation
-        assert [item.content for item in result.conversation.items if item.type == "assistant"] == ["recovered"]
-        hints = [item for item in result.new_items if getattr(item, "purpose", None) == "response_retry"]
-        assert len(hints) == 1 and hints[0].purpose == "response_retry" and hints[0].visibility == "internal"
-        assert hints[0].run_id == result.run_id
-        assert "private thought" not in hints[0].content and "partial" not in hints[0].content
-        assert "purpose" not in provider.requests[1]["messages"][-1]
+        assert [item.content for item in result.conversation.items
+                if item.type == "assistant" and not item.tool_calls] == ["recovered"]
+        hints = [item for item in result.conversation.items if getattr(item, "purpose", None) == "response_retry"]
+        failed_request, retry_request = provider.requests[first], provider.requests[first + 1]
+        if after == "user":
+            # A hint here would make two user turns in a row, which role-alternating
+            # chat templates reject; the identical request is resent instead.
+            assert hints == [] and retry_request["messages"] == failed_request["messages"]
+        else:
+            assert len(hints) == 1 and hints[0].visibility == "internal" and hints[0].run_id == result.run_id
+            assert "private thought" not in hints[0].content and "partial" not in hints[0].content
+            assert retry_request["messages"][:-1] == failed_request["messages"]
+            assert retry_request["messages"][-1]["role"] == "user" and "purpose" not in retry_request["messages"][-1]
+        roles = [message["role"] for message in retry_request["messages"]]
+        assert not any(left == right == "user" for left, right in zip(roles, roles[1:]))
         outcomes = [o.status for b in host.batches for o in b.observations
                     if o.type == "response" and o.status != "started"]
-        assert outcomes == ["failed", "completed"]
-        assert result.usage.model_turns == 2
+        assert outcomes == ["completed"] * first + ["failed", "completed"]
+        assert result.usage.model_turns == first + 2
         discarded = [record for batch in host.batches for record in batch.messages
-                     if record.item.type == "assistant" and record.item.content != "recovered"]
-        assert len(discarded) == 1 and discarded[0].partial
+                     if record.item.type == "assistant" and record.partial]
+        assert len(discarded) == 1
         assert discarded[0].item.id not in {item.id for item in result.conversation.items}
         if stream:
             event = next(event for event in events if event.type == "response.discarded")
             assert isinstance(event.data, ResponseDiscardedData)
-            assert event.data.retry == 1 and event.data.model_step == 1
+            assert event.data.retry == 1 and event.data.model_step == first + 1
             assert event.data.message_id == discarded[0].item.id
             assert dagent.RunStreamEvent.model_validate(event.model_dump(mode="json")) == event
             boundaries = [event.type for event in events if event.type in {
                 "response.started", "response.finished", "response.discarded"}]
-            assert boundaries == ["response.started", "response.finished", "response.discarded",
-                                  "response.started", "response.finished"]
-            finished = next(e for e in events if e.type == "response.finished")
+            assert boundaries == ["response.started", "response.finished"] * first + [
+                "response.started", "response.finished", "response.discarded", "response.started", "response.finished"]
+            finished = [e for e in events if e.type == "response.finished"][first]
             assert finished.data.response_id == event.data.response_id
         second, _ = await invoke(runner, dagent.ToolAgent(profile="conversation"), host, stream,
                                 input="continue", conversation=result.conversation)
@@ -221,18 +239,27 @@ async def test_failed_observation_must_be_acknowledged_before_retry(tmp_path, ca
 @pytest.mark.asyncio
 async def test_partial_stream_order_across_observation_discard_and_hint(tmp_path):
     order = []
+
+    @dagent.tool
+    def echo() -> str:
+        return "evidence"
+
     class PartialProvider(MockProvider):
+        partial = False
         async def stream_chat(self, *args, **kwargs):
-            if not self.requests:
-                self.requests.append({})
+            # The second response breaks off after a tool result, so a hint follows.
+            if len(self.requests) == 1 and not self.partial:
+                self.partial = True
                 yield ChatStreamEvent(type="token", content="temporary text")
                 return
             async for event in super().stream_chat(*args, **kwargs):
                 yield event
-    with closing(dagent.Runner(provider=PartialProvider([ChatResponse(content="done")]), workspace=tmp_path,
-                              skill_roots=[])) as runner:
+    provider = PartialProvider([ChatResponse(tool_calls=[ToolCall(id="evidence", name="tool_echo")]),
+                                ChatResponse(content="done")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
         host = Host(runner=runner)
-        async for event in runner.stream(dagent.ToolAgent(profile="conversation", response_retries=1), input="finish",
+        async for event in runner.stream(dagent.ToolAgent(profile="conversation", capabilities=[echo], response_retries=1),
+                                         input="finish",
                                          persistence=dagent.StreamPersistenceOptions()):
             if event.type == "conversation.changed":
                 await host.save(event.data)
@@ -244,14 +271,21 @@ async def test_partial_stream_order_across_observation_discard_and_hint(tmp_path
             else:
                 order.append(event.type)
         selected = [i for i in order if i in {"response.started", "response.finished", "response.discarded", "observation", "hint"}]
-        assert selected == ["response.started", "response.finished", "observation", "response.discarded", "hint",
+        assert selected == ["response.started", "response.finished",
+                            "response.started", "response.finished", "observation", "response.discarded", "hint",
                             "response.started", "response.finished"]
 
 
 @pytest.mark.asyncio
 async def test_cancel_during_retry_hint_stops_generation(tmp_path):
     reached, release = asyncio.Event(), asyncio.Event()
-    provider = MockProvider([ChatResponse(), ChatResponse(content="must not generate")])
+
+    @dagent.tool
+    def echo() -> str:
+        return "evidence"
+
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="evidence", name="tool_echo")]),
+                             ChatResponse(), ChatResponse(content="must not generate")])
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
         host = Host(runner=runner)
         original = host.save
@@ -261,14 +295,15 @@ async def test_cancel_during_retry_hint_stops_generation(tmp_path):
                 await release.wait()
             await original(batch)
         host.save = save
-        task = asyncio.create_task(invoke(runner, dagent.ToolAgent(profile="conversation", response_retries=1), host,
+        task = asyncio.create_task(invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[echo],
+                                                                   response_retries=1), host,
                                          True, input="finish", run_id="retry_hint"))
         await asyncio.wait_for(reached.wait(), 5)
         assert await runner.cancel("retry_hint")
         release.set()
         result, _ = await asyncio.wait_for(task, 5)
         assert result.status == "cancelled"
-    assert len(provider.requests) == 1
+    assert len(provider.requests) == 2
 
 
 @pytest.mark.asyncio

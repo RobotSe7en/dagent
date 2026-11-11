@@ -1110,6 +1110,11 @@ class ToolAgentLoop:
                 if on_event is not None:
                     on_event({"type": "response_discarded", **response_record.context.payload(),
                               "error": model_error.model_dump(mode="json"), "retry": consecutive_failures})
+                items = loop_state.conversation.items
+                if items and isinstance(items[-1], UserMessage):
+                    # Never send two user turns in a row: templates that require
+                    # alternating roles reject them. Resend the same request.
+                    continue
                 hint = UserMessage(run_id=resolved_run_id, content=_response_recovery_hint(model_error),
                                    visibility="internal", purpose="response_retry")
                 loop_state.conversation = _append_item(loop_state.conversation, hint)

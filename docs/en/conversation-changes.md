@@ -176,8 +176,10 @@ stream = runner.resume_stream(
 )
 ```
 
-Finish the previous stream delivery before resuming. An overlapping active run
-is rejected before consuming the review decision. The host stores the checkpoint
+Resume once the review terminal batch is acknowledged; the previous stream need not
+have ended, because only the SDK's synchronous cleanup remains. A run that is still
+active, including one whose terminal batch is unacknowledged, is rejected before
+consuming the review decision. The host stores the checkpoint
 whole; it never constructs private pending batches.
 `pending_tool_invocations` returns detached, remaining potentially executable calls.
 Checkpoint validation checks structure, plan fingerprints and available registered

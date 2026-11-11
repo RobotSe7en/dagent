@@ -963,3 +963,36 @@ async def test_stall_timeout_ends_a_delivery_whose_reader_stops(tmp_path):
             if event.type == "conversation.changed":
                 assert not await runner.acknowledge_changes(event.run_id, event.data.batch_id)
         assert provider.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent_resume", [True, False])
+async def test_review_resumes_right_after_its_terminal_batch_is_acknowledged(tmp_path, persistent_resume):
+    effects = []
+
+    @dagent.tool(risk="medium")
+    def gate() -> str:
+        effects.append("once")
+        return "ok"
+
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="gate", name="tool_gate")]), ChatResponse(content="done")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        host = Host(runner=runner)
+        resumed = None
+        async for event in runner.stream(dagent.ToolAgent(profile="conversation", capabilities=[gate], review="careful"),
+                                         input="review", persistence=dagent.StreamPersistenceOptions()):
+            if event.type != "conversation.changed":
+                continue
+            await host.save(event.data)
+            assert await runner.acknowledge_changes(event.run_id, event.data.batch_id)
+            if event.data.status == "awaiting_review":
+                # The previous delivery is still open here; its producer has
+                # only synchronous cleanup left once this ACK is accepted.
+                checkpoint = event.data.checkpoint
+                if persistent_resume:
+                    resumed, _ = await resume_invoke(runner, checkpoint.review.approve(), checkpoint, host)
+                else:
+                    events = [item async for item in runner.resume_stream(checkpoint.review.approve(), checkpoint=checkpoint)]
+                    resumed = events[-1].data.result
+        assert resumed.status == "completed" and resumed.output_text == "done" and effects == ["once"]
+        assert not runner._active_run_tasks and not runner._persistent_deliveries

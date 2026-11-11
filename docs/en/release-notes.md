@@ -25,6 +25,10 @@
   compaction-request boundaries. Delivery failures surface only at those
   boundaries. New optional `StreamPersistenceOptions.stall_timeout_seconds`
   (`DeliveryStalled`) bounds each wait for the reader.
+- A review can be resumed as soon as its terminal batch is acknowledged, without
+  waiting for the previous stream to end.
+- A response retry right after a user message resends the same request instead of
+  adding a second consecutive user turn.
 - **Breaking, explicitly authorized:** remove `on_conversation_change` from all
   four execution APIs, its Handler/Failure/Error contracts and the failure-event
   callback field. Remove DAG callback-only hooks. Other default execution,

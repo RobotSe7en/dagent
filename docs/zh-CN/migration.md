@@ -43,6 +43,7 @@ V1 批次仍可读取，会话/状态/checkpoint 格式仍为 V4/V6/V9，不新�
 `AutoAgent.response_retries` 纳入 plan 和子 agent 执行指纹，并在 checkpoint 恢复后
 继续生效。默认字段逐项省略，schema version 保持 9。子 agent 需单独配置。
 使用该功能的流式宿主应处理 `response.discarded`，并将 token 输出视为临时内容。
+用户消息之后的重试原样重发同一请求，只有工具结果之后的重试才加入内部提示。
 参见 [Agents](agents.md)。
 
 没有 `tool.read_file` 时，工具全文留在消息和 trace 中，结果对象及 checkpoint 会
@@ -448,6 +449,7 @@ fingerprint；启用新模式的记录需要兼容读取方。无需迁移旧记
 配置、128K/256K 预算、恢复边界与真实缓存验证见
 [ToolAgent 上下文策略](model-context-and-reasoning.md#有界的-toolagent-上下文策略)。
 Render 能力和标准缓存统计依赖实际服务端版本及开关，启用采集本身不会开启缓存。
+尚未对真实自托管部署的缓存性能或上下文错误率进行基准测试。
 
 验证：Python 测试 1,804 项通过，3 项因环境条件跳过。覆盖 200 次工具执行及至少
 5 次实际压缩、Chat/Responses 流式调用、失败恢复，以及提交 `8c2e9f2` 生成的旧
@@ -481,7 +483,8 @@ usage 省略该字段，包括嵌套的会话、摘要和 checkpoint。旧记录
 不支持这些字段的旧版本读取。
 
 已知限制：摘要存在信息损失；必要输入自身过大或服务端上限未知时仍可能超限。
-前缀缓存命中取决于部署、tokenizer 和服务端缓存状态。
+前缀缓存命中取决于部署、tokenizer 和服务端缓存状态。本次没有对真实 vLLM 缓存
+命中率和一小时长时执行进行基准测试。
 
 - 验证：Python 3.11 上 1,804 项 Python/MCP 测试通过，3 项依赖环境的测试跳过；
   128 项 WebUI 测试和生产构建通过。

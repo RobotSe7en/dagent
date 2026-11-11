@@ -71,6 +71,9 @@ class StreamDelivery:
         self.failure: PersistenceDeliveryError | None = None
         self.failed_batch_id: str | None = None
         self.terminal_started = False
+        # Set once the host confirms the terminal batch; only synchronous
+        # producer cleanup remains after that.
+        self.terminal_acknowledged = False
         self.closed = False
         self.done = False
         # Ready events respect the configured limits; overflow events follow
@@ -226,6 +229,8 @@ class StreamDelivery:
             return False
         if not self._ack.done():
             self._ack.set_result(None)
+        if self.pending.status is not None:
+            self.terminal_acknowledged = True
         return True
 
     def reject(self, run_id: str, batch_id: str, message: str) -> bool:

@@ -2150,6 +2150,8 @@ class Runner:
             await asyncio.gather(task, return_exceptions=True)
             if self._persistent_deliveries.get(delivery.run_id) is delivery:
                 self._persistent_deliveries.pop(delivery.run_id, None)
+            # A resumed Run may already own these entries.
+            if self._active_run_tasks.get(delivery.run_id) is task:
                 self._active_run_tasks.pop(delivery.run_id, None)
                 self._active_run_cancellation_events.pop(delivery.run_id, None)
 
@@ -2266,7 +2268,12 @@ class Runner:
         """Resume within the caller's delivery scope; only a persistent stream sets one."""
         active = self._active_run_tasks.get(checkpoint.state.run_id)
         if active is not None and not active.done():
-            raise ValueError(f"Run '{checkpoint.state.run_id}' still has an active execution or delivery.")
+            delivery = self._persistent_deliveries.get(checkpoint.state.run_id)
+            if delivery is None or not delivery.terminal_acknowledged:
+                raise ValueError(f"Run '{checkpoint.state.run_id}' still has an active execution or delivery.")
+            # The host confirmed the terminal batch; the old producer only
+            # finishes synchronous cleanup, so wait for it instead of failing.
+            await asyncio.wait({active})
         with self._run_retention_scope(is_resume=True) as retain:
             with self._steering_scope(on_event) as steering_on_event:
                 result = await self._resume_checkpoint(

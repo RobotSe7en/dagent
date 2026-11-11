@@ -533,8 +533,6 @@ class DAGExecutor:
             dag_node.error = _error(str(exc), type(exc).__name__)
             dag_node.ended_at = _now()
             self.partial_node_traces[node.id] = dag_node
-            if isinstance(exc, ResultStorageError):
-                pass
             raise
         finally:
             if token_stream is not None:

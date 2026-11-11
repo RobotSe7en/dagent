@@ -146,7 +146,8 @@ stream = runner.resume_stream(
 )
 ```
 
-先完成上一条流的交付，再恢复审核。重叠的活跃运行会在消费审核决定前被拒绝。
+审核最终批次确认后即可恢复，无需等上一条流结束，此时只剩 SDK 的同步清理。仍在运行的
+run（包括最终批次尚未确认的）会在消费审核决定前被拒绝。
 整体保存 checkpoint，不组装私有 pending batch。pending_tool_invocations 返回隔离的、
 仍可能执行的剩余调用。SDK 检查结构、plan 指纹和已注册能力及 skill；企业策略仍由宿主检查。
 审核最终批次 ACK 后立即释放本地重状态和 checkpoint，不受普通无限保留设置影响。
