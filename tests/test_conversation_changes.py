@@ -520,7 +520,7 @@ async def test_terminal_has_only_output_reference_and_no_trace_or_history(tmp_pa
 @pytest.mark.parametrize("options", [
     {"max_buffer_events": 0}, {"max_buffer_events": True}, {"max_buffer_bytes": -1},
     {"max_buffer_bytes": 1.5}, {"ack_timeout_seconds": 0}, {"ack_timeout_seconds": float("inf")},
-    {"trace_mode": "off"},
+    {"stall_timeout_seconds": 0}, {"stall_timeout_seconds": float("inf")}, {"trace_mode": "off"},
 ])
 def test_persistence_configuration_is_explicit_and_bounded(options):
     with pytest.raises(ValueError):
@@ -528,7 +528,7 @@ def test_persistence_configuration_is_explicit_and_bounded(options):
 
 
 @pytest.mark.asyncio
-async def test_slow_reader_applies_backpressure_without_losing_text(tmp_path):
+async def test_slow_reader_merges_display_deltas_without_stalling_the_model(tmp_path):
     class TokenProvider(MockProvider):
         emitted = 0
         async def stream_chat(self, *args, **kwargs):
@@ -554,10 +554,15 @@ async def test_slow_reader_applies_backpressure_without_losing_text(tmp_path):
                     for _ in range(20):
                         await asyncio.sleep(0)
                     delivery = runner._persistent_deliveries["slow"]
-                    assert provider.emitted < 100
+                    # The paused reader never holds the model stream; the rest
+                    # of the response waits as one merged delta behind the queue.
+                    assert provider.emitted == 100
                     assert len(delivery._queue) <= 2
                     assert delivery._bytes <= 256 or len(delivery._queue) == 1
+                    waiting = [*(event for event, _ in delivery._queue), *delivery._overflow]
+                    assert sum(event.type == "response.content.delta" for event in waiting) <= 1
         assert "".join(text) == "x" * 12800
+        assert len(text) < 100
         assert host.state.items[-1].content == "x" * 12800
 
 
@@ -940,3 +945,21 @@ async def test_capability_test_from_a_persistent_tool_records_nothing_in_that_ru
         assert parent.status == "completed" and parent.output_text == "parent done"
         assert [item.content.text for item in host.state.items if item.type == "tool_result"] == ["child answer"]
         assert all(record.origin.scope == "conversation" for batch in host.batches for record in batch.messages)
+
+
+@pytest.mark.asyncio
+async def test_stall_timeout_ends_a_delivery_whose_reader_stops(tmp_path):
+    provider = MockProvider([ChatResponse(content="never requested")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        stream = runner.stream(dagent.ToolAgent(profile="conversation"), input="hello",
+                               persistence=dagent.StreamPersistenceOptions(stall_timeout_seconds=0.05))
+        first = await anext(stream)
+        assert first.type == "run.started"
+        await asyncio.sleep(0.2)
+        rest = [event async for event in stream]
+        assert rest[-1].type == "run.failed" and rest[-1].data.error_type == "DeliveryStalled"
+        assert rest[-1].data.acknowledged_sequence == 0
+        for event in rest:
+            if event.type == "conversation.changed":
+                assert not await runner.acknowledge_changes(event.run_id, event.data.batch_id)
+        assert provider.requests == []

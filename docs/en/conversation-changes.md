@@ -30,6 +30,7 @@ options = dagent.StreamPersistenceOptions(
     max_buffer_events=256,
     max_buffer_bytes=1_048_576,
     ack_timeout_seconds=None,
+    stall_timeout_seconds=None,
 )
 
 async for event in runner.stream(
@@ -67,10 +68,20 @@ active delivery. Wrong, stale or closed-delivery acknowledgements return `False`
 A commit can succeed before its ACK is lost: deduplicate using batch identity.
 
 `ack_timeout_seconds` starts when the consumer receives the batch. `None` imposes
-no persistence timeout. Buffer limits bound the ready queue, plus a bounded
-producer emission group. A single oversized event may occupy the queue alone.
-They are not frame-size limits. Synchronous producers that overrun their bounded
-emission group fail explicitly; ordinary SDK production awaits buffer capacity.
+no persistence timeout. Buffer limits bound the ready queue; a single oversized
+event may occupy it alone. They are not frame-size limits.
+
+A slow reader never stalls a model call. When the ready queue is full, later
+events wait behind it in order, and adjacent deltas of one response channel merge:
+the reader then receives fewer, larger deltas carrying the same text. The producer
+waits for the reader only at its boundaries, which are every batch publication and
+every compaction summary request, so a model stream keeps flowing and the
+compaction time budget excludes that wait. `stall_timeout_seconds` bounds each such
+wait and fails the delivery with `DeliveryStalled`; `None` waits indefinitely, so
+production hosts should set it or `ack_timeout_seconds`. More than
+`max(32, max_buffer_events)` unmerged events waiting between two boundaries fail the
+delivery with `StreamBufferOverflow`. Every delivery failure is raised at the next
+boundary, never inside the model call or compaction step that emitted the event.
 
 ## Public batch contract
 

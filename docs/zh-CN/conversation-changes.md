@@ -25,6 +25,7 @@ options = dagent.StreamPersistenceOptions(
     max_buffer_events=256,
     max_buffer_bytes=1_048_576,
     ack_timeout_seconds=None,
+    stall_timeout_seconds=None,
 )
 
 async for event in runner.stream(
@@ -56,9 +57,16 @@ uv run python -m examples.conversation_changes
 派发，不自动重放工具。活跃 delivery 内重复确认最近已确认批次是安全的；不匹配、过期或
 已关闭交付返回 `False`。提交可能成功而 ACK 丢失，宿主应根据批次身份去重。
 
-确认时限从消费者收到批次开始计算，`None` 不设持久化超时。缓冲预算限制就绪队列，另有
-一个有界的同步生产组；单个超大事件可以独占队列。这不是单帧大小上限。普通 SDK 生产等待
-容量，无法等待的同步生产突发超出边界时明确失败，不静默丢事件。
+确认时限从消费者收到批次开始计算，`None` 不设持久化超时。缓冲预算限制就绪队列；单个
+超大事件可以独占队列。这不是单帧大小上限。
+
+读取慢不会卡住模型调用。就绪队列满后，后续事件按顺序排在其后，同一响应同一通道的相邻
+增量会合并：读取方收到条数更少、单条更长但文本相同的增量。生产方只在边界处等待读取方，
+边界是每次发布批次和每次压缩摘要请求，因此模型流不会停顿，压缩时限也不计入这段等待。
+`stall_timeout_seconds` 限制每次这样的等待，超时以 `DeliveryStalled` 结束交付；`None`
+表示无限等待，生产环境应设置它或 `ack_timeout_seconds`。两个边界之间有超过
+`max(32, max_buffer_events)` 条未合并事件等待时，以 `StreamBufferOverflow` 结束交付。
+所有交付失败都在下一个边界抛出，不会出现在产生事件的模型调用或压缩步骤内部。
 
 ## 公开批次契约
 

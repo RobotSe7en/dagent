@@ -1,4 +1,13 @@
-"""Bounded event delivery and one outstanding durable acknowledgement."""
+"""Ordered persistent delivery with a non-blocking display lane.
+
+Producer events and durable batches share one ordered stream, but they wait in
+different places. Display events never block the producer: once the ready queue
+is full they enter an overflow lane, where adjacent deltas of one response
+channel merge. Only the producer's boundaries wait — every batch publication
+and compaction summary request — and they wait until the consumer has drained
+that overflow. Delivery failures are therefore raised only at boundaries, never
+inside a model call.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +28,14 @@ class PersistenceDeliveryError(RuntimeError):
         self.code = code
 
 
+_DIAGNOSTIC_EVENTS = frozenset({
+    "trace.updated", "dag.updated", "capability.call.started",
+    "capability.call.completed", "capability.call.failed", "review.required",
+})
+_DELTA_EVENTS = frozenset({"response.content.delta", "response.reasoning.delta"})
+_MIN_OVERFLOW_EVENTS = 32
+
+
 def _text_bytes(value: Any) -> int:
     if isinstance(value, str):
         return len(value.encode("utf-8"))
@@ -30,6 +47,15 @@ def _text_bytes(value: Any) -> int:
     if hasattr(value, "__dict__"):
         return _text_bytes(vars(value))
     return 0
+
+
+def _merged_delta(previous: RunStreamEvent, event: RunStreamEvent) -> RunStreamEvent | None:
+    """Join two adjacent deltas of one response channel; anything else stays apart."""
+    if (event.type not in _DELTA_EVENTS or previous.type != event.type
+            or previous.run_id != event.run_id
+            or replace(previous.data, delta="") != replace(event.data, delta="")):
+        return None
+    return replace(previous, data=replace(previous.data, delta=previous.data.delta + event.data.delta))
 
 
 class StreamDelivery:
@@ -47,11 +73,11 @@ class StreamDelivery:
         self.terminal_started = False
         self.closed = False
         self.done = False
+        # Ready events respect the configured limits; overflow events follow
+        # them in order and are bounded by entry count and merged delta text.
         self._queue: deque[tuple[RunStreamEvent, int]] = deque()
-        self._staged: deque[RunStreamEvent] = deque()
+        self._overflow: deque[RunStreamEvent] = deque()
         self._bytes = 0
-        self.peak_ready_events = 0
-        self.peak_ready_bytes = 0
         self._ready = asyncio.Event()
         self._space = asyncio.Event()
         self._ack: asyncio.Future[None] | None = None
@@ -64,42 +90,72 @@ class StreamDelivery:
             raise PersistenceDeliveryError("DeliveryClosed", "Persistent stream is closed.")
 
     def emit(self, event: RunStreamEvent):
-        self.check()
-        if event.type in {"trace.updated", "dag.updated", "capability.call.started",
-                          "capability.call.completed", "capability.call.failed", "review.required"}:
+        """Accept a synchronous producer event without blocking or raising.
+
+        A failed or closed delivery drops the event; its failure surfaces at the
+        producer's next boundary instead of inside the code that emitted it.
+        """
+        if self.closed or self.failure is not None or event.type in _DIAGNOSTIC_EVENTS:
             return
         if event.type == "model.call.observed":
             event = replace(event, data=replace(event.data, model_call=None))
-        if len(self._staged) >= max(32, self.options.max_buffer_events):
-            self.failure = PersistenceDeliveryError("StreamBufferOverflow", "Synchronous event producer exceeded its bounded emission group.")
-            raise self.failure
-        self._staged.append(event)
+        self._push(event)
 
-    async def checkpoint(self):
-        self.check()
-        while self._staged:
-            event = self._staged[0]
-            size = _text_bytes(event.data)
-            while self._queue and (len(self._queue) >= self.options.max_buffer_events
-                                  or self._bytes + size > self.options.max_buffer_bytes):
-                self._space.clear()
-                await self._space.wait()
-                self.check()
-            self._staged.popleft()
+    def _push(self, event: RunStreamEvent) -> None:
+        size = _text_bytes(event.data)
+        if not self._overflow and (not self._queue or (
+                len(self._queue) < self.options.max_buffer_events
+                and self._bytes + size <= self.options.max_buffer_bytes)):
             self._queue.append((event, size))
             self._bytes += size
-            self.peak_ready_events = max(self.peak_ready_events, len(self._queue))
-            self.peak_ready_bytes = max(self.peak_ready_bytes, self._bytes)
-            self._ready.set()
+        elif self._overflow and (merged := _merged_delta(self._overflow[-1], event)) is not None:
+            self._overflow[-1] = merged
+        elif (event.type != "conversation.changed"
+              and len(self._overflow) >= max(_MIN_OVERFLOW_EVENTS, self.options.max_buffer_events)):
+            self.failure = PersistenceDeliveryError(
+                "StreamBufferOverflow", "Stream events exceeded the bounded overflow between producer boundaries.",
+            )
+            return
+        else:
+            self._overflow.append(event)
+        self._ready.set()
+
+    async def _drained(self) -> None:
+        while self._overflow:
+            self._space.clear()
+            await self._space.wait()
+            self.check()
+
+    async def _bounded_wait(self, waiter) -> None:
+        timeout = self.options.stall_timeout_seconds
+        try:
+            if timeout is None:
+                await waiter
+            else:
+                await asyncio.wait_for(waiter, timeout)
+        except TimeoutError as exc:
+            self.failure = PersistenceDeliveryError(
+                "DeliveryStalled", "The stream consumer did not keep up before the stall timeout.",
+            )
+            raise self.failure from exc
+
+    async def checkpoint(self):
+        """Producer boundary: wait until the consumer has taken all overflow."""
+        self.check()
+        if self._overflow:
+            await self._bounded_wait(self._drained())
 
     async def receive(self) -> RunStreamEvent | None:
-        while not self._queue:
+        while not self._queue and not self._overflow:
             if self.done:
                 return None
             self._ready.clear()
             await self._ready.wait()
-        event, size = self._queue.popleft()
-        self._bytes -= size
+        if self._queue:
+            event, size = self._queue.popleft()
+            self._bytes -= size
+        else:
+            event = self._overflow.popleft()
         self._space.set()
         if event.type == "conversation.changed":
             self._presented.set()
@@ -117,10 +173,12 @@ class StreamDelivery:
         self._ack = asyncio.get_running_loop().create_future()
         self._presented.clear()
         try:
-            self.emit(RunStreamEvent(type="conversation.changed", data=batch.model_copy(deep=True), run_id=batch.run_id))
+            self._push(RunStreamEvent(type="conversation.changed", data=batch.model_copy(deep=True), run_id=batch.run_id))
+
             async def wait_for_ack():
-                await self.checkpoint()
-                await self._presented.wait()
+                # The batch follows every earlier event, so its presentation
+                # also drains the overflow.
+                await self._bounded_wait(self._presented.wait())
                 if self.options.ack_timeout_seconds is None:
                     await self._ack
                 else:
@@ -190,4 +248,4 @@ class StreamDelivery:
         if self._ack is not None and not self._ack.done():
             self._ack.cancel()
         self._queue.clear()
-        self._staged.clear()
+        self._overflow.clear()

@@ -387,6 +387,7 @@ async def observe_tool(call_id, capability_id, status, **details) -> None:
 
 
 async def delivery_checkpoint() -> None:
+    """Wait for the reader at a producer boundary; never call inside a model call."""
     scope = current_changes()
     if scope is not None:
         await scope.publisher.delivery.checkpoint()

@@ -20,6 +20,11 @@
   independent ordinary runs instead of joining or breaking that Run's delivery.
 - Unlimited retention no longer records used run ids, so a run that ended before
   saving state can again be retried with the same `run_id`.
+- A slow persistent-stream reader no longer stalls model streams: display deltas
+  merge while the ready queue is full, and the producer waits only at batch and
+  compaction-request boundaries. Delivery failures surface only at those
+  boundaries. New optional `StreamPersistenceOptions.stall_timeout_seconds`
+  (`DeliveryStalled`) bounds each wait for the reader.
 - **Breaking, explicitly authorized:** remove `on_conversation_change` from all
   four execution APIs, its Handler/Failure/Error contracts and the failure-event
   callback field. Remove DAG callback-only hooks. Other default execution,

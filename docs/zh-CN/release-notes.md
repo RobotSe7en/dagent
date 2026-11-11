@@ -13,6 +13,9 @@
 - 持久化 run 的工具内部未传 `persistence` 的 Runner 调用作为独立普通 run 执行，
   不再加入或破坏外层 run 的交付。
 - 无限保留时不再记录已用 run id，未保存状态就结束的 run 可再次用原 `run_id` 重试。
+- 持久化流读取慢时不再卡住模型流：就绪队列满时展示增量会合并，生产方只在批次和压缩
+  请求边界等待；交付失败只在这些边界抛出。新增可选
+  `StreamPersistenceOptions.stall_timeout_seconds`（`DeliveryStalled`）限制每次等待读取方的时间。
 - **已明确授权的破坏性变更：** 删除四个入口的 on_conversation_change、专属 Handler/Failure/Error
   及失败事件回调字段；删除 DAG 回调专用钩子。其他默认执行、结果、provider 和 V4/V6/V9
   持久化契约保持，V1 批次仍可读取。参见[迁移说明](migration.md#未发布)。

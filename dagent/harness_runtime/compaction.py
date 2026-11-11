@@ -7,7 +7,7 @@ Unicode ranges, or remains explicitly referenced when fallback is authorized.
 
 from __future__ import annotations
 
-from dagent.harness_runtime.conversation_changes import flush_resources, current_changes
+from dagent.harness_runtime.conversation_changes import delivery_checkpoint, flush_resources, current_changes
 from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
 
 import asyncio
@@ -784,6 +784,9 @@ class HistoryCompactor:
         if current_changes() is not None:
             paused_at = monotonic()
             try:
+                # This request is a delivery boundary: wait for the reader here,
+                # never inside the summary call.
+                await delivery_checkpoint()
                 await flush_resources()
             finally:
                 # Host persistence is not part of the compaction/model budget.

@@ -7,7 +7,7 @@ import asyncio
 
 from dagent.harness_runtime.conversation_changes import (
     ResponseRecorder, current_changes, publish_state, flush_resources,
-    observe_tool, tool_observations, delivery_checkpoint,
+    observe_tool, tool_observations,
 )
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone

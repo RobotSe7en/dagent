@@ -93,13 +93,15 @@ async def provider_events(
     reprepare: Callable[[], Awaitable[Any]] | None = None,
     observer: ContextObserver | None = None, before_attempt: Callable[[], None] | None = None,
 ) -> AsyncIterator[ModelStreamEvent]:
-    """Send counted snapshots; only the budget owner may prepare replacements."""
-    from dagent.harness_runtime.conversation_changes import delivery_checkpoint
+    """Send counted snapshots; only the budget owner may prepare replacements.
+
+    Persistent delivery never waits here: a model stream keeps flowing while a
+    slow reader catches up, and delivery failures surface at the next boundary.
+    """
     guard = _ReprepareGuard(prepared)
     while True:
         if before_attempt is not None:
             before_attempt()
-        await delivery_checkpoint()
         record_model_turn()
         started = monotonic()
         call_id = f"call_{uuid4().hex}"
@@ -119,11 +121,9 @@ async def provider_events(
                             observer.progress(event.content)
                         emitted = True
                         yield event
-                        await delivery_checkpoint()
                 finally:
                     await events.aclose()
             else:
-                await delivery_checkpoint()
                 response = (await provider.complete_prepared(prepared) if prepared is not None
                             else await complete_model(provider, request))
                 yield ModelStreamEvent(type="done", response=response)
