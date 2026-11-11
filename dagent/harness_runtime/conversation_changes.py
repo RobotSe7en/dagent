@@ -174,7 +174,7 @@ class ConversationChangePublisher:
                 messages=changed_records, observations=tuple(observations), resources=resources,
                 **(terminal or {}),
             )
-            await self.delivery.publish(batch)
+            cancelled = await self.delivery.publish(batch)
             self.conversation = after
             self._messages.update(selected)
             if state is not None:
@@ -185,6 +185,8 @@ class ConversationChangePublisher:
                 origin_id, active = active_origin
                 self._messages = {key: value for key, value in self._messages.items()
                                   if key[0] != origin_id or key[1] in active}
+            if cancelled and batch.status is None:
+                raise asyncio.CancelledError
 
     async def finish(self, result=None, *, status=None, error=None):
         from dagent.schemas.results import ExecutionUsage

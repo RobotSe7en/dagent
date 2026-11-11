@@ -1933,13 +1933,16 @@ class Runner:
                 yield event
 
     async def cancel(self, run_id: str) -> bool:
-        """Cancel an active streamed run and signal blocking capabilities to stop."""
+        """Cancel active work; persistent terminal delivery is already finished work."""
 
         self._ensure_open()
         validate_run_id(run_id)
         task = self._active_run_tasks.get(run_id)
         event = self._active_run_cancellation_events.get(run_id)
         if task is None or event is None or task.done():
+            return False
+        delivery = self._persistent_deliveries.get(run_id)
+        if delivery is not None and delivery.terminal_started:
             return False
         event.set()
         task.cancel()
@@ -2069,9 +2072,12 @@ class Runner:
                             ))
                             return
                         raise
-                    await publisher.finish(result)
-                    if result.status == "awaiting_review":
-                        self._release_persistent_review(result.run_id)
+                    try:
+                        await publisher.finish(result)
+                    finally:
+                        if (result.status == "awaiting_review"
+                                and self._persistent_deliveries.get(delivery.run_id) is delivery):
+                            self._release_persistent_review(result.run_id)
             except Exception as exc:
                 failure_event = RunStreamEvent(type="run.failed", run_id=delivery.run_id, data=RunFailedData(
                     message=str(exc), error_type=exc.code if isinstance(exc, PersistenceDeliveryError) else type(exc).__name__,

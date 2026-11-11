@@ -192,8 +192,13 @@ failed-batch and last-confirmed sequence/revision, without a full result or fail
 batch replay. The SDK cannot claim an unacknowledged terminal was stored.
 
 Persistent `cancel()` accepts a stop request without waiting for host storage.
-With a reader still open it attempts a `cancelled` terminal batch; completion is
-its ACK. Closing the stream releases ACK waits and cancels work. A disconnected
+If an ordinary batch is awaiting ACK, confirmation first advances the conversation
+baseline, then cancellation publishes a `cancelled` terminal based on that revision.
+The cancellation completes when that terminal is acknowledged. Once any terminal
+batch starts delivery, `cancel()` returns `False`: execution has ended and the
+existing terminal still requires ACK, rejection or timeout. Closing the stream
+releases ACK waits and cancels work, including terminal delivery. Review state is
+released when its terminal is confirmed or delivery is abandoned. A disconnected
 host uses its committed journal to decide interruption status.
 
 Resources contain references, not bytes. Use `Runner.resolve_runtime_path` to

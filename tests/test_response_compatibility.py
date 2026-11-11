@@ -35,6 +35,8 @@ def assert_public_result(runner, result, events):
     assert saved.plan == result.plan
     assert saved.usage == result.usage
     assert runner.run_checkpoint(result.run_id) == saved
+    assert saved.plan.response_retries == 0
+    assert "response_retries" not in saved.plan.model_dump(mode="json")
 
     if events:
         assert events[0].type == "run.started"
@@ -44,6 +46,38 @@ def assert_public_result(runner, result, events):
         for event in events:
             wire = event.model_dump(mode="json")
             assert dagent.RunStreamEvent.model_validate(wire).model_dump(mode="json") == wire
+
+
+def test_released_record_defaults_are_explicit():
+    conversation = dagent.ConversationState.model_validate({"id": "saved"})
+    assert conversation.model_dump(mode="json") == {
+        "schema_version": 4, "id": "saved", "revision": 0, "summary": None, "items": [],
+    }
+    state = dagent.RunState.model_validate({"run_id": "saved", "kind": "tool", "status": "completed"})
+    fields = ("schema_version", "review_level", "runtime_mode", "execution", "dynamic_adjust",
+              "planner_frontend", "capability_scope", "input_artifact_files")
+    payload = state.model_dump(mode="json")
+    assert {key: payload[key] for key in fields} == {
+        "schema_version": 6, "review_level": "fast", "runtime_mode": "auto", "execution": "local",
+        "dynamic_adjust": True, "planner_frontend": "typed_spec",
+        "capability_scope": {"capability_ids": None, "skills": None}, "input_artifact_files": [],
+    }
+    assert "_terminal_error" not in payload and "_checkpoint_eligible" not in payload
+    assert dagent.ContextPolicy().model_dump(mode="json") == {
+        "reasoning_replay": "active_run", "compaction_trigger_ratio": .8, "compaction_retain_ratio": .16,
+        "summary_max_tokens": 8192, "compaction_reasoning_effort": "low", "max_tool_result_tokens": 2048,
+        "max_total_tool_result_tokens": 16384, "token_safety_margin": .15,
+    }
+
+
+@pytest.mark.parametrize("event_type", ["response.started", "response.finished"])
+def test_released_response_event_defaults_are_explicit(event_type):
+    event = dagent.RunStreamEvent.model_validate({"type": event_type, "data": {"response_id": "response"}})
+    assert event.model_dump(mode="json") == {
+        "type": event_type, "sequence": 0, "run_id": None,
+        "data": {"response_id": "response", "model_step": None, "run_id": None,
+                 "dag_id": None, "node_id": None, "parent_capability_id": None},
+    }
 
 
 @pytest.mark.asyncio

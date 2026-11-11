@@ -44,6 +44,7 @@ class StreamDelivery:
         self.pending: ConversationChangeBatch | None = None
         self.failure: PersistenceDeliveryError | None = None
         self.failed_batch_id: str | None = None
+        self.terminal_started = False
         self.closed = False
         self.done = False
         self._queue: deque[tuple[RunStreamEvent, int]] = deque()
@@ -104,10 +105,14 @@ class StreamDelivery:
             self._presented.set()
         return event
 
-    async def publish(self, batch: ConversationChangeBatch):
+    async def publish(self, batch: ConversationChangeBatch) -> bool:
+        """Confirm delivery and return whether cancellation must be propagated."""
         self.check()
         if self.pending is not None:
             raise RuntimeError("Only one persistence batch can await acknowledgement.")
+        if self.terminal_started:
+            raise RuntimeError("Cannot publish after a terminal persistence batch.")
+        self.terminal_started = batch.status is not None
         self.pending = batch
         self._ack = asyncio.get_running_loop().create_future()
         self._presented.clear()
@@ -140,8 +145,9 @@ class StreamDelivery:
             self.acknowledged_sequence = batch.sequence
             self.acknowledged_revision = batch.revision
             self.last_acknowledged_batch = batch.batch_id
-            if cancelled:
-                raise asyncio.CancelledError
+            # The publisher must commit its confirmed baseline before a
+            # deferred cancellation can leave this publication boundary.
+            return cancelled
         except BaseException:
             self.failed_batch_id = batch.batch_id
             raise

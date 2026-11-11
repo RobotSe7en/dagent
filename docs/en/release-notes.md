@@ -13,6 +13,9 @@
 - Allow host-rebuilt context continuation and opt-in `input=None` retry; deactivate
   unfinished tail tool groups without fabricating results or replaying effects.
 - Release acknowledged review state; ordinary state retention remains explicit.
+- Keep confirmed conversation revisions consistent when cancellation races ACK.
+  Cancel returns `False` once terminal delivery starts; review state is also
+  released if that delivery is closed or rejected.
 - **Breaking, explicitly authorized:** remove `on_conversation_change` from all
   four execution APIs, its Handler/Failure/Error contracts and the failure-event
   callback field. Remove DAG callback-only hooks. Other default execution,
