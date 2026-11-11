@@ -3,7 +3,11 @@
 UUID producers, UTC/elapsed clocks and prompt workspace labels are fixed before
 counting/hashing. Only temporary file paths are normalized after serialization;
 every other serialized field is compared.
-Regenerate deliberately with DAGENT_CAPTURE_BASELINE=1 on the baseline revision.
+Only SHA-256 digests in fixtures/response_contract_hashes.json are tracked; full
+snapshots are ignored local debugging artifacts. Mismatches save actual.json in
+tmp_path, plus expected.json when a local snapshot is available.
+Regenerate snapshots and digests deliberately with DAGENT_CAPTURE_BASELINE=1 on
+the baseline revision.
 """
 
 from contextlib import closing
@@ -25,6 +29,26 @@ from tests.test_conversation_changes import Host, invoke
 from tests.test_cache_usage import _completion, _usage
 from tests.test_reasoning_mapping import _endpoint
 from tests.test_compaction_strategy import checkpoint, request_aliases
+
+
+def assert_released_snapshot(payload: str, fixture: Path, tmp_path: Path) -> None:
+    hashes_path = fixture.with_name("response_contract_hashes.json")
+    hashes = json.loads(hashes_path.read_text(encoding="utf-8"))
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    compressed = fixture.suffix == ".gz"
+    if os.environ.get("DAGENT_CAPTURE_BASELINE") == "1":
+        if compressed:
+            fixture.write_bytes(gzip.compress(payload.encode(), mtime=0))
+        else:
+            fixture.write_text(payload, encoding="utf-8")
+        hashes[fixture.name] = digest
+        hashes_path.write_text(json.dumps(hashes, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    if digest != hashes[fixture.name]:
+        (tmp_path / "actual.json").write_text(payload, encoding="utf-8")
+        if fixture.exists():
+            expected = gzip.decompress(fixture.read_bytes()).decode() if compressed else fixture.read_text(encoding="utf-8")
+            (tmp_path / "expected.json").write_text(expected, encoding="utf-8")
+    assert digest == hashes[fixture.name], f"{fixture.name}: output differs; see {tmp_path / 'actual.json'}"
 
 
 class FixedDateTime(datetime):
@@ -123,9 +147,7 @@ async def test_released_response_contract(tmp_path, stable_clocks, scenario):
             capture(result, events)
     payload = json.dumps(snapshots, sort_keys=True, ensure_ascii=False, indent=2).replace(str(tmp_path), "<workspace>") + "\n"
     fixture = Path(__file__).parent / "fixtures" / f"response_baseline_{scenario}.json"
-    if os.environ.get("DAGENT_CAPTURE_BASELINE") == "1":
-        fixture.write_text(payload)
-    assert payload == fixture.read_text()
+    assert_released_snapshot(payload, fixture, tmp_path)
 
 
 @pytest.mark.asyncio
@@ -172,10 +194,4 @@ async def test_released_long_context_contract(tmp_path, stable_clocks, strategy)
                      "requests": [json.loads(request.content) for request in posts]}
     payload = json.dumps(value, sort_keys=True, ensure_ascii=False).replace(str(tmp_path), "<workspace>")
     fixture = Path(__file__).parent / "fixtures" / f"response_baseline_long_{strategy}.json.gz"
-    if os.environ.get("DAGENT_CAPTURE_BASELINE") == "1":
-        fixture.write_bytes(gzip.compress(payload.encode(), mtime=0))
-    expected = gzip.decompress(fixture.read_bytes()).decode()
-    if payload != expected:
-        (tmp_path / "actual.json").write_text(payload)
-        (tmp_path / "expected.json").write_text(expected)
-    assert hashlib.sha256(payload.encode()).hexdigest() == hashlib.sha256(expected.encode()).hexdigest()
+    assert_released_snapshot(payload, fixture, tmp_path)
