@@ -396,3 +396,42 @@ async def test_released_results_and_completed_run_heap_reach_a_plateau(tmp_path)
             assert max(samples[8:]) - min(samples[8:]) < 200_000
         finally:
             tracemalloc.stop()
+
+
+@pytest.mark.asyncio
+async def test_unlimited_retention_keeps_an_unsaved_failed_run_id_retryable(tmp_path):
+    class FailingOnce(MockProvider):
+        failed = False
+        async def chat(self, *args, **kwargs):
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("network down")
+            return await super().chat(*args, **kwargs)
+
+    with closing(dagent.Runner(provider=FailingOnce([ChatResponse(content="done")]),
+                               workspace=tmp_path, skill_roots=[])) as runner:
+        agent = dagent.ToolAgent(profile="conversation")
+        with pytest.raises(RuntimeError, match="network down"):
+            await runner.run(agent, input="hello", run_id="retry")
+        assert runner.run_state("retry") is None and not runner._used_run_ids
+        result = await runner.run(agent, input="hello", run_id="retry")
+        assert result.status == "completed"
+        with pytest.raises(ValueError, match="already exists"):
+            await runner.run(agent, input="again", run_id="retry")
+
+
+@pytest.mark.asyncio
+async def test_unlimited_retention_blocks_a_released_persistent_review_id(tmp_path):
+    from tests.test_conversation_changes import Host, invoke
+
+    @dagent.tool(risk="medium")
+    def gate() -> str:
+        return "ok"
+
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="gate", name="tool_gate")]), ChatResponse(content="done")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        agent = dagent.ToolAgent(profile="conversation", capabilities=[gate], review="careful")
+        pending, _ = await invoke(runner, agent, Host(runner=runner), True, input="review", run_id="review")
+        assert pending.status == "awaiting_review" and runner.run_state("review") is None
+        with pytest.raises(ValueError, match="already exists"):
+            await runner.run(agent, input="reuse", run_id="review")

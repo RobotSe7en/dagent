@@ -8,6 +8,7 @@ Unicode ranges, or remains explicitly referenced when fallback is authorized.
 from __future__ import annotations
 
 from dagent.harness_runtime.conversation_changes import flush_resources, current_changes
+from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
 
 import asyncio
 import json
@@ -790,6 +791,9 @@ class HistoryCompactor:
                     self.deadline += monotonic() - paused_at
         try:
             raw = await self._bounded(self.chat(request))
+        except PersistenceDeliveryError:
+            # Host delivery failures are not summary failures.
+            raise
         except (RuntimeError, ValueError, OSError) as exc:
             metadata = getattr(exc, "metadata", None)
             attempts = max(1, len(metadata.attempts) if metadata is not None else 0)

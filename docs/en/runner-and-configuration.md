@@ -749,9 +749,12 @@ policy is not loaded from YAML and enters no execution fingerprint.
 `runner.derive()` inherits the limit with empty history;
 `runner.derive(max_retained_runs=None)` explicitly restores unlimited retention.
 
-This bounds heavy ended-run state, not total process memory. Used run ids and
-consumed review ids remain to prevent replay and grow with history. A used
-`run_id` cannot be reused after eviction. Caller-held results, event queues,
+This bounds heavy ended-run state, not total process memory. With a limit, used
+run ids and consumed review ids remain to prevent replay and grow with history; a
+used `run_id` cannot be reused after eviction. With unlimited retention, a saved
+state already blocks reuse, so a run that ended before saving any state can be
+retried with the same `run_id`; ids of persistent review states released after
+acknowledgement stay used. Caller-held results, event queues,
 provider/host logs and within-run `new_items` can also consume memory. See
 [the offline example](../../examples/run_retention.py).
 

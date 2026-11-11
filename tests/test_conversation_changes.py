@@ -848,3 +848,95 @@ async def test_runner_close_cannot_leave_a_late_resume_checkpoint_or_state(tmp_p
         assert not runner._active_run_tasks and not runner._persistent_deliveries
     finally:
         runner.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call", ["run", "stream", "resume", "static_dag", "thread", "persistent_stream"])
+async def test_runner_calls_from_a_persistent_tool_are_independent_runs(tmp_path, call):
+    holder, nested = {}, {}
+
+    @dagent.tool(risk="medium")
+    def gate() -> str:
+        return "gated"
+
+    @dagent.tool
+    def double(x: int) -> int:
+        return x * 2
+
+    async def nested_run(runner):
+        agent = dagent.ToolAgent(profile="conversation", capabilities=[gate], review="careful" if call == "resume" else "fast")
+        if call == "static_dag":
+            dag = dagent.Dag("workflow")
+            dag.add_node(dagent.Node("double", target=double, inputs={"x": dag.input["x"]}))
+            return await runner.run(dag, graph_input={"x": 3})
+        if call == "stream":
+            events = [event async for event in runner.stream(agent, input="nested")]
+            assert events[-1].type == "run.finished"
+            return events[-1].data.result
+        if call == "persistent_stream":
+            child = Host(runner=runner)
+            turn, _ = await consume(runner, runner.stream(agent, input="nested",
+                                    persistence=dagent.StreamPersistenceOptions()), child)
+            return turn
+        result = await runner.run(agent, input="nested")
+        if call == "resume":
+            assert result.status == "awaiting_review"
+            result = await runner.resume(result.review.approve(), checkpoint=result.checkpoint)
+        return result
+
+    @dagent.tool
+    async def delegate() -> str:
+        if call == "thread":
+            # A worker thread copies the Run's context into its own event loop.
+            nested["result"] = await asyncio.to_thread(lambda: asyncio.run(nested_run(holder["runner"])))
+        else:
+            nested["result"] = await nested_run(holder["runner"])
+        return "delegated"
+
+    responses = [ChatResponse(tool_calls=[ToolCall(id="delegate", name="tool_delegate")])]
+    if call != "static_dag":
+        responses += [ChatResponse(tool_calls=[ToolCall(id="gate", name="tool_gate")]),
+                      ChatResponse(content="nested done")]
+    responses.append(ChatResponse(content="parent done"))
+    with closing(dagent.Runner(provider=MockProvider(responses), workspace=tmp_path, skill_roots=[],
+                               capabilities=[gate, double])) as runner:
+        holder["runner"] = runner
+        host = Host(runner=runner)
+        parent, events = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[delegate]),
+                                      host, True, input="delegate")
+        assert parent.status == "completed" and parent.output_text == "parent done"
+        assert {batch.run_id for batch in host.batches} == {parent.run_id}
+        assert {event.run_id for event in events} == {parent.run_id}
+        assert runner.run_state(parent.run_id).trace is None
+        child = nested["result"]
+        assert child.status == "completed" and child.run_id != parent.run_id
+        if call == "persistent_stream":
+            assert child.trace is None and child.output_text == "nested done"
+        elif call == "static_dag":
+            assert child.trace is not None and child.checkpoint is not None
+            assert child.trace.root.children[-1].value == 6
+        else:
+            assert child.trace is not None and child.checkpoint is not None
+            assert child.new_items and child.output_text == "nested done"
+
+
+@pytest.mark.asyncio
+async def test_capability_test_from_a_persistent_tool_records_nothing_in_that_run(tmp_path):
+    holder = {}
+
+    @dagent.tool
+    async def probe() -> str:
+        result = await holder["runner"].test_capability("agent.helper", {"prompt": "help"})
+        return result.content
+
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="probe", name="tool_probe")]),
+                             ChatResponse(content="child answer"), ChatResponse(content="parent done")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        holder["runner"] = runner
+        runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[]))
+        host = Host(runner=runner)
+        parent, _ = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[probe]),
+                                 host, True, input="probe")
+        assert parent.status == "completed" and parent.output_text == "parent done"
+        assert [item.content.text for item in host.state.items if item.type == "tool_result"] == ["child answer"]
+        assert all(record.origin.scope == "conversation" for batch in host.batches for record in batch.messages)

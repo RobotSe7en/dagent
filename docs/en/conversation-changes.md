@@ -11,6 +11,12 @@ branch of `AutoAgent`. DAG targets are rejected. Auto routing to a DAG also fail
 explicitly before DAG execution. DAG execution, events and recovery are otherwise
 unchanged; its former callback-only hooks have been removed.
 
+Persistence is chosen per call. A tool that itself calls `run`, `stream`,
+`resume`, `resume_stream` or `test_capability` without `persistence` starts an
+ordinary, independent run with its own result and trace; nothing from it enters
+the calling Run's batches. Pass `persistence` to that inner `stream` to give it its
+own delivery. Registered `agent.*` delegation remains part of the calling Run.
+
 The host's committed batch journal is authoritative. `ConversationState` is the
 materialized model context; a review `RunCheckpoint` is a portable continuation.
 The SDK owns neither a database nor host permissions, transactions or file storage.

@@ -33,7 +33,8 @@ V1 批次仍可读取，会话/状态/checkpoint 格式仍为 V4/V6/V9，不新�
 `Runner(max_retained_runs=None)` 保持无限保留。`0` 或正整数按结束顺序释放已结束
 根 run 的重状态及 Runner 创建的 DAG 子会话，运行中和待审批 run 受保护。
 淘汰后查询返回 `None`，已导出的结果、checkpoint 和磁盘文件仍然有效。
-已用 id 和已消费审批的防重放元数据仍随历史增长。`derive` 默认继承配置，显式
+设置上限时，已用 id 和已消费审批的防重放元数据仍随历史增长；无限保留不额外记录 id，
+未保存状态就结束的 run 与以前一样可以用原 `run_id` 重试。`derive` 默认继承配置，显式
 `None` 恢复无限；此设置不进入指纹。参见 [Runner 配置](runner-and-configuration.md)。
 
 ### 可选响应重试

@@ -16,6 +16,10 @@
 - Keep confirmed conversation revisions consistent when cancellation races ACK.
   Cancel returns `False` once terminal delivery starts; review state is also
   released if that delivery is closed or rejected.
+- Runner calls made by a tool inside a persistent Run without `persistence` run as
+  independent ordinary runs instead of joining or breaking that Run's delivery.
+- Unlimited retention no longer records used run ids, so a run that ended before
+  saving state can again be retried with the same `run_id`.
 - **Breaking, explicitly authorized:** remove `on_conversation_change` from all
   four execution APIs, its Handler/Failure/Error contracts and the failure-event
   callback field. Remove DAG callback-only hooks. Other default execution,

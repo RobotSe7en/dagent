@@ -8,6 +8,11 @@
 明确的 DAG 目标会被拒绝；自动路由选择 DAG 时也在进入 DAG 执行前明确失败。
 DAG 原执行、事件和恢复保持不变，仅删除其旧回调专属钩子。
 
+持久化按每次调用显式开启。工具内部如果自行调用 `run`、`stream`、`resume`、
+`resume_stream` 或 `test_capability` 且未传 `persistence`，会启动一个普通的独立
+run，拥有自己的结果和 trace，不会写入外层 run 的批次。需要持久化时，给内层
+`stream` 传入 `persistence`，它会使用自己的交付。已注册的 `agent.*` 委派仍属于外层 run。
+
 宿主已提交的批次日志是长期权威来源。`ConversationState` 是有效模型上下文的投影，
 审核 `RunCheckpoint` 是可移植恢复记录。SDK 不管理数据库、宿主权限、事务或文件存储。
 

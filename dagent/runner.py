@@ -837,7 +837,7 @@ class Runner:
             arguments=resolved_arguments,
             boundary=resolved_boundary,
         )
-        with self._run_scope(execution):
+        with conversation_change_scope(None), self._run_scope(execution):
             return await self._runtime.capability_executor.execute(invocation)
 
     @contextmanager
@@ -1306,7 +1306,10 @@ class Runner:
             nonlocal run_id
             if not is_resume:
                 self._ensure_new_run_id_available(value)
-            self._used_run_ids.add(value)
+            # Unlimited retention keeps every saved state, which already blocks
+            # reuse; a run that ended before saving one stays retryable.
+            if self.max_retained_runs is not None:
+                self._used_run_ids.add(value)
             self._retained_run_ids.pop(value, None)
             run_id = value
 
@@ -1409,6 +1412,36 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
+        # Persistence is chosen per call. A run started from inside another
+        # Run's tool is an ordinary run, never part of that Run's delivery.
+        with conversation_change_scope(None):
+            return await self._run(
+                target, input=input, conversation=conversation, graph_input=graph_input,
+                review=review, dynamic_adjust=dynamic_adjust, execution=execution,
+                workspace_root=workspace_root, workspace_path=workspace_path, run_id=run_id,
+                input_uploads=input_uploads, artifact_uploads=artifact_uploads,
+                on_token=on_token, on_event=on_event,
+            )
+
+    async def _run(
+        self,
+        target: RunTarget,
+        *,
+        input: str | None,
+        conversation: ConversationState | None,
+        graph_input: Any,
+        review: ReviewLevel | None,
+        dynamic_adjust: bool | None,
+        execution: RunExecution,
+        workspace_root: str | Path,
+        workspace_path: str | Path | None,
+        run_id: str | None,
+        input_uploads: list[ArtifactUpload] | None,
+        artifact_uploads: dict[str, list[ArtifactUpload]] | None,
+        on_token: TokenHandler | None,
+        on_event: LoopEventHandler | None,
+    ) -> RunResult:
+        """Run within the caller's delivery scope; only a persistent stream sets one."""
         self._ensure_open()
         if run_id is not None:
             validate_run_id(run_id)
@@ -1912,7 +1945,10 @@ class Runner:
         self._ensure_new_run_id_available(run_id)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
-            return await self.run(
+            # Ordinary streams use the public entrypoint; a persistent delivery
+            # has installed its own scope for exactly this call.
+            run = self.run if persistence is None else self._run
+            return await run(
                 target,
                 input=input,
                 conversation=conversation,
@@ -1925,6 +1961,7 @@ class Runner:
                 run_id=run_id,
                 input_uploads=input_uploads,
                 artifact_uploads=artifact_uploads,
+                on_token=None,
                 on_event=on_event,
             )
 
@@ -1990,10 +2027,12 @@ class Runner:
             self.validate_checkpoint(checkpoint)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
-            result = await self.resume(
+            resume = self.resume if persistence is None else self._resume
+            result = await resume(
                 decision,
                 checkpoint=checkpoint,
                 execution=execution,
+                on_token=None,
                 on_event=on_event,
             )
             if result is None:
@@ -2021,6 +2060,8 @@ class Runner:
         self._validate_checkpoint_runtime(restored)
 
     def _release_persistent_review(self, run_id: str) -> None:
+        # The host may still hold this Run's checkpoint, so its id stays used.
+        self._used_run_ids.add(run_id)
         self._runtime.session.runs.pop(run_id, None)
         self._runtime.session.discard_reviews_for_run(run_id)
         self._run_checkpoints.pop(run_id, None)
@@ -2207,6 +2248,22 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
+        with conversation_change_scope(None):
+            return await self._resume(
+                decision, checkpoint=checkpoint, execution=execution,
+                on_token=on_token, on_event=on_event,
+            )
+
+    async def _resume(
+        self,
+        decision: ReviewDecision,
+        *,
+        checkpoint: RunCheckpoint,
+        execution: RunExecution,
+        on_token: TokenHandler | None,
+        on_event: LoopEventHandler | None,
+    ) -> RunResult | None:
+        """Resume within the caller's delivery scope; only a persistent stream sets one."""
         active = self._active_run_tasks.get(checkpoint.state.run_id)
         if active is not None and not active.done():
             raise ValueError(f"Run '{checkpoint.state.run_id}' still has an active execution or delivery.")
