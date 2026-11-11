@@ -186,6 +186,12 @@ class AgentNodeSessionStore:
             conversation.model_copy(deep=True)
         )
 
+    def discard_task(self, task_id: str) -> None:
+        """Release this store's node conversations for one finished root task."""
+        for key in tuple(self._conversations):
+            if key[0] == task_id:
+                del self._conversations[key]
+
 
 class AgentCapabilityProvider:
     """Registers DAG agent-node capabilities backed by ``ToolAgent``."""

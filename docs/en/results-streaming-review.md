@@ -447,3 +447,13 @@ retract them; use response events or conversation changes to decide which output
 is effective. The discarded response is absent from the conversation and
 `new_items`; its model trace node and usage remain. See
 [the offline failure example](../../examples/model_failure.py).
+
+## Queries after retention eviction
+
+`run_trace(run_id)`, `run_state(run_id)` and `run_checkpoint(run_id)` return
+`None` for an evicted run. The `RunResult` already returned (including its
+exportable `checkpoint`) stays intact. To continue a conversation, keep its
+`ConversationState`; eviction leaves its summary and disk archives available.
+Awaiting-review runs remain retained regardless of the limit. Used run and
+review ids remain protected against replay. See
+[Runner configuration](runner-and-configuration.md#bound-retained-root-run-state).

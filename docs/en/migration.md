@@ -9,6 +9,16 @@ The current stable package version is `0.10.4`.
 
 ## Unreleased
 
+### Optional ended-run retention
+
+`Runner(max_retained_runs=None)` preserves unlimited retention. `0` and positive
+limits opt into releasing ended root-run state and Runner-owned DAG child
+sessions in end order; awaiting review and active runs are protected. Evicted
+queries return `None`; exported results/checkpoints and disk files remain valid.
+Used ids and consumed review metadata still grow to prevent replay. The setting
+is inherited by `derive` unless explicitly overridden, accepts explicit `None`,
+and enters no fingerprint. See [Runner configuration](runner-and-configuration.md).
+
 ### Optional response retries
 
 Response retries are additive and disabled by default. Nonzero

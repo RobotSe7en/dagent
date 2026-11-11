@@ -172,3 +172,10 @@ Provider 配置类型 `ProviderConfig` 和 `ReasoningMapping` 位于 `dagent.con
 checkpoint 的序列化形状和 schema version。`UserMessage.purpose` 默认省略。
 `response.discarded` 是类型化流事件，事件数据类位于 `dagent.result`。
 参见 [Agents](agents.md) 和[结果与流式](results-streaming-review.md)。
+
+## 可选 run 保留上限
+
+`Runner`、`Runner.from_config`、`Runner.derive` 支持 `max_retained_runs`。
+它只控制进程内保留，不进入 plan 或指纹。默认 `None`；`derive` 区分省略（继承）
+与显式 `None`（无限）。查询、审批、缓存归属和内存语义见
+[Runner 配置](runner-and-configuration.md)。

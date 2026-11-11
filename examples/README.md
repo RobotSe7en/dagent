@@ -94,3 +94,5 @@ tool timeout handling can be verified by setting `tool_timeout` below 130
 seconds.
 
 `model_failure.py` also demonstrates `invalid_tool_call` diagnostics and opt-in response retries with `response.discarded`; see [Agents](../docs/en/agents.md) and [Results and streaming](../docs/en/results-streaming-review.md).
+
+`run_retention.py` demonstrates `max_retained_runs`, exported checkpoints, conversation continuation and `derive` inheritance; see [Runner configuration](../docs/en/runner-and-configuration.md).

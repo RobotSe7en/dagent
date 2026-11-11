@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import threading
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, replace
@@ -25,6 +26,7 @@ from dagent.capabilities.mcp.config import (
 )
 from dagent.capabilities.providers import (
     AgentCapabilityProvider,
+    AgentNodeSessionStore,
 )
 from dagent.capabilities.python_tools import (
     load_python_tool_sources,
@@ -162,6 +164,7 @@ RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 _DEFAULT_RUNNER_WORKSPACE = Path.home() / ".dagent"
 _DEFAULT_RUNTIME_DIRECTORY = ".runtime"
 _UNSET_MODEL_LIMIT = object()
+_INHERIT_RETAINED_RUNS = object()
 
 
 @dataclass(frozen=True)
@@ -191,7 +194,14 @@ class Runner:
         result_storage_policy: ResultStoragePolicy | None = None,
         extra_system_prompt: str | None = None,
         context_observability: bool = False,
+        max_retained_runs: int | None = None,
     ) -> None:
+        if max_retained_runs is not None and (type(max_retained_runs) is not int or max_retained_runs < 0):
+            raise ValueError("max_retained_runs must be a nonnegative integer or None.")
+        self.max_retained_runs = max_retained_runs
+        self._used_run_ids: set[str] = set()
+        self._retained_run_ids: OrderedDict[str, None] = OrderedDict()
+        self._agent_session_stores: dict[str, AgentNodeSessionStore] = {}
         self.workspace = Path(workspace)
         self.runtime_directory = validate_runtime_directory(runtime_directory)
         self.profile_root = Path(profile_root) if profile_root is not None else None
@@ -265,6 +275,7 @@ class Runner:
         result_storage_policy: ResultStoragePolicy | None = None,
         extra_system_prompt: str | None = None,
         context_observability: bool = False,
+        max_retained_runs: int | None = None,
     ) -> "Runner":
         config_path = resolve_config_path(path)
         config = load_config(config_path)
@@ -294,6 +305,7 @@ class Runner:
             result_storage_policy=result_storage_policy,
             extra_system_prompt=extra_system_prompt,
             context_observability=context_observability,
+            max_retained_runs=max_retained_runs,
         )
 
     @property
@@ -332,6 +344,9 @@ class Runner:
         self._active_run_steering_controls.clear()
         self._runtime.capability_catalog.shutdown()
         self._run_checkpoints.clear()
+        self._retained_run_ids.clear()
+        self._used_run_ids.clear()
+        self._agent_session_stores.clear()
         self._consumed_review_ids.clear()
         self._mcp_server_capability_ids.clear()
         self._mcp_server_managers.clear()
@@ -357,6 +372,7 @@ class Runner:
         agents: Iterable[ToolAgent] = (),
         inherit_local_tools: bool = False,
         exclude_local_tool_ids: Iterable[str] = (),
+        max_retained_runs: int | None | object = _INHERIT_RETAINED_RUNS,
     ) -> "Runner":
         """Create an independent runner with explicit runtime overlays."""
 
@@ -414,6 +430,8 @@ class Runner:
             ),
             extra_system_prompt=self.extra_system_prompt,
             context_observability=self.context_observability,
+            max_retained_runs=(self.max_retained_runs if max_retained_runs is _INHERIT_RETAINED_RUNS
+                               else cast(int | None, max_retained_runs)),
         )
         try:
             derived.runtime.max_validation_retries = (
@@ -725,6 +743,7 @@ class Runner:
             name = capability_id.removeprefix("agent.")
             self._registered_agent_configs.pop(name, None)
             self._registered_agent_runtime_configs.pop(name, None)
+            self._agent_session_stores.pop(name, None)
             self._runtime.refresh_toolsets()
             return
         self._runtime.refresh_toolsets()
@@ -821,6 +840,8 @@ class Runner:
     def _steering_scope(
         self,
         on_event: LoopEventHandler | None,
+        *,
+        on_bound: Callable[[str], None] | None = None,
     ) -> Iterator[LoopEventHandler | None]:
         control: RunSteeringControl
 
@@ -832,6 +853,8 @@ class Runner:
             existing = self._active_run_steering_controls.get(run_id)
             if existing is not None and existing is not bound_control:
                 raise RuntimeError(f"Run '{run_id}' is already active.")
+            if on_bound is not None:
+                on_bound(run_id)
             self._active_run_steering_controls[run_id] = bound_control
 
         control = RunSteeringControl(emit, register)
@@ -1267,8 +1290,45 @@ class Runner:
     ) -> None:
         if run_id is None:
             return
-        if run_id in self._runtime.session.runs:
+        if run_id in self._used_run_ids or run_id in self._runtime.session.runs:
             raise ValueError(f"run_id '{run_id}' already exists.")
+
+    @contextmanager
+    def _run_retention_scope(self, *, is_resume: bool = False) -> Iterator[Callable[[str], None]]:
+        run_id: str | None = None
+        finished = False
+
+        def started(value: str) -> None:
+            nonlocal run_id
+            if not is_resume:
+                self._ensure_new_run_id_available(value)
+            self._used_run_ids.add(value)
+            self._retained_run_ids.pop(value, None)
+            run_id = value
+
+        try:
+            yield started
+            finished = True
+        finally:
+            if run_id is not None:
+                self._finish_retained_run(run_id, failed=not finished)
+
+    def _finish_retained_run(self, run_id: str, *, failed: bool) -> None:
+        # Only root run/resume exits call this, after delivery/storage/context
+        # failures have saved their final state. Intermediate saves do not count.
+        if self.max_retained_runs is None:
+            return
+        state = self._runtime.session.runs.get(run_id)
+        if not failed and state is not None and state.status == "awaiting_review":
+            return
+        self._retained_run_ids[run_id] = None
+        while len(self._retained_run_ids) > self.max_retained_runs:
+            expired, _ = self._retained_run_ids.popitem(last=False)
+            self._runtime.session.runs.pop(expired, None)
+            self._runtime.session.discard_reviews_for_run(expired)
+            self._run_checkpoints.pop(expired, None)
+            for store in self._agent_session_stores.values():
+                store.discard_task(expired)
 
     def _sync_skill_root_metadata(self) -> None:
         roots = [str(root) for root in self._skill_provider.store.roots]
@@ -1386,56 +1446,57 @@ class Runner:
                     self._resolve_run_workspace_root(workspace_root), conversation.id, create=False),
             )
         usage_tracker = ExecutionUsageTracker()
-        async with self._conversation_changes_scope(
-            on_conversation_change, conversation, usage_tracker, resolved_execution,
-        ) as publisher:
-            if publisher is not None and publisher.conversation is not None:
-                # The run works on the publisher's own copy, so the host's
-                # objects are never shared and unchanged messages are the same
-                # objects in the live state and the published baseline.
-                conversation = publisher.conversation
-            with (
-                self._run_scope(
-                    resolved_execution,
-                    skill_names=skill_names,
-                    runtime_workspaces=runtime_workspaces,
-                ),
-                execution_usage_scope(usage_tracker),
-                self._steering_scope(on_event) as steering_on_event,
-            ):
-                try:
-                    result = await self._run_dispatch(
-                        target,
-                        input=input,
-                        conversation=conversation,
-                        graph_input=graph_input,
-                        review=review,
-                        dynamic_adjust=dynamic_adjust,
-                        usage_tracker=usage_tracker,
-                        workspace_root=workspace_root,
-                        workspace_path=resolved_workspace_path,
-                        run_id=run_id,
-                        input_uploads=input_uploads,
-                        artifact_uploads=artifact_uploads,
-                        on_token=on_token,
-                        on_event=steering_on_event,
-                    )
-                    await self._finish_conversation_changes(result)
-                    return result
-                except ToolResultStorageFailure as exc:
-                    raise self._storage_failure_error(
-                        exc,
-                        usage=usage_tracker.snapshot(),
-                        execution=resolved_execution,
-                        user_request=input if isinstance(input, str) else "",
-                        review_level=review or exc.outcome.state.review_level,
-                    ) from exc.cause
-                except ToolContextFailure as exc:
-                    raise self._context_failure_error(
-                        exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
-                        user_request=input if isinstance(input, str) else "",
-                        review_level=review or exc.outcome.state.review_level,
-                    ) from exc
+        with self._run_retention_scope() as retain:
+            async with self._conversation_changes_scope(
+                on_conversation_change, conversation, usage_tracker, resolved_execution,
+            ) as publisher:
+                if publisher is not None and publisher.conversation is not None:
+                    # The run works on the publisher's own copy, so the host's
+                    # objects are never shared and unchanged messages are the same
+                    # objects in the live state and the published baseline.
+                    conversation = publisher.conversation
+                with (
+                    self._run_scope(
+                        resolved_execution,
+                        skill_names=skill_names,
+                        runtime_workspaces=runtime_workspaces,
+                    ),
+                    execution_usage_scope(usage_tracker),
+                    self._steering_scope(on_event, on_bound=retain) as steering_on_event,
+                ):
+                    try:
+                        result = await self._run_dispatch(
+                            target,
+                            input=input,
+                            conversation=conversation,
+                            graph_input=graph_input,
+                            review=review,
+                            dynamic_adjust=dynamic_adjust,
+                            usage_tracker=usage_tracker,
+                            workspace_root=workspace_root,
+                            workspace_path=resolved_workspace_path,
+                            run_id=run_id,
+                            input_uploads=input_uploads,
+                            artifact_uploads=artifact_uploads,
+                            on_token=on_token,
+                            on_event=steering_on_event,
+                        )
+                        await self._finish_conversation_changes(result)
+                        return result
+                    except ToolResultStorageFailure as exc:
+                        raise self._storage_failure_error(
+                            exc,
+                            usage=usage_tracker.snapshot(),
+                            execution=resolved_execution,
+                            user_request=input if isinstance(input, str) else "",
+                            review_level=review or exc.outcome.state.review_level,
+                        ) from exc.cause
+                    except ToolContextFailure as exc:
+                        raise self._context_failure_error(
+                            exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
+                            user_request=input if isinstance(input, str) else "",
+                            review_level=review or exc.outcome.state.review_level,
+                        ) from exc
 
     @asynccontextmanager
     async def _conversation_changes_scope(self, callback, initial, usage_tracker, execution):
@@ -2063,20 +2124,22 @@ class Runner:
         on_event: LoopEventHandler | None = None,
         on_conversation_change: ConversationChangeHandler | None = None,
     ) -> RunResult | None:
-        async with self._conversation_changes_scope(
-            on_conversation_change, checkpoint.state.conversation, None, execution,
-        ):
-            with self._steering_scope(on_event) as steering_on_event:
-                result = await self._resume_checkpoint(
-                    decision,
-                    checkpoint,
-                    execution=execution,
-                    on_token=on_token,
-                    on_event=steering_on_event,
-                )
-                if result is not None:
-                    await self._finish_conversation_changes(result)
-                return result
+        with self._run_retention_scope(is_resume=True) as retain:
+            async with self._conversation_changes_scope(
+                on_conversation_change, checkpoint.state.conversation, None, execution,
+            ):
+                with self._steering_scope(on_event) as steering_on_event:
+                    result = await self._resume_checkpoint(
+                        decision,
+                        checkpoint,
+                        execution=execution,
+                        on_token=on_token,
+                        on_event=steering_on_event,
+                        on_started=retain,
+                    )
+                    if result is not None:
+                        await self._finish_conversation_changes(result)
+                    return result
 
     async def _resume_checkpoint(
         self,
@@ -2086,6 +2149,7 @@ class Runner:
         execution: RunExecution,
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
+        on_started: Callable[[str], None] | None = None,
     ) -> RunResult | None:
         checkpoint = RunCheckpoint.model_validate(
             checkpoint.model_dump(mode="python")
@@ -2119,6 +2183,8 @@ class Runner:
             changes.publisher.usage_factory = usage_tracker.snapshot
         resolved_execution = _resolve_run_execution(execution, resume_state)
         self._consumed_review_ids.add(decision.review_id)
+        if on_started is not None:
+            on_started(resume_state.run_id)
         try:
             with (
                 self._run_scope(
@@ -2468,11 +2534,14 @@ class Runner:
             return definition
 
         config = self._registered_agent_runtime_config(agent)
+        session_store = AgentNodeSessionStore()
         AgentCapabilityProvider(
             {name: config},
+            session_store=session_store,
             runtime_directory=self.runtime_directory,
             skill_prompt_resolver=self._runtime.tool_agent.skill_prompt_resolver,
         ).register_into(self._runtime.capability_catalog)
+        self._agent_session_stores[name] = session_store
         self._registered_agent_configs[name] = agent
         self._registered_agent_runtime_configs[name] = config
         self._runtime.refresh_toolsets()

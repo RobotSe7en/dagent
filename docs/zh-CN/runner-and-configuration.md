@@ -627,3 +627,26 @@ state = runner.run_state(run_id)
 `context_observability=True`，通过 `stream` / `resume_stream` 观测 ToolAgent
 HTTP 调用及 cache-aware 上下文维护。默认 `False`；此开关不改变生成请求、策略、
 检查点或 SDK 持久化状态；开启后 legacy 摘要使用内部流式调用报告真实进度。见[流式观测](results-streaming-review.md#上下文与请求观测)。
+
+## 限制已结束根 run 的保留状态
+
+`Runner(max_retained_runs=None)` 默认保留全部已结束 run。设为 `0`，会在根 run 或
+resume 完整收尾后释放其重状态；正整数只保留最近结束的若干根 run。运行中和等待
+审批的 run 不计数、不淘汰。较早开始的 run 经审批后结束，仍算最近结束。
+正常和异常退出都在交付及失败状态完成处理后清理。
+
+清理包括 Runner 保存的 `RunState`、checkpoint、失效审批索引，以及它创建的 DAG
+子 agent 会话缓存。外部 provider 自行管理其缓存。workspace、结果文件和压缩归档
+仍可使用；调用者已取得的结果与导出 checkpoint 不受影响。恢复始终显式提供
+checkpoint，不依赖进程缓存。
+
+`Runner.from_config(...)` 也可显式传 `max_retained_runs`，该进程策略不从 YAML
+加载，不进入执行指纹。`runner.derive()` 继承上限但不继承历史；
+`runner.derive(max_retained_runs=None)` 显式恢复无限保留。
+
+上限限制已结束 run 的重状态数量，不承诺进程内存恒定。已用 run id 和已消费审批 id
+防重放元数据随历史增长，淘汰后仍不能复用 `run_id`。调用者持有的结果、事件队列、
+provider/宿主日志和单次 run 的 `new_items` 也可能占用内存。参见
+[离线示例](../../examples/run_retention.py)和[堆内存/序列化基准](../../benchmarks/run_retention.py)。
+
+堆内存与序列化体积实测见 [run 保留基准](run-retention-benchmark.md)。

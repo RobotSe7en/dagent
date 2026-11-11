@@ -365,7 +365,7 @@ async def test_three_hundred_tools_with_retries_compaction_and_review(tmp_path, 
 
     async with _endpoint(protocol="chat_completions", token_counting="heuristic", context_window_tokens=8192,
                          max_output_tokens=512, responder=respond) as (provider, _posts):
-        with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[], max_retained_runs=0)) as runner:
             host = Host(runner=runner)
             agent = dagent.ToolAgent(profile="conversation", capabilities=[query, gate], response_retries=1, review="careful",
                 context=dagent.ContextPolicy(compaction_strategy=strategy, summary_max_tokens=512))
@@ -373,10 +373,13 @@ async def test_three_hundred_tools_with_retries_compaction_and_review(tmp_path, 
             reviews = 0
             while result.requires_review:
                 reviews += 1
+                assert runner.run_checkpoint(result.run_id) is not None
                 saved = dagent.RunCheckpoint.model_validate_json(result.checkpoint.model_dump_json())
                 assert saved.plan.response_retries == 1
                 result = await runner.resume(result.review.approve(), checkpoint=saved, on_conversation_change=host.save)
             assert result.status == "completed" and reviews == 4
+            assert runner.run_state(result.run_id) is None
+            assert runner.run_checkpoint(result.run_id) is None
             assert effects == list(range(1, 301))
             assert summaries > 5 and recovery_sources > 0
             assert host.state == result.conversation

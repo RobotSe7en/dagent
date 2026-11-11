@@ -387,3 +387,11 @@ cache-aware 维护以带 `compaction_id` 的 `context.compaction.started` 开始
 已发出的 token 是临时输出。只用 `on_token` 的消费者无法撤销内容，需要结合响应事件
 或会话变化确定有效结果。被丢弃的回复不进入会话和 `new_items`，模型 trace 节点及
 usage 仍保留。参见[离线失败示例](../../examples/model_failure.py)。
+
+## 淘汰后的结果查询
+
+被淘汰 run 的 `run_trace(run_id)`、`run_state(run_id)`、`run_checkpoint(run_id)`
+返回 `None`。调用者已拿到的 `RunResult`（包括可导出的 `checkpoint`）保持有效。
+续聊时保留 `ConversationState`；淘汰不删除其摘要和磁盘归档。等待审批的 run
+不受上限影响；已用 run id 和审批 id 仍受防重放保护。
+参见 [Runner 配置](runner-and-configuration.md)。

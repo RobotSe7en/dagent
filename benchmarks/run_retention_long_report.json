@@ -1,0 +1,221 @@
+{
+  "revision": "2626349daf48ae3c38b1850d8ba6642c3c484234",
+  "working_tree_differs": true,
+  "sdk_source_sha256": "c449255a5175f47b0cd50f052bb48726ea3ed35efe10d11f186410b1bea52e7d",
+  "python": "3.11.14",
+  "configuration": {
+    "runs": 1,
+    "steps": 300,
+    "output_chars": 1024,
+    "onchange": false
+  },
+  "data": "Fresh text tool results; no read_file; legacy context; offline synthetic provider.",
+  "references": "Provider logs remain empty; host only acknowledges; events are drained; old results are released.",
+  "json_counting": "Containers and scalar values included; object keys excluded.",
+  "measurements": [
+    {
+      "mode": "tool",
+      "max_retained_runs": null,
+      "wire_sizes_last_result": {
+        "RunState": {
+          "utf8_bytes": 1498712,
+          "json_values": 50156
+        },
+        "checkpoint": {
+          "utf8_bytes": 1505577,
+          "json_values": 50204
+        },
+        "run.finished": {
+          "utf8_bytes": 2066512,
+          "json_values": 63690
+        }
+      },
+      "retained_object_graph": {
+        "run_states_bytes": 3163748,
+        "checkpoints_bytes": 3175556,
+        "child_sessions_bytes": 0,
+        "combined_unique_bytes": 5150252
+      },
+      "samples": [
+        {
+          "run": 1,
+          "heap_current_bytes": 8036668,
+          "heap_peak_bytes": 22855917,
+          "run_states": 1,
+          "checkpoints": 1,
+          "child_sessions": 0
+        }
+      ]
+    },
+    {
+      "mode": "tool",
+      "max_retained_runs": 2,
+      "wire_sizes_last_result": {
+        "RunState": {
+          "utf8_bytes": 1498709,
+          "json_values": 50156
+        },
+        "checkpoint": {
+          "utf8_bytes": 1505574,
+          "json_values": 50204
+        },
+        "run.finished": {
+          "utf8_bytes": 2066509,
+          "json_values": 63690
+        }
+      },
+      "retained_object_graph": {
+        "run_states_bytes": 3163745,
+        "checkpoints_bytes": 3175553,
+        "child_sessions_bytes": 0,
+        "combined_unique_bytes": 5150249
+      },
+      "samples": [
+        {
+          "run": 1,
+          "heap_current_bytes": 7968718,
+          "heap_peak_bytes": 22788105,
+          "run_states": 1,
+          "checkpoints": 1,
+          "child_sessions": 0
+        }
+      ]
+    },
+    {
+      "mode": "tool",
+      "max_retained_runs": 0,
+      "wire_sizes_last_result": {
+        "RunState": {
+          "utf8_bytes": 1498709,
+          "json_values": 50156
+        },
+        "checkpoint": {
+          "utf8_bytes": 1505574,
+          "json_values": 50204
+        },
+        "run.finished": {
+          "utf8_bytes": 2066509,
+          "json_values": 63690
+        }
+      },
+      "retained_object_graph": {
+        "run_states_bytes": 184,
+        "checkpoints_bytes": 184,
+        "child_sessions_bytes": 0,
+        "combined_unique_bytes": 368
+      },
+      "samples": [
+        {
+          "run": 1,
+          "heap_current_bytes": 136763,
+          "heap_peak_bytes": 20052083,
+          "run_states": 0,
+          "checkpoints": 0,
+          "child_sessions": 0
+        }
+      ]
+    },
+    {
+      "mode": "dag",
+      "max_retained_runs": null,
+      "wire_sizes_last_result": {
+        "RunState": {
+          "utf8_bytes": 2291979,
+          "json_values": 76558
+        },
+        "checkpoint": {
+          "utf8_bytes": 2298945,
+          "json_values": 76608
+        },
+        "run.finished": {
+          "utf8_bytes": 2292264,
+          "json_values": 76571
+        }
+      },
+      "retained_object_graph": {
+        "run_states_bytes": 4457775,
+        "checkpoints_bytes": 4469910,
+        "child_sessions_bytes": 97136,
+        "combined_unique_bytes": 7441491
+      },
+      "samples": [
+        {
+          "run": 1,
+          "heap_current_bytes": 10609316,
+          "heap_peak_bytes": 30403532,
+          "run_states": 1,
+          "checkpoints": 1,
+          "child_sessions": 1
+        }
+      ]
+    },
+    {
+      "mode": "dag",
+      "max_retained_runs": 2,
+      "wire_sizes_last_result": {
+        "RunState": {
+          "utf8_bytes": 2291976,
+          "json_values": 76558
+        },
+        "checkpoint": {
+          "utf8_bytes": 2298942,
+          "json_values": 76608
+        },
+        "run.finished": {
+          "utf8_bytes": 2292261,
+          "json_values": 76571
+        }
+      },
+      "retained_object_graph": {
+        "run_states_bytes": 4457772,
+        "checkpoints_bytes": 4469907,
+        "child_sessions_bytes": 97136,
+        "combined_unique_bytes": 7441488
+      },
+      "samples": [
+        {
+          "run": 1,
+          "heap_current_bytes": 10590362,
+          "heap_peak_bytes": 30332329,
+          "run_states": 1,
+          "checkpoints": 1,
+          "child_sessions": 1
+        }
+      ]
+    },
+    {
+      "mode": "dag",
+      "max_retained_runs": 0,
+      "wire_sizes_last_result": {
+        "RunState": {
+          "utf8_bytes": 2291976,
+          "json_values": 76558
+        },
+        "checkpoint": {
+          "utf8_bytes": 2298942,
+          "json_values": 76608
+        },
+        "run.finished": {
+          "utf8_bytes": 2292261,
+          "json_values": 76571
+        }
+      },
+      "retained_object_graph": {
+        "run_states_bytes": 184,
+        "checkpoints_bytes": 184,
+        "child_sessions_bytes": 224,
+        "combined_unique_bytes": 592
+      },
+      "samples": [
+        {
+          "run": 1,
+          "heap_current_bytes": 145839,
+          "heap_peak_bytes": 30331414,
+          "run_states": 0,
+          "checkpoints": 0,
+          "child_sessions": 0
+        }
+      ]
+    }
+  ]
+}

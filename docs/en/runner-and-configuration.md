@@ -728,3 +728,32 @@ maintenance through `stream` / `resume_stream`. The default is `False`;
 this flag changes no generation payload, policy, checkpoint, or saved SDK state.
 When enabled, legacy summaries use internal streaming to expose real progress.
 See [stream observations](results-streaming-review.md#context-and-request-observations).
+
+## Bound retained root-run state
+
+`Runner(max_retained_runs=None)` keeps all ended runs, preserving the default.
+Set `0` to release their heavy state at root run/resume completion, or a positive
+integer to retain the most recently ended root runs. Active and awaiting-review
+runs do not count and are never evicted. A run that ends after review counts as
+newly ended, even if it started much earlier. Cleanup includes ordinary and
+exceptional exits, after delivery and failure state have been finalized.
+
+The limit releases saved `RunState`, cached checkpoints, stale review indexes,
+and DAG node conversations owned by this Runner. External providers own their
+own caches. Workspaces, result files and compaction archives remain available.
+Returned results and exported checkpoints remain valid; resume uses an explicitly
+supplied checkpoint, independently of this cache.
+
+Pass `max_retained_runs` explicitly to `Runner.from_config(...)`; this process
+policy is not loaded from YAML and enters no execution fingerprint.
+`runner.derive()` inherits the limit with empty history;
+`runner.derive(max_retained_runs=None)` explicitly restores unlimited retention.
+
+This bounds heavy ended-run state, not total process memory. Used run ids and
+consumed review ids remain to prevent replay and grow with history. A used
+`run_id` cannot be reused after eviction. Caller-held results, event queues,
+provider/host logs and within-run `new_items` can also consume memory. See
+[the offline example](../../examples/run_retention.py) and the reproducible
+[heap/wire benchmark](../../benchmarks/run_retention.py).
+
+Measured heap and serialized-size results: [Run retention benchmark](run-retention-benchmark.md).

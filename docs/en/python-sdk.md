@@ -191,3 +191,11 @@ default values preserve released plan/checkpoint serialization and schema versio
 `UserMessage.purpose` defaults to omission. `response.discarded` is a typed stream
 event; event data classes live in `dagent.result`. See [Agents](agents.md) and
 [Results and streaming](results-streaming-review.md).
+
+## Optional run retention
+
+`Runner`, `Runner.from_config` and `Runner.derive` accept `max_retained_runs`.
+It controls only in-process retention and is absent from plans and fingerprints.
+The default is `None`; `derive` distinguishes omission (inherit) from explicit
+`None` (unlimited). See [Runner configuration](runner-and-configuration.md) for
+query, review, cache ownership and memory semantics.

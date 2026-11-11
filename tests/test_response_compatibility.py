@@ -1,7 +1,8 @@
 """Released 030e6b8 wire/state snapshots, captured before retry/retention changes.
 
-UUID producers, UTC clocks and elapsed clocks are fixed, not removed. Only the
-temporary workspace prefix is replaced; every other serialized field is compared.
+UUID producers, UTC/elapsed clocks and prompt workspace labels are fixed before
+counting/hashing. Only temporary file paths are normalized after serialization;
+every other serialized field is compared.
 Regenerate deliberately with DAGENT_CAPTURE_BASELINE=1 on the baseline revision.
 """
 
@@ -43,6 +44,20 @@ def stable_clocks(monkeypatch):
                 monkeypatch.setattr(module, "datetime", FixedDateTime)
             if hasattr(module, "monotonic"):
                 monkeypatch.setattr(module, "monotonic", lambda: 10.0)
+
+    # Fix the prompt's workspace label before the provider hashes its payload.
+    # Files still go to tmp_path; changing serialized fingerprints after the
+    # fact would hide incompatibilities.
+    from dagent.state import PromptBuilder
+    original = PromptBuilder.build_system_message
+
+    def stable_prompt(self, request):
+        message = original(self, request)
+        if request.workspace_path is not None:
+            message["content"] = message["content"].replace(str(request.workspace_path), "/baseline/work")
+        return message
+
+    monkeypatch.setattr(PromptBuilder, "build_system_message", stable_prompt)
 
 
 @pytest.mark.asyncio
@@ -115,20 +130,7 @@ async def test_released_response_contract(tmp_path, stable_clocks, scenario):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("strategy", ["legacy", "chunked", "cache_aware"])
-async def test_released_long_context_contract(tmp_path, stable_clocks, monkeypatch, strategy):
-    # Fix the prompt's workspace label before the provider hashes its payload.
-    # Files still go to tmp_path; changing serialized fingerprints after the
-    # fact would hide incompatibilities.
-    from dagent.state import PromptBuilder
-    original = PromptBuilder.build_system_message
-
-    def stable_prompt(self, request):
-        message = original(self, request)
-        if request.workspace_path is not None:
-            message["content"] = message["content"].replace(str(request.workspace_path), "/baseline/work")
-        return message
-
-    monkeypatch.setattr(PromptBuilder, "build_system_message", stable_prompt)
+async def test_released_long_context_contract(tmp_path, stable_clocks, strategy):
     turns = summaries = 0
 
     @dagent.tool
