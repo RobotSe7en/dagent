@@ -18,6 +18,7 @@ def lookup(key: str) -> str:
 
 
 async def main() -> None:
+    duplicate = ToolCall(id="duplicate", name="tool_lookup", arguments={"key": "missing"})
     provider = MockProvider([
         ChatResponse(tool_calls=[ToolCall(
             id="lookup_1", name="tool_lookup", arguments={"key": "missing"},
@@ -25,6 +26,7 @@ async def main() -> None:
         ChatResponse(reasoning_content=(
             '<tool_call>{"name":"tool_lookup","arguments":{"key":"another"}}</tool_call>'
         )),
+        ChatResponse(tool_calls=[duplicate, duplicate]),
     ])
     runner = dagent.Runner(
         workspace="agent-workspace", provider=provider, capabilities=[lookup],
@@ -40,6 +42,11 @@ async def main() -> None:
             if isinstance(item, dagent.ToolResultMessage):
                 print(item.name, item.status)
         print(result.conversation.items[-1].reasoning)
+
+        invalid = await runner.run(dagent.ToolAgent(profile="conversation"), input="Try again.")
+        assert invalid.status == "failed" and invalid.error.code == "invalid_tool_call"
+        assert not invalid.conversation.items[-1].tool_calls
+        print(invalid.error.code, invalid.trace.root.children[-1].output["provider_details"])
     finally:
         runner.close()
 

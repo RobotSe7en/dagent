@@ -370,3 +370,8 @@ cache-aware 维护以带 `compaction_id` 的 `context.compaction.started` 开始
 
 流式失败会保留异常上已有的失败 `RunResult`，包括上下文窗口失败。
 快照只作为失败证据，不授权恢复或发布失败工作区。
+
+
+同一回复内的重复 call id 以 `invalid_tool_call` 失败。原始调用保留在模型 trace
+节点的 `provider_details` 中；不执行工具，会话不含悬空调用。流式以携带失败结果的
+`run.finished` 结束。不同回复之间仍然允许复用 call id。

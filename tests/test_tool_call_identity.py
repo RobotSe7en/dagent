@@ -12,6 +12,58 @@ from dagent.harness_runtime.tool_agent import _find_capability_node, _restore_re
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import RunTrace, RunTraceNode
 from tests.test_steering import GatedProvider
+from tests.test_conversation_changes import Host, invoke
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("call_id", ["duplicate", "", " "])
+async def test_custom_duplicate_ids_fail_without_dangling_calls(tmp_path, stream, call_id):
+    executed = []
+
+    @dagent.tool
+    def echo() -> str:
+        executed.append(True)
+        return "effect"
+
+    calls = [ToolCall(id=call_id, name="tool_echo", arguments={})] * 2
+    bad = ChatResponse(content="partial", reasoning_content="thought", tool_calls=calls,
+                       usage=dagent.ModelTokenUsage(input_tokens=3, output_tokens=2, total_tokens=5))
+    provider = MockProvider([bad, ChatResponse(content="continued")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        host = Host(runner=runner)
+        agent = dagent.ToolAgent(profile="conversation", capabilities=[echo])
+        result, events = await invoke(runner, agent, host, stream, input="echo")
+        assert result.status == "failed" and result.error.code == "invalid_tool_call"
+        assert executed == [] and host.state == result.conversation
+        last = result.conversation.items[-1]
+        assert not last.tool_calls and last.content == "partial" and last.reasoning == "thought"
+        node = result.trace.root.children[-1]
+        assert node.output["usage"]["total_tokens"] == 5
+        assert node.output["provider_details"]["tool_calls"] == [
+            {"id": call.id, "name": call.name, "arguments": call.arguments} for call in calls]
+        if stream:
+            assert events[-1].type == "run.finished" and events[-1].data.result.status == "failed"
+        continued, _ = await invoke(runner, agent, host, stream, input="continue", conversation=result.conversation)
+        assert continued.status == "completed" and host.state == continued.conversation
+        assert all(not item.get("tool_calls") for item in provider.requests[-1]["messages"])
+        assert bad.tool_calls == calls and bad.status == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call_id,name", [("", "tool_echo"), (" ", "tool_echo"), ("call", ""), ("call", "unknown")])
+async def test_custom_single_call_identity_contract(tmp_path, call_id, name):
+    @dagent.tool
+    def echo() -> str:
+        return "effect"
+
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id=call_id, name=name)]), ChatResponse(content="done")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        result = await runner.run(dagent.ToolAgent(profile="conversation", capabilities=[echo]), input="echo")
+    assert result.status == "completed"
+    message = provider.requests[-1]["messages"][-1]
+    assert message["tool_call_id"] == call_id
+    assert ("[TOOL_ERROR]" in message["content"]) == (name != "tool_echo")
 
 
 def _calls(result):

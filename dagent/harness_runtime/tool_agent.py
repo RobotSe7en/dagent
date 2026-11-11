@@ -982,6 +982,18 @@ class ToolAgentLoop:
                     reason = "reasoning_only_response" if response.reasoning_content.strip() else "empty_response"
                     model_error = RunTraceError(code=reason, message="Model response has no final content, tool calls, or refusal.")
 
+            if model_error is None:
+                call_ids = [call.id for call in response.tool_calls]
+                if len(call_ids) != len(set(call_ids)):
+                    message = "Model tool calls require unique ids within one response."
+                    model_error = RunTraceError(code="invalid_tool_call", message=message)
+                    provider_details = {
+                        "reason": "invalid_tool_call", "message": message,
+                        "tool_calls": [{"id": call.id, "name": call.name, "arguments": call.arguments}
+                                       for call in response.tool_calls],
+                    }
+                    response = replace(response, tool_calls=[], status="failed")
+
             assistant_message = self._assistant_message(
                 response, message_id=None if response_record is None else response_record.message_id,
             )

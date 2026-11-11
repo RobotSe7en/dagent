@@ -18,9 +18,11 @@ call with the same id. Public invocation ids and trace record shapes are unchang
 After checkpoint restoration, historical result associations are rebuilt only
 for unambiguous call ids; ambiguous historical nodes retain their saved metadata
 when context preparation subsequently replaces result messages. A model reply
-that repeats a call id within itself is still rejected, as before: `Runner.run`
-raises `pydantic.ValidationError` (`Pending tool batch requires unique call
-ids`) and `Runner.stream` ends with `run.failed`.
+that repeats a call id within itself is rejected with `invalid_tool_call`, including
+custom providers: `Runner.run` returns a failed result and `Runner.stream` ends
+with `run.finished` carrying that result. No tools execute, invalid calls stay
+only in trace `provider_details`, and the conversation can be continued. Custom
+providers previously raised a raw `pydantic.ValidationError` in this case.
 
 ### Breaking changes: conversation workspaces and best-effort files
 

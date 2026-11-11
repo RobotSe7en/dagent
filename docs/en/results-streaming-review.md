@@ -425,3 +425,9 @@ on terminal Run events. See [`context_management.py`](../../examples/context_man
 Streaming failures preserve any typed failed `RunResult` attached to their
 exception, including context-window failures. A snapshot is failure evidence; it
 does not authorize recovery or publication of the failed workspace.
+
+
+Duplicate call ids within one response fail with `invalid_tool_call`. The raw
+calls remain in the model trace node’s `provider_details`; no tools execute and
+no dangling calls enter the conversation. Streaming ends with `run.finished`
+carrying the failed result. Reusing an id across responses remains supported.
