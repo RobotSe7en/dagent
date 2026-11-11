@@ -753,10 +753,7 @@ This bounds heavy ended-run state, not total process memory. Used run ids and
 consumed review ids remain to prevent replay and grow with history. A used
 `run_id` cannot be reused after eviction. Caller-held results, event queues,
 provider/host logs and within-run `new_items` can also consume memory. See
-[the offline example](../../examples/run_retention.py) and the reproducible
-[heap/wire benchmark](../../benchmarks/run_retention.py).
-
-Measured heap and serialized-size results: [Run retention benchmark](run-retention-benchmark.md).
+[the offline example](../../examples/run_retention.py).
 
 For persistent ToolLoop streams, review checkpoints are host-owned: after the
 review terminal batch is acknowledged, local heavy review state is released

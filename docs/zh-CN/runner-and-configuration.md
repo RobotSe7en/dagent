@@ -647,9 +647,7 @@ checkpoint，不依赖进程缓存。
 上限限制已结束 run 的重状态数量，不承诺进程内存恒定。已用 run id 和已消费审批 id
 防重放元数据随历史增长，淘汰后仍不能复用 `run_id`。调用者持有的结果、事件队列、
 provider/宿主日志和单次 run 的 `new_items` 也可能占用内存。参见
-[离线示例](../../examples/run_retention.py)和[堆内存/序列化基准](../../benchmarks/run_retention.py)。
-
-堆内存与序列化体积实测见 [run 保留基准](run-retention-benchmark.md)。
+[离线示例](../../examples/run_retention.py)。
 
 ToolLoop 持久化流的审核 checkpoint 由宿主持有：审核最终批次 ACK 后立即释放本地重状态，
 不受普通保留上限影响。普通持久化终态不缓存 checkpoint。宿主持有历史时配置

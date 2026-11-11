@@ -308,7 +308,7 @@ run_task = asyncio.create_task(
 # Called later, while the run is active.
 receipt = await runner.steer(
     "release_note_run",
-    "Focus on the breaking API change and omit benchmarks.",
+    "Focus on the breaking API change and migration steps.",
 )
 assert receipt.status == "queued"
 

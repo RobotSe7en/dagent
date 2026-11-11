@@ -264,7 +264,7 @@ run_task = asyncio.create_task(
 # 稍后在 run 仍活跃时调用。
 receipt = await runner.steer(
     "release_note_run",
-    "重点说明破坏性 API 变化，不要写性能数据。",
+    "重点说明破坏性 API 变化和迁移步骤。",
 )
 assert receipt.status == "queued"
 
