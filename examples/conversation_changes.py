@@ -161,6 +161,8 @@ async def main() -> None:
         ChatResponse(content="The approved report is ready."),
         ChatResponse(content="The earlier report remains available in place."),
         ChatResponse(content="Continued from saved context in a moved workspace."),
+        ChatResponse(content="The next section begins here.", status="incomplete"),
+        ChatResponse(content="The unfinished section is now complete."),
     ])
     with TemporaryDirectory(prefix="dagent-changes-") as temporary:
         root = Path(temporary)
@@ -207,6 +209,25 @@ async def main() -> None:
                 assert restored.reload().state == restored.state
                 assert runner.resolve_runtime_path(saved.path, workspace_path=completed.workspace_path).is_file()
                 print(f"\nReplayed {len(restored.receipts)} batches; revision={restored.state.revision}")
+
+        # Final text-only failures remain in context; a fresh question can
+        # continue that text using only the host's reconstructed journal.
+        with closing(make_runner()) as runner:
+            journal.runner = runner
+            restored = journal.reload()
+            failed = await consume(runner, runner.stream(
+                agent, input="Write the next section.", conversation=restored.state,
+                workspace_path=root / "moved", persistence=options,
+            ), restored)
+            assert failed.status == "failed"
+            continued = restored.reload()
+            assert continued.state.items[-1].content == "The next section begins here."
+            completed = await consume(runner, runner.stream(
+                agent, input="Continue the unfinished section.", conversation=continued.state,
+                workspace_path=root / "moved", persistence=options,
+            ), continued)
+            assert completed.status == "completed"
+            print("\nContinued after a persisted partial response.")
 
 
 if __name__ == "__main__":

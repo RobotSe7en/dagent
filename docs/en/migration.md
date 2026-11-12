@@ -34,6 +34,13 @@ only `ack_timeout_seconds`. Display deltas keep their original boundaries, and
 only durable batch publications wait for confirmation. This change applies to
 the unreleased persistence API; ordinary streaming remains unchanged.
 
+The final failed text-only assistant response now remains in persistent context;
+retry-discarded responses and responses containing failed calls remain audit-only.
+`input=None` continues the context the host supplies, including retained partial
+text. Rebuild the pre-response context for an exact retry. Closing a Runner ends
+persistent readers normally without claiming an unconfirmed terminal was saved;
+ordinary-stream shutdown behavior is unchanged.
+
 New delivery is ToolLoop-only. DAG callback-only hooks are removed; default DAG
 execution/results/recovery are unchanged. V1 batches remain readable, and
 conversation/state/checkpoint formats remain V4/V6/V9. No `RunSummary` is added.

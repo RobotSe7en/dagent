@@ -297,8 +297,11 @@ take precedence over status. Output budgets are never increased automatically.
 Discarded responses remain in diagnostics, consume usage, and execute no tools.
 After a tool result, the runtime adds a short internal recovery hint without
 copying failed output, reasoning or arguments. When the discarded response
-followed a user message, the identical request is resent without a hint, so no
-two user turns are ever adjacent; chat templates that require alternating roles
-reject such requests. Exhaustion preserves the original error code and the
-terminal assistant message, with unusable calls only in diagnostics. With zero
-retries, existing terminal-message behavior is preserved.
+followed a user message, the identical request is resent without another hint.
+If a steer follows an internal recovery hint, the steer supersedes the hint in
+effective context; the journal keeps the hint. This does not promise strict role
+alternation for arbitrary combinations of user instructions. Retrying an unchanged
+request may fail again; the configured attempt limit still applies.
+Exhaustion preserves the original error code. Persistent streams retain the final
+failed response's text when the original response had no calls; discarded attempts
+and failed calls remain audit-only. Ordinary zero-retry behavior is unchanged.

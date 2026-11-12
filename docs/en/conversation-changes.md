@@ -16,6 +16,7 @@ Persistence is chosen per call. A tool that itself calls `run`, `stream`,
 ordinary, independent run with its own result and trace; nothing from it enters
 the calling Run's batches. Pass `persistence` to that inner `stream` to give it its
 own delivery. Registered `agent.*` delegation remains part of the calling Run.
+`design_dag()` also isolates its planning call from the outer persistence scope.
 
 The host's committed batch journal is authoritative. `ConversationState` is the
 materialized model context; a review `RunCheckpoint` is a portable continuation.
@@ -62,6 +63,8 @@ If committing fails, call `reject_changes(run_id, batch_id, message=...)`.
 Rejection and timeout stop subsequent dispatch; tools are never automatically
 replayed. Acknowledging the latest confirmed batch again is safe during the
 active delivery. Wrong, stale or closed-delivery acknowledgements return `False`.
+A confirmation that arrives after the ACK wait has expired also returns `False`
+and cannot mark the terminal batch acknowledged.
 A commit can succeed before its ACK is lost: deduplicate using batch identity.
 
 `ack_timeout_seconds` starts when the consumer receives the batch. `None` imposes
@@ -140,9 +143,18 @@ state = dagent.ConversationState(
 Store fields verbatim: reasoning, refusal, usage and model metadata, tool IDs and
 arguments, frozen result displays, retention, references and compaction state all
 retain their existing meanings. The SDK continues to assemble provider requests.
-Persistence does not change prompt configuration, tools, replay, compaction policy,
+Successful turns keep their prompt configuration, tools, replay, compaction policy,
 result-file thresholds or provider argument precedence. Host-rebuilt context is
 checked against actual Chat Completions and Responses request payloads.
+
+When a run finally fails, a response that originally had no tool calls and has
+text remains in the effective conversation, including its reasoning, usage and
+model metadata. Its observation and terminal status still report failure;
+`partial=True` describes completeness, while `context` determines membership.
+This supports continuing a truncated answer and preserves partial child-agent
+answers in the parent's tool result. Responses discarded for an automatic retry,
+empty/reasoning-only failures and failed responses containing calls stay audit-only.
+Failed calls are never executed or activated.
 
 For normal output, resolve `output_item_id` and read
 `item.content.strip() or item.refusal.strip()`. Use `output_text` only when present.
@@ -151,8 +163,10 @@ Display deltas remain provisional: retry-discarded text is not a formal reply.
 ## Interruption and review
 
 An ordinary next turn or retry uses a new run ID and reconstructed conversation.
-Use `input=None` to retry the user request already in that context without adding
-it twice; use a new input for a new question or new uploads. `input=None` reuses
+Use `input=None` to continue the supplied context without adding the user request
+twice; retained partial text is not silently removed. For an exact retry of an
+earlier request, rebuild its pre-response context from the journal. Use a new
+input such as "Continue" to extend a partial answer. `input=None` reuses
 saved attachments and rejects new `input_uploads`. AutoAgent retries continue its
 ToolLoop without routing again. Before model dispatch, persistent
 ToolLoop removes an unfinished tail assistant/tool group from effective context
@@ -175,7 +189,9 @@ stream = runner.resume_stream(
 Resume once the review terminal batch is acknowledged; the previous stream need not
 have ended, because only the SDK's synchronous cleanup remains. A run that is still
 active, including one whose terminal batch is unacknowledged, is rejected before
-consuming the review decision. The host stores the checkpoint
+consuming the review decision. Delivery ownership follows the producer task,
+so an old reader cannot affect cancellation or admission of a new resume.
+The host stores the checkpoint
 whole; it never constructs private pending batches.
 `pending_tool_invocations` returns detached, remaining potentially executable calls.
 Checkpoint validation checks structure, plan fingerprints and available registered
@@ -216,10 +232,17 @@ existing terminal still requires ACK, rejection or timeout. Closing the stream
 releases ACK waits and cancels work, including terminal delivery. Review state is
 released when its terminal is confirmed or delivery is abandoned. A disconnected
 host uses its committed journal to decide interruption status.
+Closing the Runner ends its persistent readers without forwarding the producer's
+shutdown cancellation. Explicitly cancelling a reader task still propagates
+`CancelledError`. Neither close operation claims an unconfirmed terminal is saved.
 
 Resources contain references, not bytes. Use `Runner.resolve_runtime_path` to
 read them and preserve required bytes before ACK. Restore logical paths yourself
 when moving workspaces; the SDK does not copy or scan storage. Mutable upload
 attachments and immutable result/compaction archives retain distinct semantics.
+Within a delivery, a small bounded cache suppresses repeated notifications for
+already acknowledged references with the same path and content digest. Changed
+digests, unversioned references and mutable attachments are still announced.
+Eviction and new deliveries may announce a reference again; hosts remain idempotent.
 Upload helpers are public in `dagent.artifacts`; no runtime-private imports are
 needed for this ToolLoop integration.

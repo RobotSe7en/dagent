@@ -28,6 +28,7 @@ class StreamDelivery:
         self.options = options
         self.delivery_id = f"delivery_{uuid4().hex}"
         self.run_id: str | None = None
+        self.producer_task: asyncio.Task[None] | None = None
         self.sequence = 0
         self.acknowledged_sequence = 0
         self.acknowledged_revision: int | None = None
@@ -134,8 +135,11 @@ class StreamDelivery:
             return True
         if self.pending is None or self.pending.batch_id != batch_id or self._ack is None:
             return False
-        if not self._ack.done():
-            self._ack.set_result(None)
+        if self._ack.cancelled():
+            return False
+        if self._ack.done():
+            return self._ack.exception() is None
+        self._ack.set_result(None)
         if self.pending.status is not None:
             self.terminal_acknowledged = True
         return True

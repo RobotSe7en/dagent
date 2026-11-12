@@ -1359,40 +1359,41 @@ class Runner:
     ) -> DAGDesignResult:
         """Produce, revise, or explain a DAG design without executing it."""
 
-        self._ensure_open()
-        resolved_agent = agent or DagAgent(planner_profile="dag_design")
-        if not isinstance(resolved_agent, DagAgent):
-            raise TypeError("agent must be a DagAgent or None.")
-        resolved = self._runtime_for_dag_agent(resolved_agent)
-        capability_scope = CapabilityScope(
-            capability_ids=resolved.capability_ids,
-            skills=resolved.skill_ids,
-        )
-        capabilities = resolved.runtime.dag_agent.loop.available_capabilities(
-            capability_scope.capability_ids
-        )
-        sequence = 0
+        with conversation_change_scope(None):
+            self._ensure_open()
+            resolved_agent = agent or DagAgent(planner_profile="dag_design")
+            if not isinstance(resolved_agent, DagAgent):
+                raise TypeError("agent must be a DagAgent or None.")
+            resolved = self._runtime_for_dag_agent(resolved_agent)
+            capability_scope = CapabilityScope(
+                capability_ids=resolved.capability_ids,
+                skills=resolved.skill_ids,
+            )
+            capabilities = resolved.runtime.dag_agent.loop.available_capabilities(
+                capability_scope.capability_ids
+            )
+            sequence = 0
 
-        def emit_design_event(event: dict[str, Any]) -> None:
-            nonlocal sequence
-            if on_event is None:
-                return
-            if event.get("type") == "response_token" and event.get("channel") == "content":
-                return
-            stream_event = _stream_event_from_runtime(event)
-            sequence += 1
-            on_event(replace(stream_event, sequence=sequence, run_id=None))
+            def emit_design_event(event: dict[str, Any]) -> None:
+                nonlocal sequence
+                if on_event is None:
+                    return
+                if event.get("type") == "response_token" and event.get("channel") == "content":
+                    return
+                stream_event = _stream_event_from_runtime(event)
+                sequence += 1
+                on_event(replace(stream_event, sequence=sequence, run_id=None))
 
-        return await design_dag_candidate(
-            resolved.runtime.dag_agent,
-            instruction,
-            capabilities=capabilities,
-            capability_scope=capability_scope,
-            current=current,
-            selection=selection,
-            conversation=conversation,
-            on_event=emit_design_event if on_event is not None else None,
-        )
+            return await design_dag_candidate(
+                resolved.runtime.dag_agent,
+                instruction,
+                capabilities=capabilities,
+                capability_scope=capability_scope,
+                current=current,
+                selection=selection,
+                conversation=conversation,
+                on_event=emit_design_event if on_event is not None else None,
+            )
 
     async def run(
         self,
@@ -1969,6 +1970,11 @@ class Runner:
             async for event in events:
                 yield event
 
+    def _active_delivery(self, run_id: str) -> StreamDelivery | None:
+        delivery = self._persistent_deliveries.get(run_id)
+        return (delivery if delivery is not None
+                and delivery.producer_task is self._active_run_tasks.get(run_id) else None)
+
     async def cancel(self, run_id: str) -> bool:
         """Cancel active work; persistent terminal delivery is already finished work."""
 
@@ -1978,12 +1984,12 @@ class Runner:
         event = self._active_run_cancellation_events.get(run_id)
         if task is None or event is None or task.done():
             return False
-        delivery = self._persistent_deliveries.get(run_id)
+        delivery = self._active_delivery(run_id)
         if delivery is not None and delivery.terminal_started:
             return False
         event.set()
         task.cancel()
-        if run_id in self._persistent_deliveries:
+        if delivery is not None:
             return True
         with suppress(asyncio.CancelledError):
             await task
@@ -2132,14 +2138,22 @@ class Runner:
                 if self._closed and delivery.run_id is not None:
                     self._release_persistent_review(delivery.run_id)
                 delivery.finish()
+                if self._persistent_deliveries.get(delivery.run_id) is delivery:
+                    self._persistent_deliveries.pop(delivery.run_id, None)
 
         task = asyncio.create_task(guarded())
+        delivery.producer_task = task
         try:
             while (event := await delivery.receive()) is not None:
                 sequence += 1
                 yield replace(event, sequence=sequence, run_id=event.run_id or delivery.run_id)
-            await task
-            if failure_event is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                reader = asyncio.current_task()
+                if not self._closed or (reader is not None and reader.cancelling()):
+                    raise
+            if failure_event is not None and not self._closed:
                 sequence += 1
                 yield replace(failure_event, sequence=sequence)
         finally:
@@ -2268,7 +2282,7 @@ class Runner:
         """Resume within the caller's delivery scope; only a persistent stream sets one."""
         active = self._active_run_tasks.get(checkpoint.state.run_id)
         if active is not None and not active.done():
-            delivery = self._persistent_deliveries.get(checkpoint.state.run_id)
+            delivery = self._active_delivery(checkpoint.state.run_id)
             if delivery is None or not delivery.terminal_acknowledged:
                 raise ValueError(f"Run '{checkpoint.state.run_id}' still has an active execution or delivery.")
             # The host confirmed the terminal batch; the old producer only

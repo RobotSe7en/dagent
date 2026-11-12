@@ -589,6 +589,13 @@ class ToolAgentLoop:
         await publish_state(loop_state.conversation)
 
         async def apply_steers(steers: tuple[QueuedSteer, ...]) -> None:
+            items = loop_state.conversation.items
+            if steers and items and isinstance(items[-1], UserMessage) and items[-1].purpose == "response_retry":
+                # A real instruction supersedes the generic recovery hint.
+                # The hint remains in the journal, outside the active context.
+                loop_state.conversation = loop_state.conversation.model_copy(update={
+                    "items": items[:-1], "revision": loop_state.conversation.revision + 1,
+                })
             steer_items: list[ConversationItem] = []
             for steer in steers:
                 item = UserMessage(
@@ -1059,7 +1066,9 @@ class ToolAgentLoop:
             assistant_message = assistant_message.model_copy(
                 update={"run_id": resolved_run_id}
             )
-            if not retry_response and (not persistent or model_error is None):
+            keep_failed_text = (not observed_tool_calls
+                                and bool(response.content.strip() or response.refusal.strip()))
+            if not retry_response and (not persistent or model_error is None or keep_failed_text):
                 loop_state.conversation = _append_item(loop_state.conversation, assistant_message)
                 if not persistent:
                     new_items.append(assistant_message)

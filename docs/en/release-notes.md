@@ -28,6 +28,15 @@
   waiting for the previous stream to end.
 - A response retry right after a user message resends the same request instead of
   adding a second consecutive user turn.
+- Tie delivery ownership to its producer so an old stream cannot block cancellation
+  of an ordinary resume. Expired ACKs return `False` and never confirm a terminal.
+- Retain final failed text-only responses in persistent context and child-agent
+  failure excerpts; discarded attempts and failed calls remain audit-only.
+- Let steer replace a trailing internal retry hint. Isolate nested `design_dag`
+  calls, and end persistent readers cleanly on Runner close while preserving
+  explicit reader-task cancellation.
+- Deduplicate acknowledged, digested resource references with a bounded per-delivery
+  cache; unversioned/mutable resources and new deliveries still notify the host.
 - **Breaking, explicitly authorized:** remove `on_conversation_change` from all
   four execution APIs, its Handler/Failure/Error contracts and the failure-event
   callback field. Remove DAG callback-only hooks. Other default execution,

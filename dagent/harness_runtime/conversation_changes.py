@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 from dagent.schemas.conversation import AssistantMessage, Attachment, ContentReference, ConversationItem, ConversationState
@@ -19,9 +21,25 @@ from dagent.schemas.conversation_changes import (
     ConversationObservation, ConversationResourceReady, ConversationSummaryReplacement,
     ConversationResponseObservation, ConversationToolObservation,
 )
-from dagent.schemas.results import RunState
+from dagent.schemas.results import ExecutionUsage, LoopStatus
 from dagent.schemas.run_trace import RunTraceError
 from dagent.harness_runtime.stream_delivery import StreamDelivery, PersistenceDeliveryError
+
+if TYPE_CHECKING:
+    from dagent.result import RunResult
+    from dagent.harness_runtime.execution_usage import ExecutionUsageTracker
+    from dagent.harness_runtime.tool_agent import _ToolLoopState
+
+
+_RESOURCE_CACHE_LIMIT = 128
+
+
+def _resource_identity(resource: ConversationResourceReady) -> tuple[str, str, str, str, int, str] | None:
+    reference = resource.reference
+    if not isinstance(reference, ContentReference) or reference.sha256 is None:
+        return None
+    return (resource.workspace_path, resource.runtime_directory, reference.path,
+            reference.sha256, reference.byte_length, reference.media_type)
 
 
 @dataclass
@@ -30,7 +48,7 @@ class ChangeScope:
     origin: ConversationMessageOrigin
     public: bool = True
     response: ResponseRecorder | None = None
-    loop_state: object | None = None
+    loop_state: _ToolLoopState | None = None
 
 
 _CURRENT: ContextVar[ChangeScope | None] = ContextVar("dagent_conversation_changes", default=None)
@@ -87,10 +105,11 @@ class ConversationChangePublisher:
         self.kind = "tool"
         self.workspace_path: str | None = None
         self.runtime_directory = ".runtime"
-        self.usage_tracker = None
-        self.loop_state = None
+        self.usage_tracker: ExecutionUsageTracker | None = None
+        self.loop_state: _ToolLoopState | None = None
         self._lock = asyncio.Lock()
         self._resource_lock = Lock()
+        self._confirmed_resources: OrderedDict[tuple[str, str, str, str, int, str], None] = OrderedDict()
         self._resources: dict[tuple[str, str, str], ConversationResourceReady] = {}
         self._messages: dict[tuple[str, str], ConversationMessageChange] = {}
         if self.conversation is not None:
@@ -115,10 +134,15 @@ class ConversationChangePublisher:
                       workspace: str | Path, runtime_directory: str) -> None:
         location = str(Path(workspace).resolve())
         key = (location, runtime_directory, reference.path)
+        resource = ConversationResourceReady(
+            reference=reference, workspace_path=location, runtime_directory=runtime_directory,
+        )
+        identity = _resource_identity(resource)
         with self._resource_lock:
-            self._resources[key] = ConversationResourceReady(
-                reference=reference, workspace_path=location, runtime_directory=runtime_directory,
-            )
+            if identity is not None and identity in self._confirmed_resources:
+                self._confirmed_resources.move_to_end(identity)
+                return
+            self._resources[key] = resource
 
     def forget_origin(self, origin_id: str) -> None:
         self._messages = {key: value for key, value in self._messages.items() if key[0] != origin_id}
@@ -129,12 +153,15 @@ class ConversationChangePublisher:
     async def publish(self, *, state: ConversationState | None = None,
                       messages: Sequence[ConversationMessageChange] = (),
                       observations: Sequence[ConversationObservation] = (),
-                      terminal: dict | None = None,
+                      result: RunResult | None = None,
+                      status: LoopStatus | Literal["cancelled"] | None = None,
+                      error: RunTraceError | None = None,
                       active_origin: tuple[str, set[str]] | None = None) -> None:
         async with self._lock:
             self.check()
             if not self.run_id:
                 raise RuntimeError("Conversation publisher must be bound before publication.")
+            status = status or (None if result is None else result.state.status)
             before = self.conversation
             context = None
             # Records and states are shared, not copied: the batch below is
@@ -159,10 +186,23 @@ class ConversationChangePublisher:
             changed_records = tuple(record for key, record in selected.items()
                                     if self._messages.get(key) != record)
             with self._resource_lock:
-                resources = tuple(self._resources.values())
+                resources = tuple(resource for resource in self._resources.values()
+                                  if _resource_identity(resource) not in self._confirmed_resources)
                 self._resources.clear()
-            if context is None and not (changed_records or observations or resources or terminal):
+            if context is None and not (changed_records or observations or resources or status):
                 return
+            output_id = None
+            output_text = None if result is None else result.output_text or None
+            if output_text and after is not None:
+                for item in reversed(after.items):
+                    if isinstance(item, AssistantMessage) and (item.content.strip() or item.refusal.strip()) == output_text:
+                        output_id, output_text = item.id, None
+                        break
+            usage = (None if status is None else result.usage if result is not None else
+                     self.usage_tracker.snapshot() if self.usage_tracker is not None else ExecutionUsage())
+            terminal_error = error or (None if result is None else result.error)
+            if status == "failed" and terminal_error is None:
+                terminal_error = RunTraceError(code="SdkRunFailed", message="SDK run failed.")
             self.delivery.sequence += 1
             batch = ConversationChangeBatch(
                 schema_version=2,
@@ -172,11 +212,23 @@ class ConversationChangePublisher:
                 run_id=self.run_id, base_revision=before.revision if before else None,
                 revision=after.revision if after else None, context=context,
                 messages=changed_records, observations=tuple(observations), resources=resources,
-                **(terminal or {}),
+                status=status, usage=usage,
+                context_usage=None if status is None else () if result is None else result.context_usage,
+                error=terminal_error, workspace_path=self.workspace_path if status is not None else None,
+                output_item_id=output_id, output_text=output_text,
+                checkpoint=result.checkpoint if result is not None and status == "awaiting_review" else None,
             )
             cancelled = await self.delivery.publish(batch)
             self.conversation = after
             self._messages.update(selected)
+            with self._resource_lock:
+                for resource in resources:
+                    identity = _resource_identity(resource)
+                    if identity is not None:
+                        self._confirmed_resources[identity] = None
+                        self._confirmed_resources.move_to_end(identity)
+                        if len(self._confirmed_resources) > _RESOURCE_CACHE_LIMIT:
+                            self._confirmed_resources.popitem(last=False)
             if state is not None:
                 active = {item.id for item in state.items}
                 self._messages = {key: value for key, value in self._messages.items()
@@ -188,29 +240,13 @@ class ConversationChangePublisher:
             if cancelled and batch.status is None:
                 raise asyncio.CancelledError
 
-    async def finish(self, result=None, *, status=None, error=None):
-        from dagent.schemas.results import ExecutionUsage
-        conversation = self.conversation if result is None else result.conversation
-        output_id = None
-        output_text = None if result is None else result.output_text or None
-        if output_text and conversation is not None:
-            for item in reversed(conversation.items):
-                if isinstance(item, AssistantMessage) and (item.content.strip() or item.refusal.strip()) == output_text:
-                    output_id, output_text = item.id, None
-                    break
-        usage = (result.usage if result is not None else
-                 self.usage_tracker.snapshot() if self.usage_tracker is not None else ExecutionUsage())
-        terminal_status = status or result.status
-        terminal_error = error or (None if result is None else result.error)
-        if terminal_status == "failed" and terminal_error is None:
-            terminal_error = RunTraceError(code="SdkRunFailed", message="SDK run failed.")
-        await self.publish(state=conversation, terminal={
-            "status": terminal_status, "usage": usage,
-            "context_usage": () if result is None else result.context_usage,
-            "error": terminal_error, "workspace_path": self.workspace_path,
-            "output_item_id": output_id, "output_text": output_text,
-            "checkpoint": result.checkpoint if terminal_status == "awaiting_review" else None,
-        })
+    async def finish(self, result: RunResult | None = None, *,
+                     status: LoopStatus | Literal["cancelled"] | None = None,
+                     error: RunTraceError | None = None) -> None:
+        if result is None and status is None:
+            raise ValueError("Terminal publication requires a result or status.")
+        await self.publish(state=self.conversation if result is None else result.conversation,
+                           result=result, status=status, error=error)
 
 
 def _changed(previous: ConversationItem, item: ConversationItem) -> bool:
