@@ -291,7 +291,9 @@ class AgentCapabilityProvider:
             StaticAgentReviewRequired,
         )
         from dagent.harness_runtime.steering import suspend_run_steering
-        from dagent.harness_runtime.conversation_changes import audit_conversation_scope, publish_messages
+        from dagent.harness_runtime.conversation_changes import (
+            audit_conversation_scope, current_changes, publish_messages,
+        )
         from dagent.harness_runtime.tool_agent import ToolAgent, ToolAgentLoop
 
         profile = _profile_from_config(agent_name, config)
@@ -378,6 +380,7 @@ class AgentCapabilityProvider:
             suspend_run_steering(),
             audit_conversation_scope(invocation.invocation_id, "subagent"),
         ):
+            persistent = current_changes() is not None
             if control is not None and control.agent_state is not None:
                 outcome = await agent.resume_review(
                     control.agent_state,
@@ -387,6 +390,7 @@ class AgentCapabilityProvider:
                     capability_context=capability_context,
                     on_token=callbacks.on_token,
                     on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
+                    persistent=persistent,
                 )
                 if outcome is None:
                     raise ValueError("Static agent continuation has no resumable tool review.")
@@ -401,6 +405,7 @@ class AgentCapabilityProvider:
                     capability_context=capability_context,
                     on_token=callbacks.on_token,
                     on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
+                    persistent=persistent,
                 )
         if context is not None and context.node is not None:
             self.session_store.save(

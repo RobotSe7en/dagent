@@ -37,6 +37,8 @@
   explicit reader-task cancellation.
 - Deduplicate acknowledged, digested resource references with a bounded per-delivery
   cache; unversioned/mutable resources and new deliveries still notify the host.
+- Pass execution mode explicitly through ToolLoop internals and centralize stream
+  registration cleanup, preserving public interfaces and serialized records.
 - **Breaking, explicitly authorized:** remove `on_conversation_change` from all
   four execution APIs, its Handler/Failure/Error contracts and the failure-event
   callback field. Remove DAG callback-only hooks. Other default execution,

@@ -446,10 +446,11 @@ class HarnessRuntime:
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        persistent: bool = False,
     ) -> RunResult:
         if run_id is not None:
             validate_run_id(run_id)
-        continuing = input is None and current_changes() is not None and conversation is not None
+        continuing = input is None and persistent and conversation is not None
         if not isinstance(input, str) and not continuing:
             raise TypeError("input must be a string.")
         if continuing and input_uploads:
@@ -464,7 +465,7 @@ class HarnessRuntime:
         route_usage: ContextUsage | None = None
         if mode == "auto":
             resolved_mode, route_item, route_usage = await self._route(user_request)
-        if current_changes() is not None and resolved_mode != "tool":
+        if persistent and resolved_mode != "tool":
             raise ValueError("Persistent delivery supports ToolLoop only.")
         resolved_run_id = run_id or _new_run_id_for_mode(resolved_mode)
         if route_item is not None:
@@ -491,7 +492,7 @@ class HarnessRuntime:
                 materialized_uploads,
             ),
         )
-        if changes is not None:
+        if persistent:
             from dagent.harness_runtime.conversation_changes import repair_open_tool_group
             initial_conversation = repair_open_tool_group(initial_conversation)
         run_conversation = (initial_conversation if continuing else
@@ -522,6 +523,7 @@ class HarnessRuntime:
                 conversation=run_conversation,
                 on_token=on_token,
                 on_event=on_event,
+                persistent=persistent,
             )
             run_conversation = (
                 (
@@ -579,6 +581,7 @@ class HarnessRuntime:
             review_level,
             runtime_mode=resolved_mode,
             capability_scope=capability_scope,
+            persistent=persistent,
         )
 
     async def resume_review(
@@ -593,9 +596,10 @@ class HarnessRuntime:
         feedback: str | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        persistent: bool = False,
     ) -> RunResult | None:
         if run_state is not None:
-            self.session.save_run_state(run_state)
+            self.session.save_run_state(run_state, copy_state=not persistent)
         state = self.session.get_review_state(review_id)
         if state is None or state.pending_review is None:
             return None
@@ -637,6 +641,7 @@ class HarnessRuntime:
                     feedback=feedback,
                     on_token=on_token,
                     on_event=on_event,
+                    persistent=persistent,
                 )
             if initial_outcome is None:
                 return None
@@ -668,6 +673,7 @@ class HarnessRuntime:
                         capability_scope=capability_scope,
                         on_token=on_token,
                         on_event=on_event,
+                        persistent=persistent,
                     )
                 if previous_trace is not None and next_outcome.state.trace is not None:
                     next_state = next_outcome.state.model_copy(
@@ -690,6 +696,7 @@ class HarnessRuntime:
                 state.review_level,
                 runtime_mode=state.runtime_mode,
                 capability_scope=capability_scope,
+                persistent=persistent,
             )
 
         # DAG review resume does not flow through _execute_loop, so enforce the
@@ -843,6 +850,7 @@ class HarnessRuntime:
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         graph_input: Any = None,
         conversation: ConversationState | None = None,
+        persistent: bool = False,
     ) -> LoopOutcome:
         """Dispatch to the appropriate loop and return a unified LoopOutcome."""
         if mode != "tool" and current_run_execution() == "sandbox":
@@ -901,6 +909,7 @@ class HarnessRuntime:
                         capability_scope=capability_scope,
                         on_token=on_token,
                         on_event=on_event,
+                        persistent=persistent,
                     )
                 return await self.tool_agent.run(
                     request,
@@ -914,6 +923,7 @@ class HarnessRuntime:
                     capability_scope=capability_scope,
                     on_token=on_token,
                     on_event=on_event,
+                    persistent=persistent,
                 )
         elif mode == "dag_spec":
             if not isinstance(request, DAGSpec):
@@ -943,6 +953,7 @@ class HarnessRuntime:
         *,
         runtime_mode: str | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
+        persistent: bool = False,
     ) -> RunResult:
         final_answer = (
             ""
@@ -985,8 +996,7 @@ class HarnessRuntime:
             # runner; the default is a never-used fallback to satisfy the API.
             update["workspace_path"] = str(current_workspace_root("."))
         state = outcome.state.model_copy(update=update)
-        state = self.session.save_run_state(state)
-        changes = current_changes()
+        state = self.session.save_run_state(state, copy_state=not persistent)
         await publish_state(conversation)
         return RunResult(
             state=state,

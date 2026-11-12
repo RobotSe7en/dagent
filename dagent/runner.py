@@ -10,6 +10,7 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import aclosing, contextmanager, suppress
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -225,7 +226,7 @@ class Runner:
         self._registered_agent_runtime_configs: dict[str, dict[str, Any]] = {}
         self._run_checkpoints: dict[str, RunCheckpoint] = {}
         self._persistent_deliveries: dict[str, StreamDelivery] = {}
-        self._active_run_tasks: dict[str, asyncio.Task[RunResult]] = {}
+        self._active_run_tasks: dict[str, asyncio.Task[RunResult] | asyncio.Task[None]] = {}
         self._active_run_cancellation_events: dict[str, threading.Event] = {}
         self._active_run_steering_controls: dict[str, RunSteeringControl] = {}
         self._consumed_review_ids: set[str] = set()
@@ -1441,8 +1442,9 @@ class Runner:
         artifact_uploads: dict[str, list[ArtifactUpload]] | None,
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
+        persistent: bool = False,
     ) -> RunResult:
-        """Run within the caller's delivery scope; only a persistent stream sets one."""
+        """Run with explicit execution semantics inside the caller's delivery scope."""
         self._ensure_open()
         if run_id is not None:
             validate_run_id(run_id)
@@ -1518,6 +1520,7 @@ class Runner:
                         artifact_uploads=artifact_uploads,
                         on_token=on_token,
                         on_event=steering_on_event,
+                        persistent=persistent,
                     )
                     return result
                 except ToolResultStorageFailure as exc:
@@ -1527,12 +1530,14 @@ class Runner:
                         execution=resolved_execution,
                         user_request=input if isinstance(input, str) else "",
                         review_level=review or exc.outcome.state.review_level,
+                        persistent=persistent,
                     ) from exc.cause
                 except ToolContextFailure as exc:
                     raise self._context_failure_error(
                         exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
                         user_request=input if isinstance(input, str) else "",
                         review_level=review or exc.outcome.state.review_level,
+                        persistent=persistent,
                     ) from exc
 
     async def _run_dispatch(
@@ -1552,11 +1557,12 @@ class Runner:
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        persistent: bool = False,
     ) -> RunResult:
         if isinstance(target, AutoAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for AutoAgent targets.")
-            run_input = (None if input is None and conversation is not None and current_changes() is not None
+            run_input = (None if input is None and conversation is not None and persistent
                          else _require_input(input, "AutoAgent"))
             resolved = self._runtime_for_auto_agent(target)
             review_level = review or target.review
@@ -1579,6 +1585,7 @@ class Runner:
                 ),
                 on_token=on_token,
                 on_event=on_event,
+                persistent=persistent,
             )
             return self._finalize_run_result(
                 result,
@@ -1588,12 +1595,13 @@ class Runner:
                 review_level=review_level,
                 dynamic_adjust=resolved_dynamic_adjust,
                 usage=usage_tracker.snapshot(),
+                persistent=persistent,
             )
 
         if isinstance(target, ToolAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for ToolAgent targets.")
-            run_input = (None if input is None and conversation is not None and current_changes() is not None
+            run_input = (None if input is None and conversation is not None and persistent
                          else _require_input(input, "ToolAgent"))
             resolved = self._runtime_for_tool_agent(target)
             review_level = review or target.review
@@ -1612,6 +1620,7 @@ class Runner:
                 ),
                 on_token=on_token,
                 on_event=on_event,
+                persistent=persistent,
             )
             return self._finalize_run_result(
                 result,
@@ -1621,6 +1630,7 @@ class Runner:
                 review_level=review_level,
                 dynamic_adjust=True,
                 usage=usage_tracker.snapshot(),
+                persistent=persistent,
             )
 
         if isinstance(target, DagAgent):
@@ -1750,6 +1760,7 @@ class Runner:
         execution: RunExecution,
         user_request: str,
         review_level: ReviewLevel,
+        persistent: bool = False,
     ) -> RunExecutionError:
         outcome = failure.outcome
         state = outcome.state.model_copy(update={
@@ -1759,7 +1770,7 @@ class Runner:
             "pending_review": None,
             "pending_tool_batch": None,
         })
-        state = self._runtime.session.save_run_state(state)
+        state = self._runtime.session.save_run_state(state, copy_state=not persistent)
         self._run_checkpoints.pop(state.run_id, None)
         return RunExecutionError(
             str(failure.cause),
@@ -1769,6 +1780,7 @@ class Runner:
     def _context_failure_error(
         self, failure: ToolContextFailure, *, usage: ExecutionUsage,
         execution: RunExecution, user_request: str, review_level: ReviewLevel,
+        persistent: bool = False,
     ) -> Exception:
         outcome = failure.outcome
         state = outcome.state.model_copy(update={
@@ -1784,7 +1796,7 @@ class Runner:
         if snapshot_window is None:
             # Initially invalid configuration has no valid resolved plan. Keep
             # the complete failed state even though no checkpoint can be built.
-            state = self._runtime.session.save_run_state(state)
+            state = self._runtime.session.save_run_state(state, copy_state=not persistent)
             result = RunResult(state=state, new_items=outcome.new_items, usage=usage)
         else:
             result = self._finalize_run_result(
@@ -1792,6 +1804,7 @@ class Runner:
                 capability_ids=state.capability_scope.capability_ids or (),
                 skill_ids=state.capability_scope.skills or (), review_level=review_level,
                 dynamic_adjust=state.dynamic_adjust, usage=usage, context_window_snapshot=snapshot_window,
+                persistent=persistent,
             )
         # Preserve ContextWindowExceeded and provider diagnostics. New strategy
         # exceptions gain a failed result without changing their public type.
@@ -1809,6 +1822,7 @@ class Runner:
         dynamic_adjust: bool,
         usage: ExecutionUsage,
         context_window_snapshot: int | None = None,
+        persistent: bool = False,
     ) -> RunResult:
         capability_ids = tuple(sorted(capability_ids))
         skill_ids = tuple(sorted(skill_ids))
@@ -1822,8 +1836,8 @@ class Runner:
                 skills=skill_ids,
             ),
         })
-        state = self._runtime.session.save_run_state(state)
-        if current_changes() is not None and state.status != "awaiting_review":
+        state = self._runtime.session.save_run_state(state, copy_state=not persistent)
+        if persistent and state.status != "awaiting_review":
             self._run_checkpoints.pop(state.run_id, None)
             return replace(result, state=state, usage=usage, new_items=())
         validator_profile = (
@@ -1887,7 +1901,7 @@ class Runner:
                 self._run_checkpoints.pop(state.run_id, None)
                 return finalized
             raise RuntimeError("SDK run result did not produce a checkpoint.")
-        if current_changes() is None:
+        if not persistent:
             self._run_checkpoints[state.run_id] = checkpoint.model_copy(deep=True)
         return finalized
 
@@ -1948,7 +1962,7 @@ class Runner:
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             # Ordinary streams use the public entrypoint; a persistent delivery
             # has installed its own scope for exactly this call.
-            run = self.run if persistence is None else self._run
+            run = self.run if persistence is None else partial(self._run, persistent=True)
             return await run(
                 target,
                 input=input,
@@ -1974,6 +1988,22 @@ class Runner:
         delivery = self._persistent_deliveries.get(run_id)
         return (delivery if delivery is not None
                 and delivery.producer_task is self._active_run_tasks.get(run_id) else None)
+
+    def _unregister_stream(
+        self,
+        run_id: str | None,
+        *,
+        delivery: StreamDelivery | None = None,
+        task: asyncio.Task[RunResult] | asyncio.Task[None] | None = None,
+    ) -> None:
+        """Remove only the caller's registrations; a resumed run may own them."""
+        if run_id is None:
+            return
+        if delivery is not None and self._persistent_deliveries.get(run_id) is delivery:
+            self._persistent_deliveries.pop(run_id, None)
+        if task is not None and self._active_run_tasks.get(run_id) is task:
+            self._active_run_tasks.pop(run_id, None)
+            self._active_run_cancellation_events.pop(run_id, None)
 
     async def cancel(self, run_id: str) -> bool:
         """Cancel active work; persistent terminal delivery is already finished work."""
@@ -2033,7 +2063,7 @@ class Runner:
             self.validate_checkpoint(checkpoint)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
-            resume = self.resume if persistence is None else self._resume
+            resume = self.resume if persistence is None else partial(self._resume, persistent=True)
             result = await resume(
                 decision,
                 checkpoint=checkpoint,
@@ -2075,16 +2105,21 @@ class Runner:
         for store in self._agent_session_stores.values():
             store.discard_task(run_id)
 
-    async def _persistent_stream(self, run_target, options, conversation):
+    async def _persistent_stream(
+        self,
+        run_target: Callable[[LoopEventHandler], Awaitable[RunResult]],
+        options: StreamPersistenceOptions,
+        conversation: ConversationState | None,
+    ) -> AsyncIterator[RunStreamEvent]:
         from dagent.schemas.run_trace import RunTraceError
 
         delivery = StreamDelivery(options)
         publisher = ConversationChangePublisher(delivery, conversation)
         cancellation_event = threading.Event()
-        failure_event = None
+        failure_event: RunStreamEvent | None = None
         sequence = 0
 
-        def emit(event):
+        def emit(event: dict[str, Any]) -> None:
             typed = _stream_event_from_runtime(event)
             if typed.type == "run.started":
                 existing = self._persistent_deliveries.get(typed.run_id)
@@ -2097,7 +2132,7 @@ class Runner:
                 self._active_run_cancellation_events[typed.run_id] = cancellation_event
             delivery.emit(typed)
 
-        async def guarded():
+        async def guarded() -> None:
             nonlocal failure_event
             try:
                 with conversation_change_scope(publisher), run_cancellation_context(cancellation_event):
@@ -2138,8 +2173,7 @@ class Runner:
                 if self._closed and delivery.run_id is not None:
                     self._release_persistent_review(delivery.run_id)
                 delivery.finish()
-                if self._persistent_deliveries.get(delivery.run_id) is delivery:
-                    self._persistent_deliveries.pop(delivery.run_id, None)
+                self._unregister_stream(delivery.run_id, delivery=delivery)
 
         task = asyncio.create_task(guarded())
         delivery.producer_task = task
@@ -2162,12 +2196,7 @@ class Runner:
                 cancellation_event.set()
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-            if self._persistent_deliveries.get(delivery.run_id) is delivery:
-                self._persistent_deliveries.pop(delivery.run_id, None)
-            # A resumed Run may already own these entries.
-            if self._active_run_tasks.get(delivery.run_id) is task:
-                self._active_run_tasks.pop(delivery.run_id, None)
-                self._active_run_cancellation_events.pop(delivery.run_id, None)
+            self._unregister_stream(delivery.run_id, delivery=delivery, task=task)
 
     async def _stream_run(
         self,
@@ -2251,9 +2280,7 @@ class Runner:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
-            if run_id is not None and self._active_run_tasks.get(run_id) is task:
-                self._active_run_tasks.pop(run_id, None)
-                self._active_run_cancellation_events.pop(run_id, None)
+            self._unregister_stream(run_id, task=task)
 
     async def resume(
         self,
@@ -2278,8 +2305,9 @@ class Runner:
         execution: RunExecution,
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
+        persistent: bool = False,
     ) -> RunResult | None:
-        """Resume within the caller's delivery scope; only a persistent stream sets one."""
+        """Resume with explicit execution semantics inside the caller's delivery scope."""
         active = self._active_run_tasks.get(checkpoint.state.run_id)
         if active is not None and not active.done():
             delivery = self._active_delivery(checkpoint.state.run_id)
@@ -2297,6 +2325,7 @@ class Runner:
                     on_token=on_token,
                     on_event=steering_on_event,
                     on_started=retain,
+                    persistent=persistent,
                 )
                 return result
 
@@ -2309,9 +2338,11 @@ class Runner:
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
         on_started: Callable[[str], None] | None = None,
+        persistent: bool = False,
     ) -> RunResult | None:
+        changes = current_changes()
         checkpoint = RunCheckpoint.model_validate(
-            checkpoint.model_dump(mode="python", exclude={"state": {"trace"}} if current_changes() is not None else None)
+            checkpoint.model_dump(mode="python", exclude={"state": {"trace"}} if persistent else None)
         )
         self._validate_checkpoint_runtime(checkpoint)
         decision = _decision_for_resume_state(decision, checkpoint.state)
@@ -2337,7 +2368,6 @@ class Runner:
         )
         runtime = self._runtime_for_resolved_plan(plan)
         usage_tracker = ExecutionUsageTracker(restored.usage)
-        changes = current_changes()
         if changes is not None:
             changes.publisher.usage_tracker = usage_tracker
         resolved_execution = _resolve_run_execution(execution, resume_state)
@@ -2364,6 +2394,7 @@ class Runner:
                     feedback=decision.feedback,
                     on_token=on_token,
                     on_event=on_event,
+                    persistent=persistent,
                 )
                 if result is None:
                     raise RuntimeError(
@@ -2377,6 +2408,7 @@ class Runner:
                     review_level=review_level,
                     dynamic_adjust=plan.dynamic_adjust,
                     usage=usage_tracker.snapshot(),
+                    persistent=persistent,
                 )
         except ToolResultStorageFailure as exc:
             runtime.session.discard_review(decision.review_id)
@@ -2386,6 +2418,7 @@ class Runner:
                 execution=resolved_execution,
                 user_request=resume_state.user_request,
                 review_level=review_level,
+                persistent=persistent,
             ) from exc.cause
         except ToolContextFailure as exc:
             runtime.session.discard_review(decision.review_id)
@@ -2393,6 +2426,7 @@ class Runner:
             raise self._context_failure_error(
                 exc, usage=usage_tracker.snapshot(), execution=resolved_execution,
                 user_request=resume_state.user_request, review_level=review_level,
+                persistent=persistent,
             ) from exc
         except PersistenceDeliveryError:
             runtime.session.discard_review(decision.review_id)
@@ -2414,8 +2448,8 @@ class Runner:
                 failed_update["model_thread"] = runtime.tool_agent.conversation
                 failed_update["trace"] = runtime.tool_agent.trace
             failed_state = resume_state.model_copy(update=failed_update)
-            failed_state = self._runtime.session.save_run_state(failed_state)
-            if current_changes() is not None:
+            failed_state = self._runtime.session.save_run_state(failed_state, copy_state=not persistent)
+            if persistent:
                 self._run_checkpoints.pop(failed_state.run_id, None)
                 raise
             failed_checkpoint = RunCheckpoint(

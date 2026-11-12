@@ -11,11 +11,13 @@ import dagent
 from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError, StreamDelivery
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas.conversation_changes import ConversationChangeBatch
-from tests.test_conversation_changes import Host, invoke
+from tests.test_conversation_changes import Host, invoke, resume_invoke
 
 
 @pytest.mark.asyncio
-async def test_old_persistent_reader_cannot_control_an_ordinary_resume(tmp_path):
+@pytest.mark.parametrize("persistent_resume", [False, True])
+@pytest.mark.parametrize("close_old_reader", [False, True])
+async def test_old_persistent_reader_cannot_control_a_resume(tmp_path, persistent_resume, close_old_reader):
     started, release = asyncio.Event(), asyncio.Event()
 
     @dagent.tool(risk="medium")
@@ -40,16 +42,24 @@ async def test_old_persistent_reader_cannot_control_an_ordinary_resume(tmp_path)
                     break
 
             async def resume():
+                if persistent_resume:
+                    return await resume_invoke(runner, saved.review.approve(), saved, host)
                 return [event async for event in runner.resume_stream(saved.review.approve(), checkpoint=saved)]
 
             resumed = asyncio.create_task(resume())
             try:
                 await asyncio.wait_for(started.wait(), 2)
+                if close_old_reader:
+                    await old.aclose()
                 with pytest.raises(ValueError, match="active"):
                     await asyncio.wait_for(runner.resume(saved.review.approve(), checkpoint=saved), 1)
                 assert await asyncio.wait_for(runner.cancel(saved.state.run_id), 1)
-                with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(resumed, 2)
+                if persistent_resume:
+                    result, _ = await asyncio.wait_for(resumed, 2)
+                    assert result.status == "cancelled"
+                else:
+                    with pytest.raises(asyncio.CancelledError):
+                        await asyncio.wait_for(resumed, 2)
                 assert len(provider.requests) == 1
             finally:
                 release.set()

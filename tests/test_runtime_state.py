@@ -40,6 +40,25 @@ def test_session_saves_run_state_directly() -> None:
     assert session.runs["task_1"].trace.root.output == "done"
 
 
+@pytest.mark.parametrize("ambient_delivery", [False, True])
+@pytest.mark.parametrize("share_state", [False, True])
+def test_session_state_ownership_is_explicit(ambient_delivery, share_state) -> None:
+    from dagent import ConversationState, StreamPersistenceOptions
+    from dagent.harness_runtime.conversation_changes import ConversationChangePublisher, conversation_change_scope
+    from dagent.harness_runtime.stream_delivery import StreamDelivery
+
+    session = HarnessRuntimeSession()
+    state = RunState(run_id="run", kind="tool", status="completed", user_request="original")
+    publisher = (ConversationChangePublisher(StreamDelivery(StreamPersistenceOptions()), ConversationState())
+                 if ambient_delivery else None)
+    with conversation_change_scope(publisher):
+        saved = session.save_run_state(state, copy_state=False) if share_state else session.save_run_state(state)
+    state.user_request = "changed input"
+    assert session.runs["run"].user_request == ("changed input" if share_state else "original")
+    saved.user_request = "changed output"
+    assert session.runs["run"].user_request == ("changed output" if share_state else "original")
+
+
 def test_session_indexes_pending_review_from_run_state() -> None:
     session = HarnessRuntimeSession()
     review = PendingReview(

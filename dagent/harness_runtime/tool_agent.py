@@ -281,6 +281,7 @@ class ToolAgent:
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        persistent: bool = False,
     ) -> LoopOutcome:
         """Run one user turn from a new conversation."""
         boundary = Boundary(allowed_paths=["."])
@@ -293,6 +294,7 @@ class ToolAgent:
             boundary=boundary,
             on_token=on_token,
             on_event=on_event,
+            persistent=persistent,
         )
 
     async def run_conversation(
@@ -306,6 +308,7 @@ class ToolAgent:
         capability_context: CapabilityExecutionContext | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        persistent: bool = False,
     ) -> LoopOutcome:
         """Run a provider-neutral conversation state."""
         self.conversation = conversation
@@ -318,6 +321,7 @@ class ToolAgent:
             capability_context=capability_context,
             on_token=on_token,
             on_event=on_event,
+            persistent=persistent,
         )
 
     async def resume_review(
@@ -330,6 +334,7 @@ class ToolAgent:
         capability_context: CapabilityExecutionContext | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        persistent: bool = False,
     ) -> LoopOutcome | None:
         """Apply a complete review decision and drain the saved tool round first."""
         pending = state.pending_review
@@ -374,6 +379,7 @@ class ToolAgent:
                 skills=scope.skills, extra_system_prompt=self.extra_system_prompt,
             ),
             on_token=on_token, on_event=on_event, resume_state=restored,
+            persistent=persistent,
         )
 
     async def _continue_conversation(
@@ -388,6 +394,7 @@ class ToolAgent:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
         resume_state: RunState | None = None,
+        persistent: bool = False,
     ) -> LoopOutcome:
         """Resume a tool-agent conversation from typed state."""
         if capability_context is not None:
@@ -426,6 +433,7 @@ class ToolAgent:
                 skills=capability_scope.skills,
                 on_token=on_token,
                 on_event=on_event,
+                persistent=persistent,
             )
         except (ToolResultStorageFailure, ToolContextFailure) as exc:
             failure = exc
@@ -544,6 +552,7 @@ class ToolAgentLoop:
         on_event: LoopEventHandler | None = None,
         skills: tuple[str, ...] | None = None,
         capability_context: CapabilityExecutionContext | None = None,
+        persistent: bool = False,
     ) -> LoopOutcome:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
@@ -554,7 +563,6 @@ class ToolAgentLoop:
         failure_diagnostic: str | None = None
         resolved_run_id = run_id or f"tool_run_{uuid4().hex}"
         steering = current_run_steering_control(resolved_run_id)
-        persistent = current_changes() is not None
         trace = (None if persistent else
                  resume_state.trace.model_copy(deep=True) if resume_state and resume_state.trace else
                  RunTrace(run_id=resolved_run_id, root=RunTraceNode.run(run_id=resolved_run_id)))
@@ -1006,7 +1014,7 @@ class ToolAgentLoop:
                 await adopt_context(fresh)
                 return fresh.prepared_call
 
-            response_record = (None if current_changes() is None and response_retries == 0 else
+            response_record = (None if not persistent and response_retries == 0 else
                                ResponseRecorder(run_id=resolved_run_id, step=step))
             model_error: RunTraceError | None = None
             provider_details: Any = None

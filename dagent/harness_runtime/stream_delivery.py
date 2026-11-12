@@ -24,7 +24,7 @@ _DIAGNOSTIC_EVENTS = frozenset({
 
 
 class StreamDelivery:
-    def __init__(self, options: StreamPersistenceOptions):
+    def __init__(self, options: StreamPersistenceOptions) -> None:
         self.options = options
         self.delivery_id = f"delivery_{uuid4().hex}"
         self.run_id: str | None = None
@@ -46,13 +46,13 @@ class StreamDelivery:
         self._ack: asyncio.Future[None] | None = None
         self._presented = asyncio.Event()
 
-    def check(self):
+    def check(self) -> None:
         if self.failure is not None:
             raise self.failure
         if self.closed:
             raise PersistenceDeliveryError("DeliveryClosed", "Persistent stream is closed.")
 
-    def emit(self, event: RunStreamEvent):
+    def emit(self, event: RunStreamEvent) -> None:
         """Accept a synchronous producer event without blocking or raising.
 
         A failed or closed delivery drops the event; failures surface at durable
@@ -88,7 +88,7 @@ class StreamDelivery:
         try:
             self._queue.put_nowait(RunStreamEvent(type="conversation.changed", data=batch.model_copy(deep=True), run_id=batch.run_id))
 
-            async def wait_for_ack():
+            async def wait_for_ack() -> None:
                 await self._presented.wait()
                 if self.options.ack_timeout_seconds is None:
                     await self._ack
@@ -152,11 +152,11 @@ class StreamDelivery:
         self._ack.set_exception(self.failure)
         return True
 
-    def finish(self):
+    def finish(self) -> None:
         self.done = True
         self._queue.put_nowait(None)
 
-    def close(self):
+    def close(self) -> None:
         self.closed = True
         self._presented.set()
         if self._ack is not None and not self._ack.done():

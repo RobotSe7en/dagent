@@ -13,7 +13,9 @@ from threading import Lock
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
-from dagent.schemas.conversation import AssistantMessage, Attachment, ContentReference, ConversationItem, ConversationState
+from dagent.schemas.conversation import (
+    AssistantMessage, Attachment, ContentReference, ConversationItem, ConversationState, ModelScope,
+)
 from dagent.schemas.conversation_changes import (
     ConversationChangeBatch,
     ConversationCompactionStateReplacement, ConversationContextChange,
@@ -22,6 +24,7 @@ from dagent.schemas.conversation_changes import (
     ConversationResponseObservation, ConversationToolObservation,
 )
 from dagent.schemas.results import ExecutionUsage, LoopStatus
+from dagent.schemas.retention import ResultRetention
 from dagent.schemas.run_trace import RunTraceError
 from dagent.harness_runtime.stream_delivery import StreamDelivery, PersistenceDeliveryError
 
@@ -29,6 +32,7 @@ if TYPE_CHECKING:
     from dagent.result import RunResult
     from dagent.harness_runtime.execution_usage import ExecutionUsageTracker
     from dagent.harness_runtime.tool_agent import _ToolLoopState
+    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
 
 
 _RESOURCE_CACHE_LIMIT = 128
@@ -326,7 +330,8 @@ def note_resource(reference: ContentReference | Attachment, workspace: str | Pat
 class ResponseRecorder:
     """Identity and terminal records for one existing model response path."""
 
-    def __init__(self, *, run_id: str | None, step: int | None = None, scope: str = "conversation"):
+    def __init__(self, *, run_id: str | None, step: int | None = None,
+                 scope: ModelScope = "conversation") -> None:
         from dagent.harness_runtime.runtime_events import ResponseStreamContext
 
         self.owner = current_changes()
@@ -351,15 +356,19 @@ class ResponseRecorder:
         )
 
     async def start(self) -> None:
-        if self.enabled:
+        if self.enabled and self.owner is not None:
             await self.owner.publisher.publish(observations=(self._observation("started"),))
 
-    def capture(self, output) -> None:
+    def capture(self, output: _ResponseTokenSplitter | None) -> None:
         if output is not None:
             self._observed_content = "".join(output.observed_content) or None
             self._observed_reasoning = "".join(output.observed_reasoning) or None
 
-    def _observation(self, status, item: AssistantMessage | None = None, error=None):
+    def _observation(
+        self, status: Literal["started", "completed", "failed", "cancelled"],
+        item: AssistantMessage | None = None, error: RunTraceError | None = None,
+    ) -> ConversationResponseObservation:
+        assert self.message_id is not None
         return ConversationResponseObservation(
             message_id=self.message_id, response_id=self.context.response_id,
             origin=self.origin(), status=status, error=error,
@@ -370,11 +379,12 @@ class ResponseRecorder:
         )
 
     async def finish(self, item: AssistantMessage, *, state: ConversationState | None = None,
-                     status: str = "completed", partial: bool = False, error=None) -> None:
-        if not self.enabled or self.finished:
+                     status: Literal["completed", "failed", "cancelled"] = "completed",
+                     partial: bool = False, error: RunTraceError | None = None) -> None:
+        owner = self.owner
+        if not self.enabled or self.finished or owner is None:
             return
         self.finished = True
-        owner = self.owner
         try:
             await owner.publisher.publish(
                 state=state if owner.public else None,
@@ -385,7 +395,9 @@ class ResponseRecorder:
         finally:
             self._observed_content = self._observed_reasoning = None
 
-    async def interrupt(self, output, status: str, *, error: BaseException | None = None) -> None:
+    async def interrupt(self, output: _ResponseTokenSplitter | None,
+                        status: Literal["failed", "cancelled"], *,
+                        error: BaseException | None = None) -> None:
         if self.enabled and not self.finished:
             self.capture(output)
             item = AssistantMessage(
@@ -400,7 +412,12 @@ class ResponseRecorder:
             await self.finish(item, status=status, partial=True, error=failure)
 
 
-def tool_observations(call_id, capability_id, status, result_item_id=None, *, error=None, retention=None):
+def tool_observations(
+    call_id: str, capability_id: str | None,
+    status: Literal["starting", "completed", "failed", "outcome_unknown"],
+    result_item_id: str | None = None, *, error: RunTraceError | None = None,
+    retention: ResultRetention | None = None,
+) -> tuple[ConversationToolObservation, ...]:
     scope = current_changes()
     if scope is None:
         return ()
@@ -416,10 +433,17 @@ def tool_observations(call_id, capability_id, status, result_item_id=None, *, er
                                        origin=origin, status=status, result_item_id=result_item_id),)
 
 
-async def observe_tool(call_id, capability_id, status, **details) -> None:
+async def observe_tool(
+    call_id: str, capability_id: str | None,
+    status: Literal["starting", "completed", "failed", "outcome_unknown"], *,
+    result_item_id: str | None = None, error: RunTraceError | None = None,
+    retention: ResultRetention | None = None,
+) -> None:
     scope = current_changes()
     if scope is not None:
-        await scope.publisher.publish(observations=tool_observations(call_id, capability_id, status, **details))
+        await scope.publisher.publish(observations=tool_observations(
+            call_id, capability_id, status, result_item_id, error=error, retention=retention,
+        ))
 
 
 def repair_open_tool_group(state: ConversationState) -> ConversationState:
