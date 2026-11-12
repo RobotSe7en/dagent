@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dagent.harness_runtime.conversation_changes import delivery_checkpoint, flush_resources
+from dagent.harness_runtime.conversation_changes import flush_resources
 from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
 
 import json
@@ -645,8 +645,6 @@ class ContextAssembler:
         summarized = (_summary_items(compactable, policy, self.token_counter)
                       if result_store else compactable)
         summary_limit, _ = self.compaction_limits(policy.summary_max_tokens)
-        # The summary request is a delivery boundary, outside its failure handling.
-        await delivery_checkpoint()
         await flush_resources()
         try:
             if compact is None:

@@ -386,13 +386,6 @@ async def observe_tool(call_id, capability_id, status, **details) -> None:
         await scope.publisher.publish(observations=tool_observations(call_id, capability_id, status, **details))
 
 
-async def delivery_checkpoint() -> None:
-    """Wait for the reader at a producer boundary; never call inside a model call."""
-    scope = current_changes()
-    if scope is not None:
-        await scope.publisher.delivery.checkpoint()
-
-
 def repair_open_tool_group(state: ConversationState) -> ConversationState:
     """Deactivate an unfinished tail group; never invent or replay a result."""
     from dagent.schemas.conversation import ToolResultMessage

@@ -23,6 +23,11 @@
 现有无 trace V9 checkpoint，通过公开审核/调用视图检查并整体传回 `resume_stream`。
 审核状态 ACK 后释放，普通终态保留策略需显式配置。
 
+持久化交付使用无界有序事件队列。移除草案中的 max_buffer_events、max_buffer_bytes
+和 stall_timeout_seconds，继续传入这些参数会被拒绝。使用 StreamPersistenceOptions()
+或只配置 ack_timeout_seconds。展示增量保持原有分段，只有事实批次等待确认。
+此项调整只作用于未发布的持久化接口，普通流式调用不变。
+
 新交付只支持 ToolLoop。DAG 仅移除旧回调钩子，默认执行、结果和恢复不变。
 V1 批次仍可读取，会话/状态/checkpoint 格式仍为 V4/V6/V9，不新增 RunSummary。
 参见 [完整契约和迁移示例](conversation-changes.md)与[版本说明](release-notes.md)。
@@ -449,7 +454,6 @@ fingerprint；启用新模式的记录需要兼容读取方。无需迁移旧记
 配置、128K/256K 预算、恢复边界与真实缓存验证见
 [ToolAgent 上下文策略](model-context-and-reasoning.md#有界的-toolagent-上下文策略)。
 Render 能力和标准缓存统计依赖实际服务端版本及开关，启用采集本身不会开启缓存。
-尚未对真实自托管部署的缓存性能或上下文错误率进行基准测试。
 
 验证：Python 测试 1,804 项通过，3 项因环境条件跳过。覆盖 200 次工具执行及至少
 5 次实际压缩、Chat/Responses 流式调用、失败恢复，以及提交 `8c2e9f2` 生成的旧
@@ -483,8 +487,7 @@ usage 省略该字段，包括嵌套的会话、摘要和 checkpoint。旧记录
 不支持这些字段的旧版本读取。
 
 已知限制：摘要存在信息损失；必要输入自身过大或服务端上限未知时仍可能超限。
-前缀缓存命中取决于部署、tokenizer 和服务端缓存状态。本次没有对真实 vLLM 缓存
-命中率和一小时长时执行进行基准测试。
+前缀缓存命中取决于部署、tokenizer 和服务端缓存状态。
 
 - 验证：Python 3.11 上 1,804 项 Python/MCP 测试通过，3 项依赖环境的测试跳过；
   128 项 WebUI 测试和生产构建通过。

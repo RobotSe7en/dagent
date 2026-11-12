@@ -16,6 +16,6 @@ web/vite.*.log
 .dagent/
 .DS_STORE
 
-# Full compatibility snapshots are local; contract hashes remain tracked.
+# Local response snapshots.
 /tests/fixtures/response_baseline_*.json
 /tests/fixtures/response_baseline_*.json.gz

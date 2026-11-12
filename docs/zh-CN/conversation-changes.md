@@ -22,10 +22,7 @@ run，拥有自己的结果和 trace，不会写入外层 run 的批次。需要
 import dagent
 
 options = dagent.StreamPersistenceOptions(
-    max_buffer_events=256,
-    max_buffer_bytes=1_048_576,
     ack_timeout_seconds=None,
-    stall_timeout_seconds=None,
 )
 
 async for event in runner.stream(
@@ -57,16 +54,15 @@ uv run python -m examples.conversation_changes
 派发，不自动重放工具。活跃 delivery 内重复确认最近已确认批次是安全的；不匹配、过期或
 已关闭交付返回 `False`。提交可能成功而 ACK 丢失，宿主应根据批次身份去重。
 
-确认时限从消费者收到批次开始计算，`None` 不设持久化超时。缓冲预算限制就绪队列；单个
-超大事件可以独占队列。这不是单帧大小上限。
+确认时限从消费者收到批次开始计算，`None` 不设持久化超时，批次排队等待读取的时间不计入。
 
-读取慢不会卡住模型调用。就绪队列满后，后续事件按顺序排在其后，同一响应同一通道的相邻
-增量会合并：读取方收到条数更少、单条更长但文本相同的增量。生产方只在边界处等待读取方，
-边界是每次发布批次和每次压缩摘要请求，因此模型流不会停顿，压缩时限也不计入这段等待。
-`stall_timeout_seconds` 限制每次这样的等待，超时以 `DeliveryStalled` 结束交付；`None`
-表示无限等待，生产环境应设置它或 `ack_timeout_seconds`。两个边界之间有超过
-`max(32, max_buffer_events)` 条未合并事件等待时，以 `StreamBufferOverflow` 结束交付。
-所有交付失败都在下一个边界抛出，不会出现在产生事件的模型调用或压缩步骤内部。
+展示事件和事实批次共用一条无界有序队列。入队不等待读取方，不因容量合并或丢弃增量。
+只有事实批次发布后等待宿主 ACK，前序事实确认后才能派发下一步操作。压缩请求前不再
+额外等待事件队列排空；资源批次保存仍等待 ACK，这段等待不计入压缩或模型时限。
+
+宿主应持续消费 SDK 流，再独立向前端订阅者分发已保存事件。读取暂停时，未消费事件会
+积压在内存中；队列不限制字节数或单帧大小。关闭流或 Runner 会停止交付，释放排队事件
+和 ACK 等待。
 
 ## 公开批次契约
 
@@ -161,8 +157,9 @@ checkpoint，也没有新增 RunSummary。展示增量与最终权威消息仍�
 提交新版本。审核 checkpoint 保留 V9 已有的完整状态和重复字段。
 
 宿主持有历史时配置 `Runner(max_retained_runs=0)`。普通终态缓存继续服从原设置，默认 None
-仍无限保留；普通持久化终态不缓存 checkpoint。有效上下文、当前响应、一个待确认批次及有界
-队列仍然必要。已使用的 run/review ID 持续增长，不承诺进程总内存绝对恒定。
+仍无限保留；普通持久化终态不缓存 checkpoint。有效上下文、当前响应、一个待确认批次及未消费
+事件仍占用内存，事件队列用量取决于宿主读取速度。已使用的 run/review ID 持续增长，
+不承诺进程总内存绝对恒定。
 
 执行失败通过需要确认的 failed 终态批次报告。交付失败通过 run.failed 报告错误类型、消息、
 delivery、失败批次及最后确认序号/版本，不附完整结果、不重发失败批次。SDK 不能声称未确认

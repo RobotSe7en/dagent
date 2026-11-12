@@ -2,7 +2,7 @@
 
 ## 未发布：ToolLoop 持久化流 V2
 
-- `stream/resume_stream` 新增可选 StreamPersistenceOptions；一条混合流、显式确认/拒绝和有界缓冲。
+- `stream/resume_stream` 新增可选 StreamPersistenceOptions；一条混合流、显式确认/拒绝和无界有序事件队列。
 - 现有 ConversationChangeBatch 补充终态字段和现有审核 checkpoint，不新增 RunSummary 或第二种 checkpoint。
 - ToolLoop 和委派 tool agent 不构建 trace，通过公开批次保存错误、用量、未知执行状态和资源引用。
 - 新增 checkpoint 公开审核、隔离的剩余工具调用和只读校验入口，上传工具公开于 dagent.artifacts。
@@ -13,9 +13,9 @@
 - 持久化 run 的工具内部未传 `persistence` 的 Runner 调用作为独立普通 run 执行，
   不再加入或破坏外层 run 的交付。
 - 无限保留时不再记录已用 run id，未保存状态就结束的 run 可再次用原 `run_id` 重试。
-- 持久化流读取慢时不再卡住模型流：就绪队列满时展示增量会合并，生产方只在批次和压缩
-  请求边界等待；交付失败只在这些边界抛出。新增可选
-  `StreamPersistenceOptions.stall_timeout_seconds`（`DeliveryStalled`）限制每次等待读取方的时间。
+- 持久化事件直接入队，不等待读取方、不合并增量，只有事实批次等待宿主 ACK。
+  移除草案中的 max_buffer_events、max_buffer_bytes、stall_timeout_seconds 配置、
+  溢出处理及队列排空等待；保留 ack_timeout_seconds。
 - 审核最终批次确认后即可恢复，无需等待上一条流结束。
 - 用户消息之后的响应重试原样重发同一请求，不再插入第二条相邻的用户消息。
 - **已明确授权的破坏性变更：** 删除四个入口的 on_conversation_change、专属 Handler/Failure/Error

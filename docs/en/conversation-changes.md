@@ -27,10 +27,7 @@ The SDK owns neither a database nor host permissions, transactions or file stora
 import dagent
 
 options = dagent.StreamPersistenceOptions(
-    max_buffer_events=256,
-    max_buffer_bytes=1_048_576,
     ack_timeout_seconds=None,
-    stall_timeout_seconds=None,
 )
 
 async for event in runner.stream(
@@ -68,20 +65,19 @@ active delivery. Wrong, stale or closed-delivery acknowledgements return `False`
 A commit can succeed before its ACK is lost: deduplicate using batch identity.
 
 `ack_timeout_seconds` starts when the consumer receives the batch. `None` imposes
-no persistence timeout. Buffer limits bound the ready queue; a single oversized
-event may occupy it alone. They are not frame-size limits.
+no persistence timeout. Time spent queued before presentation is excluded.
 
-A slow reader never stalls a model call. When the ready queue is full, later
-events wait behind it in order, and adjacent deltas of one response channel merge:
-the reader then receives fewer, larger deltas carrying the same text. The producer
-waits for the reader only at its boundaries, which are every batch publication and
-every compaction summary request, so a model stream keeps flowing and the
-compaction time budget excludes that wait. `stall_timeout_seconds` bounds each such
-wait and fails the delivery with `DeliveryStalled`; `None` waits indefinitely, so
-production hosts should set it or `ack_timeout_seconds`. More than
-`max(32, max_buffer_events)` unmerged events waiting between two boundaries fail the
-delivery with `StreamBufferOverflow`. Every delivery failure is raised at the next
-boundary, never inside the model call or compaction step that emitted the event.
+Display events and durable batches share one unbounded ordered queue. Enqueuing
+never waits for a reader; deltas are neither merged nor discarded for capacity.
+Only a durable batch publication waits for host ACK. The producer cannot dispatch
+the next operation until its preceding facts are confirmed. There is no separate
+queue-drain wait before a compaction request. Saving resource batches still waits
+for ACK, outside the compaction/model time budget.
+
+The host should continuously consume the SDK stream and publish saved events to
+frontend subscribers independently. A paused reader accumulates unconsumed events
+in memory; this queue provides no byte or frame-size limit. Closing the stream or
+Runner stops delivery and releases queued events and ACK waits.
 
 ## Public batch contract
 
@@ -202,8 +198,9 @@ their existing complete V9 representation and duplicated fields.
 Configure `Runner(max_retained_runs=0)` when the host owns history. Ordinary
 terminal caches still follow the existing setting (`None` remains unlimited);
 completed persistent runs have no cached checkpoint. Active context, current
-response, one pending batch and bounded queues remain necessary. Used run/review
-IDs continue to grow; this is not an assertion of constant total process memory.
+response, one pending batch and unconsumed events remain in memory. Event queue
+usage depends on how promptly the host reads it. Used run/review IDs continue to
+grow; this is not an assertion of constant total process memory.
 
 Execution failures arrive as acknowledged terminal `status="failed"` batches.
 Delivery failures arrive as `run.failed` with message/error type plus delivery,

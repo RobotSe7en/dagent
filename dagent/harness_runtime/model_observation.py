@@ -96,7 +96,7 @@ async def provider_events(
     """Send counted snapshots; only the budget owner may prepare replacements.
 
     Persistent delivery never waits here: a model stream keeps flowing while a
-    slow reader catches up, and delivery failures surface at the next boundary.
+    slow reader catches up, and delivery failures surface at batch publication.
     """
     guard = _ReprepareGuard(prepared)
     while True:

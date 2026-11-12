@@ -1,4 +1,4 @@
-"""Display events never block the producer; boundaries own every wait and failure."""
+"""Unbounded event delivery and durable acknowledgement boundaries."""
 
 import asyncio
 
@@ -10,19 +10,16 @@ from dagent.result import ResponseStartedData, TextDeltaData
 from dagent.schemas.conversation_changes import ConversationChangeBatch
 
 
-def delta(text, response="response", kind="response.content.delta"):
-    return dagent.RunStreamEvent(type=kind, data=TextDeltaData(delta=text, response_id=response), run_id="run")
+def delta(text):
+    return dagent.RunStreamEvent(type="response.content.delta",
+        data=TextDeltaData(delta=text, response_id="response"), run_id="run")
 
 
-def started(response="response"):
-    return dagent.RunStreamEvent(type="response.started", data=ResponseStartedData(response_id=response), run_id="run")
-
-
-def batch(sequence=1, **terminal):
+def batch(sequence=1):
     return ConversationChangeBatch(
         schema_version=2, conversation_schema_version=None, batch_id=f"delivery:{sequence}",
         delivery_id="delivery", sequence=sequence, conversation_id=None, run_id="run",
-        base_revision=None, revision=None, **terminal,
+        base_revision=None, revision=None,
     )
 
 
@@ -32,85 +29,72 @@ def delivery(**options):
     return value
 
 
-async def drain(value, count):
-    return [await value.receive() for _ in range(count)]
-
-
 @pytest.mark.asyncio
-async def test_full_ready_queue_merges_adjacent_deltas_in_order():
-    value = delivery(max_buffer_events=2)
-    for event in (started(), delta("a"), delta("b"), delta("c"), delta("r", kind="response.reasoning.delta"),
-                  delta("x", response="other"), delta("y", response="other")):
+async def test_unbounded_queue_keeps_every_event_in_order():
+    value = delivery()
+    events = [dagent.RunStreamEvent(type="response.started",
+              data=ResponseStartedData(response_id="response"), run_id="run")]
+    events.extend(delta(str(index)) for index in range(1024))
+    for event in events:
         value.emit(event)
-    assert len(value._queue) == 2 and len(value._overflow) == 3
-    received = await drain(value, 5)
-    assert [event.type for event in received] == [
-        "response.started", "response.content.delta", "response.content.delta",
-        "response.reasoning.delta", "response.content.delta",
-    ]
-    assert [getattr(event.data, "delta", None) for event in received] == [None, "a", "bc", "r", "xy"]
-    assert received[-1].data.response_id == "other"
+    value.finish()
+    received = []
+    while (event := await value.receive()) is not None:
+        received.append(event)
+    assert received == events
+    assert value.failure is None
 
 
 @pytest.mark.asyncio
-async def test_emit_never_raises_and_failures_surface_at_the_next_boundary():
-    value = delivery(max_buffer_events=1)
-    value.emit(started())
-    for index in range(32):
-        value.emit(started(f"r{index}"))
-    assert value.failure is None and len(value._overflow) == 32
-    value.emit(started("one_too_many"))
-    assert value.failure is not None and value.failure.code == "StreamBufferOverflow"
-    value.emit(delta("dropped"))
-    with pytest.raises(PersistenceDeliveryError) as raised:
-        await value.checkpoint()
-    assert raised.value.code == "StreamBufferOverflow"
-    closed = delivery()
-    closed.close()
-    closed.emit(delta("ignored"))
-    with pytest.raises(PersistenceDeliveryError, match="closed"):
-        await closed.checkpoint()
-
-
-@pytest.mark.asyncio
-async def test_boundary_waits_for_the_reader_and_stall_timeout_fails_it():
-    value = delivery(max_buffer_events=1)
-    value.emit(started())
-    value.emit(delta("a"))
-    waiter = asyncio.create_task(value.checkpoint())
-    await asyncio.sleep(0)
-    assert not waiter.done()
-    await drain(value, 2)
-    await asyncio.wait_for(waiter, 1)
-
-    stalled = delivery(max_buffer_events=1, stall_timeout_seconds=0.01)
-    stalled.emit(started())
-    stalled.emit(delta("a"))
-    with pytest.raises(PersistenceDeliveryError) as raised:
-        await stalled.checkpoint()
-    assert raised.value.code == "DeliveryStalled" and stalled.failure is raised.value
-
-
-@pytest.mark.asyncio
-async def test_batch_follows_its_deltas_and_waits_for_presentation_within_the_stall_timeout():
-    value = delivery(max_buffer_events=1)
-    value.emit(started())
-    value.emit(delta("a"))
-    value.emit(delta("b"))
+async def test_batch_follows_display_events_and_waits_only_for_ack():
+    value = delivery()
+    events = [delta(str(index)) for index in range(512)]
+    for event in events:
+        value.emit(event)
     publication = asyncio.create_task(value.publish(batch()))
     await asyncio.sleep(0)
-    received = await drain(value, 3)
-    assert [event.type for event in received] == ["response.started", "response.content.delta", "conversation.changed"]
-    assert received[1].data.delta == "ab"
+    received = [await value.receive() for _ in range(len(events) + 1)]
+    assert received[:-1] == events
+    assert received[-1].type == "conversation.changed"
+    assert not publication.done()
     assert value.acknowledge("run", "delivery:1")
     assert await asyncio.wait_for(publication, 1) is False
+    assert value.acknowledged_sequence == 1
 
-    stalled = delivery(stall_timeout_seconds=0.01)
+
+@pytest.mark.asyncio
+async def test_ack_timeout_reports_an_unconfirmed_batch():
+    value = delivery(ack_timeout_seconds=.01)
+    publication = asyncio.create_task(value.publish(batch()))
+    assert (await value.receive()).type == "conversation.changed"
     with pytest.raises(PersistenceDeliveryError) as raised:
-        await stalled.publish(batch())
-    assert raised.value.code == "DeliveryStalled" and stalled.failed_batch_id == "delivery:1"
+        await asyncio.wait_for(publication, 1)
+    assert raised.value.code == "PersistenceTimeout"
+    assert value.failed_batch_id == "delivery:1"
+    assert value.acknowledged_sequence == 0
 
 
-def test_stall_timeout_is_optional():
-    assert dagent.StreamPersistenceOptions().stall_timeout_seconds is None
-    assert dagent.StreamPersistenceOptions(stall_timeout_seconds=2.5).stall_timeout_seconds == 2.5
+@pytest.mark.asyncio
+async def test_close_wakes_an_idle_reader():
+    value = delivery()
+    reader = asyncio.create_task(value.receive())
+    await asyncio.sleep(0)
+    assert not reader.done()
+    value.close()
+    assert await asyncio.wait_for(reader, 1) is None
+
+
+@pytest.mark.asyncio
+async def test_close_releases_ack_wait_and_ignores_late_display_events():
+    value = delivery()
+    publication = asyncio.create_task(value.publish(batch()))
+    assert (await value.receive()).type == "conversation.changed"
+    value.close()
+    value.emit(delta("ignored"))
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(publication, 1)
+    assert await value.receive() is None
+    assert not value.acknowledge("run", "delivery:1")
+    assert value.acknowledged_sequence == 0
+    with pytest.raises(PersistenceDeliveryError, match="closed"):
+        await value.publish(batch(2))

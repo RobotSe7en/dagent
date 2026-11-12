@@ -3,7 +3,7 @@
 ## Unreleased — ToolLoop persistent stream V2
 
 - Add opt-in `StreamPersistenceOptions` to `stream`/`resume_stream`, one mixed
-  event stream, explicit ACK/rejection and bounded delivery buffers.
+  event stream, explicit ACK/rejection and an unbounded ordered event queue.
 - Extend existing `ConversationChangeBatch` with terminal fields and the existing
   review checkpoint. No `RunSummary` or second checkpoint model is introduced.
 - Execute ToolLoop and delegated tool agents without constructing diagnostic trace.
@@ -20,11 +20,10 @@
   independent ordinary runs instead of joining or breaking that Run's delivery.
 - Unlimited retention no longer records used run ids, so a run that ended before
   saving state can again be retried with the same `run_id`.
-- A slow persistent-stream reader no longer stalls model streams: display deltas
-  merge while the ready queue is full, and the producer waits only at batch and
-  compaction-request boundaries. Delivery failures surface only at those
-  boundaries. New optional `StreamPersistenceOptions.stall_timeout_seconds`
-  (`DeliveryStalled`) bounds each wait for the reader.
+- Persistent events enqueue without waiting for the reader or merging deltas;
+  only durable batches wait for host ACK. Remove the draft `max_buffer_events`,
+  `max_buffer_bytes` and `stall_timeout_seconds` options, overflow handling and
+  queue-drain waits. `ack_timeout_seconds` remains supported.
 - A review can be resumed as soon as its terminal batch is acknowledged, without
   waiting for the previous stream to end.
 - A response retry right after a user message resends the same request instead of

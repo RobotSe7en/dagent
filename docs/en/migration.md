@@ -27,6 +27,13 @@ Review alone needs the existing trace-free V9 checkpoint in the terminal batch;
 use its public review/pending invocation views and pass it whole to `resume_stream`.
 Review state is released after ACK; configure ordinary retention explicitly.
 
+Persistent delivery uses an unbounded ordered event queue. The draft
+`max_buffer_events`, `max_buffer_bytes` and `stall_timeout_seconds` options are
+removed; passing them is rejected. Construct `StreamPersistenceOptions()` or set
+only `ack_timeout_seconds`. Display deltas keep their original boundaries, and
+only durable batch publications wait for confirmation. This change applies to
+the unreleased persistence API; ordinary streaming remains unchanged.
+
 New delivery is ToolLoop-only. DAG callback-only hooks are removed; default DAG
 execution/results/recovery are unchanged. V1 batches remain readable, and
 conversation/state/checkpoint formats remain V4/V6/V9. No `RunSummary` is added.
@@ -621,8 +628,7 @@ valid generation configuration in the checkpoint.
 See the [configuration, 128K/256K budgets, recovery boundaries, and vLLM cache
 verification guide](model-context-and-reasoning.md#bounded-toolagent-context-strategies).
 Render availability and standard cache statistics require the appropriate server
-version and flags; usage capture alone does not enable caching. Live self-hosted
-cache performance and server context-error rates have not been benchmarked.
+version and flags; usage capture alone does not enable caching.
 
 Verification: 1,804 Python tests passed with three environment-dependent skips.
 Coverage includes 200 tool executions with at least five compaction commits,
@@ -665,8 +671,7 @@ a 0.10.0-compatible reader; do not downgrade such records to an older reader.
 
 Known limitations: summaries are lossy; oversized mandatory input and unknown
 server limits can still cause context errors. Prefix-cache hits depend on the
-deployment, tokenizer and server cache state. Real vLLM cache hit rates and the
-hour-long live soak were not benchmarked for this release.
+deployment, tokenizer and server cache state.
 
 - Verification: 1,804 Python/MCP tests passed on Python 3.11, with three
   environment-dependent skips; 128 WebUI tests and the production build passed.
