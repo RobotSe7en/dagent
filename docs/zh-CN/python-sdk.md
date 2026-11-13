@@ -51,10 +51,10 @@ import dagent
 
 ToolLoop 持久化流新增 `Runner.acknowledge_changes/reject_changes`；审核宿主使用 `Runner.validate_checkpoint`、`RunCheckpoint.review/pending_tool_invocations`。上传契约和文件名校验位于公开 `dagent.artifacts`（`ArtifactUpload`、`ArtifactPathError`、`UPLOAD_ROOT`、`validate_upload_filename`），资源访问使用 `Runner.resolve_runtime_path`。[持久化流 V2](conversation-changes.md) 无需导入运行时私有模块。
 
-在 **Unreleased** SDK 中，`ContentReference.sha256` 改为可选：工具输出溢出文件、大值和产物均为 `None`，
+在 **0.11.0** SDK 中，`ContentReference.sha256` 改为可选：工具输出溢出文件、大值和产物均为 `None`，
 压缩归档仍带摘要。没有文件保存未展示文本时，`FrozenResultDisplay.recovery` 为 `None`。
 新上传附件的 `Attachment.sha256` 为 `None`。详见
-[工具结果恢复](tool-result-recovery.md)和 [未发布版本的迁移说明](migration.md#未发布)。
+[工具结果恢复](tool-result-recovery.md)和 [0.11.0 迁移说明](migration.md#0110)。
 
 自 0.10.0 起，显式缓存统计为现有 `ModelTokenUsage` 增加可空的 `cached_input_tokens`。
 采集配置及记录兼容性见

@@ -639,7 +639,7 @@ schema、用户输入、调用参数或最小结果元数据本身过大时，�
 读取边界。读不到的上一条记录所覆盖的历史标为未完全覆盖：新记录仍然链接它，摘要带
 `[DEGRADED_CONTEXT]`。保存了可复用替换结果的失败记录读不到时，对应来源可以重新压缩。
 
-归档留在写入它的 run workspace 中。在 **Unreleased** SDK 中，同一会话的 run 共用一个
+归档留在写入它的 run workspace 中。在 **0.11.0** SDK 中，同一会话的 run 共用一个
 workspace，之后的轮次在原处读取；SDK 不再把归档复制到存储中，也不再恢复到其他 workspace，
 归档缺失也不再导致 Run 失败。在其他 workspace 续聊时，除非宿主把归档复制过去，否则读不到
 之前的归档（见[会话变化](conversation-changes.md#把会话移到另一个-workspace)）。

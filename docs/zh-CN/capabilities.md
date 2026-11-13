@@ -160,7 +160,7 @@ agent = dagent.ToolAgent(
 如果工具直接返回 `CapabilityResult`，且 completed result 没有显式 `value`，则使用
 `content` 作为 value。
 
-在 **Unreleased** SDK 中，tool agent 或动态 DAG 调用的工具拿到的是参数里普通 dict、list 和
+在 **0.11.0** SDK 中，tool agent 或动态 DAG 调用的工具拿到的是参数里普通 dict、list 和
 tuple 的拷贝，返回值按返回那一刻记录。因此修改参数，或修改工具仍持有的返回对象，都不再改变
 会话历史里的调用和结果。其他对象仍然共享。静态 DAG 的运行方式不变。
 

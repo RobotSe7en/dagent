@@ -4,13 +4,18 @@
 
 ## 当前发布线
 
-当前稳定包版本为 `0.10.4`。
+当前稳定包版本为 `0.11.0`。
 
-## 未发布
+## 0.11.0
+
+使用 `pip install --upgrade 'dagent-ai==0.11.0'` 安装。
+
+本版本包含持久化回调、工作目录选择和文件存储的破坏性变更。依赖这些契约的宿主
+应先完成下文迁移步骤再升级。V4/V6/V9 持久化记录仍可读取。
 
 ### ToolLoop 持久化：回调 V1 → 流 V2（破坏性变更）
 
-下一 SDK 版本删除四个执行入口的 `on_conversation_change`，同时删除
+0.11.0 删除四个执行入口的 `on_conversation_change`，同时删除
 `ConversationChangeHandler`、`ConversationChangeFailure`、`ConversationChangeError`
 及其根导出，以及 `RunFailedData.conversation_change_failure`。不保留回调适配或忽略参数。
 其他既有公开默认行为继续兼容。
@@ -26,7 +31,7 @@
 持久化交付使用无界有序事件队列。移除草案中的 max_buffer_events、max_buffer_bytes
 和 stall_timeout_seconds，继续传入这些参数会被拒绝。使用 StreamPersistenceOptions()
 或只配置 ack_timeout_seconds。展示增量保持原有分段，只有事实批次等待确认。
-此项调整只作用于未发布的持久化接口，普通流式调用不变。
+此项调整只作用于 0.11.0 之前的持久化接口草案，普通流式调用不变。
 
 持久化上下文现在保留最终纯文本失败回复；重试丢弃的回复和包含失败调用的回复仍只入审计。
 input=None 沿宿主提供的上下文继续，包括保留的部分文本；原样重试应重建该回复之前的上下文。

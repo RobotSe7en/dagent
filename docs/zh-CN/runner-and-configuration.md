@@ -42,7 +42,7 @@ runner = dagent.Runner(
 应显式传入这两个值；如果运行数据只需驻留内存，也可以把 workspace 放在 tmpfs。
 `Runner.from_config(...)` 使用相同的运行路径默认值，不会从 YAML 加载它们。
 
-在 **Unreleased** SDK 中，同一会话的所有 run 共用一个 workspace：
+在 **0.11.0** SDK 中，同一会话的所有 run 共用一个 workspace：
 `<workspace>/runs/conversation_<key>`，其中 `<key>` 是 `ConversationState.id` 的 SHA-256
 前 32 位十六进制。续聊时传回上一轮的 `ConversationState`（保留其 `id`），才会继续使用该目录；
 重建状态时换了 id，就会得到新目录。不传 `conversation` 的 run 会开启新会话，因此得到新目录。没有会话的
@@ -148,7 +148,7 @@ boundary、绕过 review 或改变 workspace 权限。
 向 message run 传入
 `input_uploads=[dagent.ArtifactUpload(filename="note.txt", content=b"draft")]`，
 即可在工作区写入 `uploads/note.txt`。会话上传和静态 DAG artifact 上传只写入一次；写入
-字节数不足时，会在 agent 执行前抛出 `OSError`。在 **Unreleased** SDK 中，写入后不再回读，
+字节数不足时，会在 agent 执行前抛出 `OSError`。在 **0.11.0** SDK 中，写入后不再回读，
 新的 `Attachment` 记录不带摘要（`sha256` 为 `None`），只记录字节数。
 
 上传成功后，工具可以修改、覆盖或删除工作文件。SDK 在等待审核、完成运行或续聊时

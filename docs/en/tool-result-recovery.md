@@ -9,7 +9,7 @@ and structured DAG planner observations.
 
 ## When results overflow to files
 
-In the **Unreleased** SDK, a result is shortened only for a model that can open the rest:
+In the **0.11.0** SDK, a result is shortened only for a model that can open the rest:
 
 - **With the built-in `read_file` tool** (for a DagAgent: `tool.read_file` in its
   capabilities), a result longer than its display limit is shortened. Its full

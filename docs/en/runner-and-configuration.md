@@ -49,7 +49,7 @@ explicitly and may put the workspace on tmpfs when runtime data should remain
 memory-backed. `Runner.from_config(...)` uses the same runtime-path defaults;
 they are not loaded from YAML.
 
-In the **Unreleased** SDK, all runs of one conversation share one workspace,
+In the **0.11.0** SDK, all runs of one conversation share one workspace,
 `<workspace>/runs/conversation_<key>`, where `<key>` is the first 32 hex digits
 of the SHA-256 of `ConversationState.id`. Pass the preceding
 `ConversationState` back, with its `id`, to keep using that directory; a state
@@ -192,7 +192,7 @@ runner's later configuration, has a different `extra_system_prompt`.
 Pass `input_uploads=[dagent.ArtifactUpload(filename="note.txt", content=b"draft")]`
 to a message run to write `uploads/note.txt` inside its workspace. Message
 uploads and static DAG artifact uploads are written once; a short write raises
-`OSError` before agent execution. In the **Unreleased** SDK the written file is
+`OSError` before agent execution. In the **0.11.0** SDK the written file is
 not read back, and new `Attachment` records carry no digest (`sha256` is
 `None`). Only the byte count is recorded.
 

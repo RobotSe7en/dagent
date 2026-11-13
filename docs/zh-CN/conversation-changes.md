@@ -1,8 +1,8 @@
 # 通过流式批次持久化 ToolLoop 会话
 
-**未发布：批次契约 V2。** 在 `Runner.stream` 或 `resume_stream` 中传入
+**0.11.0：批次契约 V2。** 在 `Runner.stream` 或 `resume_stream` 中传入
 `StreamPersistenceOptions` 启用。旧 `on_conversation_change` 回调及其专属异常已经移除，
-参见 [V1 到 V2 迁移](migration.md#未发布)。不传配置时，保持原完整结果流及 trace 行为。
+参见 [V1 到 V2 迁移](migration.md#0110)。不传配置时，保持原完整结果流及 trace 行为。
 
 本模式支持 `ToolAgent`、已注册 tool agent 委派和 `AutoAgent` 的 tool 分支。
 明确的 DAG 目标会被拒绝；自动路由选择 DAG 时也在进入 DAG 执行前明确失败。

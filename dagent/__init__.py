@@ -106,7 +106,7 @@ from dagent.schemas import (
     UserMessage,
 )
 
-__version__ = "0.10.4"
+__version__ = "0.11.0"
 
 __all__ = [
     "StreamPersistenceOptions",

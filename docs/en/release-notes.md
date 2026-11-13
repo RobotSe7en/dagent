@@ -1,6 +1,12 @@
 # Release notes
 
-## Unreleased — ToolLoop persistent stream V2
+## 0.11.0 — ToolLoop persistent stream V2
+
+Install with `pip install --upgrade 'dagent-ai==0.11.0'`. This release includes
+breaking changes to persistence callbacks, default workspaces and file storage;
+follow the [0.11.0 migration steps](migration.md#0110) before upgrading hosts
+that depend on them. ConversationState V4, RunState V6 and RunCheckpoint V9
+records remain readable.
 
 - Add opt-in `StreamPersistenceOptions` to `stream`/`resume_stream`, one mixed
   event stream, explicit ACK/rejection and an unbounded ordered event queue.
@@ -39,19 +45,43 @@
   cache; unversioned/mutable resources and new deliveries still notify the host.
 - Pass execution mode explicitly through ToolLoop internals and centralize stream
   registration cleanup, preserving public interfaces and serialized records.
+- Add opt-in `ToolAgent.response_retries` / `AutoAgent.response_retries`, disabled
+  by default, with provisional stream output and `response.discarded` events.
+- Add optional `Runner(max_retained_runs=...)` to release ended root-run state
+  and owned DAG child sessions; unlimited retention remains the default.
+- Keep separate tool trace nodes when call ids repeat across model rounds, and
+  reject duplicate ids within one reply with `invalid_tool_call` before execution,
+  including replies from custom providers.
+- Reduce repeated context preparation, definition copying and archive writes;
+  send incremental tool-loop messages and preserve published message ownership.
+- **Breaking: workspaces and files.** Conversation runs now share a workspace
+  chosen by `ConversationState.id`; static DAGs keep per-run workspaces. The SDK
+  no longer carries, restores or verifies files between workspaces, and removes
+  `ConversationResourceError`. Hosts moving a conversation must copy its files.
+- Tool-output files are best-effort and require a model that can read them.
+  `ContentReference.sha256`, `Attachment.sha256` and frozen-display recovery are
+  optional; new tool-output/artifact/upload references carry no digest. Missing
+  compaction archives degrade context, and display-write failures report storage
+  warnings. Hosts own file integrity checks and must accept the optional fields.
+- Tools in ToolAgent and dynamic DAG runs receive copies of ordinary container
+  arguments; return values rather than mutating arguments to pass data back.
 - **Breaking, explicitly authorized:** remove `on_conversation_change` from all
   four execution APIs, its Handler/Failure/Error contracts and the failure-event
   callback field. Remove DAG callback-only hooks. Other default execution,
   result, provider and persisted V4/V6/V9 contracts are preserved; V1 batch reads
-  remain supported. See [migration](migration.md#unreleased).
+  remain supported. See [migration](migration.md#0110).
 
 Verification covers actual Chat Completions/Responses request equivalence,
 public result and continuation contracts, review
 recovery, retry/compaction, failure boundaries, slow consumers and memory release.
-Run the Python test suite and offline example listed in
-[the persistence guide](conversation-changes.md).
+Release verification: the full Python suite (dev and MCP) passed with 2,535
+tests and 3 skips; both offline persistence and retention examples passed.
+All 128 frontend tests, the frontend build, wheel/sdist builds, Twine metadata,
+version consistency, lockfile and diff checks passed. Two opt-in live MiniMax
+tests and one Docker test without a running daemon were skipped; live provider
+and Docker acceptance require their respective environments.
 
 Limits: authoritative final messages still accompany display deltas; review V9
 checkpoints retain full state and duplicated fields; there is no chunking or hard
 frame bound. Unlimited ordinary retention and replay-ID growth remain explicit.
-This entry documents source changes; it does not indicate package publication.
+See [the persistence guide](conversation-changes.md) for host integration details.

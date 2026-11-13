@@ -801,7 +801,7 @@ carries `[DEGRADED_CONTEXT]`. When a failed record that held a reusable
 replacement cannot be read, its source may be summarized again.
 
 Archives stay in the run workspace where they were written. In the
-**Unreleased** SDK a conversation's runs share one workspace, so later turns
+**0.11.0** SDK a conversation's runs share one workspace, so later turns
 read them in place; the SDK no longer copies archives into a store or restores
 them into another workspace, and a missing archive no longer fails a Run. A
 continuation in another workspace runs without the earlier archives unless the

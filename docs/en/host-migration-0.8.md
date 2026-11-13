@@ -104,10 +104,10 @@ Hosts that replace local storage must upload the referenced bytes and preserve
 their typed provenance. The SDK does not create public URLs or enforce host
 retention.
 
-In the **Unreleased** SDK, nothing is carried across workspaces: a
+In the **0.11.0** SDK, nothing is carried across workspaces: a
 conversation's runs share one workspace, and the content-addressed store above is
 no longer written or read. Tool-output overflow files have no digest and are not
-checked; see the [unreleased migration notes](migration.md#unreleased).
+checked; see the [0.11.0 migration notes](migration.md#0110).
 
 Never accept a client-supplied reference path as trusted. Resolve references
 inside the recorded run workspace; only compaction archives still carry a

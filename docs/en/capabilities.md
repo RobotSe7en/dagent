@@ -179,7 +179,7 @@ Static DAG node output references read from `value` by default.
 If a tool returns `CapabilityResult` directly, completed results with no explicit
 `value` use `content` as the value.
 
-In the **Unreleased** SDK, a tool called by a tool agent or a dynamic DAG
+In the **0.11.0** SDK, a tool called by a tool agent or a dynamic DAG
 receives its own copy of the plain dicts, lists and tuples in its arguments, and
 its result is recorded as it was returned. Changing an argument, or a returned
 object the tool still holds, therefore no longer changes the call or result in

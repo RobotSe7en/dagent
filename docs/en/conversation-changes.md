@@ -1,9 +1,9 @@
 # Persist ToolLoop conversations from the stream
 
-**Unreleased — batch contract V2.** Enable persistence with
+**0.11.0 — batch contract V2.** Enable persistence with
 `StreamPersistenceOptions` on `Runner.stream` or `resume_stream`. The former
 `on_conversation_change` callback and its error types have been removed; see
-[the V1 to V2 migration](migration.md#unreleased). Without persistence options,
+[the V1 to V2 migration](migration.md#0110). Without persistence options,
 the existing complete-result stream and diagnostic trace remain unchanged.
 
 This mode supports `ToolAgent`, registered tool-agent delegation, and the tool

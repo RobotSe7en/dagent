@@ -1,6 +1,10 @@
 # 版本说明
 
-## 未发布：ToolLoop 持久化流 V2
+## 0.11.0：ToolLoop 持久化流 V2
+
+使用 `pip install --upgrade 'dagent-ai==0.11.0'` 安装。本版本包含持久化回调、默认工作目录
+及文件存储的破坏性变更；依赖这些契约的宿主请先完成 [0.11.0 迁移步骤](migration.md#0110)。
+ConversationState V4、RunState V6 和 RunCheckpoint V9 记录仍可读取。
 
 - `stream/resume_stream` 新增可选 StreamPersistenceOptions；一条混合流、显式确认/拒绝和无界有序事件队列。
 - 现有 ConversationChangeBatch 补充终态字段和现有审核 checkpoint，不新增 RunSummary 或第二种 checkpoint。
@@ -24,14 +28,30 @@
   主动取消读取任务仍传播取消异常。
 - 使用每次交付的小容量缓存去重已确认、有摘要的资源引用；无摘要/可变资源及新交付仍通知宿主。
 - ToolLoop 内部显式传递执行模式，统一清理流的登记；公开接口及序列化记录保持不变。
+- 新增可选 ToolAgent.response_retries / AutoAgent.response_retries，默认关闭；开启后流式
+  输出视为临时内容，丢弃的回复通过 response.discarded 事件通知宿主。
+- 新增可选 Runner(max_retained_runs=...)，释放已结束的根运行状态及其拥有的 DAG 子会话；
+  默认仍无限保留。
+- 跨模型轮次重复使用 call id 时保留独立工具 trace 节点；同一回复内重复 id 以
+  invalid_tool_call 拒绝且不执行工具，包括自定义 provider 返回的回复。
+- 减少上下文准备、能力定义复制和归档写入的重复工作，增量提交工具循环消息，保持已发布消息的归属。
+- **破坏性变更：工作目录与文件。** 会话内的 run 按 ConversationState.id 共用工作目录，
+  静态 DAG 仍按 run 分配。SDK 不再跨目录携带、恢复或校验文件，删除 ConversationResourceError；
+  宿主迁移会话时需自行复制文件。
+- 工具输出文件改为尽力保存，且仅在模型能读取时写入。ContentReference.sha256、Attachment.sha256
+  及冻结展示的恢复引用改为可选；新工具输出、产物和上传引用不带摘要。压缩归档缺失时降级上下文，
+  展示文件写入失败时报告存储告警。宿主需接受可选字段并自行执行文件完整性检查。
+- ToolAgent 和动态 DAG 中的工具接收普通容器参数的拷贝；通过返回值传递数据，不再依赖修改参数。
 - **已明确授权的破坏性变更：** 删除四个入口的 on_conversation_change、专属 Handler/Failure/Error
   及失败事件回调字段；删除 DAG 回调专用钩子。其他默认执行、结果、provider 和 V4/V6/V9
-  持久化契约保持，V1 批次仍可读取。参见[迁移说明](migration.md#未发布)。
+  持久化契约保持，V1 批次仍可读取。参见[迁移说明](migration.md#0110)。
 
 验证覆盖实际 Chat Completions/Responses 请求一致性、公开结果与续聊契约、审核恢复、
-重试/压缩、保存失败、慢消费者及内存释放。运行 Python 全量测试，以及
-[持久化指南](conversation-changes.md)中的离线示例。
+重试/压缩、保存失败、慢消费者及内存释放。发布验证：Python 全量测试（dev、MCP）为
+2535 passed、3 skipped；离线持久化与状态保留示例均通过。128 项前端测试、前端构建、
+wheel/sdist 构建、Twine 元数据、版本一致性、锁文件和差异格式检查均通过。跳过两项未启用的
+真实 MiniMax 测试和一项缺少运行中 daemon 的 Docker 测试；真实 provider 和 Docker 验收需要相应环境。
 
 边界：展示增量之外仍交付最终权威消息；V9 审核 checkpoint 保留完整状态及已有重复字段；
 不拆帧、不承诺固定帧上限。普通无限保留和防重放 ID 增长仍显式存在。
-本说明记录源码改造，不代表已发布包。
+宿主集成细节参见[持久化指南](conversation-changes.md)。

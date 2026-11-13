@@ -92,9 +92,9 @@ host 的保留策略。
 不要信任客户端提交的 reference path。只能在记录的 run workspace 内解析，并校验
 checksum。
 
-在 **Unreleased** SDK 中，不再跨 workspace 携带任何文件：同一会话的 run 共用一个 workspace，上面的
+在 **0.11.0** SDK 中，不再跨 workspace 携带任何文件：同一会话的 run 共用一个 workspace，上面的
 content-addressed store 不再读写。工具输出溢出文件不带摘要、不受校验，只有压缩归档还带
-checksum；详见 [未发布版本的迁移说明](migration.md#未发布)。
+checksum；详见 [0.11.0 迁移说明](migration.md#0110)。
 
 ## 上线验证
 

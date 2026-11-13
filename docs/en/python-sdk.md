@@ -53,12 +53,12 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 
 Persistent ToolLoop streams add `Runner.acknowledge_changes` and `reject_changes`; review hosts use `Runner.validate_checkpoint`, `RunCheckpoint.review` and `pending_tool_invocations`. Upload contracts and checked filenames are public in `dagent.artifacts` (`ArtifactUpload`, `ArtifactPathError`, `UPLOAD_ROOT`, `validate_upload_filename`); resource access uses `Runner.resolve_runtime_path`. [Persistent stream V2](conversation-changes.md) requires no runtime-private imports.
 
-In the **Unreleased** SDK, `ContentReference.sha256` is optional and is `None` for tool-output
+In the **0.11.0** SDK, `ContentReference.sha256` is optional and is `None` for tool-output
 overflow files, large values and artifacts; compaction archives keep a digest.
 `FrozenResultDisplay.recovery` is `None` when no file holds the undisplayed text.
 `Attachment.sha256` is `None` for new uploads. See [tool result
-recovery](tool-result-recovery.md) and the [unreleased migration
-notes](migration.md#unreleased).
+recovery](tool-result-recovery.md) and the [0.11.0 migration
+notes](migration.md#0110).
 
 Since 0.10.0, opt-in prompt-cache statistics extend the existing `ModelTokenUsage`
 with nullable `cached_input_tokens`. See

@@ -5,13 +5,19 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current stable package version is `0.10.4`.
+The current stable package version is `0.11.0`.
 
-## Unreleased
+## 0.11.0
+
+Install with `pip install --upgrade 'dagent-ai==0.11.0'`.
+
+This release includes breaking changes to persistence callbacks, workspace
+selection, and file storage. Complete the migration steps below before upgrading
+hosts that use these contracts. Persisted V4/V6/V9 records remain readable.
 
 ### ToolLoop persistence: callback V1 → stream V2 (breaking)
 
-The next SDK version removes `on_conversation_change` from `run`, `stream`,
+Version 0.11.0 removes `on_conversation_change` from `run`, `stream`,
 `resume`, and `resume_stream`. `ConversationChangeHandler`, `ConversationChangeFailure`,
 `ConversationChangeError` (including its root export), and
 `RunFailedData.conversation_change_failure` are removed. There is no callback
@@ -32,7 +38,7 @@ Persistent delivery uses an unbounded ordered event queue. The draft
 removed; passing them is rejected. Construct `StreamPersistenceOptions()` or set
 only `ack_timeout_seconds`. Display deltas keep their original boundaries, and
 only durable batch publications wait for confirmation. This change applies to
-the unreleased persistence API; ordinary streaming remains unchanged.
+the draft persistence API before 0.11.0; ordinary streaming remains unchanged.
 
 The final failed text-only assistant response now remains in persistent context;
 retry-discarded responses and responses containing failed calls remain audit-only.
