@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import PurePosixPath
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import (
     BaseModel,
+    PrivateAttr,
     ConfigDict,
     Field,
     field_validator,
@@ -26,7 +27,7 @@ from dagent.schemas.common import (
 from dagent.schemas.dag import DAG, DAGSpec
 from dagent.schemas.artifact import ArtifactFileManifest
 from dagent.schemas.capability import CapabilityInvocation, CapabilityResult
-from dagent.schemas.run_trace import RunTrace
+from dagent.schemas.run_trace import RunTrace, RunTraceError
 from dagent.schemas.sandbox import RunExecution
 from dagent.schemas.context import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -41,6 +42,10 @@ from dagent.schemas.conversation import (
     ConversationItem,
     ConversationState,
 )
+
+
+if TYPE_CHECKING:
+    from dagent.review import ReviewHandle
 
 
 ReviewKind = Literal["initial_dag", "dag_replan", "capability_review"]
@@ -122,6 +127,7 @@ class ResolvedRunPlan(BaseModel):
     max_output_tokens: int | None = Field(default=None, ge=1)
     extra_system_prompt: str | None = None
     fingerprint: str = ""
+    response_retries: int = Field(default=0, ge=0, strict=True)
 
     @field_validator(
         "tool_profile",
@@ -208,6 +214,8 @@ class ResolvedRunPlan(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_current_execution_fields(self, serializer):
         payload = serializer(self)
+        if self.response_retries == 0:
+            payload.pop("response_retries", None)
         if self.runtime_kind == "static_dag" and self.max_steps is None:
             payload.pop("max_steps", None)
         return payload
@@ -384,6 +392,9 @@ class RunState(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    _terminal_error: RunTraceError | None = PrivateAttr(default=None)
+    _checkpoint_eligible: bool = PrivateAttr(default=True)
+
     schema_version: Literal[6] = 6
     run_id: str
     kind: RunStateKind
@@ -447,6 +458,23 @@ class RunCheckpoint(BaseModel):
     state: RunState
     plan: ResolvedRunPlan
     usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
+
+    @property
+    def review(self) -> ReviewHandle | None:
+        """Public decisions for this checkpoint; no private batch access."""
+        from dagent.review import ReviewHandle
+        return None if self.state.pending_review is None else ReviewHandle(self.state.pending_review)
+
+    @property
+    def pending_tool_invocations(self) -> tuple[CapabilityInvocation, ...]:
+        """Detached remaining invocations of a root ToolLoop checkpoint."""
+        if self.state.kind != "tool":
+            raise ValueError("pending_tool_invocations requires a root tool checkpoint.")
+        batch = self.state.pending_tool_batch
+        return () if batch is None else tuple(
+            call.invocation.model_copy(deep=True) for call in batch.calls[batch.next_index:]
+            if call.invocation is not None and call.approved is not False
+        )
 
     @model_validator(mode="after")
     def validate_checkpoint_consistency(self) -> "RunCheckpoint":
@@ -517,11 +545,16 @@ class RunCheckpoint(BaseModel):
                 if item.invocation is not None and scope is not None and item.invocation.capability_id not in scope:
                     raise ValueError("Checkpoint pending capability is outside the resolved scope.")
             thread = tool_state.model_thread or tool_state.conversation
-            assistant = next((item for item in reversed(thread.items if thread else ())
-                              if isinstance(item, AssistantMessage)), None)
+            thread_items = thread.items if thread else ()
+            assistant_index = next((index for index in range(len(thread_items) - 1, -1, -1)
+                                    if isinstance(thread_items[index], AssistantMessage)), None)
+            assistant = None if assistant_index is None else thread_items[assistant_index]
             if assistant is None or assistant.tool_calls != tuple(item.call for item in batch.calls):
                 raise ValueError("Checkpoint tool batch does not match its model reply.")
-            results = [item.call_id for item in (thread.items if thread else ())
+            # Only results after this batch's reply belong to its cursor.
+            # Providers can reuse call ids from earlier model rounds.
+            assert assistant_index is not None
+            results = [item.call_id for item in thread_items[assistant_index + 1:]
                        if isinstance(item, ToolResultMessage) and item.call_id in {c.call.id for c in batch.calls}]
             if results != [item.call.id for item in batch.calls[:batch.next_index]]:
                 raise ValueError("Checkpoint tool results do not match its batch cursor.")

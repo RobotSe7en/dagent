@@ -27,12 +27,14 @@ async def main() -> None:
                     tool_calls=[ToolCall(id="report", name="tool_rows", arguments={})]
                 ),
                 ChatResponse(
-                    content="Report saved; this agent has no read_file capability."
+                    content="Report saved; read_file can open the rest."
                 ),
             ]
         )
         # Keep each display within a fixed limit that fits this model window.
         # Later results never take tokens from an earlier result's excerpt.
+        # Results are shortened, with the rest in a file, only for a model that
+        # has read_file; without it the full report would stay inline.
         provider.context_window_tokens = 8192
         provider.max_output_tokens = 1024
         runner = dagent.Runner(
@@ -44,7 +46,7 @@ async def main() -> None:
         try:
             result = await runner.run(
                 dagent.ToolAgent(
-                    profile="conversation", capabilities=["tool.rows"],
+                    profile="conversation", capabilities=["tool.rows", "tool.read_file"],
                     context=dagent.ContextPolicy(
                         max_tool_result_tokens=2048,
                     ),
@@ -114,7 +116,7 @@ async def main() -> None:
                     ]
                 ),
                 ChatResponse(
-                    content="Read a character window, searched a page and saved shell output."
+                    content="Read a character window, searched a page and ran a shell command."
                 ),
             ]
         )

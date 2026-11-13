@@ -13,8 +13,8 @@ credentials.
 | `editable_uploads.py` | Upload, edit, and read current file contents across runs using the same workspace. | [Runner and Configuration](../docs/en/runner-and-configuration.md#editing-uploaded-files) |
 | `batch_tool_review.py` | Exact replace-all editing, mixed batch review, saved-queue resume and shell execution | [Capabilities](../docs/en/capabilities.md), [Review](../docs/en/results-streaming-review.md) |
 | `deepseek_replay.py` | Opt-in, bounded official DeepSeek tool-replay acceptance using synthetic data. | [Model context and reasoning](../docs/en/model-context-and-reasoning.md#deepseek-chat-tool-replay) |
-| `tool_result_recovery.py` | Fit large tool results into a small model window, recover the saved report, inspect display cursors, page through searches, and retain shell logs offline. | [Tool result recovery](../docs/en/tool-result-recovery.md) |
-| `external_runtime_directory.py` | Keep private results outside the model workspace and restore them into a new conversation turn after removing the source run. | [Runner and Configuration](../docs/en/runner-and-configuration.md#store-private-runtime-files-outside-the-workspace) |
+| `tool_result_recovery.py` | Fit large tool results into a small model window for a `read_file` agent, recover the overflow file, inspect display cursors, page through searches, and run shell commands offline. | [Tool result recovery](../docs/en/tool-result-recovery.md) |
+| `external_runtime_directory.py` | Keep overflow files outside the model workspace, read them through logical paths, and continue in a new workspace without restoring them. | [Runner and Configuration](../docs/en/runner-and-configuration.md#store-private-runtime-files-outside-the-workspace) |
 | `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/en/agents.md), [Capabilities](../docs/en/capabilities.md) |
 | `model_failure.py` | Inspect retained tool errors and an inert reasoning-only final response. | [Model contracts](../docs/en/model-context-and-reasoning.md), [Results](../docs/en/results-streaming-review.md) |
 | `reasoning_mapping.py` | Map request field paths and string effort names for Chat, Responses, and compaction using an offline endpoint. | [Reasoning mappings](../docs/en/model-context-and-reasoning.md#custom-reasoning-fields-and-effort-names) |
@@ -32,7 +32,7 @@ credentials.
 | `static_dag_artifact_files.py` | Materialize input artifact uploads and fan their safe file metadata out with a `MapNode`. | [Static DAGs](../docs/en/static-dag.md) |
 | `static_rag.py` | Feed retrieval output into an agent node through optional reference content. | [Static DAGs](../docs/en/static-dag.md) |
 | `control_flow.py` | Use an exclusive condition node, map fan-out, an embedded subgraph, and a bounded loop in one static DAG. | [Static DAGs](../docs/en/static-dag.md) |
-| `conversation_changes.py` | Persist typed changes and ready files, resume review, replay a host journal, and continue without result snapshots. | [Conversation Changes](../docs/en/conversation-changes.md) |
+| `conversation_changes.py` | Read persistent ToolLoop events with an independent writer/ACK task, resume a trace-free review in a fresh Runner, replay a host journal and restore files into a moved workspace. | [Conversation Changes](../docs/en/conversation-changes.md) |
 | `streaming.py` | Consume `Runner.stream(...)` typed events, final results, and failure audit snapshots. | [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
 | `steering.py` | Queue guidance for an active root `ToolAgent` and observe typed steer events. | [Results, Streaming, and Review](../docs/en/results-streaming-review.md#steer-an-active-tool-agent-run) |
 | `runtime_registration_and_skills.py` | Add tools and skill roots at runtime, then use `SkillStore` directly. | [Runner and Configuration](../docs/en/runner-and-configuration.md), [Skills](../docs/en/skills.md) |
@@ -92,3 +92,7 @@ repository root, `run`, `python`, `-m`, `examples.local_test_mcp`. The test
 server's `echo` tool intentionally waits 130 seconds before returning so MCP
 tool timeout handling can be verified by setting `tool_timeout` below 130
 seconds.
+
+`model_failure.py` also demonstrates `invalid_tool_call` diagnostics and opt-in response retries with `response.discarded`; see [Agents](../docs/en/agents.md) and [Results and streaming](../docs/en/results-streaming-review.md).
+
+`run_retention.py` demonstrates `max_retained_runs`, exported checkpoints, conversation continuation and `derive` inheritance; see [Runner configuration](../docs/en/runner-and-configuration.md).

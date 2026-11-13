@@ -42,17 +42,27 @@ runner = dagent.Runner(
 应显式传入这两个值；如果运行数据只需驻留内存，也可以把 workspace 放在 tmpfs。
 `Runner.from_config(...)` 使用相同的运行路径默认值，不会从 YAML 加载它们。
 
-每次运行默认在 `<workspace>/runs/<run_id>` 下记录自己的目录。在 ToolAgent 和
-DagAgent message run 中，内置 file 和 shell tool 的相对路径从当前 run workspace
-解析。SDK 私有数据隔离在调用方选择的相对目录中：
+在 **Unreleased** SDK 中，同一会话的所有 run 共用一个 workspace：
+`<workspace>/runs/conversation_<key>`，其中 `<key>` 是 `ConversationState.id` 的 SHA-256
+前 32 位十六进制。续聊时传回上一轮的 `ConversationState`（保留其 `id`），才会继续使用该目录；
+重建状态时换了 id，就会得到新目录。不传 `conversation` 的 run 会开启新会话，因此得到新目录。没有会话的
+静态 DAG run 仍使用 `<workspace>/runs/<run_id>`。在 ToolAgent 和 DagAgent message run 中，
+内置 file 和 shell tool 的相对路径从当前 run workspace 解析。SDK 私有数据隔离在调用方
+选择的相对目录中：
 
-- `<workspace>/<runtime_directory>/conversations` 保存后续会话轮次需要的内容寻址外置结果；
-- `<run-workspace>/<runtime_directory>/results` 保存外置的 tool/MCP 输出；
-- `<run-workspace>/<runtime_directory>/history` 保存恢复到新 run workspace 的结果资源。
+- `<run-workspace>/<runtime_directory>/results` 保存超出展示上限的 tool/MCP 输出，以及大值和二进制产物；
+- `<run-workspace>/<runtime_directory>/history` 保存压缩归档（压缩记录、源归档和旧版结果索引）。
 
 这些目录按需创建。只构造 runner 或执行纯文本轮次不会创建它们。
-工具执行可能为恢复需要保存小结果，shell 执行则无论输出大小都会保存。
-仅上传附件不会创建 conversation backing store 或 history 目录。
+只有读取结果的模型具备内置 `read_file` 工具时，展示内容才会溢出写入文件；否则展示
+仍会截断，但不写文件。Shell 输出只在超过 shell 自身的内联上限（100,000 字节或 2,000 行）
+时写入文件。溢出文件尽力写入，不带摘要，SDK 不校验、不回读，详见
+[工具结果恢复](tool-result-recovery.md)。仅上传附件不会创建 history 目录。
+
+SDK 不在 workspace 之间复制任何文件。同一会话的 run 共用 workspace，所以之后的轮次能读到
+之前轮次写的文件，包括压缩归档。早期版本还会把压缩归档复制到
+`<workspace>/<runtime_directory>/conversations`，并在每个新 run workspace 中恢复；该目录
+现在不再读写，可以删除。
 
 ### 将 SDK 私有运行文件放到工作区外
 
@@ -66,7 +76,7 @@ runner = dagent.Runner(
 )
 ```
 
-外置目录包含 `conversations/` 和 `runs/<workspace-key>/{results,history}/`。
+外置目录包含 `runs/<workspace-key>/{results,history}/`。
 `workspace-key` 是解析后的 run workspace 路径的 SHA-256，不同工作区的结果文件互相隔离；
 复用同一工作区时复用其存储命名空间。相对路径保留原有布局，`../runtime` 等相对路径穿越
 仍被拒绝。绝对路径在构造 Runner 时解析。`from_config` 接受这个显式参数，`derive`
@@ -85,22 +95,28 @@ saved_path = runner.resolve_runtime_path(
 )
 ```
 
-多轮续聊应使用同一个绝对存储目录。改变设置不会自动搬迁已有文件；旧 checkpoint 按其
-冻结的设置续跑。宿主仍负责保留存储文件，以及持久化 conversation/checkpoint 记录。
+多轮续聊应使用同一个绝对存储目录和同一个 workspace 路径，以便之前轮次的文件（包括
+压缩归档）保持可用：它们留在所属 workspace 的命名空间中，在其他 workspace 续聊时保留原
+路径，但读不到这些文件。改变设置不会自动搬迁已有文件；旧 checkpoint 按其冻结的设置续跑。
+宿主仍负责保留存储文件，以及持久化 conversation/checkpoint 记录。
 
 绝对目录只改变存储位置，不改变进程权限。本地 shell 仍拥有宿主进程的访问权限。
 Docker 执行只为工具 worker 将 Runner 工作区和当前 run workspace 对应的
-`runs/<workspace-key>/` 目录挂载为可读写，不挂载共享的 `runs/` 父目录或 `conversations/`；
+`runs/<workspace-key>/` 目录挂载为可读写，不挂载共享的 `runs/` 父目录；
 沙箱启动会按需创建这些命名空间。需要防止删除时，仍应通过宿主权限和沙箱策略约束。
 
 ### 选择运行工作区
 
 如果应用已经拥有执行目录，可以给 `Runner.run(...)` 或 `Runner.stream(...)` 传入
-`workspace_path=...`。达智会直接使用这个目录运行，不再创建 `<run_id>` 子目录。
+`workspace_path=...`。达智会直接使用这个目录运行，而不是 `workspace_root` 下该会话的目录。
 这是运行时 workspace 选择能力，不是持久化能力；调用方仍然负责在 SDK 之外保存 run
-的 conversation 和 review 状态。会话续聊会创建新的 run，也可以选择不同 workspace。
+的 conversation 和 review 状态。会话续聊会创建新的 run，也可以选择不同 workspace，
+见[把会话移到另一个 workspace](conversation-changes.md#把会话移到另一个-workspace)。
 review 续跑使用 `RunCheckpoint` 中冻结的 workspace；`Runner.resume(...)` 不接受替换
 workspace。
+
+同一会话同时执行的 run 共用其 workspace。SDK 不加锁；溢出文件和归档的文件名不会冲突，
+但工具写的文件可能互相覆盖。workspace 按会话累积，是否删除由宿主决定。
 
 对于由 profile 驱动的模型调用，SDK 还会在 system prompt 中动态加入
 `Runtime Context` 段，写明解析后的 workspace root，并要求 agent 从该目录解析相对
@@ -110,8 +126,8 @@ validator。Profile Markdown 本身保持不变；runtime path 不会写入 prof
 收到 `workspace_path` 后，也会使用相同的动态段。
 
 模型会在该 system 段中收到解析后的 run workspace。附件记录和外置结果使用 workspace
-相对路径，不暴露 runner-level conversation backing store。附件的字节数和摘要描述
-上传时的内容；结果引用的元数据描述受完整性校验保护的已保存结果。
+相对路径。附件的字节数描述上传时的内容；早期版本的附件还保留上传时的摘要。工具输出引用只说明溢出文件写在哪里，不带摘要，文件也不受校验，
+之后读取到的是文件当时的内容。
 
 `extra_system_prompt` 用一个普通字符串统一追加宿主指令，不会替换 Agent Profile 或
 `Runtime Context`。SDK 的组装顺序是：Profile、Runtime Context、Extra System Prompt，
@@ -131,18 +147,19 @@ boundary、绕过 review 或改变 workspace 权限。
 
 向 message run 传入
 `input_uploads=[dagent.ArtifactUpload(filename="note.txt", content=b"draft")]`，
-即可在工作区写入 `uploads/note.txt`。会话上传和静态 DAG artifact 上传都会在写入后
-立即回读，与收到的 bytes 核对大小和 SHA-256。写入或校验失败会在 agent 执行前抛出
-`OSError`。这只校验 SDK 落盘完整性，不校验 HTTP 传输中的客户端声明摘要。
+即可在工作区写入 `uploads/note.txt`。会话上传和静态 DAG artifact 上传只写入一次；写入
+字节数不足时，会在 agent 执行前抛出 `OSError`。在 **Unreleased** SDK 中，写入后不再回读，
+新的 `Attachment` 记录不带摘要（`sha256` 为 `None`），只记录字节数。
 
 上传成功后，工具可以修改、覆盖或删除工作文件。SDK 在等待审核、完成运行或续聊时
-不再核对历史附件的大小和摘要。`Attachment` 保留上传时元数据，不保证文件仍存在或
-仍具有原始内容。工具读取已删除文件时，按正常文件访问错误处理。
+不再核对历史附件的元数据。`Attachment` 保留上传时元数据，不保证文件仍存在或
+仍具有原始内容。工具读取已删除文件时，按正常文件访问错误处理。同一会话的 run 共用
+workspace，之后上传同名文件会覆盖之前的文件，之前的附件记录描述的内容就不存在了。
 
-继续编辑时，向下一轮传入相同的 `workspace_path` 和上一轮的 `conversation`。
-如选择其他工作区，由调用方复制需要的工作文件；SDK 不自动复制历史上传文件、恢复
-已删除附件或改写附件路径。需要原始版本时，由宿主使用独立快照保存。
-已保存的 tool/MCP 结果引用仍保留完整性校验和跨工作区恢复能力。
+继续编辑时，向下一轮传入上一轮的 `conversation`，它会使用同一个 workspace；自行选择
+workspace 时，传入相同的 `workspace_path`。如选择其他工作区，由调用方复制需要的工作文件；
+SDK 不复制历史上传文件、溢出文件或压缩归档，不恢复已删除附件，也不改写路径。需要原始
+版本时，由宿主使用独立快照保存。
 
 可离线运行[上传文件编辑示例](../../examples/editable_uploads.py)，查看在同一显式工作区
 内上传、编辑和续聊的完整流程。
@@ -610,3 +627,30 @@ state = runner.run_state(run_id)
 `context_observability=True`，通过 `stream` / `resume_stream` 观测 ToolAgent
 HTTP 调用及 cache-aware 上下文维护。默认 `False`；此开关不改变生成请求、策略、
 检查点或 SDK 持久化状态；开启后 legacy 摘要使用内部流式调用报告真实进度。见[流式观测](results-streaming-review.md#上下文与请求观测)。
+
+## 限制已结束根 run 的保留状态
+
+`Runner(max_retained_runs=None)` 默认保留全部已结束 run。设为 `0`，会在根 run 或
+resume 完整收尾后释放其重状态；正整数只保留最近结束的若干根 run。运行中和等待
+审批的 run 不计数、不淘汰。较早开始的 run 经审批后结束，仍算最近结束。
+正常和异常退出都在交付及失败状态完成处理后清理。
+
+清理包括 Runner 保存的 `RunState`、checkpoint、失效审批索引，以及它创建的 DAG
+子 agent 会话缓存。外部 provider 自行管理其缓存。workspace、结果文件和压缩归档
+仍可使用；调用者已取得的结果与导出 checkpoint 不受影响。恢复始终显式提供
+checkpoint，不依赖进程缓存。
+
+`Runner.from_config(...)` 也可显式传 `max_retained_runs`，该进程策略不从 YAML
+加载，不进入执行指纹。`runner.derive()` 继承上限但不继承历史；
+`runner.derive(max_retained_runs=None)` 显式恢复无限保留。
+
+上限限制已结束 run 的重状态数量，不承诺进程内存恒定。设置上限时，已用 run id 和
+已消费审批 id 防重放元数据随历史增长，淘汰后仍不能复用 `run_id`。无限保留时，已保存
+的状态本身即阻止复用，因此尚未保存任何状态就结束的 run 可用同一 `run_id` 重试；
+持久化审核状态在 ACK 后释放，其 id 仍视为已用。调用者持有的结果、事件队列、
+provider/宿主日志和单次 run 的 `new_items` 也可能占用内存。参见
+[离线示例](../../examples/run_retention.py)。
+
+ToolLoop 持久化流的审核 checkpoint 由宿主持有：审核最终批次 ACK 后立即释放本地重状态，
+不受普通保留上限影响。普通持久化终态不缓存 checkpoint。宿主持有历史时配置
+`max_retained_runs=0`。参见[持久化流](conversation-changes.md)。

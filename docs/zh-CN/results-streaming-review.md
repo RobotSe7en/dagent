@@ -37,8 +37,10 @@ Review resume 会恢复 checkpoint 中冻结的值。
 不要自行把 `result.new_items` 追加回会话。`new_items` 是当前 run 的审计增量；
 `result.conversation` 已经是下一轮应传入的完整有界状态。
 
-执行过程中需要增量保存时，四个执行入口共用可选的 `on_conversation_change`
-异步回调。批次顺序、状态重建、审计、文件和保存失败行为见
+ToolLoop 增量持久化使用 `stream(..., persistence=StreamPersistenceOptions())`，
+`resume_stream` 使用相同配置。该模式发布需要确认的 `conversation.changed` 批次和终态元数据，
+不构建 trace、不发送完整 `RunResult`。本页完整结果示例描述默认模式。
+旧 `on_conversation_change` 回调已移除。状态重建、ACK、审核恢复、文件和失败处理见
 [会话变化](conversation-changes.md)。
 
 ## 实际输入模型的内容
@@ -129,10 +131,10 @@ for item in result.new_items:
 
 ## 大型工具与 MCP 结果
 
-通常情况下，256 KiB 以内的工具/MCP 文本内联保存；展示预算截断也会触发原文保存。
-更大的文本、二进制 value 和 MCP
-二进制 payload 会原子写入 run workspace，并转换为带校验和的 `ContentReference`。
-模型只看到有界预览和 workspace 相对引用。
+通常情况下，256 KiB 以内的工具/MCP 文本内联保存。对具备内置 `read_file` 工具的模型，
+展示预算截断也会触发原文保存，更大的文本写入溢出文件。二进制 value 和 MCP 二进制
+payload 总会原子写入 run workspace。这些文件以不带摘要的 `ContentReference` 表示，
+不做校验。模型只看到有界预览和 workspace 相对引用，详见[工具结果恢复](tool-result-recovery.md)。
 
 ```python
 runner = dagent.Runner(
@@ -262,7 +264,7 @@ run_task = asyncio.create_task(
 # 稍后在 run 仍活跃时调用。
 receipt = await runner.steer(
     "release_note_run",
-    "重点说明破坏性 API 变化，不要写性能数据。",
+    "重点说明破坏性 API 变化和迁移步骤。",
 )
 assert receipt.status == "queued"
 
@@ -370,3 +372,28 @@ cache-aware 维护以带 `compaction_id` 的 `context.compaction.started` 开始
 
 流式失败会保留异常上已有的失败 `RunResult`，包括上下文窗口失败。
 快照只作为失败证据，不授权恢复或发布失败工作区。
+
+
+同一回复内的重复 call id 以 `invalid_tool_call` 失败。原始调用保留在模型 trace
+节点的 `provider_details` 中；不执行工具，会话不含悬空调用。流式以携带失败结果的
+`run.finished` 结束。不同回复之间仍然允许复用 call id。
+
+## 被丢弃的响应和流式 token
+
+开启响应重试后，`response.finished` 仍表示一次模型调用结束。实际重试时，失败观察被
+确认之后、恢复提示发布之前，新增 `response.discarded`。其类型化数据包括
+`response_id`、`model_step`、`error`、`retry`（每段连续失败从 1 开始），以及可用的
+`message_id` 和子 agent 关联信息。下一次 `response.started` 使用新响应身份。
+次数或模型步数耗尽时不发出丢弃事件。
+
+已发出的 token 是临时输出。只用 `on_token` 的消费者无法撤销内容，需要结合响应事件
+或会话变化确定有效结果。被丢弃的回复不进入会话和 `new_items`，模型 trace 节点及
+usage 仍保留。参见[离线失败示例](../../examples/model_failure.py)。
+
+## 淘汰后的结果查询
+
+被淘汰 run 的 `run_trace(run_id)`、`run_state(run_id)`、`run_checkpoint(run_id)`
+返回 `None`。调用者已拿到的 `RunResult`（包括可导出的 `checkpoint`）保持有效。
+续聊时保留 `ConversationState`；淘汰不删除其摘要和磁盘归档。等待审批的 run
+不受上限影响；已用 run id 和审批 id 仍受防重放保护。
+参见 [Runner 配置](runner-and-configuration.md)。

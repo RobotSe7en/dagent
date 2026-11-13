@@ -43,11 +43,18 @@ import dagent
 | DAG design | `Runner.design_dag`（包括可选的 `RunStreamEvent` 观察）、`DAGDesignSelection`, `DAGDesignResult`, `DAGDesignProposal`, `DAGDesignNoChange`, `DAGDesignAnswer`, `DAGDesignFailure`, `DAGDiagnostic`, `DAGDiagnosticSeverity`, `inspect_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
-| Conversations and context | `ConversationChangeBatch`, `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ReasoningEffort`, `ModelCallMetadata`, `ModelCallAttempt`, `ModelTokenUsage`, `ResultStoragePolicy` |
-| Reviews and results | `RunResult`（包含 `output_text` 和静态结构化 `output_value`）、`RunExecutionError`, `ConversationChangeError`, `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `CapabilityReviewDecision`, `ReviewLevel` |
+| Conversations and context | `StreamPersistenceOptions`, `ConversationChangeBatch`, `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ReasoningEffort`, `ModelCallMetadata`, `ModelCallAttempt`, `ModelTokenUsage`, `ResultStoragePolicy` |
+| Reviews and results | `RunResult`（包含 `output_text` 和静态结构化 `output_value`）、`RunExecutionError`, `RunError`, `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `CapabilityReviewDecision`, `ReviewLevel` |
 | Tool-run steering | `Runner.steer`, `SteerReceipt`, `SteerError`, `RunNotActiveError`, `RunNotSteerableError`, `SteerQueueFullError` |
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionUsage`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`；`dagent.providers` 也导出 `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ModelRequest`, `PreparedModelCall`, `ProviderReprepareRequired`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于能力查看、custom providers 和 tests |
+
+ToolLoop 持久化流新增 `Runner.acknowledge_changes/reject_changes`；审核宿主使用 `Runner.validate_checkpoint`、`RunCheckpoint.review/pending_tool_invocations`。上传契约和文件名校验位于公开 `dagent.artifacts`（`ArtifactUpload`、`ArtifactPathError`、`UPLOAD_ROOT`、`validate_upload_filename`），资源访问使用 `Runner.resolve_runtime_path`。[持久化流 V2](conversation-changes.md) 无需导入运行时私有模块。
+
+在 **Unreleased** SDK 中，`ContentReference.sha256` 改为可选：工具输出溢出文件、大值和产物均为 `None`，
+压缩归档仍带摘要。没有文件保存未展示文本时，`FrozenResultDisplay.recovery` 为 `None`。
+新上传附件的 `Attachment.sha256` 为 `None`。详见
+[工具结果恢复](tool-result-recovery.md)和 [未发布版本的迁移说明](migration.md#未发布)。
 
 自 0.10.0 起，显式缓存统计为现有 `ModelTokenUsage` 增加可空的 `cached_input_tokens`。
 采集配置及记录兼容性见
@@ -159,3 +166,18 @@ Provider 配置类型 `ProviderConfig` 和 `ReasoningMapping` 位于 `dagent.con
 自 0.10.1 起，包装 provider 可以请求重新准备并校验预算，或显式省略思考强度。
 `Runner(context_observability=True)` 开启请求观测与摘要进度。扩展契约位于
 `dagent.providers`，见[Provider 扩展与观测](model-context-and-reasoning.md#provider-包装与观测)。
+
+## 可选响应恢复
+
+`ToolAgent`、`AutoAgent` 在配置末尾增加可选的 `response_retries=0`。
+`ResolvedRunPlan` 保存非零值并纳入指纹，用于审批恢复；默认值保留已发布 plan、
+checkpoint 的序列化形状和 schema version。`UserMessage.purpose` 默认省略。
+`response.discarded` 是类型化流事件，事件数据类位于 `dagent.result`。
+参见 [Agents](agents.md) 和[结果与流式](results-streaming-review.md)。
+
+## 可选 run 保留上限
+
+`Runner`、`Runner.from_config`、`Runner.derive` 支持 `max_retained_runs`。
+它只控制进程内保留，不进入 plan 或指纹。默认 `None`；`derive` 区分省略（继承）
+与显式 `None`（无限）。查询、审批、缓存归属和内存语义见
+[Runner 配置](runner-and-configuration.md)。

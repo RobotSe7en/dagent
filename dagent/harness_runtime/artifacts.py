@@ -33,6 +33,20 @@ MAX_ARTIFACT_UPLOAD_FILE_BYTES = 25 * 1024 * 1024
 MAX_ARTIFACT_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024
 
 
+def conversation_workspace(root: str | Path, conversation_id: str, *, create: bool = True) -> Path:
+    """The default workspace of a conversation: all of its runs share it.
+
+    The name is derived from the conversation id, so any id is a safe,
+    stable directory name that cannot collide with a run workspace.
+    """
+
+    key = hashlib.sha256(conversation_id.encode("utf-8")).hexdigest()[:32]
+    workspace = Path(root).resolve() / f"conversation_{key}"
+    if create:
+        workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
 def create_run_workspace(root: str | Path = DEFAULT_RUNS_DIR, *, run_id: str | None = None) -> Path:
     workspace_name = run_id if run_id is not None else f"run_{uuid4().hex}"
     validate_run_id(workspace_name)
@@ -233,16 +247,11 @@ def materialize_workbench_uploads(
 
 
 def _write_upload(destination: Path, content: bytes) -> None:
-    """Verify received bytes at ingestion; the working file may then change."""
+    """Write received bytes once; the file is not read back or checked."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     written = destination.write_bytes(content)
     if written != len(content):
         raise OSError(f"Uploaded file write size mismatch: {destination}.")
-    stored = destination.read_bytes()
-    if len(stored) != len(content):
-        raise OSError(f"Uploaded file size mismatch: {destination}.")
-    if hashlib.sha256(stored).digest() != hashlib.sha256(content).digest():
-        raise OSError(f"Uploaded file SHA-256 mismatch: {destination}.")
 
 
 def validate_upload_filename(filename: str) -> None:

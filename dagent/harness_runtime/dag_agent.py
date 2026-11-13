@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from dagent.harness_runtime.conversation_changes import (
-    ConversationDeliveryFailure, ResponseRecorder, current_changes, publish_state, publish_messages, flush_resources,
-)
 
 from dagent.review import CapabilityReviewDecision
 from dagent.harness_runtime.context import compaction_source
@@ -118,6 +115,7 @@ from dagent.schemas.value import iter_artifact_exprs
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.harness_runtime.context import ContextAssembler, user_content_for_model
 from dagent.schemas.conversation import inline_content, ResultObservation
+from dagent.harness_runtime.result_projection import READ_FILE_CAPABILITY_ID
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.schemas.results import _StaticDagAgentContinuation
 
@@ -329,7 +327,6 @@ class DAGAgent:
                 "model_thread": self.thread,
             }
         )
-        await publish_state(public_conversation)
         return outcome.model_copy(
             update={
                 "state": state,
@@ -404,7 +401,6 @@ class DAGAgent:
                 "conversation": public_conversation,
             }
         )
-        await publish_state(public_conversation)
         return outcome.model_copy(
             update={
                 "state": next_state,
@@ -509,6 +505,12 @@ class DAGAgentLoop:
             capability_ids=capability_ids,
         )
 
+    def _reads_result_files(self, capability_ids: Sequence[str] | None) -> bool:
+        """Whether the planner can schedule read_file to open saved results."""
+
+        return any(definition.id == READ_FILE_CAPABILITY_ID
+                   for definition in self.available_capabilities(capability_ids))
+
     async def _request_dag(
         self,
         *,
@@ -538,9 +540,6 @@ class DAGAgentLoop:
                 visibility="internal",
             )
         )
-        if current_changes() is not None:
-            self.audit_items[-1] = user_item
-            await publish_messages((user_item,))
         if not messages or not isinstance(messages[0], dict) or messages[0].get("role") != "system":
             raise ValueError("DAG planner model thread requires one system message.")
         planner_thread = _thread_from_items(
@@ -561,6 +560,8 @@ class DAGAgentLoop:
             policy=self.context_policy,
             active_run_id=resolved_task_id,
             response_format=response_format,
+            result_overflow=("file" if self._reads_result_files(capability_scope.capability_ids)
+                             else "truncate"),
             compact=lambda summary, items, limit: self._compact_history(
                 summary,
                 items,
@@ -586,9 +587,6 @@ class DAGAgentLoop:
             *_thread_items(prepared.conversation),
         ]
         audit_ids = {item.id for item in self.audit_items}
-        await publish_messages(tuple(item for item in prepared.conversation.items if item.id in audit_ids))
-        response_record = (None if current_changes() is None else
-                           ResponseRecorder(run_id=resolved_task_id, step=model_step, scope="planner"))
         response = await _chat_for_dag(
             self.provider,
             prepared.request,
@@ -599,10 +597,9 @@ class DAGAgentLoop:
             retry_policy=self.llm_retry_policy,
             retry_sleep=self.llm_retry_sleep,
             response_format=response_format,
-            response_record=response_record,
         )
         assistant_message = AssistantMessage(
-            **({"id": response_record.message_id} if response_record is not None else {}), run_id=resolved_task_id, content=response.content,
+            run_id=resolved_task_id, content=response.content,
             reasoning=response.reasoning_content, refusal=response.refusal, usage=response.usage,
             model_call=response.metadata, scope="planner", visibility="internal")
         messages.append(assistant_message)
@@ -618,9 +615,6 @@ class DAGAgentLoop:
                 visibility="internal",
             )
         )
-        if response_record is not None:
-            self.audit_items[-1] = assistant_message
-            await response_record.finish(assistant_message)
         if response.refusal:
             raise DAGCreationError(f"DAG planner refused the request: {response.refusal}")
         try:
@@ -1023,8 +1017,6 @@ class DAGAgentLoop:
         if spec.output is not None and trace.status == "completed":
             try:
                 output_value = dag_executor.resolve_spec_output(spec.output, trace)
-            except ConversationDeliveryFailure:
-                raise
             except Exception as exc:
                 trace.root.status = "failed"
                 record.dag.status = "failed"
@@ -1210,12 +1202,10 @@ class DAGAgentLoop:
         step_limit = self.max_steps if max_steps is None else max_steps
         pending_observation: str | None = entry_observation
         trace = record.trace
-        changes = current_changes()
-        if changes is not None and changes.public:
-            changes.publisher.state_factory = lambda: record.model_copy(update={
-                "conversation": changes.publisher.conversation, "trace": trace,
-            })
         active_executor = dag_executor or self.dag_executor
+        # A static DAG has no planner reading its results; it stores by size.
+        result_files = (record.kind != "dynamic_dag"
+                        or self._reads_result_files(record.capability_scope.capability_ids))
         if record.kind == "dynamic_dag" and record.dag_spec is not None:
             active_executor.configure_spec(
                 record.dag_spec,
@@ -1246,15 +1236,11 @@ class DAGAgentLoop:
                         skills=record.capability_scope.skills,
                         on_token=on_token,
                         on_event=on_event,
+                        result_files=result_files,
+                        # Only a dynamic DAG's planner records node values.
+                        detach_values=record.kind == "dynamic_dag",
                     )
                 except StaticAgentReviewRequired:
-                    raise
-                except ConversationDeliveryFailure as error:
-                    trace = self._absorb_partial_results(
-                        record, trace, on_dag, dag_executor=active_executor,
-                        error_message=str(error), error_code="ConversationChangeError",
-                    )
-                    record.trace = trace
                     raise
                 except Exception as exc:
                     layer_failed = True
@@ -1352,8 +1338,6 @@ class DAGAgentLoop:
                 )
             except ContextWindowExceeded:
                 raise
-            except ConversationDeliveryFailure:
-                raise
             except Exception as exc:
                 pending_observation = _format_dag_observation(
                     kind="validation_error",
@@ -1387,8 +1371,6 @@ class DAGAgentLoop:
             # Apply the new DAG
             try:
                 self._apply_replan(record, response)
-            except ConversationDeliveryFailure:
-                raise
             except Exception as exc:
                 pending_observation = _format_dag_observation(
                     kind="validation_error",
@@ -1670,7 +1652,6 @@ async def _chat_for_dag(
     retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
     retry_sleep: LLMRetrySleep = asyncio.sleep,
     response_format: StructuredOutputFormat | None = None,
-    response_record: ResponseRecorder | None = None,
 ) -> ChatResponse:
     request = (
         replace(request_or_messages, response_format=response_format)
@@ -1687,26 +1668,15 @@ async def _chat_for_dag(
         record_model_turn()
         return chat_response_from_model(await complete_model(provider, request))
 
-    await flush_resources()
     if on_token is None and on_event is None:
-        try:
-            if response_record is not None:
-                await response_record.start()
-            return normalize_chat_response(
-                await run_with_llm_retries(chat_attempt, policy=retry_policy, sleep=retry_sleep)
-            )
-        except ConversationDeliveryFailure:
-            raise
-        except BaseException as error:
-            if response_record is not None:
-                await response_record.interrupt(None, "cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
-            raise
+        return normalize_chat_response(
+            await run_with_llm_retries(chat_attempt, policy=retry_policy, sleep=retry_sleep)
+        )
 
     stream = response_token_stream(
         on_raw=on_token,
         on_event=on_event,
-        context=(response_record.context if response_record is not None
-                 else ResponseStreamContext.create(run_id=run_id, model_step=model_step)),
+        context=ResponseStreamContext.create(run_id=run_id, model_step=model_step),
     )
     if stream is None:
         return normalize_chat_response(
@@ -1745,8 +1715,6 @@ async def _chat_for_dag(
         return response or ChatResponse(content=content)
 
     try:
-        if response_record is not None:
-            await response_record.start()
         stream.start()
         return normalize_chat_response(
             await run_with_llm_retries(
@@ -1756,13 +1724,6 @@ async def _chat_for_dag(
                 should_retry=lambda _exc: not emitted_tokens,
             )
         )
-    except ConversationDeliveryFailure:
-        raise
-    except BaseException as error:
-        stream.finish()
-        if response_record is not None:
-            await response_record.interrupt(stream, "cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
-        raise
     finally:
         stream.finish()
 

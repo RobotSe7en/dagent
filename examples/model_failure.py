@@ -18,6 +18,7 @@ def lookup(key: str) -> str:
 
 
 async def main() -> None:
+    duplicate = ToolCall(id="duplicate", name="tool_lookup", arguments={"key": "missing"})
     provider = MockProvider([
         ChatResponse(tool_calls=[ToolCall(
             id="lookup_1", name="tool_lookup", arguments={"key": "missing"},
@@ -25,10 +26,12 @@ async def main() -> None:
         ChatResponse(reasoning_content=(
             '<tool_call>{"name":"tool_lookup","arguments":{"key":"another"}}</tool_call>'
         )),
+        ChatResponse(tool_calls=[duplicate, duplicate]),
+        ChatResponse(),
+        ChatResponse(content="Recovered with a complete answer."),
     ])
     runner = dagent.Runner(
         workspace="agent-workspace", provider=provider, capabilities=[lookup],
-        validator="validator_agent",
     )
     try:
         result = await runner.run(dagent.ToolAgent(profile="conversation"), input="Find a record.")
@@ -40,6 +43,19 @@ async def main() -> None:
             if isinstance(item, dagent.ToolResultMessage):
                 print(item.name, item.status)
         print(result.conversation.items[-1].reasoning)
+
+        invalid = await runner.run(dagent.ToolAgent(profile="conversation"), input="Try again.")
+        assert invalid.status == "failed" and invalid.error.code == "invalid_tool_call"
+        assert not invalid.conversation.items[-1].tool_calls
+        print(invalid.error.code, invalid.trace.root.children[-1].output["provider_details"])
+
+        events = [event async for event in runner.stream(
+            dagent.ToolAgent(profile="conversation", response_retries=1), input="Return a complete answer.",
+        )]
+        discarded = next(event for event in events if event.type == "response.discarded")
+        recovered = events[-1].data.result
+        assert recovered.status == "completed"
+        print(discarded.data.error.code, discarded.data.retry, recovered.output_text)
     finally:
         runner.close()
 

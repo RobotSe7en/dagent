@@ -40,10 +40,13 @@ previous tool output is retained in the conversation and trace, not used as a
 replacement answer. Inspect the last `AssistantMessage.model_call` for terminal
 metadata and retry attempts. See [model failures and token accounting](model-context-and-reasoning.md).
 
-For opt-in incremental persistence during execution, use the shared async
-`on_conversation_change` callback on `run`, `stream`, `resume`, and
-`resume_stream`. See [Conversation Changes](conversation-changes.md) for batch
-ordering, reconstruction, audit, files, and persistence failures.
+For opt-in ToolLoop persistence, use `stream(..., persistence=StreamPersistenceOptions())`
+or the same option on `resume_stream`. This mode emits acknowledged
+`conversation.changed` batches and terminal metadata without constructing trace
+or sending a full `RunResult`. The complete-result examples on this page describe
+the default mode. The old `on_conversation_change` callback has been removed.
+See [Conversation Changes](conversation-changes.md) for reconstruction, ACK,
+review recovery, files and delivery failures.
 
 ## What reaches the model
 
@@ -149,11 +152,13 @@ for serialization compatibility and per-call ratios.
 
 ## Large tool and MCP results
 
-Tool and MCP text up to 256 KiB normally stays inline. Text shortened for model
-display is also saved even below this threshold. Larger text, binary
-values, and MCP binary payloads are written atomically under the run workspace
-and represented by checksum-bearing `ContentReference` values. The model sees a
-bounded preview plus the workspace-relative reference.
+Tool and MCP text up to 256 KiB normally stays inline. For a model with the
+built-in `read_file` tool, text shortened for model display is also saved even
+below this threshold, and larger text is written to an overflow file. Binary
+values and MCP binary payloads are always written atomically under the run
+workspace. These files are represented by `ContentReference` values without a
+digest and are not checked. The model sees a bounded preview plus the
+workspace-relative reference. See [tool result recovery](tool-result-recovery.md).
 
 ```python
 runner = dagent.Runner(
@@ -303,7 +308,7 @@ run_task = asyncio.create_task(
 # Called later, while the run is active.
 receipt = await runner.steer(
     "release_note_run",
-    "Focus on the breaking API change and omit benchmarks.",
+    "Focus on the breaking API change and migration steps.",
 )
 assert receipt.status == "queued"
 
@@ -423,3 +428,35 @@ on terminal Run events. See [`context_management.py`](../../examples/context_man
 Streaming failures preserve any typed failed `RunResult` attached to their
 exception, including context-window failures. A snapshot is failure evidence; it
 does not authorize recovery or publication of the failed workspace.
+
+
+Duplicate call ids within one response fail with `invalid_tool_call`. The raw
+calls remain in the model trace node’s `provider_details`; no tools execute and
+no dangling calls enter the conversation. Streaming ends with `run.finished`
+carrying the failed result. Reusing an id across responses remains supported.
+
+## Discarded responses and streamed tokens
+
+With response retries enabled, `response.finished` still marks the end of a model
+call. An actual retry adds `response.discarded` after the failed observation is
+acknowledged and before the recovery hint is published. Its typed data includes
+`response_id`, `model_step`, `error`, `retry` (starting at 1 for each consecutive
+failure sequence), and available `message_id` and subagent attribution. The next
+`response.started` has a new response identity. No discard event is emitted when
+retries or model steps are exhausted.
+
+Already emitted tokens are temporary output. An `on_token` consumer alone cannot
+retract them; use response events or conversation changes to decide which output
+is effective. The discarded response is absent from the conversation and
+`new_items`; its model trace node and usage remain. See
+[the offline failure example](../../examples/model_failure.py).
+
+## Queries after retention eviction
+
+`run_trace(run_id)`, `run_state(run_id)` and `run_checkpoint(run_id)` return
+`None` for an evicted run. The `RunResult` already returned (including its
+exportable `checkpoint`) stays intact. To continue a conversation, keep its
+`ConversationState`; eviction leaves its summary and disk archives available.
+Awaiting-review runs remain retained regardless of the limit. Used run and
+review ids remain protected against replay. See
+[Runner configuration](runner-and-configuration.md#bound-retained-root-run-state).

@@ -31,8 +31,10 @@ class AutoAgent:
     review: ReviewLevel = "fast"
     dynamic_adjust: bool = True
     context: ContextPolicy = field(default_factory=ContextPolicy)
+    response_retries: int = 0
 
     def __post_init__(self) -> None:
+        _validate_response_retries(self.response_retries)
         object.__setattr__(self, "name", self.name or _default_profile_name(self.profile))
         if self.max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
@@ -56,8 +58,10 @@ class ToolAgent:
     review: ReviewLevel = "fast"
     description: str = ""
     context: ContextPolicy = field(default_factory=ContextPolicy)
+    response_retries: int = 0
 
     def __post_init__(self) -> None:
+        _validate_response_retries(self.response_retries)
         object.__setattr__(self, "name", self.name or _default_profile_name(self.profile))
         if self.max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
@@ -91,6 +95,11 @@ class DagAgent:
         if self.skills is not None:
             object.__setattr__(self, "skills", tuple(str(skill) for skill in self.skills))
         object.__setattr__(self, "agents", _freeze_agents(self.agents))
+
+
+def _validate_response_retries(value: int) -> None:
+    if type(value) is not int or value < 0:
+        raise ValueError("response_retries must be a nonnegative integer.")
 
 
 def _default_profile_name(profile: str | AgentProfile) -> str:

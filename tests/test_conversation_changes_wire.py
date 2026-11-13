@@ -41,7 +41,7 @@ async def test_opt_in_and_reconstructed_continuation_keep_actual_wire_payloads(t
                                         context=dagent.ContextPolicy(reasoning_replay="all_runs"))
                 arguments = dict(input="first", run_id="first", workspace_path=tmp_path / "session")
                 if enabled:
-                    first, _ = await invoke(runner, agent, host, stream, **arguments)
+                    first, _ = await invoke(runner, agent, host, True, **arguments)
                     assert first.conversation == host.state
                     state = dagent.ConversationState.model_validate_json(host.state.model_dump_json())
                 else:
@@ -53,7 +53,7 @@ async def test_opt_in_and_reconstructed_continuation_keep_actual_wire_payloads(t
                     state = first.conversation
                 arguments = dict(input="next", run_id="next", workspace_path=tmp_path / "session", conversation=state)
                 if enabled:
-                    second, _ = await invoke(runner, agent, host, stream, **arguments)
+                    second, _ = await invoke(runner, agent, host, True, **arguments)
                     assert host.state == second.conversation
                 elif stream:
                     _ = [event async for event in runner.stream(agent, **arguments)]
@@ -62,7 +62,9 @@ async def test_opt_in_and_reconstructed_continuation_keep_actual_wire_payloads(t
                 # The SDK-returned and host-replayed copies must produce exactly
                 # the same request, including generated Responses reasoning ids.
                 arguments.update(conversation=first.conversation, run_id="compare")
-                if stream:
+                if enabled:
+                    await invoke(runner, agent, Host(first.conversation, runner), True, **arguments)
+                elif stream:
                     _ = [event async for event in runner.stream(agent, **arguments)]
                 else:
                     await runner.run(agent, **arguments)
@@ -72,6 +74,16 @@ async def test_opt_in_and_reconstructed_continuation_keep_actual_wire_payloads(t
             # relationships across requests while comparing their wire behavior.
             identities = {}
             for body in payloads:
+                # Persistent delivery always streams. Check that transport
+                # choice before comparing the complete model input payload.
+                if enabled or stream:
+                    assert body.pop("stream") is True
+                else:
+                    assert "stream" not in body
+                assert body["model"] == "test"
+                assert "stream_options" not in body
+                if protocol == "responses":
+                    assert body["store"] is False
                 for item in body.get("input", ()):
                     if item.get("type") in {"reasoning", "function_call", "message"} and "id" in item:
                         value = item["id"]
@@ -141,10 +153,9 @@ async def test_context_failure_publishes_the_actual_retained_snapshot(tmp_path, 
                          max_output_tokens=256) as (provider, posts):
         with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
             host = Host(runner=runner)
-            with pytest.raises(dagent.ContextWindowExceeded) as captured:
-                await runner.run(dagent.ToolAgent(profile="conversation", capabilities=[],
-                    context=dagent.ContextPolicy(compaction_strategy=strategy)), input="protected input " * 5000,
-                    on_conversation_change=host.save)
-            assert host.state == captured.value.result.conversation
+            result, _ = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[],
+                    context=dagent.ContextPolicy(compaction_strategy=strategy)), host, True,
+                    input="protected input " * 5000)
+            assert result.status == "failed" and result.error.code == "ContextWindowExceeded"
             assert host.state.summary is None
             assert posts == []

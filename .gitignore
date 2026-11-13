@@ -15,3 +15,7 @@ web/vite.*.log
 .claude/
 .dagent/
 .DS_STORE
+
+# Local response snapshots.
+/tests/fixtures/response_baseline_*.json
+/tests/fixtures/response_baseline_*.json.gz

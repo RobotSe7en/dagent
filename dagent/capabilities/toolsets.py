@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -49,7 +50,8 @@ class CapabilityToolAdapter:
         *,
         capability_ids: Sequence[str] | None = None,
     ) -> list[CapabilityDefinition]:
-        return self._definitions(enabled_toolsets, capability_ids=capability_ids)
+        return [definition.model_copy(deep=True)
+                for definition in self._definitions(enabled_toolsets, capability_ids=capability_ids)]
 
     def definitions(
         self,
@@ -63,10 +65,10 @@ class CapabilityToolAdapter:
                 "function": {
                     "name": self.function_name(definition),
                     "description": definition.description,
-                    "parameters": definition.parameters or {"type": "object"},
+                    "parameters": deepcopy(definition.parameters) or {"type": "object"},
                 },
             }
-            for definition in self.capabilities(enabled_toolsets, capability_ids=capability_ids)
+            for definition in self._definitions(enabled_toolsets, capability_ids=capability_ids)
         ]
 
     def invocation_from_tool_call(
@@ -77,7 +79,7 @@ class CapabilityToolAdapter:
         enabled_toolsets: Sequence[str],
         capability_ids: Sequence[str] | None = None,
     ) -> CapabilityInvocation:
-        definition = self.definition_from_tool_call(
+        definition = self._definition_from_tool_call(
             tool_call,
             enabled_toolsets=enabled_toolsets,
             capability_ids=capability_ids,
@@ -98,6 +100,17 @@ class CapabilityToolAdapter:
         enabled_toolsets: Sequence[str],
         capability_ids: Sequence[str] | None = None,
     ) -> CapabilityDefinition:
+        return self._definition_from_tool_call(
+            tool_call, enabled_toolsets=enabled_toolsets, capability_ids=capability_ids,
+        ).model_copy(deep=True)
+
+    def _definition_from_tool_call(
+        self,
+        tool_call: ToolCall,
+        *,
+        enabled_toolsets: Sequence[str],
+        capability_ids: Sequence[str] | None = None,
+    ) -> CapabilityDefinition:
         definitions_by_name = self._definitions_by_function_name(
             enabled_toolsets,
             capability_ids=capability_ids,
@@ -112,6 +125,17 @@ class CapabilityToolAdapter:
         return definition
 
     def ensure_allowed(
+        self,
+        capability_id: str,
+        *,
+        enabled_toolsets: Sequence[str],
+        capability_ids: Sequence[str] | None = None,
+    ) -> CapabilityDefinition:
+        return self._ensure_allowed(
+            capability_id, enabled_toolsets=enabled_toolsets, capability_ids=capability_ids,
+        ).model_copy(deep=True)
+
+    def _ensure_allowed(
         self,
         capability_id: str,
         *,
@@ -150,7 +174,7 @@ class CapabilityToolAdapter:
         enabled_toolsets: Sequence[str],
         capability_ids: Sequence[str] | None = None,
     ) -> str:
-        definition = self.ensure_allowed(
+        definition = self._ensure_allowed(
             capability_id,
             enabled_toolsets=enabled_toolsets,
             capability_ids=capability_ids,
@@ -180,7 +204,7 @@ class CapabilityToolAdapter:
                     resolved_ids.append(capability_id)
         definitions: list[CapabilityDefinition] = []
         for capability_id in resolved_ids:
-            definition = self.catalog.get(capability_id)
+            definition = self.catalog._get_definition(capability_id)
             if definition is None:
                 raise KeyError(f"Capability '{capability_id}' is not registered.")
             if definition.enabled:

@@ -1,204 +1,248 @@
-# Persist conversation changes incrementally
+# Persist ToolLoop conversations from the stream
 
-Available since SDK **0.10.4**. The optional `on_conversation_change`
-callback is shared by `Runner.run`, `stream`, `resume`, and `resume_stream`.
-Omit it to retain existing behavior, event serialization, provider requests,
-compaction policies, and result/checkpoint formats.
+**Unreleased — batch contract V2.** Enable persistence with
+`StreamPersistenceOptions` on `Runner.stream` or `resume_stream`. The former
+`on_conversation_change` callback and its error types have been removed; see
+[the V1 to V2 migration](migration.md#unreleased). Without persistence options,
+the existing complete-result stream and diagnostic trace remain unchanged.
 
-The SDK publishes its adopted state changes. The host saves them and later
-constructs the existing `ConversationState`; it does not reproduce compaction or
-context assembly. The SDK does not manage a database, permissions, transactions,
-or a host file store.
+This mode supports `ToolAgent`, registered tool-agent delegation, and the tool
+branch of `AutoAgent`. DAG targets are rejected. Auto routing to a DAG also fails
+explicitly before DAG execution. DAG execution, events and recovery are otherwise
+unchanged; its former callback-only hooks have been removed.
 
-## Subscribe and acknowledge
+Persistence is chosen per call. A tool that itself calls `run`, `stream`,
+`resume`, `resume_stream` or `test_capability` without `persistence` starts an
+ordinary, independent run with its own result and trace; nothing from it enters
+the calling Run's batches. Pass `persistence` to that inner `stream` to give it its
+own delivery. Registered `agent.*` delegation remains part of the calling Run.
+`design_dag()` also isolates its planning call from the outer persistence scope.
+
+The host's committed batch journal is authoritative. `ConversationState` is the
+materialized model context; a review `RunCheckpoint` is a portable continuation.
+The SDK owns neither a database nor host permissions, transactions or file storage.
+
+## Read, commit, acknowledge
 
 ```python
 import dagent
 
-
-async def save_changes(batch: dagent.ConversationChangeBatch) -> None:
-    await host.save_batch(batch)  # Return only after the host commits.
-
-
-result = await runner.run(
-    agent,
-    input="Continue the investigation.",
-    conversation=previous_state,
-    on_conversation_change=save_changes,
+options = dagent.StreamPersistenceOptions(
+    ack_timeout_seconds=None,
 )
+
+async for event in runner.stream(
+    agent, input="Continue the investigation.", conversation=previous_state,
+    persistence=options,
+):
+    if event.type == "conversation.changed":
+        batch = event.data
+        await host.commit_batch(batch)  # application transaction + required files
+        await runner.acknowledge_changes(batch.run_id, batch.batch_id)
+    elif event.type == "response.content.delta":
+        display(event.data.delta)
+    elif event.type == "run.failed":
+        handle_delivery_failure(event.data)
 ```
 
-`host.save_batch` above is application code. A callback must return an awaitable.
-The SDK waits for it before advancing to the next model or tool operation.
-Text and reasoning continue through the existing stream events; callbacks do not
-receive a complete message for every token. The host may use a timeout inside
-its callback. The SDK imposes no persistence timeout or automatic retry. Saving ready resources
-does not consume the compactor's timeout allowance.
-
-Use the same keyword on `stream`, `resume`, and `resume_stream`. Review resumes
-still require their separate `RunCheckpoint`; conversation changes do not
-authorize execution from arbitrary interruption points.
-
-Run the offline example:
+This short example serializes reads and writes. For continued display while the
+host writes, run a reader and a single bounded writer task. The complete offline
+[example](../../examples/conversation_changes.py) demonstrates that arrangement,
+JSONL replay, cross-Runner review recovery, files and moved workspaces:
 
 ```bash
 uv run python -m examples.conversation_changes
 ```
 
-It writes a host JSONL journal, copies notified files, saves an ordinary review
-checkpoint, resumes it, reloads the journal, and continues from reconstructed
-state without storing `result.conversation`.
+Only one batch can await confirmation per delivery. The SDK confirms inputs and
+response starts before model dispatch, accepted replies before tool dispatch,
+tool starts before execution, and results before further dispatch. Tokens do not
+require individual acknowledgements. The final batch is also acknowledged.
 
-## Batch order and identity
+If committing fails, call `reject_changes(run_id, batch_id, message=...)`.
+Rejection and timeout stop subsequent dispatch; tools are never automatically
+replayed. Acknowledging the latest confirmed batch again is safe during the
+active delivery. Wrong, stale or closed-delivery acknowledgements return `False`.
+A confirmation that arrives after the ACK wait has expired also returns `False`
+and cannot mark the terminal batch acknowledged.
+A commit can succeed before its ACK is lost: deduplicate using batch identity.
 
-`ConversationChangeBatch` V1 contains:
+`ack_timeout_seconds` starts when the consumer receives the batch. `None` imposes
+no persistence timeout. Time spent queued before presentation is excluded.
+
+Display events and durable batches share one unbounded ordered queue. Enqueuing
+never waits for a reader; deltas are neither merged nor discarded for capacity.
+Only a durable batch publication waits for host ACK. The producer cannot dispatch
+the next operation until its preceding facts are confirmed. There is no separate
+queue-drain wait before a compaction request. Saving resource batches still waits
+for ACK, outside the compaction/model time budget.
+
+The host should continuously consume the SDK stream and publish saved events to
+frontend subscribers independently. A paused reader accumulates unconsumed events
+in memory; this queue provides no byte or frame-size limit. Closing the stream or
+Runner stops delivery and releases queued events and ACK waits.
+
+## Public batch contract
+
+`RunStreamEvent.type == "conversation.changed"` carries a
+`ConversationChangeBatch` directly. New runs publish V2; existing V1 journal
+records remain readable with the same public model.
 
 | Fields | Meaning |
 | --- | --- |
-| `delivery_id`, `sequence`, `batch_id` | One delivery session per run/resume invocation; sequence starts at 1; batch identity is stable for host deduplication |
-| `run_id`, `conversation_id` | Runtime run and public conversation identity |
-| `base_revision`, `revision` | SDK revision before and after this batch; revisions can jump |
-| `conversation_schema_version` | Version of the reconstructed public state, currently 4 |
-| `messages` | Complete typed message records or explicitly partial observations |
-| `context` | Effective public membership, summary, and compaction-state changes |
-| `observations` | Response lifecycle and factual tool-execution observations |
-| `resources` | Ready typed file references and their physical-location inputs |
+| `delivery_id`, `sequence`, `batch_id` | One delivery per run/resume, ordered from sequence 1; identity supports host deduplication |
+| `run_id`, `conversation_id` | Execution and public conversation identity |
+| `base_revision`, `revision` | Context revision before/after the batch; revisions can jump or remain equal |
+| `conversation_schema_version` | Public conversation format, currently 4 |
+| `messages` | Full typed messages, source attribution, response identity and partial marker |
+| `context` | Ordered membership, message updates, deactivation, summary and compaction-state changes |
+| `observations` | Response and tool lifecycle facts, including errors and uncertain execution |
+| `resources` | Public file references and their location inputs |
+| `status` | Absent for ordinary batches; `completed`, `awaiting_review`, `failed` or `cancelled` ends this delivery |
+| `usage`, `context_usage` | Terminal cumulative operation counts and this run's context usage |
+| `error`, `workspace_path` | Public `RunError` and workspace when available |
+| `output_item_id`, `output_text` | Mutually exclusive final output reference or fallback text |
+| `checkpoint` | Existing V9 checkpoint, present only for `awaiting_review`, without trace |
 
-Resume retains the run ID but creates a new delivery ID. Stream event sequence
-numbers are independent of batch sequence numbers. Audit/resource-only batches
-keep the same conversation revision. A static DAG without a public conversation
-has `conversation_id`, state version, and both revisions set to `None`, and no
-public `context` changes; its internal audit/resources can still be saved.
+Resume retains `run_id` and creates a new `delivery_id`. Event sequence numbers
+and batch sequence numbers are independent. Observation-only batches need not
+advance the conversation revision. Cumulative usage after review must replace the
+run's prior total, rather than being added again.
 
-Apply batches in delivery order. Check `base_revision` against the saved state
-and store the batch receipt with the host transaction. The SDK reports an
-acknowledgment only when the callback returns successfully. A host commit can
-succeed before a later callback error, so failed delivery does not prove the
-batch was absent from storage. Hosts coordinate concurrent writes themselves.
+Tool observations include `assistant_message_id`: correlate tools by assistant
+message and call ID, since providers can reuse call IDs in later rounds. A known
+completed tool whose output storage failed remains completed; retention records
+report unavailable data, and the terminal run error reports the storage failure.
+A cancelled tool can have `outcome_unknown`, without an invented result message.
 
-## Save messages and effective membership separately
+## Reconstruct the next context
 
-Store message records by `(origin.id, item.id)`. The record contains the full
-`UserMessage`, `AssistantMessage`, or `ToolResultMessage`, plus source attribution,
-an optional `response_id`, and a `partial` marker. Public membership uses records
-whose `origin.id` equals the public conversation ID. Planner, validator, and
-subagent audit records are separate sources, not implicit public history.
+Append batches to the durable journal once. A latest-message index is a projection,
+not a substitute for message versions and the journal. Apply each batch atomically:
 
-Apply a non-null `context` as one atomic change:
+1. Verify batch order, identity and `base_revision`; save messages and resources.
+2. Save observations; apply membership, updates, summary and compaction changes.
+3. Save terminal information and any checkpoint; commit, then ACK.
 
-1. Upsert `messages` into the host's structured-record table.
-2. Remove `deactivated_item_ids` and, when a summary changes, its
-   `summary_change.replaced_item_ids` from the effective ordered items.
-3. Replace the effective items listed by `updated_item_ids` from their complete
-   public records; their positions stay unchanged.
-4. Apply `added` placements in order, using their item IDs and zero-based indexes
-   in the list after the preceding changes.
-5. Apply the full summary/compaction-state replacements and the batch revision.
+Message keys are `(origin.id, item.id)`. Public membership refers to messages with
+`origin.id == conversation_id`. Validator, compactor, router and subagent records
+are audit sources; neither their presence nor `partial=True` implies membership.
+For summary replacement, remove `replaced_item_ids`; a replacement value of `None`
+clears the summary or compaction state. Keep retained item order and apply added
+placements in order. Updated and reactivated records may require the host index.
 
-Removing membership does not delete the audit record. Summary replacement and
-the exact messages it replaces are delivered in the same batch. Internal
-compaction candidates that are later rejected do not remove public messages.
-Summary tightening can replace the previous summary without removing any items.
-
-`summary_change=None` means unchanged; `summary_change.value=None` explicitly
-clears the summary. `compaction_state_change` uses the same distinction.
-Revision-only changes are valid. Result-display updates include the complete
-message, including frozen display/recovery metadata, retention, and feedback.
-Unchanged historical messages are not republished.
-
-Reconstruct the state from the saved effective records:
+Construct the existing public input yourself:
 
 ```python
-previous_state = dagent.ConversationState(
-    id=conversation_id,
-    revision=saved_revision,
-    items=tuple(saved_active_items),
-    summary=saved_summary,
-    compaction_state=saved_compaction_state,
+state = dagent.ConversationState(
+    id=conversation_id, revision=revision, items=tuple(active_messages),
+    summary=summary, compaction_state=compaction_state,
 )
 ```
 
-Supply it through the existing `conversation=` argument. Keep the initial
-conversation and its existing resources when enabling delivery on an established
-conversation. System prompts are generated separately and are not history.
-Internal audit is not a replacement for an internal model-thread checkpoint.
+Store fields verbatim: reasoning, refusal, usage and model metadata, tool IDs and
+arguments, frozen result displays, retention, references and compaction state all
+retain their existing meanings. The SDK continues to assemble provider requests.
+Successful turns keep their prompt configuration, tools, replay, compaction policy,
+result-file thresholds or provider argument precedence. Host-rebuilt context is
+checked against actual Chat Completions and Responses request payloads.
 
-## Correlate streams and preserve interruption evidence
+When a run finally fails, a response that originally had no tool calls and has
+text remains in the effective conversation, including its reasoning, usage and
+model metadata. Its observation and terminal status still report failure;
+`partial=True` describes completeness, while `context` determines membership.
+This supports continuing a truncated answer and preserves partial child-agent
+answers in the parent's tool result. Responses discarded for an automatic retry,
+empty/reasoning-only failures and failed responses containing calls stay audit-only.
+Failed calls are never executed or activated.
 
-When enabled, response start, content/reasoning delta, and finish events carry
-the SDK `message_id` allocated before generation. Batch response observations
-and the complete structured message use that identity and `response_id`.
-Tool calls retain their own IDs; tool results link through `call_id`.
+For normal output, resolve `output_item_id` and read
+`item.content.strip() or item.refusal.strip()`. Use `output_text` only when present.
+Display deltas remain provisional: retry-discarded text is not a formal reply.
 
-On cancellation or unexpected stream failure, observed content/reasoning is
-published once as a partial message with a terminal observation. Effective
-membership is determined exclusively by `context`, including the SDK's existing
-failure behavior. A partial observation must not be appended automatically.
-If a transport error's SDK message omits text already streamed, terminal
-observations preserve the differing `observed_content` / `observed_reasoning`.
-Save observations alongside message records; do not overwrite the adopted
-message with these display/audit fields.
+## Interruption and review
 
-Tool `starting` records a saved execution intention before dispatch, not proof
-of an effect. `completed` and `failed` report known outcomes. If dispatch was
-interrupted without a returned result, `outcome_unknown` preserves that
-uncertainty. No result is invented and tools are never automatically replayed.
-Each `MapNode` invocation follows the same acknowledgment and result-delivery
-rules. Persistence failure stops undispatched work; already running calls may
-still finish, and their execution evidence is retained.
-If required result-file storage fails after a tool returns, its known
-`completed` or `failed` observation is still delivered before the storage error
-propagates, including for DAG nodes and mapped invocations. This observation
-does not mean the result files were saved; no complete result message is
-published for the unsuccessful normalization.
+An ordinary next turn or retry uses a new run ID and reconstructed conversation.
+Use `input=None` to continue the supplied context without adding the user request
+twice; retained partial text is not silently removed. For an exact retry of an
+earlier request, rebuild its pre-response context from the journal. Use a new
+input such as "Continue" to extend a partial answer. `input=None` reuses
+saved attachments and rejects new `input_uploads`. AutoAgent retries continue its
+ToolLoop without routing again. Before model dispatch, persistent
+ToolLoop removes an unfinished tail assistant/tool group from effective context
+and publishes that deactivation for ACK. Earlier closed turns and user messages
+remain; original messages and known/unknown execution facts remain in the journal.
+This does not undo side effects or automatically replay a tool. Malformed orphan
+results are rejected rather than guessed.
 
-Cancellation stops further advancement and waits for the in-flight callback and
-necessary cleanup deliveries. It may therefore wait on host persistence. This
-does not promise per-token durability after a process crash or undo tool effects.
-
-## Save referenced files
-
-Each ready resource includes a complete `ContentReference` or `Attachment`, its
-`workspace_path`, and the actual `runtime_directory` used for that resource.
-Writes have completed before delivery. Locate the file using the public SDK:
+Review continues the same run and needs the existing public checkpoint:
 
 ```python
-for resource in batch.resources:
-    path = runner.resolve_runtime_path(
-        resource.reference.path,
-        workspace_path=resource.workspace_path,
-        runtime_directory=resource.runtime_directory,
-    )
-    await host.save_file(path, resource.reference)
+checkpoint = dagent.RunCheckpoint.model_validate_json(saved_checkpoint_json)
+runner.validate_checkpoint(checkpoint)  # read only; does not consume review
+calls = checkpoint.pending_tool_invocations
+stream = runner.resume_stream(
+    checkpoint.review.approve(), checkpoint=checkpoint, persistence=options,
+)
 ```
 
-Save required file bytes before acknowledging references. SDK-created result
-files, received/display snapshots, compaction sources/records, and newly
-materialized references are notified without scanning directories. A restored
-workspace location is notified even when its logical path is unchanged; this
-alone does not increase the conversation revision. References
-remain logical even with an absolute external runtime directory. Existing SDK
-backing-store restoration remains responsible for cross-workspace continuation;
-this feature does not add a host file-restoration API or relocate existing data.
-Mutable attachments retain their existing upload-time metadata semantics.
+Resume once the review terminal batch is acknowledged; the previous stream need not
+have ended, because only the SDK's synchronous cleanup remains. A run that is still
+active, including one whose terminal batch is unacknowledged, is rejected before
+consuming the review decision. Delivery ownership follows the producer task,
+so an old reader cannot affect cancellation or admission of a new resume.
+The host stores the checkpoint
+whole; it never constructs private pending batches.
+`pending_tool_invocations` returns detached, remaining potentially executable calls.
+Checkpoint validation checks structure, plan fingerprints and available registered
+capabilities/skills. Host policy checks remain host responsibilities.
+After the review terminal batch is acknowledged, local heavy state and checkpoint
+are released, even with unlimited ordinary retention. Resume into a fresh Runner
+with compatible registered capabilities. In-process replay tombstones remain;
+cross-worker review deduplication belongs to the host transaction.
 
-## Handle persistence failures
+## Size, memory and failures
 
-`run` and `resume` raise `dagent.ConversationChangeError`, a `RunExecutionError`
-subclass. It exposes `failed_batch`, `acknowledged_sequence`,
-`acknowledged_revision`, `failure`, and an auditable failed `result`; `__cause__`
-holds the original host error. The result has no resumable checkpoint.
+Persistent mode constructs no ToolLoop trace, including delegated ToolLoops. It
+suppresses trace snapshots, duplicate capability bodies, duplicate review events
+and full `run.finished` results. Normal terminal batches have no conversation,
+model thread, history collection or checkpoint. There is no `RunSummary` model.
+Display deltas and each authoritative final message still cross the stream once
+each. Real message updates may publish new versions. Review checkpoints retain
+their existing complete V9 representation and duplicated fields.
 
-`stream` and `resume_stream` emit one `run.failed` with
-`error_type="ConversationChangeError"`, `data.result`, and the equivalent typed
-`data.conversation_change_failure`. The SDK stops further work, including
-quality-validation retries. A completed tool remains completed in execution
-evidence even though the Run failed to persist.
-This includes completed calls inside subgraphs, loop bodies, and delegated agents.
-If delivery fails during a quality-validation retry, the failed result and saved
-run state retain execution traces from earlier attempts as well as the retry.
+Configure `Runner(max_retained_runs=0)` when the host owns history. Ordinary
+terminal caches still follow the existing setting (`None` remains unlimited);
+completed persistent runs have no cached checkpoint. Active context, current
+response, one pending batch and unconsumed events remain in memory. Event queue
+usage depends on how promptly the host reads it. Used run/review IDs continue to
+grow; this is not an assertion of constant total process memory.
 
-The new callback is disabled by default. `result.conversation`, `new_items`,
-review checkpoints, and full `run.finished` results remain supported. The
-incremental-size guarantee concerns the new notifications, not the existing full
-terminal result. Filter frontend transport in the host when necessary.
+Execution failures arrive as acknowledged terminal `status="failed"` batches.
+Delivery failures arrive as `run.failed` with message/error type plus delivery,
+failed-batch and last-confirmed sequence/revision, without a full result or failed
+batch replay. The SDK cannot claim an unacknowledged terminal was stored.
+
+Persistent `cancel()` accepts a stop request without waiting for host storage.
+If an ordinary batch is awaiting ACK, confirmation first advances the conversation
+baseline, then cancellation publishes a `cancelled` terminal based on that revision.
+The cancellation completes when that terminal is acknowledged. Once any terminal
+batch starts delivery, `cancel()` returns `False`: execution has ended and the
+existing terminal still requires ACK, rejection or timeout. Closing the stream
+releases ACK waits and cancels work, including terminal delivery. Review state is
+released when its terminal is confirmed or delivery is abandoned. A disconnected
+host uses its committed journal to decide interruption status.
+Closing the Runner ends its persistent readers without forwarding the producer's
+shutdown cancellation. Explicitly cancelling a reader task still propagates
+`CancelledError`. Neither close operation claims an unconfirmed terminal is saved.
+
+Resources contain references, not bytes. Use `Runner.resolve_runtime_path` to
+read them and preserve required bytes before ACK. Restore logical paths yourself
+when moving workspaces; the SDK does not copy or scan storage. Mutable upload
+attachments and immutable result/compaction archives retain distinct semantics.
+Within a delivery, a small bounded cache suppresses repeated notifications for
+already acknowledged references with the same path and content digest. Changed
+digests, unversioned references and mutable attachments are still announced.
+Eviction and new deliveries may announce a reference again; hosts remain idempotent.
+Upload helpers are public in `dagent.artifacts`; no runtime-private imports are
+needed for this ToolLoop integration.

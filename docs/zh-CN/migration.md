@@ -6,6 +6,160 @@
 
 当前稳定包版本为 `0.10.4`。
 
+## 未发布
+
+### ToolLoop 持久化：回调 V1 → 流 V2（破坏性变更）
+
+下一 SDK 版本删除四个执行入口的 `on_conversation_change`，同时删除
+`ConversationChangeHandler`、`ConversationChangeFailure`、`ConversationChangeError`
+及其根导出，以及 `RunFailedData.conversation_change_failure`。不保留回调适配或忽略参数。
+其他既有公开默认行为继续兼容。
+
+持久化改用 `stream(..., persistence=StreamPersistenceOptions())`，保存
+`conversation.changed` 批次后调用 `acknowledge_changes`，保存失败时调用
+`reject_changes`。展示与保存独立时使用读取和写入任务。持久化模式以最终 V2 批次代替
+完整 `run.finished`，交付失败通过 `run.failed` 报告确认位置，不携带完整结果。
+宿主自行重建 `ConversationState`，保留所有字段与顺序。只有审核需要最终批次中的
+现有无 trace V9 checkpoint，通过公开审核/调用视图检查并整体传回 `resume_stream`。
+审核状态 ACK 后释放，普通终态保留策略需显式配置。
+
+持久化交付使用无界有序事件队列。移除草案中的 max_buffer_events、max_buffer_bytes
+和 stall_timeout_seconds，继续传入这些参数会被拒绝。使用 StreamPersistenceOptions()
+或只配置 ack_timeout_seconds。展示增量保持原有分段，只有事实批次等待确认。
+此项调整只作用于未发布的持久化接口，普通流式调用不变。
+
+持久化上下文现在保留最终纯文本失败回复；重试丢弃的回复和包含失败调用的回复仍只入审计。
+input=None 沿宿主提供的上下文继续，包括保留的部分文本；原样重试应重建该回复之前的上下文。
+关闭 Runner 时持久化读流正常结束，但不声称未确认终态已保存；普通流的关闭行为不变。
+
+新交付只支持 ToolLoop。DAG 仅移除旧回调钩子，默认执行、结果和恢复不变。
+V1 批次仍可读取，会话/状态/checkpoint 格式仍为 V4/V6/V9，不新增 RunSummary。
+参见 [完整契约和迁移示例](conversation-changes.md)与[版本说明](release-notes.md)。
+下文 0.10.4 回调说明仅记录已移除的历史 API，不代表仍支持第二条运行路径。
+
+### 可选已结束 run 保留上限
+
+`Runner(max_retained_runs=None)` 保持无限保留。`0` 或正整数按结束顺序释放已结束
+根 run 的重状态及 Runner 创建的 DAG 子会话，运行中和待审批 run 受保护。
+淘汰后查询返回 `None`，已导出的结果、checkpoint 和磁盘文件仍然有效。
+设置上限时，已用 id 和已消费审批的防重放元数据仍随历史增长；无限保留不额外记录 id，
+未保存状态就结束的 run 与以前一样可以用原 `run_id` 重试。`derive` 默认继承配置，显式
+`None` 恢复无限；此设置不进入指纹。参见 [Runner 配置](runner-and-configuration.md)。
+
+### 可选响应重试
+
+响应重试是默认关闭的增量功能。非零 `ToolAgent.response_retries` /
+`AutoAgent.response_retries` 纳入 plan 和子 agent 执行指纹，并在 checkpoint 恢复后
+继续生效。默认字段逐项省略，schema version 保持 9。子 agent 需单独配置。
+使用该功能的流式宿主应处理 `response.discarded`，并将 token 输出视为临时内容。
+用户消息之后的重试原样重发同一请求，只有工具结果之后的重试才加入内部提示。
+参见 [Agents](agents.md)。
+
+没有 `tool.read_file` 时，工具全文留在消息和 trace 中，结果对象及 checkpoint 会
+明显变大。需要控制体积的宿主应给 agent 配上 `tool.read_file`。
+
+### 工具调用 trace 修复
+
+当 provider 在不同模型轮次复用 call id 时，ToolAgent 现在为每次调用保留独立 trace 节点。
+结果的保留信息和文件引用只同步到对应调用，审批续跑和 steer 不再覆盖已完成的同 id 调用。
+公开 invocation id 和 trace 记录结构不变。恢复 checkpoint 后，仅为无歧义的 call id
+重建历史结果对应关系；之后上下文准备替换结果消息时，有歧义的历史节点保留已保存的元数据。
+同一条模型回复内出现重复 call id 时（包括自定义 provider），现在以
+`invalid_tool_call` 拒绝：`Runner.run` 返回失败结果，`Runner.stream` 以携带该结果的
+`run.finished` 结束。不执行工具，无效调用仅保留在 trace 的 `provider_details` 中，
+会话可以继续使用。自定义 provider 在此场景下之前会抛出原始 `pydantic.ValidationError`。
+
+### 破坏性变更：按会话固定 workspace，文件改为尽力保存
+
+本版本调整运行目录和 SDK 存储文件的方式：同一会话的所有 run 共用一个 workspace，SDK 不再在
+workspace 之间复制、恢复或校验文件。溢出文件只为能读取它的模型写入，从不校验。新上传的附件
+不带摘要。升级前请确认以下行为变化：
+
+- **每个会话一个 workspace。** 不传 `workspace_path` 时，run 改为使用
+  `<workspace_root>/conversation_<key>`（`<key>` 为 `ConversationState.id` 的 SHA-256 前 32 位
+  十六进制），不再每个 run 新建 `<workspace_root>/<run_id>`。不传 `conversation` 的 run 会开启
+  新会话，因此得到新目录；静态 DAG run 仍使用 `<workspace_root>/<run_id>`。显式的
+  `workspace_path`、审批续跑和 checkpoint 不变。影响：某一轮中工具、上传和溢出写入的文件在
+  之后几轮仍然可见；之后上传同名文件会覆盖之前的文件；同一会话并发 run 共用目录，不加锁；
+  目录按会话累积，而不是按 run。
+- **不再跨 workspace 搬运文件。** SDK 不再在 `<runtime_directory>/conversations` 中保存压缩
+  归档副本，Run 开始时不再恢复到新 workspace，结束时也不再校验。归档留在压缩写入的位置，
+  也就是该会话下一次 run 读取的位置。`dagent.ConversationResourceError` 已删除，归档缺失或
+  被改也不再导致 Run 失败。已有的 `conversations/` 目录不再读写，可以删除。
+
+- **溢出文件需要 `read_file`。** 超过展示上限的结果仍会截断。只有读取结果的模型能打开
+  溢出文件时，完整文本才写入溢出文件：模型具备内置 `read_file` 工具，且 ToolAgent 的读取
+  边界允许 runtime 的 `results/` 和 `history/` 目录（DagAgent 为能力列表包含
+  `tool.read_file`）。否则不写文件，被截断的展示标 `[RECOVERY_UNAVAILABLE: no saved original]`。
+  含 NUL 的文本 `read_file` 打不开，即使模型具备 `read_file`，也同样截断、不写文件。
+  `ValidatorAgent` 等没有工具的 profiled agent 同样截断但不写文件。静态 DAG 仍按大小保存大值。
+- **不带摘要，不做检查。** `ContentReference.sha256` 改为可选，工具输出、大值和产物均为
+  `None`。读取时不再校验大小、摘要或文件身份，不再拒绝被改过的文件，也不再回读刚写的
+  文件。文件被改后读到改后的内容；被删除时由读取工具报告不存在。静态 DAG 下游读取上游值时
+  不再报大小或校验和不符。溢出文件名不再包含内容 hash。
+- **Shell 输出。** 未超过 shell 内联上限（100,000 字节且 2,000 行）的输出完整返回，不再
+  写文件。更大的输出只在具备 `read_file` 时流式写入一个溢出文件；否则，或输出中含 NUL
+  时，只保留尾部，并标 `[SOURCE_TRUNCATED]`。
+- **冻结展示（`chunked`、`cache_aware`）。** `FrozenResultDisplay.recovery` 改为可选，完整
+  展示的结果，以及为无法打开文件的模型截断的结果，均为 `None`，不写文件。接收时已保存的结果直接复用该文件，不再写第二份快照。
+  恢复文件缺失不再抛出 `ResultBudgetExceeded`。紧急切换不读取文件，不再写
+  `previous_display`，并且只在模型能打开文件时进行；否则所有展示保持不变。展示文件写入
+  失败不再以 `OSError` 让 Run 失败：结果保留存储告警，没有文件而被截断的展示标
+  `[RECOVERY_UNAVAILABLE: no saved original]`。
+- **压缩。** 不再读取或校验工具输出文件，写入新归档前不再遍历更早的归档，
+  `CompactionSourceV1.refs` 不再列出工具输出引用。读取所需的上一条压缩记录时不校验摘要，
+  也不套用模型的读取边界。旧版结果索引原样归档结果，不再为每条结果单独写文件。引用回退
+  需要 `read_file` 工具，且读取边界允许 runtime 文件。
+- **归档缺失时降级。** 读不到上一条压缩记录不再导致压缩失败：它覆盖的历史标为未完全覆盖，
+  摘要带 `[DEGRADED_CONTEXT]`。保存了可复用替换结果的失败记录读不到时，对应来源可以重新压缩。
+  打不开的上一份旧版结果索引不再并入新索引，并设置 `result_archive_incomplete`。
+- **展示标记。** 不再输出 `[RECOVERY_UNAVAILABLE: read_file unavailable, path denied or
+  missing]`。没有文件的截断结果标 `[RECOVERY_UNAVAILABLE: no saved original]`（模型无法打开
+  文件、写入失败或没有工具的验证器）；之前已保存、但模型打不开的结果标
+  `[RECOVERY_UNAVAILABLE: read_file unavailable]`。
+- **会话变化。** 压缩归档仍在写入时通知；由于不再恢复，不会再在其他 workspace 中重复通知。
+  工具输出资源不带摘要。所有通知的文件宿主都可以不存。
+- **上传。** `Attachment.sha256` 改为可选，新上传的附件为 `None`，仍记录 `byte_length`。
+  上传只写入一次，不再回读校验；写入字节数不足时仍抛出 `OSError`。新附件给模型的描述为
+  `(<媒体类型>, <n> bytes)`。早期版本的附件保留摘要，描述文字不变。
+- **工具操作的是拷贝。** tool agent 或动态 DAG 调用的 capability 处理函数，拿到的是参数里
+  普通 dict、list 和 tuple 的拷贝，结果值按返回那一刻记录。工具修改参数，或修改仍持有的
+  返回对象，都不再改变记录下来的调用和结果；动态 DAG 节点修改参数，不再改变规划器看到的
+  观察。其他对象仍然共享；静态 DAG 的运行方式不变。开启
+  持久化流 V2 时，`stream` 使用 SDK 自己那份传入 `conversation` 的拷贝，
+  之后修改宿主自己的对象不会再影响它；已发布的消息也不会再因为被原地修改而报告为已更新。
+  交付时不再为每个批次复制整个会话。
+
+### 迁移步骤
+
+- 读取 `ContentReference.sha256` 或 `FrozenResultDisplay.recovery` 的宿主代码需接受 `None`。
+- 希望模型能找回截断内容的 agent，加上 `tool.read_file` 能力，并让读取边界包含 runtime 目录。
+  否则展示仍然有界，但省略的内容不会保存。
+- 如果依赖每个 run 一个新目录，请为每个 run 自行传入 `workspace_path`。如果每次 run 后删除
+  run 目录，请在会话可能继续期间保留该会话的目录。
+- 在不同的 `workspace_path` 中续聊时，由宿主把需要的文件复制过去；压缩归档的做法见
+  [把会话移到另一个 workspace](conversation-changes.md#把会话移到另一个-workspace)。不复制时，
+  run 照常继续，但历史会降级。
+- 升级后，不传 `workspace_path` 续聊已有会话时，第一次 run 会落在新的会话目录中，里面没有
+  之前的归档（它们在旧的按 run 建的目录和 `conversations/` 里）。除非用
+  `runner.resolve_runtime_path` 把归档复制到相同的逻辑路径，这次压缩会降级一次。
+- 删除对 `dagent.ConversationResourceError`、`HarnessRuntime.conversation_resources`，以及
+  上下文失败时可能带有的 `recovery_error` 属性的处理，它们都已不存在。
+- 为下一轮重建会话时保留 `ConversationState.id`：共用的 workspace 由它决定。
+- `Attachment.sha256` 需接受 `None`；如果用它给上传文件去重或校验，请改由宿主自行计算。
+- 如果工具通过修改参数把信息传回，请改为通过返回值传回。run 使用传入的 `conversation` 期间，
+  请把它当作只读。
+- 若此前依赖 SDK 的完整性报错来发现结果文件被改，请改由宿主实现。
+- 若此前依赖 `OSError` 在展示文件写不进去时停止 `chunked` 或 `cache_aware` Run，请改为
+  监听 `tool_result_storage_warning` 事件（`Runner.stream` 中为
+  `capability.result.storage_warning`）或检查 `retention.storage_warnings`。
+
+无需迁移记录。ConversationState V4、RunState V6 和 RunCheckpoint V9 记录原样加载，包括
+带摘要的引用，以及早期版本的冻结展示和附件。保持不变的部分：压缩归档的内容寻址文件名
+和摘要、runtime 路径包含检查和外置 runtime 目录映射，以及 `ResultStoragePolicy` 的全部
+字段。回归测试覆盖 ToolAgent、DagAgent 与验证器的 `read_file` 规则、shell 溢出、冻结展示、
+压缩、会话 workspace、在其他 workspace 续聊、上传和会话变化。
+
 ## 0.10.4
 
 使用 `pip install --upgrade 'dagent-ai==0.10.4'` 安装。
@@ -178,9 +332,7 @@ Completed Work，未知标题之后的条目留在当前分区，无引用条目
   行为。Qwen3 等模板在摘要指令之后会丢弃较早
   推理，使用这类模板时请配合 `reasoning_replay="none"` 或改用 `chunked`，参见
   [会丢弃较早推理的聊天模板](model-context-and-reasoning.md#会丢弃较早推理的聊天模板)。
-- Run 边界保存和恢复对话资源时，不再重新读取未变化的历史。此前每次续用对话，保存时
-  会把全部保留结果重新读取并计算哈希两遍，恢复时也是两遍；离线基准中 60.8 MiB 的保留
-  结果每次保存或恢复要读取 121.7 MiB，现在重复操作不再读取。同一个 `Runner` 的各次
+- Run 边界保存和恢复对话资源时，不再重新读取未变化的历史。同一个 `Runner` 的各次
   Run 共用存储，以及已校验文件身份和压缩记录引用的有界缓存；变化、缺失或损坏的文件仍
   校验失败。此项适用于所有策略。
 
@@ -306,13 +458,11 @@ fingerprint；启用新模式的记录需要兼容读取方。无需迁移旧记
 配置、128K/256K 预算、恢复边界与真实缓存验证见
 [ToolAgent 上下文策略](model-context-and-reasoning.md#有界的-toolagent-上下文策略)。
 Render 能力和标准缓存统计依赖实际服务端版本及开关，启用采集本身不会开启缓存。
-尚未对真实自托管部署的缓存性能或上下文错误率进行基准测试。
 
 验证：Python 测试 1,804 项通过，3 项因环境条件跳过。覆盖 200 次工具执行及至少
 5 次实际压缩、Chat/Responses 流式调用、失败恢复，以及提交 `8c2e9f2` 生成的旧
 checkpoint 原样读取。新增回归覆盖外置结果审批反馈、已付费摘要链恢复、旧总摘要下
-失败记录降级、小窗口发现、NUL 文本及归档文件删改。200 次合成压缩的累计归档正文读取
-从约 1.25 GB 降至 25 MB；每轮文件状态遍历仍随历史量线性增长。
+失败记录降级、小窗口发现、NUL 文本及归档文件删改。每轮文件状态遍历仍随历史量线性增长。
 离线上下文示例、文档代码片段与 `git diff --check` 通过。
 真实 vLLM 一小时 soak 需要服务端地址，尚未执行。
 
@@ -341,8 +491,7 @@ usage 省略该字段，包括嵌套的会话、摘要和 checkpoint。旧记录
 不支持这些字段的旧版本读取。
 
 已知限制：摘要存在信息损失；必要输入自身过大或服务端上限未知时仍可能超限。
-前缀缓存命中取决于部署、tokenizer 和服务端缓存状态。本次没有对真实 vLLM 缓存
-命中率和一小时长时执行进行基准测试。
+前缀缓存命中取决于部署、tokenizer 和服务端缓存状态。
 
 - 验证：Python 3.11 上 1,804 项 Python/MCP 测试通过，3 项依赖环境的测试跳过；
   128 项 WebUI 测试和生产构建通过。

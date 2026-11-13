@@ -92,6 +92,9 @@ class ProfiledAgent:
             system_message=messages[0],
             conversation=conversation,
             policy=self.context_policy,
+            # Profiled agents have no tools: keep their context bounded, but
+            # write no files they could never read.
+            result_overflow="truncate",
         )
 
         async def chat_attempt() -> ChatResponse:

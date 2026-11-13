@@ -42,7 +42,9 @@ class Host:
             )
             body = path.read_bytes()
             assert len(body) == resource.reference.byte_length
-            assert hashlib.sha256(body).hexdigest() == resource.reference.sha256
+            # Only compaction archives carry a digest; tool output files do not.
+            if resource.reference.sha256 is not None:
+                assert hashlib.sha256(body).hexdigest() == resource.reference.sha256
             self.resources[(resource.workspace_path, resource.reference.path)] = body
         if batch.context is not None:
             change = batch.context
@@ -67,12 +69,59 @@ class Host:
         self.batches.append(batch)
 
 
+class PersistedTurn:
+    """Host projection assembled exclusively from public stream records."""
+
+    def __init__(self, host, terminal, batches):
+        self.conversation = host.state
+        self.run_id = terminal.run_id
+        self.status = terminal.status
+        self.usage = terminal.usage
+        self.context_usage = terminal.context_usage
+        self.error = terminal.error
+        self.checkpoint = terminal.checkpoint
+        self.review = None if self.checkpoint is None else self.checkpoint.review
+        self.requires_review = self.status == "awaiting_review"
+        self.plan = None if self.checkpoint is None else self.checkpoint.plan
+        self.trace = None
+        self.new_items = tuple({(r.origin.id, r.item.id): r.item for b in batches for r in b.messages}.values())
+        self.output_text = terminal.output_text or ""
+        if terminal.output_item_id is not None:
+            item = host.records[(terminal.conversation_id, terminal.output_item_id)]
+            self.output_text = item.content.strip() or item.refusal.strip()
+
+
+async def consume(runner, events, host):
+    observed = []
+    batches = []
+    terminal = None
+    async for event in events:
+        observed.append(event)
+        if event.type == "conversation.changed":
+            batch = event.data
+            batches.append(batch)
+            try:
+                await host.save(batch)
+            except Exception as exc:
+                assert await runner.reject_changes(batch.run_id, batch.batch_id, message=str(exc))
+            else:
+                assert await runner.acknowledge_changes(batch.run_id, batch.batch_id)
+            if batch.status is not None:
+                terminal = batch
+    if terminal is None:
+        return None, observed
+    return PersistedTurn(host, terminal, batches), observed
+
+
 async def invoke(runner, agent, host, stream, **kwargs):
-    if stream:
-        events = [event async for event in runner.stream(agent, on_conversation_change=host.save, **kwargs)]
-        assert events[-1].type == "run.finished", events[-1]
-        return events[-1].data.result, events
-    return await runner.run(agent, on_conversation_change=host.save, **kwargs), []
+    result, events = await consume(runner, runner.stream(agent, persistence=dagent.StreamPersistenceOptions(), **kwargs), host)
+    assert result is not None, events[-1] if events else "empty stream"
+    return result, events if stream else []
+
+
+async def resume_invoke(runner, decision, checkpoint, host):
+    return await consume(runner, runner.resume_stream(decision, checkpoint=checkpoint,
+                         persistence=dagent.StreamPersistenceOptions()), host)
 
 
 @pytest.mark.asyncio
@@ -110,57 +159,6 @@ async def test_replay_tool_records_and_continue_without_saving_result(tmp_path, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stream", [False, True])
-async def test_review_resume_uses_new_delivery_and_original_run_id(tmp_path, stream):
-    executed = []
-
-    @dagent.tool(risk="medium")
-    def record() -> str:
-        executed.append("effect")
-        return "saved"
-
-    provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="record", name="tool_record", arguments={})]),
-        ChatResponse(content="finished"),
-    ])
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        host = Host(runner=runner)
-        first, _ = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[record], review="careful"),
-                                host, stream, input="record")
-        assert host.state == first.conversation
-        assert executed == []
-        checkpoint = dagent.RunCheckpoint.model_validate_json(first.checkpoint.model_dump_json())
-        if stream:
-            events = [event async for event in runner.resume_stream(first.review.approve(), checkpoint=checkpoint,
-                                                                    on_conversation_change=host.save)]
-            result = events[-1].data.result
-        else:
-            result = await runner.resume(first.review.approve(), checkpoint=checkpoint, on_conversation_change=host.save)
-        assert host.state == result.conversation
-        assert executed == ["effect"]
-        assert len(host.sequences) == 2
-        assert {batch.run_id for batch in host.batches} == {first.run_id}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stream", [False, True])
-async def test_planner_audit_is_not_public_context(tmp_path, stream):
-    provider = MockProvider([ChatResponse(content=final_answer_response("answer"))])
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        host = Host(runner=runner)
-        result, events = await invoke(runner, dagent.DagAgent(capabilities=[]), host, stream, input="hello")
-        assert result.status == "completed"
-        assert host.state == result.conversation
-        audit = [record for batch in host.batches for record in batch.messages if record.origin.scope == "planner"]
-        assert {item.id for item in result.new_items} <= {key[1] for key in host.records}
-        assert audit
-        assert all(item.scope == "conversation" for item in host.state.items)
-        if events:
-            started = next(event for event in events if event.type == "response.started")
-            assert any(record.item.id == started.data.message_id for record in audit)
-
-
-@pytest.mark.asyncio
 async def test_subagent_audit_does_not_replace_parent_context(tmp_path):
     provider = MockProvider([
         ChatResponse(tool_calls=[ToolCall(id="delegate", name="agent_helper", arguments={"prompt": "help"})]),
@@ -178,191 +176,8 @@ async def test_subagent_audit_does_not_replace_parent_context(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stream", [False, True])
-async def test_save_failure_after_effect_stops_next_call_and_preserves_result(tmp_path, stream):
-    executed = []
-
-    @dagent.tool
-    def record(value: str) -> str:
-        executed.append(value)
-        return value
-
-    provider = MockProvider([ChatResponse(tool_calls=[
-        ToolCall(id="one", name="tool_record", arguments={"value": "one"}),
-        ToolCall(id="two", name="tool_record", arguments={"value": "two"}),
-    ])])
-    saved = []
-
-    async def failing_save(batch):
-        saved.append(batch)
-        if any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages):
-            raise OSError("host commit failed")
-
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        agent = dagent.ToolAgent(profile="conversation", capabilities=[record])
-        if stream:
-            events = [event async for event in runner.stream(agent, input="record", on_conversation_change=failing_save)]
-            assert [event.type for event in events].count("run.failed") == 1
-            assert events[-1].data.error_type == "ConversationChangeError"
-            assert events[-1].data.conversation_change_failure.failed_batch == saved[-1]
-            result = events[-1].data.result
-        else:
-            with pytest.raises(dagent.ConversationChangeError) as captured:
-                await runner.run(agent, input="record", on_conversation_change=failing_save)
-            assert isinstance(captured.value.__cause__, OSError)
-            assert captured.value.failed_batch == saved[-1]
-            assert captured.value.acknowledged_sequence == saved[-1].sequence - 1
-            result = captured.value.result
-        assert executed == ["one"]
-        assert len(provider.requests) == 1
-        assert result.status == "failed"
-        assert result.checkpoint is None
-        assert runner.run_checkpoint(result.run_id) is None
-        assert result.trace.root.children[-1].capability_execution.result.status == "completed"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("resume", [False, True])
-@pytest.mark.parametrize("fail_at", ["response_start", "result", "validation_start", "validation_result"])
-@pytest.mark.parametrize("attempts", [1, 2])
-async def test_retry_delivery_failure_preserves_prior_execution_traces(tmp_path, stream, resume, fail_at, attempts):
-    executed = []
-
-    @dagent.tool(risk="medium" if resume else "low")
-    def prepare() -> str:
-        executed.append("prepare")
-        return "prepared"
-
-    @dagent.tool
-    def retry(value: str) -> str:
-        executed.append(value)
-        return value
-
-    responses = [ChatResponse(tool_calls=[ToolCall(id="prepare", name="tool_prepare", arguments={})])]
-    for attempt in range(attempts):
-        responses.extend([
-            ChatResponse(content=f"answer {attempt}"),
-            ChatResponse(content=json.dumps({"passed": False, "summary": "Try again", "issues": []})),
-            ChatResponse(tool_calls=[ToolCall(id=f"retry_{attempt}", name="tool_retry",
-                                             arguments={"value": f"retry_{attempt}"})]),
-        ])
-    if fail_at.startswith("validation_"):
-        responses.extend([ChatResponse(content="final answer"),
-                          ChatResponse(content=json.dumps({"passed": True, "issues": []}))])
-    provider = MockProvider(responses)
-    feedback_ids = set()
-
-    async def save(batch):
-        feedback_ids.update(record.item.id for record in batch.messages
-                            if isinstance(record.item, dagent.UserMessage) and record.item.scope == "validator"
-                            and record.origin.scope == "conversation")
-        if len(feedback_ids) != attempts:
-            return
-        if fail_at == "response_start":
-            reject = any(obs.type == "response" and obs.status == "started" for obs in batch.observations)
-        elif fail_at == "result":
-            reject = any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages)
-        elif fail_at == "validation_start":
-            reject = any(obs.type == "response" and obs.status == "started" and obs.origin.scope == "validator"
-                         for obs in batch.observations)
-        else:
-            reject = any(isinstance(record.item, dagent.AssistantMessage) and record.item.scope == "validator"
-                         for record in batch.messages)
-        if reject:
-            raise OSError("retry commit failed")
-
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[],
-                              validator="validator_agent")) as runner:
-        runner.runtime.max_validation_retries = attempts
-        agent = dagent.ToolAgent(profile="conversation", capabilities=[prepare, retry],
-                                 review="careful" if resume else "fast")
-        if resume:
-            pending = await runner.run(agent, input="prepare", on_conversation_change=save)
-            operation = (runner.resume_stream(pending.review.approve(), checkpoint=pending.checkpoint,
-                                               on_conversation_change=save) if stream else
-                         runner.resume(pending.review.approve(), checkpoint=pending.checkpoint,
-                                       on_conversation_change=save))
-        else:
-            operation = (runner.stream(agent, input="prepare", on_conversation_change=save) if stream else
-                         runner.run(agent, input="prepare", on_conversation_change=save))
-        if stream:
-            events = [event async for event in operation]
-            assert events[-1].type == "run.failed"
-            assert events[-1].data.error_type == "ConversationChangeError"
-            result = events[-1].data.result
-        else:
-            with pytest.raises(dagent.ConversationChangeError) as captured:
-                await operation
-            result = captured.value.result
-        expected = ["prepare", *(f"retry_{attempt}" for attempt in range(attempts - (fail_at == "response_start")))]
-        assert executed == expected
-        executions = [node.capability_execution for node in result.trace.root.children if node.capability_execution]
-        assert [execution.invocation.invocation_id for execution in executions] == expected
-        assert all(execution.result.status == "completed" for execution in executions)
-        assert all(node.parent_id == result.trace.root.id for node in result.trace.root.children)
-        assert runner.run_state(result.run_id).trace == result.trace
-        assert result.checkpoint is None
-        assert len(provider.requests) == len(responses) - (fail_at in {"response_start", "validation_start"})
-
-
-@pytest.mark.asyncio
-async def test_save_backpressure_precedes_model_and_cancellation_waits_for_ack(tmp_path):
-    saving = asyncio.Event()
-    release = asyncio.Event()
-    saved = []
-    provider = MockProvider([ChatResponse(content="must not generate")])
-
-    async def save(batch):
-        saving.set()
-        await release.wait()
-        saved.append(batch)
-
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        task = asyncio.create_task(runner.run(dagent.ToolAgent(profile="conversation"), input="hello",
-                                               on_conversation_change=save))
-        await saving.wait()
-        assert provider.requests == []
-        task.cancel()
-        await asyncio.sleep(0)
-        assert not task.done()
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert len(saved) == 1
-        assert provider.requests == []
-
-
-@pytest.mark.asyncio
-async def test_cancelled_stream_keeps_observed_text_without_fabricating_context(tmp_path):
-    emitted = asyncio.Event()
-
-    class BlockingProvider(MockProvider):
-        async def stream_chat(self, messages, tools=None, *, response_format=None):
-            yield ChatStreamEvent(type="token", content="observed prefix")
-            emitted.set()
-            await asyncio.Event().wait()
-
-    with closing(dagent.Runner(provider=BlockingProvider(), workspace=tmp_path, skill_roots=[])) as runner:
-        host = Host(runner=runner)
-        stream = runner.stream(dagent.ToolAgent(profile="conversation"), input="hello", run_id="cancel",
-                               on_conversation_change=host.save)
-        task = asyncio.create_task(anext(stream))
-        await task
-        await emitted.wait()
-        await runner.cancel("cancel")
-        with pytest.raises(asyncio.CancelledError):
-            async for _ in stream:
-                pass
-        partials = [record for batch in host.batches for record in batch.messages if record.partial]
-        assert [record.item.content for record in partials] == ["observed prefix"]
-        assert all(isinstance(item, dagent.UserMessage) for item in host.state.items)
-        assert any(obs.status == "cancelled" for batch in host.batches for obs in batch.observations if obs.type == "response")
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("external", [False, True])
-async def test_ready_files_restore_into_another_workspace(tmp_path, external):
+async def test_ready_files_are_notified_but_not_restored_into_another_workspace(tmp_path, external):
     body = "evidence\n" * 3000
 
     @dagent.tool
@@ -371,7 +186,7 @@ async def test_ready_files_restore_into_another_workspace(tmp_path, external):
 
     provider = MockProvider([
         ChatResponse(tool_calls=[ToolCall(id="report", name="tool_report", arguments={})]),
-        ChatResponse(content="saved"), ChatResponse(content="continued"), ChatResponse(content="continued again"),
+        ChatResponse(content="saved"), ChatResponse(content="continued"),
     ])
     directory = tmp_path / "private" if external else ".runtime"
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, runtime_directory=directory, skill_roots=[],
@@ -381,14 +196,17 @@ async def test_ready_files_restore_into_another_workspace(tmp_path, external):
         first, _ = await invoke(runner, agent, host, False, input="report", workspace_path=tmp_path / "first")
         assert host.state == first.conversation
         assert body.encode() in host.resources.values()
+        saved = next(item for item in first.conversation.items if isinstance(item, dagent.ToolResultMessage))
+        assert saved.content.sha256 is None
         second, _ = await invoke(runner, agent, host, False, input="continue", conversation=host.state,
                                  workspace_path=tmp_path / "second")
         assert host.state == second.conversation
-        assert any(workspace == str(tmp_path / "second") for workspace, _ in host.resources)
-        third, _ = await invoke(runner, agent, host, False, input="continue again", conversation=host.state,
-                                workspace_path=tmp_path / "third")
-        assert host.state == third.conversation
-        assert any(workspace == str(tmp_path / "third") for workspace, _ in host.resources)
+        # Tool output keeps its original path and is not copied to the new workspace.
+        assert not any(workspace == str(tmp_path / "second") for workspace, _ in host.resources)
+        assert saved in second.conversation.items
+        path = runner.resolve_runtime_path(saved.content.path, workspace_path=tmp_path / "second",
+                                           runtime_directory=directory)
+        assert not path.exists()
 
 
 @pytest.mark.asyncio
@@ -410,29 +228,6 @@ async def test_long_initial_history_is_not_republished(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_callback_payload_is_detached_from_runtime_state(tmp_path):
-    @dagent.tool
-    def echo(value: str) -> str:
-        assert value == "original"
-        return value
-
-    async def mutate(batch):
-        for record in batch.messages:
-            if isinstance(record.item, dagent.AssistantMessage) and record.item.tool_calls:
-                record.item.tool_calls[0].arguments["value"] = "mutated"
-
-    provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="c", name="tool_echo", arguments={"value": "original"})]),
-        ChatResponse(content="done"),
-    ])
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        result = await runner.run(dagent.ToolAgent(profile="conversation", capabilities=[echo]), input="echo",
-                                  on_conversation_change=mutate)
-        assert result.status == "completed"
-        assert result.conversation.items[1].tool_calls[0].arguments == {"value": "original"}
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 async def test_opt_in_does_not_change_provider_requests(tmp_path, stream):
     requests = []
@@ -440,15 +235,13 @@ async def test_opt_in_does_not_change_provider_requests(tmp_path, stream):
         provider = MockProvider([ChatResponse(content="answer", reasoning_content="reason")])
         with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
             host = Host(runner=runner)
-            if stream:
-                events = [event async for event in runner.stream(dagent.ToolAgent(profile="conversation", capabilities=[]),
-                    input="question", workspace_path=tmp_path / "session", run_id="wire", on_conversation_change=host.save if enabled else None)]
-                if not enabled:
-                    assert all("message_id" not in event.data.__dict__ or event.data.message_id is None for event in events)
-                    assert all("message_id" not in event.model_dump(mode="json")["data"] for event in events)
+            agent = dagent.ToolAgent(profile="conversation", capabilities=[])
+            arguments = dict(input="question", workspace_path=tmp_path / "session", run_id="wire")
+            if enabled:
+                await invoke(runner, agent, host, stream, **arguments)
             else:
-                await runner.run(dagent.ToolAgent(profile="conversation", capabilities=[]), input="question", workspace_path=tmp_path / "session", run_id="wire",
-                                 on_conversation_change=host.save if enabled else None)
+                events = [event async for event in runner.stream(agent, **arguments)]
+                assert all("message_id" not in event.model_dump(mode="json")["data"] for event in events)
             requests.append(provider.requests)
     assert requests[0] == requests[1]
 
@@ -478,143 +271,6 @@ async def test_legacy_compaction_batches_exact_removals(tmp_path):
         assert not any("old_" in record.item.run_id for batch in host.batches for record in batch.messages)
 
 
-@pytest.mark.asyncio
-async def test_metadata_clearing_and_noncontiguous_summary_replacement():
-    from dagent.harness_runtime.conversation_changes import ConversationChangePublisher
-    from dagent.schemas.conversation import CompactionState
-
-    initial = dagent.ConversationState(revision=5, items=tuple(
-        dagent.AssistantMessage(id=f"item_{index}", content=f"part {index}") for index in range(5)
-    ), summary=dagent.ContextSummary(content="previous", source_item_count=2),
-        compaction_state=CompactionState(failed_sources=("source",)))
-    host = Host(initial)
-    publisher = ConversationChangePublisher(host.save, initial)
-    publisher.bind("run", "tool", None, ".runtime")
-    adopted = initial.model_copy(update={
-        "revision": 8, "items": (initial.items[0], initial.items[2], initial.items[4]),
-        "summary": dagent.ContextSummary(content="replacement", source_item_count=4),
-        "compaction_state": None,
-    })
-    await publisher.publish(state=adopted)
-    assert host.state == adopted
-    change = host.batches[-1].context
-    assert change.summary_change.replaced_item_ids == ("item_1", "item_3")
-    assert change.deactivated_item_ids == ()
-    assert change.compaction_state_change.value is None
-    cleared = adopted.model_copy(update={"revision": 9, "summary": None})
-    await publisher.publish(state=cleared)
-    assert host.state == cleared
-    assert host.batches[-1].context.summary_change.value is None
-
-
-@pytest.mark.asyncio
-async def test_resume_save_failure_is_not_a_replayable_checkpoint(tmp_path):
-    executed = []
-
-    @dagent.tool(risk="medium")
-    def effect() -> str:
-        executed.append("effect")
-        return "effect"
-
-    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="effect", name="tool_effect", arguments={})])])
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        first = await runner.run(dagent.ToolAgent(profile="conversation", capabilities=[effect], review="careful"), input="effect")
-
-        async def fail(batch):
-            if any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages):
-                raise OSError("cannot commit")
-
-        with pytest.raises(dagent.ConversationChangeError) as captured:
-            await runner.resume(first.review.approve(), checkpoint=first.checkpoint, on_conversation_change=fail)
-        assert executed == ["effect"]
-        assert len(provider.requests) == 1
-        assert captured.value.result.checkpoint is None
-        assert runner.run_checkpoint(first.run_id) is None
-
-
-@pytest.mark.asyncio
-async def test_static_agent_review_only_publishes_audit_records(tmp_path):
-    @dagent.tool(risk="medium")
-    def effect() -> str:
-        return "effect"
-
-    provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="effect", name="tool_effect", arguments={})]),
-        ChatResponse(content="child complete"),
-    ])
-    child = dagent.ToolAgent(name="helper", profile="conversation", capabilities=[effect])
-    graph = dagent.Dag("audit")
-    graph.add_node(dagent.Node("child", target=child, inputs={"prompt": "do it"}))
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        host = Host(runner=runner)
-        first = await runner.run(graph, review="careful", on_conversation_change=host.save)
-        assert first.status == "awaiting_review"
-        events = [event async for event in runner.resume_stream(first.review.approve(), checkpoint=first.checkpoint,
-                                                                on_conversation_change=host.save)]
-        assert events[-1].type == "run.finished"
-        assert events[-1].data.result.status == "completed"
-        assert host.state is None
-        assert host.batches
-        assert all(batch.context is None and batch.conversation_id is None and batch.revision is None for batch in host.batches)
-        assert any(isinstance(record.item, dagent.ToolResultMessage) for batch in host.batches for record in batch.messages)
-
-
-@pytest.mark.asyncio
-async def test_validator_audit_and_feedback_preserve_public_state(tmp_path):
-    @dagent.tool
-    def evidence() -> str:
-        return "evidence"
-
-    provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="evidence", name="tool_evidence", arguments={})]),
-        ChatResponse(content="first answer"),
-        ChatResponse(content=json.dumps({"passed": False, "issues": [{"message": "explain more"}], "summary": "retry"})),
-        ChatResponse(content="improved answer"),
-        ChatResponse(content=json.dumps({"passed": True, "issues": [], "summary": "good"})),
-    ])
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[],
-                              validator=dagent.AgentProfile(name="test_validator", content="Assess the result."))) as runner:
-        host = Host(runner=runner)
-        result = await runner.run(dagent.ToolAgent(profile="conversation", capabilities=[evidence]), input="explain",
-                                  on_conversation_change=host.save)
-        assert result.status == "completed"
-        assert host.state == result.conversation
-        recorded = {key[1] for key in host.records}
-        assert {item.id for item in result.new_items} <= recorded
-        validators = [record for batch in host.batches for record in batch.messages if record.origin.scope == "validator"]
-        assert any(isinstance(record.item, dagent.UserMessage) for record in validators)
-        assert sum(isinstance(record.item, dagent.AssistantMessage) for record in validators) == 2
-
-
-@pytest.mark.asyncio
-async def test_cancelled_tool_keeps_unknown_outcome_without_result(tmp_path):
-    started = asyncio.Event()
-
-    @dagent.tool
-    async def block() -> str:
-        started.set()
-        await asyncio.Event().wait()
-        return "unobserved"
-
-    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="block", name="tool_block", arguments={})])])
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        host = Host(runner=runner)
-
-        async def consume():
-            async for _ in runner.stream(dagent.ToolAgent(profile="conversation", capabilities=[block]), input="block",
-                                          run_id="blocking", on_conversation_change=host.save):
-                pass
-
-        task = asyncio.create_task(consume())
-        await started.wait()
-        assert await runner.cancel("blocking")
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not any(isinstance(item, dagent.ToolResultMessage) for item in host.state.items)
-        observations = [obs for batch in host.batches for obs in batch.observations if obs.type == "tool_execution"]
-        assert observations[-1].status == "outcome_unknown"
-
-
 def test_optional_response_identity_preserves_positional_event_constructors():
     from dagent.result import ResponseStartedData, ResponseFinishedData, TextDeltaData
     from dagent.harness_runtime.runtime_events import ResponseStreamContext
@@ -625,252 +281,19 @@ def test_optional_response_identity_preserves_positional_event_constructors():
     assert ResponseStreamContext("run", "response", 3).model_step == 3
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("dag", [False, True])
-async def test_cancellation_while_acknowledging_response_start_closes_observation(tmp_path, dag):
-    saving = asyncio.Event()
-    release = asyncio.Event()
-    provider = MockProvider([ChatResponse(content="not requested")])
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        host = Host(runner=runner)
-
-        async def save(batch):
-            if any(obs.type == "response" and obs.status == "started" for obs in batch.observations):
-                saving.set()
-                await release.wait()
-            await host.save(batch)
-
-        agent = dagent.DagAgent(capabilities=[]) if dag else dagent.ToolAgent(profile="conversation", capabilities=[])
-        task = asyncio.create_task(runner.run(agent, input="hello", on_conversation_change=save))
-        await saving.wait()
-        task.cancel()
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert provider.requests == []
-        responses = [obs for batch in host.batches for obs in batch.observations if obs.type == "response"]
-        assert [obs.status for obs in responses] == ["started", "cancelled"]
-        assert responses[0].message_id == responses[1].message_id
+def call_item_updated(batch, state):
+    calls = {item.id for item in state.items if isinstance(item, dagent.AssistantMessage) and item.tool_calls}
+    return bool(calls & set(batch.context.updated_item_ids))
 
 
 @pytest.mark.asyncio
-async def test_invalid_validator_response_is_preserved_before_json_parsing(tmp_path):
-    @dagent.tool
-    def evidence() -> str:
-        return "evidence"
+async def test_nested_argument_mutation_stays_in_the_tool_and_continues(tmp_path):
+    seen = []
 
-    provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="evidence", name="tool_evidence", arguments={})]),
-        ChatResponse(content="answer"), ChatResponse(content="invalid validator output"),
-    ])
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[],
-                              validator=dagent.AgentProfile(name="test_validator", content="Assess the result."))) as runner:
-        host = Host(runner=runner)
-        result = await runner.run(dagent.ToolAgent(profile="conversation", capabilities=[evidence]), input="explain",
-                                  on_conversation_change=host.save)
-        assert host.state == result.conversation
-        assert any(record.item.content == "invalid validator output" for batch in host.batches for record in batch.messages)
-
-
-@pytest.mark.asyncio
-async def test_static_dag_save_failure_retains_actual_tool_execution(tmp_path):
-    executed = []
-
-    @dagent.tool
-    def first() -> str:
-        executed.append("first")
-        return "evidence"
-
-    @dagent.tool
-    def second() -> str:
-        executed.append("second")
-        return "later"
-
-    graph = dagent.Dag("effects")
-    one = graph.add_node(dagent.Node("first", target=first))
-    two = graph.add_node(dagent.Node("second", target=second))
-    graph.add_edge(one, two)
-
-    async def fail(batch):
-        if any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages):
-            raise OSError("commit failed")
-
-    with closing(dagent.Runner(provider=MockProvider(), workspace=tmp_path, skill_roots=[])) as runner:
-        with pytest.raises(dagent.ConversationChangeError) as captured:
-            await runner.run(graph, on_conversation_change=fail)
-        assert executed == ["first"]
-        result = captured.value.result
-        assert result.conversation is None
-        assert result.checkpoint is None
-        assert any(node.capability_execution.result.status == "completed"
-                   for node in result.trace.root.children[0].children if node.capability_execution is not None)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mapped", [False, True])
-@pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("reject_terminal", [False, True])
-@pytest.mark.parametrize("outcome", ["completed", "failed"])
-async def test_dag_storage_failure_publishes_known_tool_outcome(tmp_path, monkeypatch, mapped, stream,
-                                                              reject_terminal, outcome):
-    from dagent.capabilities.tools.registry import ToolOutput
-    from dagent.harness_runtime import result_storage
-
-    executed = []
-
-    @dagent.tool
-    def binary():
-        executed.append("binary")
-        return ToolOutput("produced", value=b"\xff")
-
-    if outcome == "failed":
-        async def failed_binary(invocation):
-            executed.append("binary")
-            return dagent.CapabilityResult.failed(invocation, "tool failed", stop_reason="ToolError", value=b"\xff")
-
-        binary = dagent.CapabilityBinding(binary.definition, failed_binary)
-
-    def fail_storage(*args, **kwargs):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(result_storage, "_write_reference", fail_storage)
-    graph = dagent.Dag("storage_failure")
-    graph.add_node(dagent.MapNode("produce", target=binary, over=[1]) if mapped else
-                   dagent.Node("produce", target=binary))
-    batches = []
-
-    async def save(batch):
-        batches.append(batch)
-        if reject_terminal and any(obs.type == "tool_execution" and obs.status == outcome
-                                   for obs in batch.observations):
-            raise OSError("terminal commit failed")
-
-    with closing(dagent.Runner(provider=MockProvider(), workspace=tmp_path, skill_roots=[])) as runner:
-        if stream:
-            events = [event async for event in runner.stream(graph, on_conversation_change=save)]
-            assert events[-1].type == ("run.failed" if reject_terminal else "run.finished")
-            result = events[-1].data.result
-            if reject_terminal:
-                assert events[-1].data.error_type == "ConversationChangeError"
-        elif reject_terminal:
-            with pytest.raises(dagent.RunExecutionError) as captured:
-                await runner.run(graph, on_conversation_change=save)
-            assert isinstance(captured.value, dagent.ConversationChangeError)
-            result = captured.value.result
-        else:
-            result = await runner.run(graph, on_conversation_change=save)
-        assert result.status == "failed"
-        assert executed == ["binary"]
-        observations = [obs for batch in batches for obs in batch.observations if obs.type == "tool_execution"]
-        assert [obs.status for obs in observations] == ["starting", outcome]
-        assert observations[0].call_id == observations[1].call_id
-        assert observations[0].origin == observations[1].origin
-        assert observations[1].origin.scope == "planner"
-        assert not any(isinstance(record.item, dagent.ToolResultMessage) for batch in batches for record in batch.messages)
-        execution = result.trace.dag_node_traces()["produce"].children[0].capability_execution
-        assert execution.result.status == outcome
-        assert execution.result.retention.unavailable_fields == ("value",)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stream", [False, True])
-async def test_map_publishes_each_inline_result(tmp_path, stream):
-    @dagent.tool
-    def echo(value: str) -> str:
-        return value
-
-    graph = dagent.Dag("mapped")
-    graph.add_node(dagent.MapNode("each", target=echo, over=["one", "two"], inputs={"value": dagent.item}))
-    with closing(dagent.Runner(provider=MockProvider(), workspace=tmp_path, skill_roots=[])) as runner:
-        host = Host(runner=runner)
-        result, _ = await invoke(runner, graph, host, stream)
-        assert result.node_value("each") == ["one", "two"]
-        records = [record for batch in host.batches for record in batch.messages
-                   if isinstance(record.item, dagent.ToolResultMessage)]
-        assert {record.item.content.text for record in records} == {"one", "two"}
-        assert len({record.origin.id for record in records}) == 2
-        assert all(record.origin.scope == "planner" for record in records)
-        observations = [obs for batch in host.batches for obs in batch.observations if obs.type == "tool_execution"]
-        for record in records:
-            assert [obs.status for obs in observations if obs.call_id == record.item.call_id] == ["starting", "completed"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("fail_at", ["starting", "result"])
-async def test_map_save_acknowledgment_gates_dispatch_and_preserves_effects(tmp_path, fail_at):
-    executed = []
-    saving = asyncio.Event()
-    release = asyncio.Event()
-
-    @dagent.tool
-    def effect(value: str) -> str:
-        executed.append(value)
-        return value
-
-    graph = dagent.Dag("mapped")
-    graph.add_node(dagent.MapNode("each", target=effect, over=["one", "two"],
-                                 inputs={"value": dagent.item}, max_concurrency=1))
-
-    async def save(batch):
-        reject = (any(obs.type == "tool_execution" and obs.status == "starting" for obs in batch.observations)
-                  if fail_at == "starting" else
-                  any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages))
-        if reject:
-            saving.set()
-            await release.wait()
-            raise OSError("commit failed")
-
-    with closing(dagent.Runner(provider=MockProvider(), workspace=tmp_path, skill_roots=[])) as runner:
-        task = asyncio.create_task(runner.run(graph, on_conversation_change=save))
-        try:
-            await asyncio.wait_for(saving.wait(), timeout=5)
-            assert executed == ([] if fail_at == "starting" else ["one"])
-        finally:
-            release.set()
-        with pytest.raises(dagent.ConversationChangeError) as captured:
-            await task
-        assert isinstance(captured.value.__cause__, OSError)
-        assert executed == ([] if fail_at == "starting" else ["one"])
-        children = captured.value.result.trace.dag_node_traces()["each"].children
-        assert [child.capability_execution.result.content for child in children] == executed
-        assert all(child.status == "completed" for child in children)
-
-
-@pytest.mark.asyncio
-async def test_map_save_failure_retains_all_inflight_effects(tmp_path):
-    executed = []
-    both_started = asyncio.Event()
-
-    @dagent.tool
-    async def effect(value: str) -> str:
-        executed.append(value)
-        if len(executed) == 2:
-            both_started.set()
-        await both_started.wait()
-        return value
-
-    graph = dagent.Dag("concurrent")
-    graph.add_node(dagent.MapNode("each", target=effect, over=["one", "two"],
-                                 inputs={"value": dagent.item}, max_concurrency=2))
-
-    async def save(batch):
-        if any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages):
-            raise OSError("commit failed")
-
-    with closing(dagent.Runner(provider=MockProvider(), workspace=tmp_path, skill_roots=[])) as runner:
-        with pytest.raises(dagent.ConversationChangeError) as captured:
-            await asyncio.wait_for(runner.run(graph, on_conversation_change=save), timeout=5)
-        assert set(executed) == {"one", "two"}
-        children = captured.value.result.trace.dag_node_traces()["each"].children
-        assert [child.capability_execution.result.content for child in children] == ["one", "two"]
-        assert all(child.status == "completed" for child in children)
-
-
-@pytest.mark.asyncio
-async def test_nested_argument_mutation_is_replayed_and_continued(tmp_path):
     @dagent.tool
     def append(values: list) -> str:
         values.append("added")
+        seen.append(list(values))
         return "done"
 
     provider = MockProvider([
@@ -883,7 +306,10 @@ async def test_nested_argument_mutation_is_replayed_and_continued(tmp_path):
         result, _ = await invoke(runner, agent, host, False, input="append")
         assert host.state == result.conversation
         call = next(item for item in host.state.items if isinstance(item, dagent.AssistantMessage)).tool_calls[0]
-        assert call.arguments == {"values": ["original", "added"]}
+        # The tool changed its own copy; the call stays as the model made it.
+        assert seen == [["original", "added"]]
+        assert call.arguments == {"values": ["original"]}
+        assert not any(batch.context and call_item_updated(batch, host.state) for batch in host.batches)
         restored = dagent.ConversationState.model_validate_json(host.state.model_dump_json())
         await invoke(runner, agent, host, False, input="continue", conversation=restored)
         first_call = next(message for message in provider.requests[1]["messages"] if message.get("tool_calls"))
@@ -891,87 +317,275 @@ async def test_nested_argument_mutation_is_replayed_and_continued(tmp_path):
         assert first_call == restored_call
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("bind_initial", [False, True])
-async def test_initial_publisher_snapshot_is_detached(bind_initial):
-    from dagent.harness_runtime.conversation_changes import ConversationChangePublisher
-
-    initial = dagent.ConversationState(items=(dagent.AssistantMessage(tool_calls=(
-        dagent.ToolCallItem(id="call", name="append", arguments={"values": ["original"]}),
-    )),))
-    host = Host(initial.model_copy(deep=True))
-    publisher = ConversationChangePublisher(host.save, None if bind_initial else initial)
-    publisher.bind("run", "tool", None, ".runtime", initial=initial if bind_initial else None)
-    initial.items[0].tool_calls[0].arguments["values"].append("added")
-    await publisher.publish(state=initial.model_copy(update={"revision": 1}))
-    assert host.state.items == initial.items
-    assert host.batches[-1].context.updated_item_ids == (initial.items[0].id,)
-
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("wrapper,fail_at", [
-    ("subgraph", "result"), ("loop", "result"), ("agent", "result"),
-    ("delegated", "result"), ("delegated", "next_response"),
-])
-async def test_nested_save_failure_retains_completed_child_trace(tmp_path, wrapper, fail_at):
+async def test_review_checkpoint_is_public_trace_free_and_released(tmp_path, monkeypatch):
+    effects = []
+
+    @dagent.tool(risk="medium")
+    def record() -> str:
+        effects.append("once")
+        return "saved"
+
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="record", name="tool_record")]),
+                             ChatResponse(content="finished")])
+    from dagent.schemas.run_trace import RunTraceNode
+    monkeypatch.setattr(RunTraceNode, "run", lambda **kwargs: pytest.fail("trace constructed"))
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        host = Host(runner=runner)
+        first, _ = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[record], review="careful"),
+                                host, True, input="record")
+        assert first.requires_review and effects == []
+        saved = dagent.RunCheckpoint.model_validate_json(first.checkpoint.model_dump_json())
+        assert saved.state.trace is None
+        assert saved.pending_tool_invocations[0].capability_id == "tool.record"
+        runner.validate_checkpoint(saved)
+        assert runner.run_checkpoint(first.run_id) is None
+        assert runner.run_state(first.run_id) is None
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[], capabilities=[record])) as runner:
+        host.runner = runner
+        result, _ = await resume_invoke(runner, saved.review.approve(), saved, host)
+        assert result.status == "completed" and effects == ["once"]
+        assert len(host.sequences) == 2
+        assert {batch.run_id for batch in host.batches} == {first.run_id}
+        assert runner.run_checkpoint(first.run_id) is None
+        with pytest.raises(ValueError, match="consumed"):
+            await runner.resume(saved.review.approve(), checkpoint=saved)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_at", ["response_start", "result", "validation_start", "validation_result"])
+@pytest.mark.parametrize("attempts", [1, 2])
+@pytest.mark.parametrize("resume", [False, True])
+async def test_retry_delivery_failure_preserves_execution_facts(tmp_path, fail_at, attempts, resume):
     executed = []
 
+    @dagent.tool(risk="medium" if resume else "low")
+    def prepare() -> str:
+        executed.append("prepare")
+        return "prepared"
+
     @dagent.tool
-    def effect() -> str:
-        executed.append("effect")
-        return "evidence"
+    def retry(value: str) -> str:
+        executed.append(value)
+        return value
 
-    graph = dagent.Dag("outer")
-    responses = [ChatResponse(tool_calls=[ToolCall(id="effect", name="tool_effect", arguments={})])]
-    if wrapper == "delegated":
-        responses.insert(0, ChatResponse(tool_calls=[
-            ToolCall(id="delegate", name="agent_helper", arguments={"prompt": "do it"}),
-        ]))
+    responses = [ChatResponse(tool_calls=[ToolCall(id="prepare", name="tool_prepare")])]
+    for attempt in range(attempts):
+        responses.extend([ChatResponse(content=f"answer {attempt}"),
+                          ChatResponse(content=json.dumps({"passed": False, "summary": "Try again", "issues": []})),
+                          ChatResponse(tool_calls=[ToolCall(id=f"retry_{attempt}", name="tool_retry",
+                                                         arguments={"value": f"retry_{attempt}"})])])
+    if fail_at.startswith("validation_"):
+        responses.extend([ChatResponse(content="final"), ChatResponse(content='{"passed":true,"issues":[]}')])
     provider = MockProvider(responses)
-    if wrapper in {"agent", "delegated"}:
-        child = dagent.ToolAgent(name="helper", profile="conversation", capabilities=[effect])
-        node = dagent.Node("child", target=child, inputs={"prompt": "do it"})
-    else:
-        child = dagent.Dag("inner")
-        child.add_node(dagent.Node("effect", target=effect))
-        node = (dagent.LoopNode("child", body=child, until=dagent.item == "done", max_iterations=2)
-                if wrapper == "loop" else dagent.Node("child", target=child))
-    graph.add_node(node)
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[], validator="validator_agent")) as runner:
+        runner.runtime.max_validation_retries = attempts
+        host = Host(runner=runner)
+        save = host.save
+        feedback = set()
 
-    async def save(batch):
-        reject = (any(isinstance(record.item, dagent.ToolResultMessage) for record in batch.messages)
-                  if fail_at == "result" else executed and
-                  any(obs.type == "response" and obs.status == "started" for obs in batch.observations))
-        if reject:
-            raise OSError("commit failed")
-
-    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        if wrapper == "delegated":
-            runner.add_agent(child)
-            target = dagent.ToolAgent(profile="conversation", capabilities=[], agents=["agent.helper"])
+        async def rejecting(batch):
+            await save(batch)
+            feedback.update(r.item.id for r in batch.messages if isinstance(r.item, dagent.UserMessage)
+                            and r.item.scope == "validator" and r.origin.scope == "conversation")
+            if len(feedback) != attempts:
+                return
+            reject = (any(o.type == "response" and o.status == "started" for o in batch.observations)
+                      if fail_at == "response_start" else
+                      any(isinstance(r.item, dagent.ToolResultMessage) for r in batch.messages)
+                      if fail_at == "result" else
+                      any(o.type == "response" and o.status == "started" and o.origin.scope == "validator" for o in batch.observations)
+                      if fail_at == "validation_start" else
+                      any(isinstance(r.item, dagent.AssistantMessage) and r.item.scope == "validator" for r in batch.messages))
+            if reject:
+                raise OSError("commit failed")
+        host.save = rejecting
+        agent = dagent.ToolAgent(profile="conversation", capabilities=[prepare, retry], review="careful" if resume else "fast")
+        if resume:
+            pending, _ = await invoke(runner, agent, host, True, input="prepare")
+            _, events = await resume_invoke(runner, pending.review.approve(), pending.checkpoint, host)
         else:
-            target = graph
-        with pytest.raises(dagent.ConversationChangeError) as captured:
-            await runner.run(target, input="do it" if wrapper == "delegated" else None, on_conversation_change=save)
-        assert executed == ["effect"]
-        trace = captured.value.result.trace
-        if wrapper != "delegated":
-            assert trace.dag_node_traces()["child"].children
-
-        def effects(node):
-            execution = node.capability_execution
-            if execution is not None and execution.invocation.capability_id == "tool.effect":
-                yield execution.result
-            for child_node in node.children:
-                assert child_node.parent_id == node.id
-                yield from effects(child_node)
-
-        assert [result.status for result in effects(trace.root)] == ["completed"]
-        assert captured.value.result.checkpoint is None
+            _, events = await consume(runner, runner.stream(agent, input="prepare", persistence=dagent.StreamPersistenceOptions()), host)
+        assert events[-1].type == "run.failed"
+        assert events[-1].data.error_type == "PersistenceRejected"
+        assert events[-1].data.result is None
+        assert events[-1].data.failed_batch_id == host.batches[-1].batch_id
+        assert executed == ["prepare", *(f"retry_{i}" for i in range(attempts - (fail_at == "response_start")))]
+        assert runner.run_checkpoint(host.batches[-1].run_id) is None
+        assert len(provider.requests) == len(responses) - (fail_at in {"response_start", "validation_start"})
 
 
 @pytest.mark.asyncio
-async def test_file_save_failure_does_not_commit_candidate_context_or_call_model(tmp_path):
+async def test_ack_precedes_model_timeout_and_close_do_not_hang(tmp_path):
+    provider = MockProvider([ChatResponse(content="must not generate")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        agent = dagent.ToolAgent(profile="conversation")
+        events = [event async for event in runner.stream(agent, input="hi", run_id="timeout",
+                  persistence=dagent.StreamPersistenceOptions(ack_timeout_seconds=.01))]
+        assert provider.requests == []
+        assert events[-1].type == "run.failed"
+        assert events[-1].data.error_type == "PersistenceTimeout"
+        assert events[-1].data.acknowledged_sequence == 0
+        stream = runner.stream(agent, input="hi", run_id="close", persistence=dagent.StreamPersistenceOptions())
+        while (await anext(stream)).type != "conversation.changed":
+            pass
+        await asyncio.wait_for(stream.aclose(), 1)
+        assert not runner._persistent_deliveries and not runner._active_run_tasks
+        assert provider.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_type", [dagent.ToolAgent, dagent.AutoAgent])
+async def test_cancelled_tool_group_is_deactivated_on_next_turn(tmp_path, agent_type):
+    started = asyncio.Event()
+
+    @dagent.tool
+    async def block() -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "unobserved"
+
+    provider = MockProvider([*([ChatResponse(content="tool")] if agent_type is dagent.AutoAgent else []),
+                             ChatResponse(tool_calls=[ToolCall(id="same", name="tool_block")]), ChatResponse(content="continued")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[], max_retained_runs=0)) as runner:
+        host = Host(runner=runner)
+        task = asyncio.create_task(invoke(runner, agent_type(profile="conversation", capabilities=[block]),
+                                         host, True, input="block", run_id="interrupted"))
+        await asyncio.wait_for(started.wait(), 2)
+        assert await runner.cancel("interrupted")
+        result, _ = await asyncio.wait_for(task, 2)
+        assert result.status == "cancelled"
+        assistant = next(item for item in host.state.items if isinstance(item, dagent.AssistantMessage))
+        observations = [o for b in host.batches for o in b.observations if o.type == "tool_execution"]
+        assert observations[-1].status == "outcome_unknown"
+        assert observations[-1].assistant_message_id == assistant.id
+        result, _ = await invoke(runner, agent_type(profile="conversation", capabilities=[block]), host, True,
+                                 input=None, conversation=host.state, run_id="retry")
+        assert result.status == "completed"
+        assert sum(isinstance(i, dagent.UserMessage) for i in host.state.items) == 1
+        assert not any(i.id == assistant.id for i in host.state.items)
+        assert any(b.context and assistant.id in b.context.deactivated_item_ids for b in host.batches)
+        assert (host.state.id, assistant.id) in host.records
+        assert not any(message.get("tool_calls") for message in provider.requests[-1]["messages"])
+
+
+@pytest.mark.asyncio
+async def test_cancel_preserves_partial_response_as_audit_only(tmp_path):
+    emitted = asyncio.Event()
+    class BlockingProvider(MockProvider):
+        async def stream_chat(self, *args, **kwargs):
+            yield ChatStreamEvent(type="token", content="observed prefix")
+            emitted.set()
+            await asyncio.Event().wait()
+    with closing(dagent.Runner(provider=BlockingProvider(), workspace=tmp_path, skill_roots=[])) as runner:
+        host = Host(runner=runner)
+        task = asyncio.create_task(invoke(runner, dagent.ToolAgent(profile="conversation"), host, True,
+                                         input="hi", run_id="cancel"))
+        await asyncio.wait_for(emitted.wait(), 2)
+        assert await runner.cancel("cancel")
+        result, _ = await asyncio.wait_for(task, 2)
+        assert result.status == "cancelled"
+        assert [r.item.content for b in host.batches for r in b.messages if r.partial] == ["observed prefix"]
+        assert all(isinstance(i, dagent.UserMessage) for i in host.state.items)
+
+
+@pytest.mark.asyncio
+async def test_persistence_rejects_dag_but_default_dag_still_works(tmp_path):
+    with closing(dagent.Runner(provider=MockProvider(), workspace=tmp_path, skill_roots=[])) as runner:
+        with pytest.raises(ValueError, match="ToolLoop"):
+            async for _ in runner.stream(dagent.DagAgent(), input="hi", persistence=dagent.StreamPersistenceOptions()):
+                pass
+        assert "on_conversation_change" not in __import__('inspect').signature(runner.run).parameters
+        assert not hasattr(dagent, "ConversationChangeError")
+
+
+@pytest.mark.asyncio
+async def test_terminal_has_only_output_reference_and_no_trace_or_history(tmp_path, monkeypatch):
+    from dagent.schemas.run_trace import RunTrace
+    monkeypatch.setattr(RunTrace, "__init__", lambda *a, **kw: pytest.fail("trace constructed"))
+    with closing(dagent.Runner(provider=MockProvider([ChatResponse(content="answer")]), workspace=tmp_path,
+                              skill_roots=[], max_retained_runs=0)) as runner:
+        host = Host(runner=runner)
+        _, events = await invoke(runner, dagent.ToolAgent(profile="conversation"), host, True, input="hi")
+        final = events[-1].data
+        assert final.status == "completed" and final.output_item_id and final.output_text is None
+        assert final.checkpoint is None
+        assert not {"trace.updated", "run.finished", "capability.call.completed"} & {e.type for e in events}
+        assert "conversation" not in final.model_dump() and "model_thread" not in final.model_dump()
+        assert all(dagent.RunStreamEvent.model_validate(e.model_dump(mode="json")) == e for e in events)
+        assert not runner.runtime.runs and not runner._run_checkpoints
+
+
+@pytest.mark.parametrize("options", [
+    {"ack_timeout_seconds": 0}, {"ack_timeout_seconds": float("inf")},
+    {"max_buffer_events": 256}, {"max_buffer_bytes": 1_048_576},
+    {"stall_timeout_seconds": 1}, {"trace_mode": "off"},
+])
+def test_persistence_configuration_accepts_only_ack_timeout(options):
+    with pytest.raises(ValueError):
+        dagent.StreamPersistenceOptions(**options)
+
+
+@pytest.mark.asyncio
+async def test_slow_reader_keeps_all_display_deltas_without_stalling_the_model(tmp_path):
+    class TokenProvider(MockProvider):
+        emitted = 0
+        finished = asyncio.Event()
+        async def stream_chat(self, *args, **kwargs):
+            for _ in range(100):
+                self.emitted += 1
+                yield ChatStreamEvent(type="token", content="x" * 128)
+            self.finished.set()
+            yield ChatStreamEvent(type="done", response=ChatResponse(content="x" * 12800))
+    provider = TokenProvider()
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        host = Host(runner=runner)
+        stream = runner.stream(dagent.ToolAgent(profile="conversation"), input="hi", run_id="slow",
+                               persistence=dagent.StreamPersistenceOptions())
+        text = []
+        async for event in stream:
+            if event.type == "conversation.changed":
+                await host.save(event.data)
+                assert not await runner.acknowledge_changes("other", event.data.batch_id)
+                assert await runner.acknowledge_changes(event.run_id, event.data.batch_id)
+                assert await runner.acknowledge_changes(event.run_id, event.data.batch_id)
+            elif event.type == "response.content.delta":
+                text.append(event.data.delta)
+                if len(text) == 1:
+                    await asyncio.wait_for(provider.finished.wait(), 1)
+                    assert provider.emitted == 100
+        assert "".join(text) == "x" * 12800
+        assert text == ["x" * 128] * 100
+        assert host.state.items[-1].content == "x" * 12800
+
+
+@pytest.mark.asyncio
+async def test_result_storage_failure_is_a_public_known_execution_fact(tmp_path, monkeypatch):
+    from dagent.capabilities.tools.registry import ToolOutput
+    from dagent.harness_runtime import result_storage
+    effects = []
+    @dagent.tool
+    def binary():
+        effects.append("once")
+        return ToolOutput("produced", value=b"binary")
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(result_storage, "_write_reference", fail)
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="binary", name="tool_binary")]), ChatResponse(content="must not run")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        host = Host(runner=runner)
+        result, _ = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[binary]), host, True, input="produce")
+        assert result.status == "failed" and result.error.code == "ResultStorageError"
+        assert result.checkpoint is None and effects == ["once"] and len(provider.requests) == 1
+        tool = [o for b in host.batches for o in b.observations if o.type == "tool_execution"][-1]
+        assert tool.status == "completed" and "value" in tool.retention.unavailable_fields
+        assert tool.retention.storage_warnings[0].error_type == "OSError"
+        assert not any(isinstance(i, dagent.ToolResultMessage) for i in host.state.items)
+
+
+@pytest.mark.asyncio
+async def test_rejected_resource_does_not_adopt_candidate_context(tmp_path):
     initial = dagent.ConversationState(items=(
         dagent.UserMessage(run_id="old", content="collect"),
         dagent.AssistantMessage(run_id="old", tool_calls=(dagent.ToolCallItem(id="old_call", name="query"),)),
@@ -980,98 +594,381 @@ async def test_file_save_failure_does_not_commit_candidate_context_or_call_model
         dagent.AssistantMessage(run_id="old", content="collected"),
     ))
     provider = MockProvider()
-    provider.configured_context_window_tokens = 4096
-    provider.max_output_tokens = 512
+    provider.configured_context_window_tokens, provider.max_output_tokens = 4096, 512
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
         host = Host(initial, runner)
-
+        original = host.save
         async def save(batch):
             if batch.resources:
                 raise OSError("file store unavailable")
-            await host.save(batch)
-
-        agent = dagent.ToolAgent(profile="conversation", capabilities=["tool.read_file"], context=dagent.ContextPolicy(
-            compaction_trigger_ratio=.1, compaction_retain_ratio=.05, max_tool_result_tokens=128,
-        ))
-        with pytest.raises(dagent.ConversationChangeError) as captured:
-            await runner.run(agent, input="continue", conversation=initial, on_conversation_change=save)
-        assert captured.value.failed_batch.resources
-        assert provider.requests == []
-        assert captured.value.result.conversation == host.state
-        assert host.state.summary is None
+            await original(batch)
+        host.save = save
+        _, events = await consume(runner, runner.stream(dagent.ToolAgent(profile="conversation", capabilities=["tool.read_file"],
+            context=dagent.ContextPolicy(compaction_trigger_ratio=.1, compaction_retain_ratio=.05, max_tool_result_tokens=128)),
+            input="continue", conversation=initial, persistence=dagent.StreamPersistenceOptions()), host)
+        assert events[-1].type == "run.failed" and events[-1].data.error_type == "PersistenceRejected"
+        assert any(e.type == "conversation.changed" and e.data.resources for e in events)
+        assert provider.requests == [] and host.state.summary is None
+        assert all(item in host.state.items for item in initial.items)
 
 
 @pytest.mark.asyncio
-async def test_failed_model_response_replays_the_sdk_adopted_failure_state(tmp_path):
-    provider = MockProvider([ChatResponse(content="partial", status="failed")])
+async def test_confirmed_reviews_release_heavy_state_but_keep_replay_ids(tmp_path):
+    @dagent.tool(risk="medium")
+    def gate(values: list[str]) -> str:
+        return "ok"
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="gate", name="tool_gate", arguments={"values": ["original"]})]) for _ in range(20)])
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        host = Host(runner=runner)
-        result = await runner.run(dagent.ToolAgent(profile="conversation"), input="hello", on_conversation_change=host.save)
-        assert result.status == "failed"
-        assert host.state == result.conversation
-        assert any(record.partial and record.item.content == "partial" for batch in host.batches for record in batch.messages)
-        assert host.batches[-1].observations[-1].status == "failed"
+        for index in range(20):
+            host = Host(runner=runner)
+            result, _ = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[gate], review="careful"),
+                                     host, True, input="hold", run_id=f"pending_{index}")
+            assert result.requires_review
+            calls = result.checkpoint.pending_tool_invocations
+            calls[0].arguments["values"].append("host")
+            assert result.checkpoint.pending_tool_invocations[0].arguments == {"values": ["original"]}
+            assert not runner.runtime.runs and not runner._run_checkpoints
+            assert not runner.runtime.session._review_index
+        assert len(runner._used_run_ids) == 20
+        with pytest.raises(ValueError, match="already"):
+            await runner.run(dagent.ToolAgent(profile="conversation"), input="again", run_id="pending_0")
 
 
 @pytest.mark.asyncio
-async def test_host_callback_does_not_inherit_runtime_publication_scope(tmp_path):
-    from dagent.harness_runtime.conversation_changes import current_changes
-
-    async def save(batch):
-        # A host may use SDK helpers itself; it must not recursively publish
-        # into the run whose acknowledgment lock it currently holds.
-        assert current_changes() is None
-
-    with closing(dagent.Runner(provider=MockProvider([ChatResponse(content="answer")]), workspace=tmp_path,
-                              skill_roots=[])) as runner:
-        result = await runner.run(dagent.ToolAgent(profile="conversation"), input="hello", on_conversation_change=save)
-        assert result.status == "completed"
+async def test_metadata_clearing_and_noncontiguous_summary_replacement():
+    from dagent.harness_runtime.conversation_changes import ConversationChangePublisher
+    from dagent.harness_runtime.stream_delivery import StreamDelivery
+    from dagent.schemas.conversation import CompactionState
+    initial = dagent.ConversationState(revision=5, items=tuple(
+        dagent.AssistantMessage(id=f"item_{i}", content=f"part {i}") for i in range(5)),
+        summary=dagent.ContextSummary(content="previous", source_item_count=2),
+        compaction_state=CompactionState(failed_sources=("source",)))
+    host = Host(initial)
+    publisher = ConversationChangePublisher(StreamDelivery(dagent.StreamPersistenceOptions()), initial)
+    publisher.bind("run", "tool", None, ".runtime")
+    async def adopt(state):
+        task = asyncio.create_task(publisher.publish(state=state))
+        event = await publisher.delivery.receive()
+        await host.save(event.data)
+        publisher.delivery.acknowledge("run", event.data.batch_id)
+        await task
+    adopted = initial.model_copy(update={"revision": 8, "items": (initial.items[0], initial.items[2], initial.items[4]),
+        "summary": dagent.ContextSummary(content="replacement", source_item_count=4), "compaction_state": None})
+    await adopt(adopted)
+    assert host.state == adopted
+    change = host.batches[-1].context
+    assert change.summary_change.replaced_item_ids == ("item_1", "item_3")
+    assert change.deactivated_item_ids == () and change.compaction_state_change.value is None
+    cleared = adopted.model_copy(update={"revision": 9, "summary": None})
+    await adopt(cleared)
+    assert host.state == cleared and host.batches[-1].context.summary_change.value is None
 
 
 @pytest.mark.asyncio
-async def test_transport_error_keeps_observed_prefix_when_sdk_failure_message_is_empty(tmp_path):
+async def test_transport_error_keeps_observed_prefix_without_activating_it(tmp_path):
     from dagent.providers.openai_compatible import ProviderRequestError
-
     class BrokenProvider(MockProvider):
-        async def stream_chat(self, messages, tools=None, *, response_format=None):
+        async def stream_chat(self, *args, **kwargs):
             yield ChatStreamEvent(type="token", content="observed prefix")
             raise ProviderRequestError(OSError("connection closed"),
                                        metadata=dagent.ModelCallMetadata(protocol="chat_completions"))
-
     with closing(dagent.Runner(provider=BrokenProvider(), workspace=tmp_path, skill_roots=[])) as runner:
         host = Host(runner=runner)
-        events = [event async for event in runner.stream(dagent.ToolAgent(profile="conversation"), input="hello",
-                                                         on_conversation_change=host.save)]
-        result = events[-1].data.result
+        result, _ = await invoke(runner, dagent.ToolAgent(profile="conversation"), host, True, input="hello")
         assert result.status == "failed"
-        assert host.state == result.conversation
-        assert result.conversation.items[-1].content == ""  # Released failure behavior.
-        terminal = [obs for batch in host.batches for obs in batch.observations
-                    if obs.type == "response" and obs.status == "failed"]
-        assert terminal[-1].observed_content == "observed prefix"
+        assert all(isinstance(i, dagent.UserMessage) for i in host.state.items)
+        responses = [o for b in host.batches for o in b.observations if o.type == "response" and o.status == "failed"]
+        assert responses[-1].observed_content == "observed prefix"
+        assert responses[-1].error.code == "provider_request_failed"
 
 
 @pytest.mark.asyncio
 async def test_host_resource_save_does_not_exhaust_compaction_timeout(tmp_path, monkeypatch):
-    from dagent.harness_runtime.conversation_changes import ConversationChangePublisher, conversation_change_scope
+    from dagent.harness_runtime.conversation_changes import ConversationChangePublisher, conversation_change_scope, current_changes
+    from dagent.harness_runtime.stream_delivery import StreamDelivery
     from tests.test_compaction_strategy import compactor, summary_response
-
     clock = [0.0]
     monkeypatch.setattr("dagent.harness_runtime.compaction.monotonic", lambda: clock[0])
-
-    async def save(batch):
-        assert batch.resources
-        clock[0] += 10  # A slow host exceeds the one-second model allowance.
-
     async def summarize(request):
         await asyncio.sleep(0)
         return summary_response(request)
-
     initial = dagent.ConversationState()
-    publisher = ConversationChangePublisher(save, initial)
+    publisher = ConversationChangePublisher(StreamDelivery(dagent.StreamPersistenceOptions()), initial)
     publisher.bind("compaction", "tool", tmp_path, ".runtime")
-    with conversation_change_scope(publisher):
-        engine = compactor(tmp_path, summarize, timeout=1)
-        summary = await engine.compact(None, (dagent.AssistantMessage(content="Earlier work completed."),), 256)
-    assert summary.method == "model"
-    assert engine.deadline == 11
+    async def writer():
+        while (event := await publisher.delivery.receive()) is not None:
+            assert current_changes() is None
+            assert event.data.resources
+            clock[0] += 10
+            publisher.delivery.acknowledge("compaction", event.data.batch_id)
+    task = asyncio.create_task(writer())
+    try:
+        with conversation_change_scope(publisher):
+            engine = compactor(tmp_path, summarize, timeout=1)
+            summary = await engine.compact(None, (dagent.AssistantMessage(content="Earlier work completed."),), 256)
+        assert summary.method == "model" and engine.deadline == 11
+    finally:
+        publisher.delivery.finish()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_context_retry_does_not_silently_drop_new_uploads(tmp_path):
+    provider = MockProvider([ChatResponse(content="must not run")])
+    initial = dagent.ConversationState(items=(dagent.UserMessage(content="saved request"),))
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        events = [event async for event in runner.stream(dagent.ToolAgent(profile="conversation"), input=None,
+            conversation=initial, input_uploads=[dagent.ArtifactUpload(filename="new.txt", content=b"new")],
+            persistence=dagent.StreamPersistenceOptions())]
+        assert events[-1].type == "run.failed" and events[-1].data.error_type == "ValueError"
+        assert "input_uploads" in events[-1].data.message
+        assert provider.requests == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_auto_route_failure_cannot_replace_or_release_another_delivery(tmp_path, monkeypatch):
+    from dagent.harness_runtime.runtime import HarnessRuntime
+    gates = [asyncio.Event(), asyncio.Event()]
+    arrived, generating = asyncio.Event(), asyncio.Event()
+    routes = []
+    async def route(self, message):
+        index = len(routes)
+        routes.append(message)
+        if len(routes) == 2:
+            arrived.set()
+        await gates[index].wait()
+        return "tool", None, None
+    monkeypatch.setattr(HarnessRuntime, "_route", route)
+    class BlockingProvider(MockProvider):
+        async def stream_chat(self, *args, **kwargs):
+            yield ChatStreamEvent(type="token", content="prefix")
+            generating.set()
+            await asyncio.Event().wait()
+    with closing(dagent.Runner(provider=BlockingProvider(), workspace=tmp_path, skill_roots=[])) as runner:
+        agent = dagent.AutoAgent(profile="conversation", capabilities=[])
+        host = Host(runner=runner)
+        first = asyncio.create_task(invoke(runner, agent, host, True, input="first", run_id="same"))
+        second = asyncio.create_task(consume(runner, runner.stream(agent, input="second", run_id="same",
+                                            persistence=dagent.StreamPersistenceOptions()), Host(runner=runner)))
+        await asyncio.wait_for(arrived.wait(), 2)
+        gates[0].set()
+        await asyncio.wait_for(generating.wait(), 2)
+        owner = runner._persistent_deliveries["same"]
+        gates[1].set()
+        result, events = await asyncio.wait_for(second, 2)
+        assert result is None and events[-1].type == "run.failed"
+        assert events[-1].data.error_type == "RuntimeError", events[-1].data.message
+        assert runner._persistent_deliveries["same"] is owner
+        assert not first.done()
+        assert await runner.cancel("same")
+        result, _ = await asyncio.wait_for(first, 2)
+        assert result.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_premature_review_resume_does_not_consume_the_decision(tmp_path):
+    effects = []
+    @dagent.tool(risk="medium")
+    def gate() -> str:
+        effects.append("once")
+        return "ok"
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="gate", name="tool_gate")]), ChatResponse(content="done")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        host = Host(runner=runner)
+        stream = runner.stream(dagent.ToolAgent(profile="conversation", capabilities=[gate], review="careful"),
+                               input="review", persistence=dagent.StreamPersistenceOptions())
+        async for event in stream:
+            if event.type == "conversation.changed":
+                await host.save(event.data)
+                if event.data.status == "awaiting_review":
+                    checkpoint = event.data.checkpoint
+                    decision = checkpoint.review.approve()
+                    with pytest.raises(ValueError, match="active"):
+                        await runner.resume(decision, checkpoint=checkpoint)
+                    assert decision.review_id not in runner._consumed_review_ids
+                    assert effects == []
+                await runner.acknowledge_changes(event.run_id, event.data.batch_id)
+        result, _ = await resume_invoke(runner, decision, checkpoint, host)
+        assert result.status == "completed" and effects == ["once"]
+
+
+@pytest.mark.asyncio
+async def test_closing_finished_default_stream_cannot_unlink_a_persistent_resume(tmp_path):
+    generating = asyncio.Event()
+    class BlockingProvider(MockProvider):
+        async def stream_chat(self, *args, **kwargs):
+            if len(self.requests) > 0:
+                yield ChatStreamEvent(type="token", content="prefix")
+                generating.set()
+                await asyncio.Event().wait()
+            else:
+                async for event in super().stream_chat(*args, **kwargs):
+                    yield event
+    @dagent.tool(risk="medium")
+    def gate() -> str:
+        return "ok"
+    with closing(dagent.Runner(provider=BlockingProvider([ChatResponse(tool_calls=[ToolCall(id="gate", name="tool_gate")])]),
+                              workspace=tmp_path, skill_roots=[])) as runner:
+        old_stream = runner.stream(dagent.ToolAgent(profile="conversation", capabilities=[gate], review="careful"), input="review")
+        async for event in old_stream:
+            if event.type == "run.finished":
+                old = event.data.result
+                break
+        assert old.checkpoint.state.trace is not None
+        host = Host(old.conversation, runner)
+        task = asyncio.create_task(resume_invoke(runner, old.review.approve(), old.checkpoint, host))
+        await asyncio.wait_for(generating.wait(), 2)
+        await old_stream.aclose()
+        assert await runner.cancel(old.run_id)
+        result, _ = await asyncio.wait_for(task, 2)
+        assert result.status == "cancelled"
+        assert runner.run_checkpoint(old.run_id) is None
+
+
+@pytest.mark.asyncio
+async def test_runner_close_cannot_leave_a_late_resume_checkpoint_or_state(tmp_path):
+    executing = asyncio.Event()
+    @dagent.tool(risk="medium")
+    async def gate() -> str:
+        executing.set()
+        await asyncio.Event().wait()
+        return "unobserved"
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="gate", name="tool_gate")])])
+    runner = dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])
+    try:
+        host = Host(runner=runner)
+        pending, _ = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[gate], review="careful"),
+                                  host, True, input="review")
+        task = asyncio.create_task(resume_invoke(runner, pending.review.approve(), pending.checkpoint, host))
+        await asyncio.wait_for(executing.wait(), 2)
+        runner.close()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+        assert not runner.runtime.runs and not runner._run_checkpoints
+        assert not runner._active_run_tasks and not runner._persistent_deliveries
+    finally:
+        runner.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call", ["run", "stream", "resume", "static_dag", "thread", "persistent_stream"])
+async def test_runner_calls_from_a_persistent_tool_are_independent_runs(tmp_path, call):
+    holder, nested = {}, {}
+
+    @dagent.tool(risk="medium")
+    def gate() -> str:
+        return "gated"
+
+    @dagent.tool
+    def double(x: int) -> int:
+        return x * 2
+
+    async def nested_run(runner):
+        agent = dagent.ToolAgent(profile="conversation", capabilities=[gate], review="careful" if call == "resume" else "fast")
+        if call == "static_dag":
+            dag = dagent.Dag("workflow")
+            dag.add_node(dagent.Node("double", target=double, inputs={"x": dag.input["x"]}))
+            return await runner.run(dag, graph_input={"x": 3})
+        if call == "stream":
+            events = [event async for event in runner.stream(agent, input="nested")]
+            assert events[-1].type == "run.finished"
+            return events[-1].data.result
+        if call == "persistent_stream":
+            child = Host(runner=runner)
+            turn, _ = await consume(runner, runner.stream(agent, input="nested",
+                                    persistence=dagent.StreamPersistenceOptions()), child)
+            return turn
+        result = await runner.run(agent, input="nested")
+        if call == "resume":
+            assert result.status == "awaiting_review"
+            result = await runner.resume(result.review.approve(), checkpoint=result.checkpoint)
+        return result
+
+    @dagent.tool
+    async def delegate() -> str:
+        if call == "thread":
+            # A worker thread copies the Run's context into its own event loop.
+            nested["result"] = await asyncio.to_thread(lambda: asyncio.run(nested_run(holder["runner"])))
+        else:
+            nested["result"] = await nested_run(holder["runner"])
+        return "delegated"
+
+    responses = [ChatResponse(tool_calls=[ToolCall(id="delegate", name="tool_delegate")])]
+    if call != "static_dag":
+        responses += [ChatResponse(tool_calls=[ToolCall(id="gate", name="tool_gate")]),
+                      ChatResponse(content="nested done")]
+    responses.append(ChatResponse(content="parent done"))
+    with closing(dagent.Runner(provider=MockProvider(responses), workspace=tmp_path, skill_roots=[],
+                               capabilities=[gate, double])) as runner:
+        holder["runner"] = runner
+        host = Host(runner=runner)
+        parent, events = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[delegate]),
+                                      host, True, input="delegate")
+        assert parent.status == "completed" and parent.output_text == "parent done"
+        assert {batch.run_id for batch in host.batches} == {parent.run_id}
+        assert {event.run_id for event in events} == {parent.run_id}
+        assert runner.run_state(parent.run_id).trace is None
+        child = nested["result"]
+        assert child.status == "completed" and child.run_id != parent.run_id
+        if call == "persistent_stream":
+            assert child.trace is None and child.output_text == "nested done"
+        elif call == "static_dag":
+            assert child.trace is not None and child.checkpoint is not None
+            assert child.trace.root.children[-1].value == 6
+        else:
+            assert child.trace is not None and child.checkpoint is not None
+            assert child.new_items and child.output_text == "nested done"
+
+
+@pytest.mark.asyncio
+async def test_capability_test_from_a_persistent_tool_records_nothing_in_that_run(tmp_path):
+    holder = {}
+
+    @dagent.tool
+    async def probe() -> str:
+        result = await holder["runner"].test_capability("agent.helper", {"prompt": "help"})
+        return result.content
+
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="probe", name="tool_probe")]),
+                             ChatResponse(content="child answer"), ChatResponse(content="parent done")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        holder["runner"] = runner
+        runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[]))
+        host = Host(runner=runner)
+        parent, _ = await invoke(runner, dagent.ToolAgent(profile="conversation", capabilities=[probe]),
+                                 host, True, input="probe")
+        assert parent.status == "completed" and parent.output_text == "parent done"
+        assert [item.content.text for item in host.state.items if item.type == "tool_result"] == ["child answer"]
+        assert all(record.origin.scope == "conversation" for batch in host.batches for record in batch.messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent_resume", [True, False])
+async def test_review_resumes_right_after_its_terminal_batch_is_acknowledged(tmp_path, persistent_resume):
+    effects = []
+
+    @dagent.tool(risk="medium")
+    def gate() -> str:
+        effects.append("once")
+        return "ok"
+
+    provider = MockProvider([ChatResponse(tool_calls=[ToolCall(id="gate", name="tool_gate")]), ChatResponse(content="done")])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        host = Host(runner=runner)
+        resumed = None
+        async for event in runner.stream(dagent.ToolAgent(profile="conversation", capabilities=[gate], review="careful"),
+                                         input="review", persistence=dagent.StreamPersistenceOptions()):
+            if event.type != "conversation.changed":
+                continue
+            await host.save(event.data)
+            assert await runner.acknowledge_changes(event.run_id, event.data.batch_id)
+            if event.data.status == "awaiting_review":
+                # The previous delivery is still open here; its producer has
+                # only synchronous cleanup left once this ACK is accepted.
+                checkpoint = event.data.checkpoint
+                if persistent_resume:
+                    resumed, _ = await resume_invoke(runner, checkpoint.review.approve(), checkpoint, host)
+                else:
+                    events = [item async for item in runner.resume_stream(checkpoint.review.approve(), checkpoint=checkpoint)]
+                    resumed = events[-1].data.result
+        assert resumed.status == "completed" and resumed.output_text == "done" and effects == ["once"]
+        assert not runner._active_run_tasks and not runner._persistent_deliveries

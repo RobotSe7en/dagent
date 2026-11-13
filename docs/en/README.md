@@ -17,8 +17,8 @@ Simplified Chinese documentation is available at
 
 ## Feature Guides
 
-- [Conversation Changes](conversation-changes.md): optional async persistence,
-  exact state reconstruction, message identity, file readiness, and failures.
+- [Conversation Changes](conversation-changes.md): ToolLoop persistent stream V2,
+  explicit ACK, host reconstruction, trace-free review and files.
 - [Tool Result Recovery](tool-result-recovery.md): display budgets, saved output, pagination and storage failures.
 
 - [Runner and Configuration](runner-and-configuration.md): providers,
@@ -47,6 +47,7 @@ Simplified Chinese documentation is available at
 
 - [Troubleshooting](troubleshooting.md): common setup, provider, MCP,
   capability, DAG validation, and review issues.
+- [Release Notes](release-notes.md): additions, authorized callback removal and verification.
 - [Migration Notes](migration.md): released-surface changes and upgrade notes.
 - [Dynamic DAG Generation Plan](dynamic-dag-generation-plan.md): staged
   development of a typed planner spec and restricted SDK builder; this page

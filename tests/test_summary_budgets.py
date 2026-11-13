@@ -497,3 +497,55 @@ async def test_endurance_with_substantial_checkpoints_and_enforced_reasoning_out
     assert "amber42" in result.conversation.summary.content
     assert counter.count_text(result.conversation.summary.content) > 256
     assert result.conversation.compaction_state is None
+
+
+@pytest.mark.asyncio
+async def test_root_whose_paid_tightening_record_is_lost_is_tightened_again():
+    from dagent.providers.openai_compatible import ProviderTokenCountError
+
+    lost = dagent.ContentReference(path=".runtime/history/" + "0" * 64 + ".txt", byte_length=1, sha256="0" * 64)
+    fail = True
+
+    class RootCompactor(RecordingCompactor):
+        unreadable_records: set[str]
+
+        def __init__(self):
+            super().__init__()
+            self.unreadable_records = set()
+
+        async def tighten(self, summary, max_tokens, *, allow_fallback=False):
+            self.goals.append(max_tokens)
+            return summary.model_copy(update={"content": "t" * (4 * max_tokens), "compaction_record": lost})
+
+        async def reuse_compaction(self, previous, items, max_tokens, *, record_reference):
+            # The paid record is gone, as a real compactor finds when reading it.
+            self.unreadable_records.add(record_reference.path)
+            return None
+
+    async def count(request, _field):
+        text = next((item.content for item in request.items if item.source_id == "context_summary"), "")
+        if fail and "ttt" in text:
+            raise ProviderTokenCountError("Counting failed after the paid tightening.")
+        return ModelTokenCount(count=113800 + math.ceil(len(text) / 4), exact=True)
+
+    source = dagent.ConversationState(summary=dagent.ContextSummary(content="x" * 4000, source_item_count=3),
+        items=(dagent.UserMessage(id="task", run_id="run", content="Keep the requirement."),
+               dagent.AssistantMessage(id="latest", run_id="run", content="Latest step.")))
+
+    async def prepare(conversation, compactor):
+        return await ContextAssembler(context_window_tokens=131072, request_token_counter=count).prepare(
+            system_message={"content": "Inspect evidence."}, conversation=conversation,
+            policy=dagent.ContextPolicy(compaction_strategy="chunked"),
+            history_compactor=compactor, enable_new_strategy=True,
+        )
+
+    with pytest.raises(ProviderTokenCountError) as failed:
+        await prepare(source, RootCompactor())
+    saved = failed.value._conversation
+    assert [record.record for record in saved.compaction_state.failed_records] == [lost]
+    fail = False
+    retry = RootCompactor()
+    prepared = await prepare(saved, retry)
+    # The lost attempt no longer blocks tightening the same root again.
+    assert len(retry.goals) == 1 and lost.path in retry.unreadable_records
+    assert prepared.usage.estimated_input_tokens <= prepared.usage.input_budget_tokens

@@ -45,11 +45,20 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | DAG design | `Runner.design_dag` (including optional `RunStreamEvent` observation), `DAGDesignSelection`, `DAGDesignResult`, `DAGDesignProposal`, `DAGDesignNoChange`, `DAGDesignAnswer`, `DAGDesignFailure`, `DAGDiagnostic`, `DAGDiagnosticSeverity`, `inspect_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
-| Conversations and context | `ConversationChangeBatch`, `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ReasoningEffort`, `ModelCallMetadata`, `ModelCallAttempt`, `ModelTokenUsage`, `ResultStoragePolicy` |
-| Reviews and results | `RunResult` (`output_text` plus structured static `output_value`), `RunExecutionError`, `ConversationChangeError`, `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `CapabilityReviewDecision`, `ReviewLevel` |
+| Conversations and context | `StreamPersistenceOptions`, `ConversationChangeBatch`, `ConversationState`, `UserMessage`, `AssistantMessage`, `ToolCallItem`, `ToolResultMessage`, `Attachment`, `InlineContent`, `ContentReference`, `ContextSummary`, `ContextPolicy`, `ContextUsage`, `ContextWindowExceeded`, `ReasoningEffort`, `ModelCallMetadata`, `ModelCallAttempt`, `ModelTokenUsage`, `ResultStoragePolicy` |
+| Reviews and results | `RunResult` (`output_text` plus structured static `output_value`), `RunExecutionError`, `RunError`, `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `PlannerFrontend`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `CapabilityReviewDecision`, `ReviewLevel` |
 | Tool-run steering | `Runner.steer`, `SteerReceipt`, `SteerError`, `RunNotActiveError`, `RunNotSteerableError`, `SteerQueueFullError` |
 | Runtime schemas | `ArtifactFileRef`, `ArtifactFileManifest`, `ArtifactUpload`, `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionUsage`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunTrace`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`; `dagent.providers` also exports `ProviderCapabilities`, `ProtocolCapabilities`, `ProviderCapabilityWarning`, `ProviderCapabilityError`, `ProviderResponseError`, `ProviderRequestError`, `ProviderTokenCountError`, `ModelRequest`, `PreparedModelCall`, `ProviderReprepareRequired`, `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for capability inspection, custom providers, and tests |
+
+Persistent ToolLoop streams add `Runner.acknowledge_changes` and `reject_changes`; review hosts use `Runner.validate_checkpoint`, `RunCheckpoint.review` and `pending_tool_invocations`. Upload contracts and checked filenames are public in `dagent.artifacts` (`ArtifactUpload`, `ArtifactPathError`, `UPLOAD_ROOT`, `validate_upload_filename`); resource access uses `Runner.resolve_runtime_path`. [Persistent stream V2](conversation-changes.md) requires no runtime-private imports.
+
+In the **Unreleased** SDK, `ContentReference.sha256` is optional and is `None` for tool-output
+overflow files, large values and artifacts; compaction archives keep a digest.
+`FrozenResultDisplay.recovery` is `None` when no file holds the undisplayed text.
+`Attachment.sha256` is `None` for new uploads. See [tool result
+recovery](tool-result-recovery.md) and the [unreleased migration
+notes](migration.md#unreleased).
 
 Since 0.10.0, opt-in prompt-cache statistics extend the existing `ModelTokenUsage`
 with nullable `cached_input_tokens`. See
@@ -175,3 +184,20 @@ Since 0.10.1, provider wrappers can request budget-checked re-preparation and
 explicit effort omission. `Runner(context_observability=True)` enables request
 observations and summary progress. These extensions live in `dagent.providers`;
 see [provider wrappers and observations](model-context-and-reasoning.md#provider-wrappers-and-observations).
+
+## Optional response recovery
+
+`ToolAgent` and `AutoAgent` append the optional `response_retries=0` setting.
+`ResolvedRunPlan` persists nonzero values for review recovery and fingerprints;
+default values preserve released plan/checkpoint serialization and schema version.
+`UserMessage.purpose` defaults to omission. `response.discarded` is a typed stream
+event; event data classes live in `dagent.result`. See [Agents](agents.md) and
+[Results and streaming](results-streaming-review.md).
+
+## Optional run retention
+
+`Runner`, `Runner.from_config` and `Runner.derive` accept `max_retained_runs`.
+It controls only in-process retention and is absent from plans and fingerprints.
+The default is `None`; `derive` distinguishes omission (inherit) from explicit
+`None` (unlimited). See [Runner configuration](runner-and-configuration.md) for
+query, review, cache ownership and memory semantics.

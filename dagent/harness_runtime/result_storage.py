@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from dagent.harness_runtime.conversation_changes import current_changes, note_resource
+from dagent.harness_runtime.conversation_changes import note_resource
 
 import base64
-import codecs
 import hashlib
 import json
 import mimetypes
 import os
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from collections.abc import Callable, Iterable
 import warnings
+from uuid import uuid4
 
 from dagent.schemas import CapabilityResult
 from dagent.schemas.common import validate_runtime_directory
@@ -33,9 +33,10 @@ from dagent.schemas.conversation import (
 )
 from dagent.schemas.retention import ResultRetention, ResultStorageWarning
 from dagent.schemas.common import Boundary
-from dagent.capabilities.tools.boundary import enforce_path_allowed, BoundaryViolation
+from dagent.capabilities.tools.boundary import enforce_path_allowed
 from dagent.capabilities.tools.runtime_paths import RuntimePaths
-from dagent.harness_runtime.result_projection import result_references
+from dagent.harness_runtime.capability_executor import detach_containers
+from dagent.harness_runtime.result_projection import file_readable_text, result_references
 
 
 class ResultStorageError(RuntimeError):
@@ -81,84 +82,29 @@ class ResultStore:
         self.root.relative_to(self.paths.boundary)
         self.on_event = on_event
         self.read_boundary = read_boundary
-        # New strategies share this unchanged-file verification cache for a run;
-        # legacy preparation continues to create its own ResultStore each time.
-        self._verified_references: dict[tuple[str, int, str], tuple[int, ...]] = {}
-        self._text_readability: dict[tuple[str, int, str], bool] = {}
 
-    @staticmethod
-    def _file_identity(target: Path) -> tuple[int, ...]:
-        stat = target.stat()
-        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+    def files_readable(self) -> bool:
+        """Whether the read boundary lets the model open overflow and archive files.
 
-    def verify_reference(self, reference: ContentReference) -> None:
-        """Check each unchanged file once within this store's lifetime."""
-
-        target = self.paths.resolve(reference.path)
-        identity = self._file_identity(target)
-        key = (str(target), reference.byte_length, reference.sha256)
-        if self._verified_references.get(key) == identity:
-            return
-        digest = hashlib.sha256()
-        length = 0
-        decoder = codecs.getincrementaldecoder("utf-8-sig")()
-        text_readable = True
-        with target.open("rb") as source:
-            for chunk in iter(lambda: source.read(65536), b""):
-                digest.update(chunk)
-                length += len(chunk)
-                if text_readable:
-                    try:
-                        text_readable = "\0" not in decoder.decode(chunk)
-                    except UnicodeDecodeError:
-                        text_readable = False
-        if text_readable:
-            try:
-                decoder.decode(b"", final=True)
-            except UnicodeDecodeError:
-                text_readable = False
-        if length != reference.byte_length:
-            raise OSError(f"Result reference size mismatch: {reference.path}")
-        if digest.hexdigest() != reference.sha256:
-            raise OSError(f"Result reference SHA-256 mismatch: {reference.path}")
-        if self._file_identity(target) != identity:
-            raise OSError(f"Result reference changed during verification: {reference.path}")
-        self._verified_references[key] = identity
-        self._text_readability[key] = text_readable
-
-    def is_text_reference(self, reference: ContentReference) -> bool:
-        """Whether every character can be recovered by the UTF-8 file tool.
-
-        Decode checks share the existing integrity scan and its unchanged-file
-        cache. The file tool rejects NUL text even when it is valid UTF-8.
+        Only the folder paths are checked; no file is opened.
         """
 
-        self.verify_reference(reference)
-        target = self.paths.resolve(reference.path)
-        return self._text_readability[(str(target), reference.byte_length, reference.sha256)]
+        if self.read_boundary is None:
+            return True
+        try:
+            for root in (self.root, self.snapshot_root):
+                enforce_path_allowed(self.paths.relative(root), self.read_boundary, self.workspace)
+        except (PermissionError, ValueError):
+            return False
+        return True
 
     def read_reference(self, reference: ContentReference) -> bytes:
-        """Read an immutable result reference, verifying its stored identity."""
+        """Read a saved file as it is now; its contents are not checked."""
 
-        target = self.paths.resolve(reference.path)
-        identity = self._file_identity(target)
-        data = target.read_bytes()
-        if len(data) != reference.byte_length:
-            raise OSError(f"Result reference size mismatch: {reference.path}")
-        if hashlib.sha256(data).hexdigest() != reference.sha256:
-            raise OSError(f"Result reference SHA-256 mismatch: {reference.path}")
-        if self._file_identity(target) != identity:
-            raise OSError(f"Result reference changed during verification: {reference.path}")
-        self._verified_references[(str(target), reference.byte_length, reference.sha256)] = identity
-        try:
-            text_readable = "\0" not in data.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text_readable = False
-        self._text_readability[(str(target), reference.byte_length, reference.sha256)] = text_readable
-        return data
+        return self.paths.resolve(reference.path).read_bytes()
 
     def snapshot_text(self, text: str) -> ContentReference:
-        """Save received text under a stable, content-addressed relative path."""
+        """Save a compaction archive under a stable, content-addressed path."""
 
         data = text.encode("utf-8")
         digest = hashlib.sha256(data).hexdigest()
@@ -167,8 +113,6 @@ class ResultStore:
         target = (root / f"{digest}.txt").resolve()
         target.relative_to(root)
         if target.exists():
-            if target.read_bytes() != data:
-                raise OSError(f"Result snapshot conflicts with existing data: {target}")
             reference = ContentReference(
                 path=self.paths.relative(target),
                 media_type="text/plain; charset=utf-8", byte_length=len(data),
@@ -179,37 +123,40 @@ class ResultStore:
         return _write_reference(
             self.workspace, root, target.name, data,
             media_type="text/plain; charset=utf-8", preview=_head_tail_preview(text),
-            paths=self.paths,
+            paths=self.paths, sha256=digest,
         )
 
-    def can_read(self, item: ToolResultMessage | ResultObservation) -> bool:
-        paths = [reference.path for reference in result_references(item)]
-        if item.retention and item.retention.continuation:
-            paths.append(item.retention.continuation.path)
-        try:
-            for path in paths:
-                target = self.paths.resolve(path)
-                if self.read_boundary is not None:
-                    enforce_path_allowed(path, self.read_boundary, self.workspace)
-                if not target.exists() or not os.access(target, os.R_OK):
-                    return False
-        except (BoundaryViolation, ValueError, OSError):
-            return False
-        return True
+    def text_reference(
+        self, identity: str, text: str, *, field: str = "content"
+    ) -> ContentReference:
+        """Name the overflow file for ``text`` without writing it."""
+
+        target = (self.root / _result_filename(identity, field, ".txt")).resolve()
+        target.relative_to(self.root)
+        return ContentReference(
+            path=self.paths.relative(target),
+            media_type="text/plain; charset=utf-8",
+            byte_length=len(text.encode("utf-8")),
+            preview=_head_tail_preview(text),
+        )
+
+    def write_text(self, reference: ContentReference, text: str) -> ContentReference:
+        """Write ``text`` to the overflow file that ``text_reference`` named."""
+
+        return _write_reference(
+            self.workspace,
+            self.root,
+            PurePosixPath(reference.path).name,
+            text.encode("utf-8"),
+            media_type=reference.media_type,
+            preview=reference.preview,
+            paths=self.paths,
+        )
 
     def save_text(
         self, identity: str, text: str, *, field: str = "content"
     ) -> ContentReference:
-        data = text.encode("utf-8")
-        return _write_reference(
-            self.workspace,
-            self.root,
-            _result_filename(identity, field, data, ".txt"),
-            data,
-            media_type="text/plain; charset=utf-8",
-            preview=_head_tail_preview(text),
-            paths=self.paths,
-        )
+        return self.write_text(self.text_reference(identity, text, field=field), text)
 
     def warning(self, identity: str, field: str, exc: OSError) -> ResultStorageWarning:
         warning = ResultStorageWarning(
@@ -231,8 +178,15 @@ class ResultStore:
         return warning
 
     def ensure(
-        self, item: ToolResultMessage | ResultObservation
+        self, item: ToolResultMessage | ResultObservation, *, identity: str | None = None,
     ) -> ToolResultMessage | ResultObservation:
+        """Write a shortened inline result to an overflow file.
+
+        ``identity`` names the file; it defaults to the item id and must be
+        unique in the workspace (observation ids are unique only per message).
+        """
+
+        identity = identity or item.id
         refs = result_references(item)
         reference_storage_failed = item.retention and any(
             warning.field == "references" for warning in item.retention.storage_warnings
@@ -240,7 +194,7 @@ class ResultStore:
         if len(refs) > 4 and not reference_storage_failed:
             try:
                 manifest = self.save_text(
-                    item.id,
+                    identity,
                     "\n".join(ref.model_dump_json() for ref in refs),
                     field="references",
                 )
@@ -269,7 +223,7 @@ class ResultStore:
         if retention.storage_warnings or retention.window_start is not None:
             return item
         try:
-            reference = self.save_text(item.id, item.content.text)
+            reference = self.save_text(identity, item.content.text)
         except OSError as exc:
             warning = self.warning(item.id, "content", exc)
             return item.model_copy(
@@ -285,7 +239,14 @@ class ResultStore:
 
     def archive(
         self, previous: ContextSummary | None, items: Iterable[ConversationItem]
-    ) -> ContentReference | None:
+    ) -> tuple[ContentReference | None, bool]:
+        """Append archived results to the legacy result manifest.
+
+        Returns the manifest and whether the earlier manifest could not be
+        opened; its entries are then left out instead of failing compaction.
+        The earlier manifest is copied as it is, without checking it.
+        """
+
         previous_ref = previous.result_manifest if previous else None
         archived_items = tuple(items)
         has_results = any(
@@ -294,23 +255,17 @@ class ResultStore:
             for item in archived_items
         )
         if not has_results:
-            return previous_ref
+            return previous_ref, False
+        earlier = None
+        if previous_ref:
+            try:
+                earlier = self.paths.resolve(previous_ref.path).open("rb")
+            except (OSError, ValueError):
+                earlier = None
 
         def chunks() -> Iterable[bytes]:
-            if previous_ref:
-                target = self.paths.resolve(previous_ref.path)
-                digest = hashlib.sha256()
-                length = 0
-                with target.open("rb") as source:
-                    for data in iter(lambda: source.read(65536), b""):
-                        digest.update(data)
-                        length += len(data)
-                        yield data
-                if (
-                    length != previous_ref.byte_length
-                    or digest.hexdigest() != previous_ref.sha256
-                ):
-                    raise OSError("Result manifest checksum mismatch")
+            if earlier is not None:
+                yield from iter(lambda: earlier.read(65536), b"")
             for item in archived_items:
                 if isinstance(item, AssistantMessage) and item.tool_calls:
                     yield (
@@ -336,11 +291,12 @@ class ResultStore:
                     )
                 )
                 for result in results:
-                    saved = self.ensure(result)
-                    yield (saved.model_dump_json() + "\n").encode("utf-8")
+                    # Results are archived as they are; compaction writes no
+                    # tool-output files and never opens existing ones.
+                    yield (result.model_dump_json() + "\n").encode("utf-8")
 
         try:
-            return _write_chunks(
+            manifest = _write_chunks(
                 self.workspace,
                 self.root,
                 None,
@@ -348,10 +304,15 @@ class ResultStore:
                 media_type="application/x-ndjson",
                 preview="Earlier tool results and calls (JSONL)",
                 paths=self.paths,
+                hashed=True,
             )
         except OSError as exc:
             self.warning("compaction", "manifest", exc)
             raise
+        finally:
+            if earlier is not None:
+                earlier.close()
+        return manifest, previous_ref is not None and earlier is None
 
 
 @dataclass(frozen=True)
@@ -371,8 +332,16 @@ def normalize_capability_result(
     runtime_directory: str,
     policy: ResultStoragePolicy,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    result_files: bool = True,
+    detach_value: bool = True,
 ) -> NormalizedCapabilityResult:
-    """Return a checkpoint-safe result plus model/audit content references."""
+    """Return a checkpoint-safe result plus model/audit content references.
+
+    ``result_files`` is false when the model that reads this result cannot
+    open saved files: display text is then kept inline instead of overflowing
+    to a file, and its display is bounded later. Text containing NUL is also
+    kept inline, since read_file cannot open it. Values and artifacts are data and are stored by size either way.
+    """
 
     workspace = Path(workspace_path).expanduser().resolve()
     paths = RuntimePaths.current(workspace, validate_runtime_directory(runtime_directory))
@@ -384,6 +353,11 @@ def normalize_capability_result(
     references: list[ContentReference] = []
     content_reference: ContentReference | None = result.content_reference
     store = ResultStore(workspace, runtime_directory, on_event)
+    # Names this execution's files. Invocation ids can repeat (a ToolAgent
+    # uses the provider's call id, often "call_0"), so a fresh suffix keeps
+    # one execution from overwriting another's files. A result is normalized
+    # once, so the files are not duplicated.
+    file_identity = f"{result.invocation_id}/{uuid4().hex}"
     retention = result.retention or ResultRetention()
     if on_event:
         for warning in retention.storage_warnings:
@@ -398,12 +372,14 @@ def normalize_capability_result(
     display_content = _display_content(result)
     content_bytes = display_content.encode("utf-8")
     if (
-        content_reference is None
+        result_files
+        and content_reference is None
         and len(content_bytes) > policy.max_inline_bytes
         and retention.window_start is None
+        and file_readable_text(display_content)
     ):
         try:
-            content_reference = store.save_text(result.invocation_id, display_content)
+            content_reference = store.save_text(file_identity, display_content)
         except OSError as exc:
             warning = store.warning(result.invocation_id, "content", exc)
             retention = retention.model_copy(
@@ -425,7 +401,7 @@ def normalize_capability_result(
             normalized, reference = _normalize_artifact(
                 workspace,
                 result_root,
-                result.invocation_id,
+                file_identity,
                 index,
                 artifact,
                 paths=paths,
@@ -469,12 +445,7 @@ def normalize_capability_result(
             "value",
             workspace,
             result_root,
-            _result_filename(
-                result.invocation_id,
-                "value",
-                encoded_value,
-                value_extension,
-            ),
+            _result_filename(file_identity, "value", value_extension),
             encoded_value,
             media_type=value_media_type,
             preview=(
@@ -497,11 +468,12 @@ def normalize_capability_result(
         if not field_value:
             continue
         encoded = field_value.encode("utf-8")
-        if len(encoded) <= policy.max_inline_bytes:
+        if (not result_files or len(encoded) <= policy.max_inline_bytes
+                or not file_readable_text(field_value)):
             continue
         try:
             reference = store.save_text(
-                result.invocation_id, field_value, field=field_name
+                file_identity, field_value, field=field_name
             )
         except OSError as exc:
             warning = store.warning(result.invocation_id, field_name, exc)
@@ -519,18 +491,17 @@ def normalize_capability_result(
             "content": normalized_content,
             "content_reference": content_reference,
             "retention": retention,
-            "value": normalized_value,
+            # Recorded as returned: a tool that keeps and later changes the
+            # object does not change a conversation's result.
+            "value": detach_containers(normalized_value) if detach_value else normalized_value,
             "artifacts": normalized_artifacts,
             **normalized_text_fields,
         }
     )
-    if current_changes() is not None:
-        for reference in references:
-            try:
-                store.verify_reference(reference)
-            except OSError as exc:
-                raise ResultStorageError(normalized_result, "references", exc) from exc
-            note_resource(reference, workspace, store.paths.directory)
+    if result.content_reference is not None:
+        # Files written here are announced by the writer; a tool-written file
+        # is announced as reported, without opening it.
+        note_resource(result.content_reference, workspace, store.paths.directory)
     return NormalizedCapabilityResult(
         result=normalized_result,
         content=stored_content,
@@ -582,12 +553,7 @@ def _normalize_artifact(
     reference = _write_reference(
         workspace,
         root,
-        _result_filename(
-            invocation_id,
-            f"artifact-{index}",
-            encoded,
-            extension,
-        ),
+        _result_filename(invocation_id, f"artifact-{index}", extension),
         encoded,
         media_type=media_type,
         preview="",
@@ -598,15 +564,11 @@ def _normalize_artifact(
     return normalized, reference
 
 
-def _result_filename(
-    invocation_id: str,
-    field_name: str,
-    data: bytes,
-    extension: str,
-) -> str:
-    invocation_digest = hashlib.sha256(invocation_id.encode("utf-8")).hexdigest()[:16]
-    content_digest = hashlib.sha256(data).hexdigest()[:16]
-    return f"{invocation_digest}-{field_name}-{content_digest}{extension}"
+def _result_filename(identity: str, field_name: str, extension: str) -> str:
+    # The identity is hashed only to make an arbitrary id a safe file name;
+    # callers pass an identity that is unique within the run workspace.
+    identity_digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"{identity_digest}-{field_name}{extension}"
 
 
 def _write_required_reference(
@@ -627,10 +589,11 @@ def _write_reference(
     media_type: str,
     preview: str,
     paths: RuntimePaths | None = None,
+    sha256: str | None = None,
 ) -> ContentReference:
     return _write_chunks(
         workspace, root, filename, (data,), media_type=media_type, preview=preview,
-        paths=paths,
+        paths=paths, sha256=sha256,
     )
 
 
@@ -643,20 +606,34 @@ def _write_chunks(
     media_type: str,
     preview: str,
     paths: RuntimePaths | None = None,
+    hashed: bool = False,
+    sha256: str | None = None,
 ) -> ContentReference:
+    """Write one file atomically.
+
+    Only compaction archives carry a digest; it names and links them. Pass a
+    digest the caller already has as ``sha256``, or ``hashed`` to compute it
+    while writing. Tool output and data files carry no digest. An unnamed file
+    is a hashed result manifest.
+    """
+
+    if filename is None and not hashed:
+        raise ValueError("An unnamed result file must be hashed.")
     root.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256()
+    digest = hashlib.sha256() if hashed else None
     length = 0
     descriptor, temporary_name = tempfile.mkstemp(prefix=".result-", dir=root)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             for data in chunks:
                 handle.write(data)
-                digest.update(data)
+                if digest is not None:
+                    digest.update(data)
                 length += len(data)
             handle.flush()
             os.fsync(handle.fileno())
-        target = (root / (filename or f"manifest-{digest.hexdigest()}.jsonl")).resolve()
+        name = filename or f"manifest-{digest.hexdigest()}.jsonl"
+        target = (root / name).resolve()
         try:
             target.relative_to(root)
         except ValueError as exc:
@@ -675,7 +652,7 @@ def _write_chunks(
         path=relative,
         media_type=media_type,
         byte_length=length,
-        sha256=digest.hexdigest(),
+        sha256=digest.hexdigest() if digest is not None else sha256,
         preview=preview,
     )
     note_resource(reference, workspace, (paths or RuntimePaths.current(workspace)).directory)

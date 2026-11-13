@@ -7,6 +7,44 @@ Since 0.9.18, tool results use independent per-result display limits so appendin
 new results does not shorten earlier displays. This applies to ToolAgent replies
 and structured DAG planner observations.
 
+## When results overflow to files
+
+In the **Unreleased** SDK, a result is shortened only for a model that can open the rest:
+
+- **With the built-in `read_file` tool** (for a DagAgent: `tool.read_file` in its
+  capabilities), a result longer than its display limit is shortened. Its full
+  text is written to an overflow file under the runtime directory's `results/`
+  directory, and the display tells the model where it is. For a ToolAgent, the
+  run's read boundary must also admit the runtime `results/` and `history/`
+  folders; only those paths are checked, no file is opened.
+- **Without `read_file`**, or when that boundary excludes the runtime folders,
+  no file is written. The result is still shortened to its display limit, and a
+  shortened display is marked `[RECOVERY_UNAVAILABLE: no saved original]`. The
+  emergency reference-only transition is not made, since it would remove text
+  the model cannot read back.
+- **Text containing NUL** is handled the same way even with `read_file`: it is
+  shortened without a file, because `read_file` rejects such files.
+- `ValidatorAgent` and other profiled agents have no tools. Their context stays
+  bounded by shortening results, but no file is written for them and a shortened
+  inline result is marked `[RECOVERY_UNAVAILABLE: no saved original]`.
+
+A result shortened without a file keeps its full text inline in the
+conversation record. With the `legacy` strategy, summaries and the retention
+estimate read it through the same bounded preview a saved result carries (the
+first and last parts, 8,192 characters in total), so long results do not push
+the rest of the history out of the summary request.
+
+Overflow files are best-effort. The SDK writes them atomically but stores no
+digest (`ContentReference.sha256` is `None`), never checks or rereads them, and
+does not copy them into another workspace. A conversation's runs share one
+workspace, so later turns can read the overflow files of earlier turns. A file
+that was later changed is
+read as it is; a deleted one is reported by the file tool as missing. Compaction
+neither checks nor copies them. Large structured values, binary values and MCP
+artifacts are data rather than display text: they are still stored by size,
+without a digest, and a static DAG node reading an upstream value fails only if
+the file cannot be read.
+
 ## Configure display and storage separately
 
 ```python
@@ -39,22 +77,27 @@ Context-window pressure uses the normal history-summary and reasoning-omission
 steps. It does not shrink result displays again. If required input still exceeds
 the hard input budget, generation fails explicitly. Configure the per-result
 limit to fit the model window, accounting for parallel results, system
-instructions, tool schemas, user input and output capacity. Saving a truncated
-original retains the existing storage behavior. A failed reference-manifest write
-keeps its warning and is not retried by later projections.
+instructions, tool schemas, user input and output capacity. When the model can
+open files, a shortened inline result gets its overflow file when it is first
+shortened (text containing NUL never does). A failed write keeps
+its storage warning and is not retried by later projections.
 
-The inline threshold is independent: a smaller result can also be written before
-its model display is truncated. Projection does not replace a structured tool
+The inline threshold is independent: with `read_file`, a result above
+`max_inline_bytes` is written to a file when it is received, before its display
+is shortened. Projection does not replace a structured tool
 value with its excerpt. Static DAG value expressions retain their full-data
 rehydration behavior.
 
 ## Read the original
 
-Enable `tool.read_file` explicitly when the agent should recover saved text.
-The SDK does not automatically add capabilities or expand path permissions.
-Result references are relative to the run workspace, under the configured
-runtime directory's `results` directory. The model is told when direct reading
-is unavailable, denied or missing. A reference is not a permanent download URL.
+Enable `tool.read_file` explicitly when the agent should recover saved text;
+without it results are still shortened, but no overflow file is written. The
+SDK does not
+automatically add capabilities or expand path permissions: reading an overflow
+file still goes through `read_file`'s normal boundary checks. Result references
+are relative to the run workspace, under the configured runtime directory's
+`results` directory. A reference is not a permanent download URL, and the file
+may no longer exist.
 
 With an absolute `runtime_directory`, references use logical `.runtime/...`
 paths and built-in file tools resolve them into the external store. Host code
@@ -83,14 +126,21 @@ have a partial saved record or a storage warning.
 - `[EMPTY_RESULT]`: the tool genuinely returned no display content or artifacts.
 - `[TRUNCATED]`: the model sees only an excerpt of received content.
 - `[SOURCE_TRUNCATED]`: the source was bounded or returned a window.
-- `[RECOVERY_UNAVAILABLE]`: a saved original or the required reading access is
-  unavailable; do not assume the omitted data can be reconstructed.
+- `[RECOVERY_UNAVAILABLE: no saved original]`: the display was shortened but no
+  overflow file was written (a storage failure, a model that cannot open files,
+  or a tool-less validator); do not assume the omitted data can be
+  reconstructed.
 
-Shell stdout and stderr are drained concurrently with bounded memory and saved
-under a shared per-call capture limit (64 MiB by default). Above that limit the
-command continues, pipes keep draining, and a bounded tail remains visible.
-The saved record is explicitly partial. Exit codes, timeouts and cancellations
-are preserved. This capture limit is not a workspace-wide disk quota.
+Shell stdout and stderr are drained concurrently with bounded memory. Output
+within the shell's inline limits (100,000 bytes and 2,000 lines) is returned
+whole and no file is written. Beyond them, with `read_file`, the complete output
+is streamed to one overflow file under a shared per-call capture limit (64 MiB
+by default); above that limit the command continues, pipes keep draining, and
+the saved record is explicitly partial. Without `read_file`, or once the output
+contains NUL, only a bounded tail of each stream is kept, no file is left, and
+the result is marked `[SOURCE_TRUNCATED]`. Exit codes,
+timeouts and cancellations are preserved. This capture limit is not a
+workspace-wide disk quota.
 
 Text-storage I/O failure produces `tool_result_storage_warning` through the
 runtime event callback (`capability.result.storage_warning` in `Runner.stream`),
@@ -115,6 +165,12 @@ resource is downloaded automatically.
 of earlier tool results and calls. Runtime code retains this reference separately
 from model-generated summary prose. `result_archive_incomplete` explicitly marks
 an archival failure. Later compactions retain access to earlier index entries.
+If an earlier index can no longer be opened, the new index leaves its entries
+out and sets `result_archive_incomplete` instead of failing compaction.
+Compaction archives (records, sources and this index) stay in the workspace
+where they were written. They hold the compacted messages and the results as
+they were, so a result that had an overflow file is archived with its path only;
+the file itself stays best-effort.
 
 `CapabilityResult.retention` and `ToolResultMessage.retention` contain typed
 source completeness, continuation and storage warnings. Their types live in
@@ -123,7 +179,9 @@ source completeness, continuation and storage warnings. Their types live in
 `ContextUsage` distinguishes result body/metadata tokens, source truncation and
 unavailable recovery. References alone do not count as body truncation.
 
-Keep the workspace with a checkpoint when resuming elsewhere. Hosts own copying,
+Keep the workspace with a checkpoint when resuming elsewhere. A continuation
+that you move to another `workspace_path` cannot read earlier overflow files or
+archives unless you copy them there. Hosts own copying,
 retention periods, cleanup, redaction and disk quotas. More eager preservation
 uses disk space and can persist sensitive tool output; files are not automatically
 deleted when the runner closes.

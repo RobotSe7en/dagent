@@ -11,7 +11,7 @@ import dagent.harness_runtime.compaction as compaction
 from dagent.harness_runtime.compaction import (
     CompactionArchiveError, CompactionBudgetExceeded, CompactionChunk, CompactionError,
     CompactionRecordV1, CompactionRunState, CompactionSourceV1, HistoryCompactor,
-    SummaryEntry, TaskSummary, load_compaction_references,
+    SummaryEntry, TaskSummary,
 )
 from dagent.harness_runtime.context import ContextAssembler
 from dagent.harness_runtime.result_storage import ResultStore
@@ -169,8 +169,9 @@ async def test_archive_omits_reasoning_and_preserves_received_snapshot_and_view(
     assert b"PRIVATE_REASONING" not in raw
     assert b"COMPLETE_RESULT_BODY" in raw
     assert b'"displayed_spans":[[0,8]]' in raw
-    assert recovery in load_compaction_references(raw)
-    assert record.source in load_compaction_references(engine.result_store.read_reference(summary.compaction_record))
+    # The archived item keeps its recovery path; the file itself is not linked.
+    assert recovery.path.encode() in raw
+    assert recovery not in CompactionSourceV1.model_validate_json(raw).refs
 
 
 @pytest.mark.asyncio
@@ -226,7 +227,7 @@ async def test_fallback_requires_read_capability_and_successful_storage(tmp_path
 
     item = UserMessage(id="source", content="Original")
     engine = compactor(tmp_path, chat, fallback=True, readable=False)
-    with pytest.raises(CompactionArchiveError, match="read capability"):
+    with pytest.raises(CompactionArchiveError, match="read_file"):
         await engine.compact(None, (item,), 256, allow_fallback=True)
 
     def fail(_text):
@@ -697,16 +698,17 @@ async def test_complete_paid_record_reuse_requires_exact_source_and_runs_without
 
 
 @pytest.mark.asyncio
-async def test_missing_raw_recovery_reference_prevents_normal_compaction(tmp_path):
-    async def chat(_request):
-        raise AssertionError("Missing raw result must be found before a model call")
+async def test_missing_tool_output_file_does_not_prevent_compaction(tmp_path):
+    async def chat(request):
+        return summary_response(request)
 
     engine = compactor(tmp_path, chat)
-    reference = engine.result_store.snapshot_text("original tool output")
+    reference = engine.result_store.save_text("missing", "original tool output")
     (engine.result_store.workspace / reference.path).unlink()
     result = ToolResultMessage(call_id="missing", name="query", status="completed", content=reference)
-    with pytest.raises(CompactionArchiveError, match="retain"):
-        await engine.compact(None, (result,), 256)
+    summary = await engine.compact(None, (result,), 256)
+    raw = engine.result_store.read_reference(record_for(engine, summary).source)
+    assert reference.path.encode() in raw
 
 
 @pytest.mark.asyncio
@@ -911,7 +913,7 @@ async def test_root_reference_fallback_does_not_fake_read_access_or_metadata_roo
 
     engine = compactor(tmp_path, chat, fallback=True, readable=False)
     original = ContextSummary(content="Current summary that must remain intact.", source_item_count=1)
-    with pytest.raises(CompactionArchiveError, match="read capability") as failure:
+    with pytest.raises(CompactionArchiveError, match="read_file") as failure:
         await engine.tighten(original, 128, allow_fallback=True)
     assert failure.value.compaction_record is not None
     engine.reset_budget()

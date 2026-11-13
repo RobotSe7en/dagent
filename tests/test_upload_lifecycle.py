@@ -1,7 +1,6 @@
-"""Uploads are mutable working files; retained results are verified snapshots."""
+"""Uploads are mutable working files, written once and never checked again."""
 
 import asyncio
-import hashlib
 from pathlib import Path
 
 import pytest
@@ -11,7 +10,6 @@ from dagent.harness_runtime.artifacts import (
     materialize_artifact_uploads,
     materialize_workbench_uploads,
 )
-from dagent.harness_runtime.conversation_resources import ConversationResourceStore
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import Artifact
 
@@ -27,27 +25,37 @@ def _change(target: Path, operation: str) -> None:
         target.write_bytes(b"HELLO" if operation == "same_size" else b"updated contents")
 
 
+def _ingest(kind, workspace):
+    if kind == "attachment":
+        materialize_workbench_uploads([_upload()], workspace_path=workspace)
+    else:
+        materialize_artifact_uploads(
+            {"source": [_upload()]},
+            artifacts={"source": Artifact(id="source", paths=["note.txt"])},
+            workspace_path=workspace,
+        )
+
+
 @pytest.mark.parametrize("kind", ["attachment", "artifact"])
-@pytest.mark.parametrize("corruption", ["short_write", "truncated", "same_size"])
-def test_upload_integrity_is_checked_at_ingestion(tmp_path, monkeypatch, kind, corruption):
+def test_a_short_upload_write_still_fails(tmp_path, monkeypatch, kind):
     write_bytes = Path.write_bytes
+    monkeypatch.setattr(Path, "write_bytes", lambda path, content: write_bytes(path, content[:-1]))
+    with pytest.raises(OSError, match="write size mismatch"):
+        _ingest(kind, tmp_path)
 
-    def corrupt(path, content):
-        damaged = b"HELLO" if corruption == "same_size" else content[:-1]
-        written = write_bytes(path, damaged)
-        return written if corruption == "short_write" else len(content)
 
-    monkeypatch.setattr(Path, "write_bytes", corrupt)
-    expected = "SHA-256 mismatch" if corruption == "same_size" else "size mismatch"
-    with pytest.raises(OSError, match=expected):
-        if kind == "attachment":
-            materialize_workbench_uploads([_upload()], workspace_path=tmp_path)
-        else:
-            materialize_artifact_uploads(
-                {"source": [_upload()]},
-                artifacts={"source": Artifact(id="source", paths=["note.txt"])},
-                workspace_path=tmp_path,
-            )
+@pytest.mark.parametrize("kind", ["attachment", "artifact"])
+def test_uploads_are_written_once_and_not_read_back(tmp_path, monkeypatch, kind):
+    reads = []
+    read_bytes = Path.read_bytes
+
+    def counted(path):
+        reads.append(path)
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted)
+    _ingest(kind, tmp_path)
+    assert reads == []
 
 
 @pytest.mark.parametrize("kind", ["attachment", "artifact"])
@@ -116,8 +124,8 @@ def test_edited_upload_finishes_and_continues_with_current_file(tmp_path, operat
             first = await runner.run(agent, **kwargs)
         assert first.status == "completed"
         attachment = first.conversation.items[0].attachments[0]
-        assert attachment.byte_length == 5
-        assert attachment.sha256 == hashlib.sha256(b"hello").hexdigest()
+        # The size is recorded; new uploads carry no digest.
+        assert attachment.byte_length == 5 and attachment.sha256 is None
         second = await runner.run(
             agent, input="read current file", conversation=first.conversation,
             workspace_path=workspace,
@@ -192,40 +200,3 @@ def test_review_and_restart_preserve_upload_edits(tmp_path, operation):
         assert target.read_bytes() == b"changed after review"
     finally:
         resumed_runner.close()
-
-
-def test_only_result_references_are_persisted_and_rebased(tmp_path):
-    original = tmp_path / "original"
-    original.mkdir()
-    content = b"retained result"
-    source = original / "result.txt"
-    source.write_bytes(content)
-    reference = dagent.ContentReference(
-        path="result.txt", media_type="text/plain", byte_length=len(content),
-        sha256=hashlib.sha256(content).hexdigest(),
-    )
-    attachment = dagent.Attachment(
-        path="uploads/missing.txt", byte_length=5, sha256=hashlib.sha256(b"hello").hexdigest(),
-    )
-    conversation = dagent.ConversationState(items=(
-        dagent.UserMessage(content="historical upload", attachments=(attachment,)),
-        dagent.ToolResultMessage(
-            call_id="result", name="tool_result", status="completed", content=reference,
-            value_reference=reference, value=reference.model_dump(mode="json"), artifacts=(reference,),
-        ),
-    ))
-    store = ConversationResourceStore(tmp_path, ".runtime")
-    store.persist(conversation, workspace_path=original)
-    source.unlink()
-    destination = tmp_path / "new"
-    restored = store.materialize(conversation, workspace_path=destination)
-    assert restored.items[0] == conversation.items[0]
-    result = restored.items[1]
-    assert (destination / result.content.path).read_bytes() == content
-    assert result.value_reference == result.content == result.artifacts[0]
-    assert result.value == result.content.model_dump(mode="json")
-    (destination / result.content.path).write_bytes(b"x" * len(content))
-    with pytest.raises(dagent.ConversationResourceError, match="SHA-256 mismatch"):
-        store.materialize(restored, workspace_path=destination)
-    with pytest.raises(dagent.ConversationResourceError, match="SHA-256 mismatch"):
-        store.persist(restored, workspace_path=destination)

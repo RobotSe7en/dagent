@@ -65,15 +65,24 @@ def shell(
             process, workspace=Path(context["workspace"]),
             runtime_directory=context["runtime_directory"], max_bytes=context["max_bytes"],
             timeout=timeout_seconds, cancel=_dagent_cancel_event, stop=stop,
+            files=context.get("files", True),
+            inline_bytes=SHELL_OUTPUT_MAX_BYTES, inline_lines=SHELL_OUTPUT_MAX_LINES,
         )
     except BaseException:
         stop()
         raise
     content = _tail_truncate(output.content)
     reference = output.content_reference
+    retention = output.retention
     if reference is not None:
         reference = {**reference, "preview": content}
-    output = ToolOutput(content, retention=output.retention, content_reference=reference)
+    elif content != output.content:
+        # No overflow file holds the rest, so the shown tail is all there is.
+        retention = {
+            **retention, "source_completeness": "partial",
+            "source_reason": retention.get("source_reason") or "capture_limit",
+        }
+    output = ToolOutput(content, retention=retention, content_reference=reference)
     if process.returncode != 0 or reason:
         raise ShellExecutionError(content, output=output)
     return output

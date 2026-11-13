@@ -278,3 +278,30 @@ result = await runner.run(
 
 See [Results, Streaming, and Review](results-streaming-review.md) for persistence
 and review-safe resume flows.
+
+## Retry incomplete model responses
+
+`ToolAgent(response_retries=0)` and `AutoAgent(response_retries=0)` preserve the
+released behavior. Set a nonnegative integer to allow that many extra generations
+per consecutive sequence of bad responses. Every generation consumes one
+`max_steps`; the last step cannot retry. A valid response resets the allowance.
+AutoAgent applies this setting only when it selects the ToolAgent loop. Child
+agents use their own settings; planners, validators and compactors are unchanged.
+
+Retries cover empty or reasoning-only output, `max_output_tokens`, missing finish
+or terminal responses, `invalid_tool_call`, and an explicit custom-provider
+`incomplete` status. Request failures, refusal, content filtering, unknown errors
+and a generic `failed` status do not trigger response retries. Structured errors
+take precedence over status. Output budgets are never increased automatically.
+
+Discarded responses remain in diagnostics, consume usage, and execute no tools.
+After a tool result, the runtime adds a short internal recovery hint without
+copying failed output, reasoning or arguments. When the discarded response
+followed a user message, the identical request is resent without another hint.
+If a steer follows an internal recovery hint, the steer supersedes the hint in
+effective context; the journal keeps the hint. This does not promise strict role
+alternation for arbitrary combinations of user instructions. Retrying an unchanged
+request may fail again; the configured attempt limit still applies.
+Exhaustion preserves the original error code. Persistent streams retain the final
+failed response's text when the original response had no calls; discarded attempts
+and failed calls remain audit-only. Ordinary zero-retry behavior is unchanged.

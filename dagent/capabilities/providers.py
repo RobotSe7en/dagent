@@ -186,6 +186,12 @@ class AgentNodeSessionStore:
             conversation.model_copy(deep=True)
         )
 
+    def discard_task(self, task_id: str) -> None:
+        """Release this store's node conversations for one finished root task."""
+        for key in tuple(self._conversations):
+            if key[0] == task_id:
+                del self._conversations[key]
+
 
 class AgentCapabilityProvider:
     """Registers DAG agent-node capabilities backed by ``ToolAgent``."""
@@ -237,6 +243,7 @@ class AgentCapabilityProvider:
                     "execution_fingerprint": _agent_config_fingerprint(
                         profile=profile,
                         max_steps=int(config.get("max_steps", 888)),
+                        response_retries=config.get("response_retries", 0),
                         context_policy=_context_policy_from_config(config),
                         result_storage_policy=_result_storage_policy_from_config(config),
                         capability_ids=capability_ids,
@@ -284,7 +291,9 @@ class AgentCapabilityProvider:
             StaticAgentReviewRequired,
         )
         from dagent.harness_runtime.steering import suspend_run_steering
-        from dagent.harness_runtime.conversation_changes import audit_conversation_scope, publish_messages
+        from dagent.harness_runtime.conversation_changes import (
+            audit_conversation_scope, current_changes, publish_messages,
+        )
         from dagent.harness_runtime.tool_agent import ToolAgent, ToolAgentLoop
 
         profile = _profile_from_config(agent_name, config)
@@ -336,6 +345,7 @@ class AgentCapabilityProvider:
             prompt_builder=self.prompt_builder,
             context_observability=config.get("context_observability", False),
             max_steps=max_steps,
+            response_retries=config.get("response_retries", 0),
             extra_system_prompt=None if context is None else context.extra_system_prompt,
             skill_prompt_resolver=self.skill_prompt_resolver,
             context_policy=context_policy,
@@ -370,6 +380,7 @@ class AgentCapabilityProvider:
             suspend_run_steering(),
             audit_conversation_scope(invocation.invocation_id, "subagent"),
         ):
+            persistent = current_changes() is not None
             if control is not None and control.agent_state is not None:
                 outcome = await agent.resume_review(
                     control.agent_state,
@@ -379,6 +390,7 @@ class AgentCapabilityProvider:
                     capability_context=capability_context,
                     on_token=callbacks.on_token,
                     on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
+                    persistent=persistent,
                 )
                 if outcome is None:
                     raise ValueError("Static agent continuation has no resumable tool review.")
@@ -393,6 +405,7 @@ class AgentCapabilityProvider:
                     capability_context=capability_context,
                     on_token=callbacks.on_token,
                     on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
+                    persistent=persistent,
                 )
         if context is not None and context.node is not None:
             self.session_store.save(
@@ -469,6 +482,7 @@ def _agent_config_fingerprint(
     *,
     profile: AgentProfile,
     max_steps: int,
+    response_retries: int = 0,
     context_policy: ContextPolicy,
     result_storage_policy: ResultStoragePolicy,
     capability_ids: tuple[str, ...],
@@ -484,6 +498,8 @@ def _agent_config_fingerprint(
         "skills": skills,
         "enabled_toolsets": enabled_toolsets,
     }
+    if response_retries:
+        payload["response_retries"] = response_retries
     canonical = json.dumps(
         payload,
         ensure_ascii=False,
@@ -729,6 +745,7 @@ def _execute_tool(
                 paths.directory if paths.external else getattr(context, "runtime_directory", ".dagent")
             ),
             "max_bytes": getattr(context, "max_shell_output_bytes", 64 * 1024 * 1024),
+            "files": getattr(context, "result_files", True),
         }
     if current_run_execution() == "sandbox":
         session = current_sandbox_session()

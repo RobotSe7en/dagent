@@ -72,7 +72,7 @@ def simulated_endpoint():
 
 
 async def main() -> None:
-    print("Simulated endpoint: synthetic counts, not a cache benchmark.")
+    print("Simulated endpoint: synthetic counts.")
     with TemporaryDirectory(prefix="dagent-cache-usage-") as temporary:
         async with AsyncOpenAI(
             base_url="https://model.example/v1", api_key="offline",
