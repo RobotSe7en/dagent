@@ -104,6 +104,8 @@ from dagent.schemas.conversation import (
 )
 from dagent.schemas.common import validate_runtime_directory
 from dagent.schemas.results import PendingCapabilityReviewItem, _PendingToolBatch, _PendingToolCall
+from dagent.harness_runtime.user_interactions import invocation_interactions
+from dagent.user_interactions import UserInteractionFatalError
 
 
 @dataclass
@@ -800,13 +802,29 @@ class ToolAgentLoop:
                         call_context = replace(call_context, approved_boundary_invocation_id=invocation.invocation_id)
                     await observe_tool(item.call.id, invocation.capability_id, "starting")
                     try:
-                        result = await self.capability_executor.execute(invocation, context=call_context, callbacks=capability_callbacks)
+                        assistant = next(message for message in reversed(loop_state.conversation.items)
+                                         if isinstance(message, AssistantMessage)
+                                         and any(call.id == item.call.id for call in message.tool_calls))
+                        with invocation_interactions(resolved_run_id, invocation, assistant.id) as ui:
+                            call_context = replace(call_context, ui=ui)
+                            result = await self.capability_executor.execute(invocation, context=call_context, callbacks=capability_callbacks)
                     except PersistenceDeliveryError:
                         raise
                     except asyncio.CancelledError:
                         await observe_tool(item.call.id, invocation.capability_id, "outcome_unknown")
                         raise
                     except Exception as exc:
+                        if isinstance(exc, UserInteractionFatalError) and exc.result is None:
+                            loop_state.error = RunTraceError(code=type(exc).__name__, message=str(exc))
+                            loop_state.checkpoint_eligible = False
+                            if trace is not None:
+                                trace.root.error = loop_state.error
+                            if node is not None:
+                                node.status = "failed"
+                                node.ended_at = datetime.now(timezone.utc)
+                                node.error = loop_state.error
+                            await observe_tool(item.call.id, invocation.capability_id, "failed", error=loop_state.error)
+                            raise ToolContextFailure(exc, failed_outcome()) from exc
                         result = CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__)
                     content = _tool_content(result)
                 if result is not None:

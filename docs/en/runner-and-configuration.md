@@ -1,5 +1,9 @@
 # Runner and Configuration
 
+For per-execution `interactions=UserInteractionOptions(...)` on local root
+ToolLoops, see [User Interactions](user-interactions.md). Receivers are explicit
+on each run/resume and are not Runner defaults or checkpoint contents.
+
 For ready-file notifications and incremental host persistence, see
 [Conversation Changes](conversation-changes.md).
 

@@ -1,5 +1,8 @@
 # 通过流式批次持久化 ToolLoop 会话
 
+显式启用的[用户交互](user-interactions.md)作为原 invocation 的普通工具结果返回。
+接受应答仅结束等待，结果批次仍需宿主保存并 ACK 后才能继续派发。
+
 **0.11.0：批次契约 V2。** 在 `Runner.stream` 或 `resume_stream` 中传入
 `StreamPersistenceOptions` 启用。旧 `on_conversation_change` 回调及其专属异常已经移除，
 参见 [V1 到 V2 迁移](migration.md#0110)。不传配置时，保持原完整结果流及 trace 行为。

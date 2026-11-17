@@ -6,6 +6,7 @@ from examples import (
     dynamic_dag_builder_agent,
     runtime_registration_and_skills,
     tool_agent,
+    user_interactions,
 )
 
 
@@ -17,6 +18,14 @@ def test_tool_agent_example_uses_derived_tool_function_name(capsys) -> None:
     assert lines[0] == "completed"
     assert lines[1] == "The echo tool returned hello."
     assert "tool_echo" in lines[2]
+
+
+def test_user_interactions_example_runs_without_external_services(capsys) -> None:
+    asyncio.run(user_interactions.main())
+    output = capsys.readouterr().out
+    assert "wait ended: compose / cancelled" in output
+    assert "result persisted: saved_edit" in output
+    assert "persistent run: completed" in output
 
 
 def test_agent_delegation_example_executes_registered_agent(capsys) -> None:

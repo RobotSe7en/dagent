@@ -1,5 +1,9 @@
 # Runner 和配置
 
+local 根 ToolLoop 可按次传入 `interactions=UserInteractionOptions(...)`，见
+[用户交互](user-interactions.md)。每次 run/resume 显式提供接收方，不设 Runner
+默认值，也不写入 checkpoint。
+
 文件就绪通知与宿主增量保存方式，见[会话变化](conversation-changes.md)。
 
 结果展示预算、类型化保留元信息及文件/搜索分页，见[工具结果恢复](tool-result-recovery.md)。

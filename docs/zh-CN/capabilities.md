@@ -1,5 +1,8 @@
 # Capabilities
 
+显式注册的 `tool.ui_confirm/select/input/editor` 以及自定义异步工具的 `context.ui`，
+见[用户交互](user-interactions.md)。
+
 结果展示预算、类型化保留元信息及文件/搜索分页，见[工具结果恢复](tool-result-recovery.md)。
 
 Capabilities 是注册到 `Runner` 的可执行动作。Agents 和 DAG nodes 不直接执行函数；

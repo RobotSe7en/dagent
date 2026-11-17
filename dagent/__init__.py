@@ -46,6 +46,14 @@ from dagent.providers import Provider
 from dagent.result import RunExecutionError, RunResult, RunStreamEvent
 from dagent.review import CapabilityReviewDecision, ReviewDecision, ReviewHandle, ReviewLevel
 from dagent.runner import Runner
+from dagent.user_interactions import (
+    ToolContext, UserInteractionClient, UserInteractionOptions,
+    UserInteractionError, UserInteractionCancelled, UserInteractionUnsupported,
+    UserInteractionBusy, UserInteractionResponseRejected, UserInteractionFatalError,
+    UserInteractionTimeout, UserInteractionUnavailable, UserInteractionDeliveryError,
+    UserInteractionRequest, UserInteractionResponse, UserInteractionAnswer,
+    UserInteractionAbandonment, UserInteractionEnded, UserInteractionOption, ui_tools,
+)
 from dagent.schemas.streaming import StreamPersistenceOptions
 from dagent.schemas.run_trace import RunTraceError as RunError
 from dagent.steering import (
@@ -109,6 +117,12 @@ from dagent.schemas import (
 __version__ = "0.11.0"
 
 __all__ = [
+    "ToolContext", "UserInteractionClient", "UserInteractionOptions",
+    "UserInteractionError", "UserInteractionCancelled", "UserInteractionUnsupported",
+    "UserInteractionBusy", "UserInteractionResponseRejected", "UserInteractionFatalError",
+    "UserInteractionTimeout", "UserInteractionUnavailable", "UserInteractionDeliveryError",
+    "UserInteractionRequest", "UserInteractionResponse", "UserInteractionAnswer",
+    "UserInteractionAbandonment", "UserInteractionEnded", "UserInteractionOption", "ui_tools",
     "StreamPersistenceOptions",
     "RunError",
     "ConversationChangeBatch",

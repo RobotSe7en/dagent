@@ -25,6 +25,7 @@ RunSteeringPhase = Literal[
     "active",
     "validation",
     "awaiting_review",
+    "awaiting_user_interaction",
     "finishing",
 ]
 RunSteeringKind = Literal["tool", "dynamic_dag", "static_dag"]
@@ -215,9 +216,11 @@ _RUN_STEERING_SUSPENDED: ContextVar[bool] = ContextVar(
 @contextmanager
 def run_steering_context(control: RunSteeringControl) -> Iterator[None]:
     token = _RUN_STEERING_CONTROL.set(control)
+    suspended_token = _RUN_STEERING_SUSPENDED.set(False)
     try:
         yield
     finally:
+        _RUN_STEERING_SUSPENDED.reset(suspended_token)
         _RUN_STEERING_CONTROL.reset(token)
 
 

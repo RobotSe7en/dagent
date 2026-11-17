@@ -14,6 +14,7 @@ from dagent.capabilities.sandbox_context import current_run_execution
 from dagent.capabilities.workspace import workspace_context
 from dagent.harness_runtime.execution_usage import record_capability_call
 from dagent.schemas import ArtifactState, CapabilityInvocation, CapabilityResult, DAGNode
+from dagent.user_interactions import UserInteractionClient
 
 
 class CapabilityExecutionError(RuntimeError):
@@ -65,6 +66,7 @@ class CapabilityExecutionContext:
     # record (tool agents, dynamic DAGs): the handler then works on copies of
     # their plain containers. Static DAG runs keep their own value handling.
     detach_values: bool = True
+    ui: UserInteractionClient = field(default_factory=UserInteractionClient, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

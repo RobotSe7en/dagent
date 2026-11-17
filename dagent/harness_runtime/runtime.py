@@ -1190,6 +1190,9 @@ def _emit_run_started(
     bind_run_steering(run_id, kind)
     if on_event is not None:
         on_event({"type": "run_started", "run_id": run_id, "kind": kind})
+    from dagent.harness_runtime.user_interactions import bind_interactions
+
+    bind_interactions(run_id, kind)
 
 
 def _capability_registration_parts(

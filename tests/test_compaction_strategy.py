@@ -712,25 +712,29 @@ async def test_missing_tool_output_file_does_not_prevent_compaction(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_shared_deadline_bounds_token_preparation_and_model_request(tmp_path):
-    async def slow_chat(_request):
-        await asyncio.sleep(1)
+@pytest.mark.parametrize("phase", ["prepare", "model"])
+async def test_shared_deadline_bounds_token_preparation_and_model_request(tmp_path, monkeypatch, phase):
+    # Isolate in-flight timeouts from source archiving and other synchronous setup.
+    # asyncio's own timeout clock remains real, so cancellation is still exercised.
+    monkeypatch.setattr(compaction, "monotonic", lambda: 0.0)
+    cancelled = []
 
-    engine = compactor(tmp_path, slow_chat, timeout=0.01)
+    async def slow_operation(_request, *, stream=False):
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            cancelled.append(phase)
+            raise
+
+    engine = compactor(tmp_path, slow_operation, timeout=0.01)
+    if phase == "prepare":
+        engine.assembler.request_preparer = slow_operation
     item = UserMessage(id="source", content="Original")
     with pytest.raises(CompactionBudgetExceeded, match="deadline") as failure:
         await engine.compact(None, (item,), 256)
     assert failure.value.compaction_record is not None
-    assert engine.logical_calls == 1
-
-    async def slow_prepare(_request, *, stream):
-        await asyncio.sleep(1)
-
-    engine.reset_budget()
-    engine.assembler.request_preparer = slow_prepare
-    with pytest.raises(CompactionBudgetExceeded, match="deadline"):
-        await engine.compact(None, (item,), 256)
-    assert engine.logical_calls == 0
+    assert engine.logical_calls == (1 if phase == "model" else 0)
+    assert cancelled == [phase]
 
 
 @pytest.mark.asyncio

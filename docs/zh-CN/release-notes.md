@@ -1,5 +1,19 @@
 # 版本说明
 
+## 未发布 — 显式启用用户交互
+
+- 新增按次 `UserInteractionOptions`、公开宿主应答和终止接口、四个可注册
+  `tool.ui_*` 工具，以及异步 Python 工具的 `ToolContext.ui`。
+- 类型化应答后继续原 local 根 ToolLoop 调用，区分放弃、False 和空文本；等待时拒绝 steer。
+- 不同 Run 隔离，停止、关闭、异常和超时均清理等待。超时及宿主不可用使 Run 失败，
+  不转换为普通工具结果。
+- 复用原结果存储、长内容引用和持久化 ACK 门。新配置可选，既有默认值、记录和工具集
+  保持不变；不启用的应用无需迁移。
+- 普通流式调用兼容既有 `run/resume` 重写；独立内层 Run 的交互失败不再连带终止外层 Run。
+- 首版仅 local 根 ToolLoop，不支持 DAG、子 Agent 和 sandbox 交互；不跨重启恢复。
+- 增加离线公共示例及响应、身份、取消、审核续跑、steer、长结果和持久化顺序回归。
+  详见[用户交互](user-interactions.md)。
+
 ## 0.11.0：ToolLoop 持久化流 V2
 
 使用 `pip install --upgrade 'dagent-ai==0.11.0'` 安装。本版本包含持久化回调、默认工作目录
