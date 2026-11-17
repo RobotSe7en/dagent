@@ -2410,7 +2410,9 @@ class Runner:
         interactions: UserInteractionOptions | None = None,
     ) -> RunResult | None:
         """Resume with explicit execution semantics inside the caller's delivery scope."""
-        if interactions is not None and (execution != "local" or checkpoint.state.kind != "tool"):
+        if interactions is not None and (
+            execution != "local" or checkpoint.state.execution != "local" or checkpoint.state.kind != "tool"
+        ):
             raise UserInteractionUnsupported("User interactions support local root ToolLoop only.")
         active = self._active_run_tasks.get(checkpoint.state.run_id)
         if active is not None and not active.done():

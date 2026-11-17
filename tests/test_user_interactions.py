@@ -433,22 +433,40 @@ async def test_pending_request_is_not_replaced_by_concurrent_request(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_nested_agent_is_rejected_without_affecting_root_interaction(tmp_path):
+@pytest.mark.parametrize("independent", [False, True])
+async def test_nested_agent_is_rejected_without_affecting_root_interaction(tmp_path, independent):
     queue = asyncio.Queue()
     provider = MockProvider([
         ChatResponse(tool_calls=[ToolCall(id="delegate", name="agent_helper", arguments={"task": "ask"})]),
+        *([
+            ChatResponse(tool_calls=[ToolCall(id="launch", name="tool_launch")]),
+            ChatResponse(tool_calls=[ToolCall(id="independent", name="tool_ui_input", arguments={"title": "independent"})]),
+            ChatResponse(content="independent done"),
+        ] if independent else []),
         ChatResponse(tool_calls=[ToolCall(id="nested", name="tool_ui_input", arguments={"title": "child"})]),
         ChatResponse(content="child done"),
         ChatResponse(tool_calls=[ToolCall(id="root", name="tool_ui_input", arguments={"title": "root"})]),
         ChatResponse(content="root done"),
     ])
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
-        runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=list(dagent.ui_tools())))
+        @dagent.tool
+        async def launch():
+            result = await runner.run(agent_for(*dagent.ui_tools()), input="independent", run_id="independent",
+                                      interactions=dagent.UserInteractionOptions(queue.put_nowait))
+            return result.output_text
+
+        runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[launch, *dagent.ui_tools()]))
         agent = dagent.ToolAgent(profile="conversation", capabilities=list(dagent.ui_tools()), agents=["agent.helper"])
         task = asyncio.create_task(runner.run(agent, input="ask", interactions=dagent.UserInteractionOptions(queue.put_nowait)))
         request = await receive(queue)
-        assert request.invocation_id == "root" and len(provider.requests) == 4
-        assert "root ToolLoop" in provider.requests[2]["messages"][-1]["content"]
+        if independent:
+            assert request.run_id == "independent" and request.invocation_id == "independent"
+            await runner.respond_to_interaction(answer(request, "independent answer"))
+            request = await receive(queue)
+            assert request.run_id != "independent"
+        offset = 3 if independent else 0
+        assert request.invocation_id == "root" and len(provider.requests) == 4 + offset
+        assert "root ToolLoop" in provider.requests[2 + offset]["messages"][-1]["content"]
         await runner.respond_to_interaction(answer(request, "root answer"))
         assert (await asyncio.wait_for(task, 5)).status == "completed"
 
@@ -525,6 +543,42 @@ async def test_review_resume_can_enable_interaction(tmp_path, mode):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["run", "stream", "persistent"])
+async def test_sandbox_resume_rejects_interactions_before_consuming_review(tmp_path, monkeypatch, mode):
+    queue = asyncio.Queue()
+    confirm = dagent.ui_tools()[0]
+    confirm = dagent.CapabilityBinding(confirm.definition.model_copy(update={
+        "policy": dagent.CapabilityPolicy(risk="medium")}), confirm.handler, supports_context=True)
+    provider = provider_for("tool_ui_confirm")
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        initial = await runner.run(dagent.ToolAgent(profile="conversation", capabilities=[confirm], review="careful"), input="ask")
+        assert initial.requires_review
+        checkpoint = initial.checkpoint.model_copy(update={
+            "state": initial.checkpoint.state.model_copy(update={"execution": "sandbox"}),
+        })
+
+        def unexpected_scope(*args, **kwargs):
+            raise AssertionError("Unsupported interactions must not enter the execution scope.")
+
+        monkeypatch.setattr(runner, "_run_scope", unexpected_scope)
+        options = dagent.UserInteractionOptions(queue.put_nowait)
+        if mode == "run":
+            with pytest.raises(dagent.UserInteractionUnsupported):
+                await runner.resume(initial.review.approve(), checkpoint=checkpoint, interactions=options)
+        else:
+            events = []
+            async for event in runner.resume_stream(initial.review.approve(), checkpoint=checkpoint, interactions=options,
+                    persistence=dagent.StreamPersistenceOptions() if mode == "persistent" else None):
+                events.append(event)
+                if event.type == "conversation.changed":
+                    await runner.acknowledge_changes(event.run_id, event.data.batch_id)
+            assert events[-1].type == "run.failed"
+            assert events[-1].data.error_type == "UserInteractionUnsupported"
+        assert initial.review.review_id not in runner._consumed_review_ids
+        assert len(provider.requests) == 1 and queue.empty()
+
+
+@pytest.mark.asyncio
 async def test_unsupported_execution_and_direct_capability(tmp_path):
     queue, tools = asyncio.Queue(), dagent.ui_tools()
     with closing(dagent.Runner(provider=MockProvider([]), workspace=tmp_path, skill_roots=[], capabilities=tools)) as runner:
@@ -598,16 +652,23 @@ async def test_stream_wait_cleanup(tmp_path, persistent, action):
 
 
 @pytest.mark.asyncio
-async def test_steering_before_and_after_wait_keeps_existing_rules(tmp_path):
+@pytest.mark.parametrize("cancel_wait", [False, True])
+async def test_steering_before_and_after_wait_keeps_existing_rules(tmp_path, cancel_wait):
     from tests.test_steering import GatedProvider
 
     queue, entered, release = asyncio.Queue(), asyncio.Event(), asyncio.Event()
+    waiters, ended = [], []
 
     @dagent.tool(supports_context=True)
     async def custom(*, context, callbacks):
         entered.set()
         await release.wait()
-        return await context.ui.input("ask")
+        waiter = asyncio.create_task(context.ui.input("ask"))
+        waiters.append(waiter)
+        try:
+            return await waiter
+        except asyncio.CancelledError:
+            return "interaction wait cancelled"
 
     provider = GatedProvider([
         ChatResponse(tool_calls=[ToolCall(id="call", name="tool_custom")]),
@@ -615,15 +676,21 @@ async def test_steering_before_and_after_wait_keeps_existing_rules(tmp_path):
     ], blocked={1})
     with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
         task = asyncio.create_task(runner.run(agent_for(custom), input="ask", run_id="steer",
-                                 interactions=dagent.UserInteractionOptions(queue.put_nowait)))
+                                 interactions=dagent.UserInteractionOptions(queue.put_nowait, ended.append)))
         await asyncio.wait_for(entered.wait(), 5)
         before = await runner.steer("steer", "first update")
         release.set()
         request = await receive(queue)
         with pytest.raises(dagent.RunNotSteerableError):
             await runner.steer("steer", "during wait")
-        await runner.respond_to_interaction(answer(request, "answer"))
+        if cancel_wait:
+            waiters[0].cancel()
+        else:
+            await runner.respond_to_interaction(answer(request, "answer"))
         await asyncio.wait_for(provider.started[1].wait(), 5)
+        assert len(ended) == 1 and ended[0].invalidated == cancel_wait
+        with pytest.raises(dagent.UserInteractionResponseRejected):
+            await runner.respond_to_interaction(answer(request, "late"))
         after = await runner.steer("steer", "second update")
         provider.release[1].set()
         result = await asyncio.wait_for(task, 5)

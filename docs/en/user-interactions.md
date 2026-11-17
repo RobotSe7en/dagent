@@ -46,15 +46,18 @@ worker and Runner that own the run.
 
 `interactions` is optional on `run`, `stream`, `resume`, and `resume_stream`.
 There is no Runner default or implicit receiver inheritance. An independent run
-started inside a tool must supply its own options. Review continuation also
-supplies fresh options; receivers are not serialized into checkpoints.
+started inside a tool, including a delegated tool, must supply its own options.
+Review continuation also supplies fresh options; receivers are not serialized
+into checkpoints.
 
 Only local root ToolLoops support interaction. This includes an AutoAgent that
 routes to tools. Explicit interaction configuration for DAG or sandbox execution
 is rejected before execution; AutoAgent's DAG branch is rejected before entering
-the DAG. A delegated `agent.*` never inherits interaction permission. Attempts
-inside unsupported tool contexts raise `UserInteractionUnsupported` and follow
-existing tool-failure handling without creating a wait.
+the DAG. Resuming a sandbox checkpoint with interactions is rejected before
+consuming the review, even when `execution` is omitted. A delegated `agent.*` never
+inherits interaction permission. Attempts inside unsupported tool contexts raise
+`UserInteractionUnsupported` and follow existing tool-failure handling without
+creating a wait.
 
 ## Four interaction types
 
@@ -164,6 +167,9 @@ Interaction timeouts and persistence ACK timeouts are separate mechanisms.
 
 Waiting rejects new `Runner.steer` calls with `RunNotSteerableError`. Previously
 accepted steering remains queued for the existing execution boundary.
+If a custom tool cancels only its UI await (for example, by catching a timeout
+from `asyncio.wait_for`) and continues, steering becomes available again and
+queued steering is retained. This differs from the fatal SDK interaction timeout.
 `Runner.cancel` retains the entrypoint's existing cancellation behavior. Stopping,
 closing the stream or Runner, or unwinding an invocation invalidates pending
 requests and releases waiters and timers. Runner close synchronously invokes the

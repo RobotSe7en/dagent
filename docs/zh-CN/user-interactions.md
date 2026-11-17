@@ -41,11 +41,12 @@ result = await task
 响应提交到所属 Runner 的执行事件循环；多 worker 宿主负责路由到持有 Run 的实例。
 
 `run`、`stream`、`resume`、`resume_stream` 均可选传入 `interactions`。
-没有 Runner 默认接收方或隐式继承。工具内部独立启动的新 Run 必须自行显式配置。
-审核续跑也重新提供配置；接收方不写入 checkpoint。
+没有 Runner 默认接收方或隐式继承。工具（包括委派工具）内部独立启动的新 Run
+必须自行显式配置。审核续跑也重新提供配置；接收方不写入 checkpoint。
 
 仅支持 local 根 ToolLoop，包括 AutoAgent 的工具分支。DAG、sandbox 显式配置交互
-时在执行前拒绝；AutoAgent 的 DAG 分支在进入 DAG 前拒绝。`agent.*` 子智能体
+时在执行前拒绝；AutoAgent 的 DAG 分支在进入 DAG 前拒绝。sandbox checkpoint
+续跑时配置交互会在消费审核前拒绝，即使未传入 `execution`。`agent.*` 子智能体
 不继承交互许可。不支持的工具上下文调用抛出 `UserInteractionUnsupported`，
 沿用既有工具失败处理，不建立等待。
 
@@ -144,9 +145,11 @@ SDK 时限；宿主可传入自己的值，例如 `1800`，也可自行计时并
 交互等待超时与持久化 ACK 超时相互独立。
 
 等待期间新的 `Runner.steer` 以 `RunNotSteerableError` 拒绝；已接受的 steer
-保留到既有处理边界。`Runner.cancel` 沿用各入口原有取消表现。停止、关闭流或
-Runner、调用异常退出均使 pending 失效并释放等待和定时器。关闭 Runner 时同步
-调用结束回调，即使宿主已不读取流，也能获知失效。
+保留到既有处理边界。若自定义工具仅取消 UI 等待后继续执行（例如捕获
+`asyncio.wait_for` 的超时），则恢复接收 steer，并保留已接受的指令；这与 SDK
+交互超时导致整个 Run 失败不同。`Runner.cancel` 沿用各入口原有取消表现。
+停止、关闭流或 Runner、调用异常退出均使 pending 失效并释放等待和定时器。
+关闭 Runner 时同步调用结束回调，即使宿主已不读取流，也能获知失效。
 
 `user_interaction.requested` 和 `user_interaction.ended` 是类型化流事件。
 结束记录含身份、`reason` 和 `invalidated`。原因包括 `submitted`、`cancelled`、

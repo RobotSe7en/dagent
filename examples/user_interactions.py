@@ -22,8 +22,9 @@ async def compose(*, context: dagent.ToolContext, callbacks=None) -> str:
     prefix = "Draft by "
     name = await context.ui.input("Author", initial="Ada")
     try:
-        await context.ui.confirm("Optional revision")
-    except dagent.UserInteractionCancelled:
+        # A caller timeout cancels only this await; the tool can continue.
+        await asyncio.wait_for(context.ui.confirm("Optional revision"), timeout=30)
+    except (dagent.UserInteractionCancelled, TimeoutError):
         return prefix + name + "; optional revision cancelled"
     return prefix + name
 

@@ -99,7 +99,8 @@ class InteractionControl:
         )
         steering = current_run_steering_control(request.run_id)
         if steering is not None:
-            steering.set_phase(request.run_id, "finishing" if self.failure or ended.invalidated else "active")
+            # Invalidating only the await need not terminate the tool or run.
+            steering.set_phase(request.run_id, "finishing" if self.failure or self.closed else "active")
         for callback, payload in (
             (self.emit, {"type": "user_interaction_ended", "run_id": self.run_id, "data": ended}),
             (self.options.on_end, ended),
