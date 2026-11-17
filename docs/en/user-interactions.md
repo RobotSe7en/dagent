@@ -147,6 +147,10 @@ handling and prevent subsequent dispatch. Direct calls raise the typed error
 with its failed `result`; streams preserve existing failure delivery conventions.
 No resumable interaction checkpoint is created.
 
+Fatal errors stop only the run that owns the interaction. If a tool starts an
+independent run and lets its finalized interaction error escape, the calling run
+records an ordinary failed tool result. The error retains the inner run's `result`.
+
 `UserInteractionResponseRejected.code` is `not_pending`, `identity_mismatch`, or
 `invalid_value`. Unknown, mismatched, duplicated, expired, and late responses are
 rejected. Invalid responses do not consume a valid pending request. Same-process

@@ -808,23 +808,23 @@ class ToolAgentLoop:
                         with invocation_interactions(resolved_run_id, invocation, assistant.id) as ui:
                             call_context = replace(call_context, ui=ui)
                             result = await self.capability_executor.execute(invocation, context=call_context, callbacks=capability_callbacks)
-                    except UserInteractionFatalError as exc:
-                        loop_state.error = RunTraceError(code=type(exc).__name__, message=str(exc))
-                        loop_state.checkpoint_eligible = False
-                        if trace is not None:
-                            trace.root.error = loop_state.error
-                        if node is not None:
-                            node.status = "failed"
-                            node.ended_at = datetime.now(timezone.utc)
-                            node.error = loop_state.error
-                        await observe_tool(item.call.id, invocation.capability_id, "failed", error=loop_state.error)
-                        raise ToolContextFailure(exc, failed_outcome()) from exc
                     except PersistenceDeliveryError:
                         raise
                     except asyncio.CancelledError:
                         await observe_tool(item.call.id, invocation.capability_id, "outcome_unknown")
                         raise
                     except Exception as exc:
+                        if isinstance(exc, UserInteractionFatalError) and exc.result is None:
+                            loop_state.error = RunTraceError(code=type(exc).__name__, message=str(exc))
+                            loop_state.checkpoint_eligible = False
+                            if trace is not None:
+                                trace.root.error = loop_state.error
+                            if node is not None:
+                                node.status = "failed"
+                                node.ended_at = datetime.now(timezone.utc)
+                                node.error = loop_state.error
+                            await observe_tool(item.call.id, invocation.capability_id, "failed", error=loop_state.error)
+                            raise ToolContextFailure(exc, failed_outcome()) from exc
                         result = CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__)
                     content = _tool_content(result)
                 if result is not None:

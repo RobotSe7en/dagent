@@ -129,6 +129,9 @@ await runner.abort_interaction(
 失败。这些致命错误穿过普通工具异常处理并阻止后续派发。普通调用抛出类型化错误并
 携带失败的 `result`；流式入口沿用既有失败交付方式。不产生可恢复交互 checkpoint。
 
+致命错误仅终止发起交互的 Run。工具启动独立 Run 后，如果让已结束的内层交互错误
+继续抛出，外层 Run 按普通工具失败记录并继续执行；异常仍保留内层 Run 的 `result`。
+
 `UserInteractionResponseRejected.code` 为 `not_pending`、`identity_mismatch`
 或 `invalid_value`。不存在、错配、重复、过期和迟到响应均拒绝；无效响应不消费
 有效等待。进程内匹配和单次消费不提供跨 HTTP 重试的持久化幂等。

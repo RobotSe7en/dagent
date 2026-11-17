@@ -2041,7 +2041,8 @@ class Runner:
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             # Ordinary streams use the public entrypoint; a persistent delivery
             # has installed its own scope for exactly this call.
-            run = self.run if persistence is None and interactions is None else partial(self._run, persistent=persistence is not None)
+            run = (self.run if persistence is None and interactions is None else
+                   partial(self._run, persistent=persistence is not None, interactions=interactions))
             return await run(
                 target,
                 input=input,
@@ -2057,7 +2058,6 @@ class Runner:
                 artifact_uploads=artifact_uploads,
                 on_token=None,
                 on_event=on_event,
-                interactions=interactions,
             )
 
         async with aclosing(self._stream_run(run_target, persistence=persistence, conversation=conversation)) as events:
@@ -2162,14 +2162,14 @@ class Runner:
             self.validate_checkpoint(checkpoint)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
-            resume = self.resume if persistence is None and interactions is None else partial(self._resume, persistent=persistence is not None)
+            resume = (self.resume if persistence is None and interactions is None else
+                      partial(self._resume, persistent=persistence is not None, interactions=interactions))
             result = await resume(
                 decision,
                 checkpoint=checkpoint,
                 execution=execution,
                 on_token=None,
                 on_event=on_event,
-                interactions=interactions,
             )
             if result is None:
                 raise LookupError("Review session not found.")

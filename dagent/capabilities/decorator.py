@@ -106,9 +106,10 @@ def tool(
                     content=content,
                     value=value,
                 )
-            except UserInteractionFatalError:
-                raise
             except Exception as exc:
+                # A result marks a failure already finalized by an independent run.
+                if isinstance(exc, UserInteractionFatalError) and exc.result is None:
+                    raise
                 return CapabilityResult(
                     invocation_id=invocation.invocation_id,
                     capability_id=invocation.capability_id,

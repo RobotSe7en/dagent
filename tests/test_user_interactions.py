@@ -34,6 +34,44 @@ async def receive(queue):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True])
+async def test_stream_preserves_released_entrypoint_overrides(tmp_path, resume):
+    class ExistingRunner(dagent.Runner):
+        async def run(self, target, *, input=None, conversation=None, graph_input=None,
+                      review=None, dynamic_adjust=None, execution="local",
+                      workspace_root="runs", workspace_path=None, run_id=None,
+                      input_uploads=None, artifact_uploads=None, on_token=None, on_event=None):
+            return await super().run(
+                target, input=input, conversation=conversation, graph_input=graph_input,
+                review=review, dynamic_adjust=dynamic_adjust, execution=execution,
+                workspace_root=workspace_root, workspace_path=workspace_path, run_id=run_id,
+                input_uploads=input_uploads, artifact_uploads=artifact_uploads,
+                on_token=on_token, on_event=on_event,
+            )
+
+        async def resume(self, decision, *, checkpoint, execution="local", on_token=None, on_event=None):
+            return await super().resume(decision, checkpoint=checkpoint, execution=execution,
+                                        on_token=on_token, on_event=on_event)
+
+    @dagent.tool(risk="medium")
+    def record():
+        return "recorded"
+
+    provider = provider_for("tool_record", {}) if resume else MockProvider([ChatResponse(content="done")])
+    with closing(ExistingRunner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        agent = dagent.ToolAgent(profile="conversation", capabilities=[record], review="careful")
+        if resume:
+            initial = await runner.run(agent, input="record")
+            assert initial.requires_review
+            stream = runner.resume_stream(initial.review.approve(), checkpoint=initial.checkpoint)
+        else:
+            stream = runner.stream(agent, input="hello")
+        events = [event async for event in stream]
+        assert events[-1].type == "run.finished"
+        assert events[-1].data.result.status == "completed"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind,arguments,value", [
     ("confirm", {"title": "Continue?", "description": "Details"}, False),
     ("select", {"title": "Choose", "options": [{"id": "stable", "label": "Choice"}]}, "stable"),
@@ -502,6 +540,55 @@ async def test_independent_inner_run_can_be_cancelled_without_cancelling_outer(t
         assert second.run_id == "outer" and inner_stopped == [True]
         await runner.respond_to_interaction(answer(second, "continued"))
         assert (await asyncio.wait_for(task, 5)).status == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_handler", [False, True])
+@pytest.mark.parametrize("reason", ["timeout", "unavailable", "delivery_error"])
+async def test_independent_inner_interaction_failure_does_not_fail_outer(tmp_path, raw_handler, reason):
+    queue, failures = asyncio.Queue(), []
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="outer_call", name="tool_launch")]),
+        ChatResponse(tool_calls=[ToolCall(id="inner_call", name="tool_ui_input", arguments={"title": "inner"})]),
+        ChatResponse(content="outer continued"),
+    ])
+    with closing(dagent.Runner(provider=provider, workspace=tmp_path, skill_roots=[])) as runner:
+        def requested(request):
+            queue.put_nowait(request)
+            if reason == "delivery_error":
+                raise OSError("receiver disconnected")
+
+        async def launch():
+            try:
+                await runner.run(agent_for(*dagent.ui_tools()), input="inner", run_id="inner",
+                                 interactions=dagent.UserInteractionOptions(requested))
+            except dagent.UserInteractionFatalError as exc:
+                failures.append((exc, exc.result))
+                raise
+
+        binding = dagent.tool(launch)
+        if raw_handler:
+            async def handler(invocation):
+                return await launch()
+
+            runner.register_capability(binding.definition, handler)
+        else:
+            runner.add_tool(binding)
+        task = asyncio.create_task(runner.run(agent_for("tool.launch"), input="outer", run_id="outer"))
+        request = await receive(queue)
+        if reason != "delivery_error":
+            await runner.abort_interaction(run_id=request.run_id, invocation_id=request.invocation_id,
+                                           interaction_id=request.interaction_id, reason=reason)
+        result = await asyncio.wait_for(task, 5)
+        assert result.status == "completed" and result.output_text == "outer continued"
+        error, inner_result = failures[0]
+        assert error.result is inner_result
+        assert inner_result.run_id == "inner" and inner_result.status == "failed"
+        assert inner_result.checkpoint is None
+        item = next(item for item in result.conversation.items if isinstance(item, dagent.ToolResultMessage))
+        assert item.call_id == "outer_call" and item.status == "failed"
+        assert len(provider.requests) == 3
+        assert not runner._interaction_controls
 
 
 @pytest.mark.asyncio

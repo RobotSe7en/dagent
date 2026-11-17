@@ -11,6 +11,8 @@
 - Preserve result storage, overflow references and persistence ACK gates. Existing
   defaults, records and toolsets are unchanged; applications that do not enable
   interactions need no migration.
+- Preserve existing `run`/`resume` overrides in ordinary streams and keep independent
+  inner-run interaction failures from terminating the calling run.
 - Initial support is local root ToolLoop only. DAGs, delegated agents and sandbox
   interaction are excluded; receivers and waits do not survive restart.
 - Add an offline host example and regression coverage for values, identity,
