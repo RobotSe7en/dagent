@@ -25,6 +25,7 @@ RunSteeringPhase = Literal[
     "active",
     "validation",
     "awaiting_review",
+    "awaiting_user_interaction",
     "finishing",
 ]
 RunSteeringKind = Literal["tool", "dynamic_dag", "static_dag"]

@@ -1,5 +1,9 @@
 # Persist ToolLoop conversations from the stream
 
+Opt-in [user interactions](user-interactions.md) produce ordinary results for the
+original invocation. Accepting a response only ends the wait; the result batch
+still requires host persistence and ACK before subsequent dispatch.
+
 **0.11.0 — batch contract V2.** Enable persistence with
 `StreamPersistenceOptions` on `Runner.stream` or `resume_stream`. The former
 `on_conversation_change` callback and its error types have been removed; see

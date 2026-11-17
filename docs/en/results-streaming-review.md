@@ -1,5 +1,9 @@
 # Conversations, results, streaming, and review
 
+For in-process user-input waits that continue the original tool invocation, see
+[User Interactions](user-interactions.md). They keep the execution coroutine alive
+and use the existing tool-result persistence acknowledgement boundary.
+
 dagent 0.8 separates cross-run conversation continuation from same-run review
 continuation. This is an intentional breaking change:
 

@@ -10,6 +10,7 @@ from pydantic import ConfigDict, Field as PydanticField, TypeAdapter, model_seri
 from pydantic.dataclasses import dataclass
 
 from dagent.schemas.conversation_changes import ConversationChangeBatch
+from dagent.schemas.user_interactions import UserInteractionRequest, UserInteractionEnded
 
 from dagent.review import ReviewHandle
 from dagent.steering import SteerDiscardReason
@@ -38,6 +39,8 @@ from dagent.schemas import (
 
 RunResultKind = Literal["tool", "dynamic_dag", "static_dag"]
 RunStreamEventType = Literal[
+    "user_interaction.requested",
+    "user_interaction.ended",
     "conversation.changed",
     "run.started",
     "response.started",
@@ -437,7 +440,9 @@ class RunExecutionError(RuntimeError):
 
 
 RunStreamEventData = (
-    ConversationChangeBatch
+    UserInteractionRequest
+    | UserInteractionEnded
+    | ConversationChangeBatch
     | RunStartedData
     | ResponseStartedData
     | TextDeltaData
@@ -500,6 +505,8 @@ class RunStreamEvent:
 
 _EVENT_ADAPTER = TypeAdapter(RunStreamEvent)
 _EVENT_DATA_ADAPTERS: dict[str, TypeAdapter[Any]] = {
+    "user_interaction.requested": TypeAdapter(UserInteractionRequest),
+    "user_interaction.ended": TypeAdapter(UserInteractionEnded),
     "conversation.changed": TypeAdapter(ConversationChangeBatch),
     "run.started": TypeAdapter(RunStartedData),
     "response.started": TypeAdapter(ResponseStartedData),

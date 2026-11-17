@@ -1,5 +1,11 @@
 # 迁移说明
 
+## 未发布用户交互
+
+既有应用无需迁移。需要时注册 `ui_tools()`，并为每次受支持执行传入
+`interactions=UserInteractionOptions(...)`。宿主提供接收方、持久化及截止策略，
+pending 等待不作为重启恢复 checkpoint。见[用户交互](user-interactions.md)。
+
 达智已经发布公开 SDK contracts。本页记录升级时可能需要用户采取行动的面向用户变化。
 
 ## 当前发布线

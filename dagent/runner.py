@@ -12,12 +12,12 @@ from contextlib import aclosing, contextmanager, suppress
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent, validate_agent_name
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
 from dagent.capabilities.boundaries import infer_capability_boundary
-from dagent.capabilities.cancellation import run_cancellation_context
+from dagent.capabilities.cancellation import run_cancellation_context, current_run_cancellation_event
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
@@ -160,6 +160,14 @@ from dagent.schemas.common import (
     validate_runtime_directory,
 )
 from dagent.state.prompt_builder import PromptSkill
+from dagent.harness_runtime.user_interactions import InteractionControl, interaction_scope
+from dagent.user_interactions import (
+    UserInteractionOptions, UserInteractionFatalError, UserInteractionResponseRejected,
+    UserInteractionUnsupported,
+)
+from dagent.schemas.user_interactions import (
+    UserInteractionAnswer, UserInteractionAbandonment, UserInteractionResponse,
+)
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 _DEFAULT_RUNNER_WORKSPACE = Path.home() / ".dagent"
@@ -229,6 +237,7 @@ class Runner:
         self._active_run_tasks: dict[str, asyncio.Task[RunResult] | asyncio.Task[None]] = {}
         self._active_run_cancellation_events: dict[str, threading.Event] = {}
         self._active_run_steering_controls: dict[str, RunSteeringControl] = {}
+        self._interaction_controls: dict[str, InteractionControl] = {}
         self._consumed_review_ids: set[str] = set()
         self._mcp_server_capability_ids: dict[str, tuple[str, ...]] = {}
         self._mcp_server_managers: dict[str, Any] = {}
@@ -335,6 +344,9 @@ class Runner:
     def close(self) -> None:
         if self._closed:
             return
+        for control in tuple(self._interaction_controls.values()):
+            control.close("runner_closed")
+        self._interaction_controls.clear()
         for delivery in self._persistent_deliveries.values():
             delivery.close()
         self._persistent_deliveries.clear()
@@ -840,6 +852,41 @@ class Runner:
         )
         with conversation_change_scope(None), self._run_scope(execution):
             return await self._runtime.capability_executor.execute(invocation)
+
+    @contextmanager
+    def _interaction_scope(
+        self, options: UserInteractionOptions | None, on_event: LoopEventHandler | None,
+    ) -> Iterator[None]:
+        if options is not None and not isinstance(options, UserInteractionOptions):
+            raise TypeError("interactions must be UserInteractionOptions or None.")
+        task = asyncio.current_task()
+        cancellation_event = current_run_cancellation_event() or threading.Event()
+        owns_registration = False
+
+        def register(run_id: str) -> None:
+            nonlocal owns_registration
+            self._interaction_controls[run_id] = control
+            if run_id not in self._active_run_tasks:
+                self._active_run_tasks[run_id] = task
+                self._active_run_cancellation_events[run_id] = cancellation_event
+                owns_registration = True
+
+        control = None if options is None else InteractionControl(options, on_event, register)
+        try:
+            with interaction_scope(control):
+                if options is not None:
+                    with run_cancellation_context(cancellation_event):
+                        yield
+                else:
+                    yield
+        finally:
+            if control is not None:
+                control.close()
+                run_id = control.run_id
+                if run_id is not None and self._interaction_controls.get(run_id) is control:
+                    self._interaction_controls.pop(run_id, None)
+                if owns_registration:
+                    self._unregister_stream(run_id, task=task)
 
     @contextmanager
     def _steering_scope(
@@ -1413,17 +1460,35 @@ class Runner:
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        interactions: UserInteractionOptions | None = None,
     ) -> RunResult:
         # Persistence is chosen per call. A run started from inside another
         # Run's tool is an ordinary run, never part of that Run's delivery.
         with conversation_change_scope(None):
-            return await self._run(
+            return await self._isolated_interactive_call(partial(self._run,
                 target, input=input, conversation=conversation, graph_input=graph_input,
                 review=review, dynamic_adjust=dynamic_adjust, execution=execution,
                 workspace_root=workspace_root, workspace_path=workspace_path, run_id=run_id,
                 input_uploads=input_uploads, artifact_uploads=artifact_uploads,
-                on_token=on_token, on_event=on_event,
-            )
+                on_token=on_token, on_event=on_event, interactions=interactions,
+            ), interactions)
+
+    async def _isolated_interactive_call(self, call: Callable[[], Awaitable[Any]],
+                                         options: UserInteractionOptions | None) -> Any:
+        if options is None:
+            return await call()
+
+        async def execute() -> Any:
+            with run_cancellation_context(threading.Event()):
+                return await call()
+
+        task = asyncio.create_task(execute())
+        try:
+            return await task
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     async def _run(
         self,
@@ -1443,9 +1508,12 @@ class Runner:
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
         persistent: bool = False,
+        interactions: UserInteractionOptions | None = None,
     ) -> RunResult:
         """Run with explicit execution semantics inside the caller's delivery scope."""
         self._ensure_open()
+        if interactions is not None and (execution != "local" or isinstance(target, (Dag, DAGSpec, DagAgent))):
+            raise UserInteractionUnsupported("User interactions support local root ToolLoop only.")
         if run_id is not None:
             validate_run_id(run_id)
         self._ensure_new_run_id_available(run_id)
@@ -1503,6 +1571,7 @@ class Runner:
                 ),
                 execution_usage_scope(usage_tracker),
                 self._steering_scope(on_event, on_bound=retain) as steering_on_event,
+                self._interaction_scope(interactions, steering_on_event),
             ):
                 try:
                     result = await self._run_dispatch(
@@ -1789,6 +1858,15 @@ class Runner:
             "pending_tool_batch": None,
         })
         runtime = getattr(failure, "runtime", self._runtime)
+        if isinstance(failure.cause, UserInteractionFatalError):
+            from dagent.schemas.run_trace import RunTraceError
+
+            state._terminal_error = RunTraceError(code=type(failure.cause).__name__, message=str(failure.cause))
+            state._checkpoint_eligible = False
+            state = runtime.session.save_run_state(state, copy_state=not persistent)
+            self._run_checkpoints.pop(state.run_id, None)
+            failure.cause.result = RunResult(state=state, new_items=outcome.new_items, usage=usage)
+            return failure.cause
         assembler = runtime.tool_agent.context_assembler
         snapshot_window = assembler.context_window_tokens
         if assembler.max_output_tokens is not None and assembler.max_output_tokens >= snapshot_window:
@@ -1948,6 +2026,7 @@ class Runner:
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         persistence: StreamPersistenceOptions | None = None,
+        interactions: UserInteractionOptions | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Run a target and yield typed stream events."""
 
@@ -1962,7 +2041,7 @@ class Runner:
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             # Ordinary streams use the public entrypoint; a persistent delivery
             # has installed its own scope for exactly this call.
-            run = self.run if persistence is None else partial(self._run, persistent=True)
+            run = self.run if persistence is None and interactions is None else partial(self._run, persistent=persistence is not None)
             return await run(
                 target,
                 input=input,
@@ -1978,6 +2057,7 @@ class Runner:
                 artifact_uploads=artifact_uploads,
                 on_token=None,
                 on_event=on_event,
+                interactions=interactions,
             )
 
         async with aclosing(self._stream_run(run_target, persistence=persistence, conversation=conversation)) as events:
@@ -2044,6 +2124,24 @@ class Runner:
             raise RunNotActiveError(f"Run '{run_id}' is not active.")
         return control.enqueue(input)
 
+    def _interaction_for_response(self, run_id: str) -> InteractionControl:
+        control = self._interaction_controls.get(run_id)
+        if self._closed or control is None:
+            raise UserInteractionResponseRejected("No pending interaction for this run.", code="not_pending")
+        return control
+
+    async def respond_to_interaction(self, response: UserInteractionResponse) -> None:
+        """Accept one typed response; this does not acknowledge result persistence."""
+        if not isinstance(response, (UserInteractionAnswer, UserInteractionAbandonment)):
+            raise UserInteractionResponseRejected("A typed interaction response is required.", code="invalid_value")
+        self._interaction_for_response(response.run_id).respond(response)
+
+    async def abort_interaction(self, *, run_id: str, invocation_id: str,
+                                interaction_id: str, reason: Literal["timeout", "unavailable"],
+                                message: str = "") -> None:
+        """Stop a matching wait with a fatal timeout or unavailable error."""
+        self._interaction_for_response(run_id).abort(run_id, invocation_id, interaction_id, reason, message)
+
     async def resume_stream(
         self,
         decision: ReviewDecision,
@@ -2051,6 +2149,7 @@ class Runner:
         checkpoint: RunCheckpoint,
         execution: RunExecution = "local",
         persistence: StreamPersistenceOptions | None = None,
+        interactions: UserInteractionOptions | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Resume a pending review and yield typed stream events."""
 
@@ -2063,13 +2162,14 @@ class Runner:
             self.validate_checkpoint(checkpoint)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
-            resume = self.resume if persistence is None else partial(self._resume, persistent=True)
+            resume = self.resume if persistence is None and interactions is None else partial(self._resume, persistent=persistence is not None)
             result = await resume(
                 decision,
                 checkpoint=checkpoint,
                 execution=execution,
                 on_token=None,
                 on_event=on_event,
+                interactions=interactions,
             )
             if result is None:
                 raise LookupError("Review session not found.")
@@ -2290,12 +2390,13 @@ class Runner:
         execution: RunExecution = "local",
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        interactions: UserInteractionOptions | None = None,
     ) -> RunResult | None:
         with conversation_change_scope(None):
-            return await self._resume(
+            return await self._isolated_interactive_call(partial(self._resume,
                 decision, checkpoint=checkpoint, execution=execution,
-                on_token=on_token, on_event=on_event,
-            )
+                on_token=on_token, on_event=on_event, interactions=interactions,
+            ), interactions)
 
     async def _resume(
         self,
@@ -2306,8 +2407,11 @@ class Runner:
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
         persistent: bool = False,
+        interactions: UserInteractionOptions | None = None,
     ) -> RunResult | None:
         """Resume with explicit execution semantics inside the caller's delivery scope."""
+        if interactions is not None and (execution != "local" or checkpoint.state.kind != "tool"):
+            raise UserInteractionUnsupported("User interactions support local root ToolLoop only.")
         active = self._active_run_tasks.get(checkpoint.state.run_id)
         if active is not None and not active.done():
             delivery = self._active_delivery(checkpoint.state.run_id)
@@ -2317,7 +2421,8 @@ class Runner:
             # finishes synchronous cleanup, so wait for it instead of failing.
             await asyncio.wait({active})
         with self._run_retention_scope(is_resume=True) as retain:
-            with self._steering_scope(on_event) as steering_on_event:
+            with (self._steering_scope(on_event) as steering_on_event,
+                  self._interaction_scope(interactions, steering_on_event)):
                 result = await self._resume_checkpoint(
                     decision,
                     checkpoint,
@@ -3174,6 +3279,12 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
     """Map a runtime event payload onto the typed protocol."""
     data = dict(event)
     event_type = str(data.get("type") or "")
+
+    if event_type in {"user_interaction_requested", "user_interaction_ended"}:
+        return RunStreamEvent(
+            type="user_interaction.requested" if event_type == "user_interaction_requested" else "user_interaction.ended",
+            data=data["data"], run_id=data["run_id"],
+        )
 
     if event_type == "run_started":
         return RunStreamEvent(

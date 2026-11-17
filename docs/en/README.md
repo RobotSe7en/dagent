@@ -17,6 +17,7 @@ Simplified Chinese documentation is available at
 
 ## Feature Guides
 
+- [User Interactions](user-interactions.md): opt-in tool requests, asynchronous host responses, deadlines, and original-call continuation.
 - [Conversation Changes](conversation-changes.md): ToolLoop persistent stream V2,
   explicit ACK, host reconstruction, trace-free review and files.
 - [Tool Result Recovery](tool-result-recovery.md): display budgets, saved output, pagination and storage failures.

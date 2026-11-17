@@ -240,6 +240,7 @@ Key runtime contracts such as `RunState`, `RunTrace`, `LoopOutcome`,
 - [English documentation](docs/en/README.md)
 - [中文文档](docs/zh-CN/README.md)
 - [Runnable examples](examples/README.md)
+- [User interactions](docs/en/user-interactions.md)
 
 ## License
 

@@ -19,6 +19,7 @@ from dagent.schemas import (
     validate_capability_id_segment,
 )
 from dagent.schemas.common import json_schema_for_type
+from dagent.user_interactions import UserInteractionFatalError
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,8 @@ def tool(
                     content=content,
                     value=value,
                 )
+            except UserInteractionFatalError:
+                raise
             except Exception as exc:
                 return CapabilityResult(
                     invocation_id=invocation.invocation_id,

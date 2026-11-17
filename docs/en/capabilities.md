@@ -1,5 +1,8 @@
 # Capabilities
 
+For opt-in `tool.ui_confirm/select/input/editor` bindings and custom asynchronous
+tools using `context.ui`, see [User Interactions](user-interactions.md).
+
 For result display budgets, typed retention metadata and file/search pagination, see
 [Tool Result Recovery](tool-result-recovery.md).
 

@@ -1,5 +1,22 @@
 # Release notes
 
+## Unreleased — opt-in user interactions
+
+- Add per-execution `UserInteractionOptions`, public host response/abort methods,
+  four registerable `tool.ui_*` tools, and `ToolContext.ui` for async Python tools.
+- Continue the original local root ToolLoop invocation after a typed response;
+  distinguish abandonment, False, and empty text. Reject steering while waiting.
+- Isolate waits across runs and clean them on stop, close, failure, and deadlines.
+  Timeouts and host unavailability fail the run instead of becoming tool results.
+- Preserve result storage, overflow references and persistence ACK gates. Existing
+  defaults, records and toolsets are unchanged; applications that do not enable
+  interactions need no migration.
+- Initial support is local root ToolLoop only. DAGs, delegated agents and sandbox
+  interaction are excluded; receivers and waits do not survive restart.
+- Add an offline host example and regression coverage for values, identity,
+  cancellation, review resume, steering, long results and persistence ordering.
+  See [User Interactions](user-interactions.md).
+
 ## 0.11.0 — ToolLoop persistent stream V2
 
 Install with `pip install --upgrade 'dagent-ai==0.11.0'`. This release includes
