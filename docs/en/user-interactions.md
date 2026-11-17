@@ -1,9 +1,9 @@
 # Wait for user input inside a tool
 
-**Unreleased, opt-in.** User interactions retain the original local root ToolLoop,
-execution coroutine, invocation, capability scope, model, and step budget. No
-Enterprise service, UI framework, HTTP transport, database, or live model is
-required. Run the complete offline host example:
+**Available since 0.11.1, opt-in.** User interactions retain the original local
+root ToolLoop, execution coroutine, invocation, capability scope, model, and step
+budget. No Enterprise service, UI framework, HTTP transport, database, or live
+model is required. Run the complete offline host example:
 
 ```bash
 uv run python -m examples.user_interactions

@@ -1,6 +1,10 @@
 # 版本说明
 
-## 未发布 — 显式启用用户交互
+## 0.11.1：显式启用用户交互
+
+使用 `pip install --upgrade 'dagent-ai==0.11.1'` 安装。本版本新增显式启用的用户交互，
+不包含破坏性变更。既有 0.11.0 应用无需迁移；启用新功能请参见
+[0.11.1 迁移说明](migration.md#0111)。
 
 - 新增按次 `UserInteractionOptions`、公开宿主应答和终止接口、四个可注册
   `tool.ui_*` 工具，以及异步 Python 工具的 `ToolContext.ui`。
@@ -13,6 +17,12 @@
 - 首版仅 local 根 ToolLoop，不支持 DAG、子 Agent 和 sandbox 交互；不跨重启恢复。
 - 增加离线公共示例及响应、身份、取消、审核续跑、steer、长结果和持久化顺序回归。
   详见[用户交互](user-interactions.md)。
+
+发布验证：Python 全量测试（dev、MCP）为 2604 passed、3 skipped。用户交互、持久化与
+状态保留离线示例、128 项前端测试、前端构建、wheel/sdist 构建、Twine 元数据、
+版本一致性、锁文件和差异格式检查均通过。构建的 wheel 通过隔离导入及使用内置 profile
+的交互冒烟检查；保留全部 107 项 0.11.0 公开导出。跳过两项未启用的真实 MiniMax 测试和
+一项缺少运行中 daemon 的 Docker 测试；真实 provider 和 Docker 验收需要相应环境。
 
 ## 0.11.0：ToolLoop 持久化流 V2
 

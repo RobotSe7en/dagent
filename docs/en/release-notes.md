@@ -1,6 +1,11 @@
 # Release notes
 
-## Unreleased — opt-in user interactions
+## 0.11.1 — opt-in user interactions
+
+Install with `pip install --upgrade 'dagent-ai==0.11.1'`. This release adds
+explicitly enabled user interactions without breaking changes. Existing 0.11.0
+applications need no migration; see the [0.11.1 migration notes](migration.md#0111)
+to enable the new feature.
 
 - Add per-execution `UserInteractionOptions`, public host response/abort methods,
   four registerable `tool.ui_*` tools, and `ToolContext.ui` for async Python tools.
@@ -18,6 +23,15 @@
 - Add an offline host example and regression coverage for values, identity,
   cancellation, review resume, steering, long results and persistence ordering.
   See [User Interactions](user-interactions.md).
+
+Release verification: the full Python suite (dev and MCP) passed with 2,604 tests
+and 3 skips. The offline user interaction, persistence and retention examples,
+all 128 frontend tests, the frontend build, wheel/sdist builds, Twine metadata,
+version consistency, lockfile and diff checks passed. The built wheel passed an
+isolated import and interaction smoke check with its bundled profile; all 107
+public 0.11.0 exports remain available. Two opt-in live MiniMax tests and one
+Docker test without a running daemon were skipped; live provider and Docker
+acceptance require their respective environments.
 
 ## 0.11.0 — ToolLoop persistent stream V2
 

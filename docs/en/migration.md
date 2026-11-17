@@ -1,18 +1,22 @@
 # Migration Notes
 
-## Unreleased user interactions
-
-No migration is required for existing applications. Register `ui_tools()` only
-where needed and pass `interactions=UserInteractionOptions(...)` on each supported
-execution. Hosts provide the receiver, persistence, and deadline policy; pending
-waits are not restart checkpoints. See [User Interactions](user-interactions.md).
-
 dagent has released public SDK contracts. This page records user-facing changes
 that may require action when upgrading.
 
 ## Current Release Line
 
-The current stable package version is `0.11.0`.
+The current stable package version is `0.11.1`.
+
+## 0.11.1
+
+Install with `pip install --upgrade 'dagent-ai==0.11.1'`.
+
+No migration is required for existing 0.11.0 applications; there are no breaking
+changes. Register `ui_tools()` only where needed and pass
+`interactions=UserInteractionOptions(...)` on each supported execution. Hosts
+provide the receiver, persistence, and deadline policy; pending waits are not
+restart checkpoints. Initial support is limited to local root ToolLoop runs.
+See [User Interactions](user-interactions.md).
 
 ## 0.11.0
 
