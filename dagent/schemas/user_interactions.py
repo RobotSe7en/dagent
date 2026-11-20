@@ -12,18 +12,27 @@ class _InteractionModel(BaseModel):
 
 
 class UserInteractionOption(_InteractionModel):
-    id: StrictStr = Field(min_length=1)
-    label: StrictStr
+    id: StrictStr = Field(
+        min_length=1,
+        description="Stable option identifier returned when selected.",
+    )
+    label: StrictStr = Field(description="Human-readable option label shown to the user.")
 
 
 class ConfirmParameters(_InteractionModel):
-    title: StrictStr
-    description: StrictStr | None = None
+    title: StrictStr = Field(description="Question or action for the user to confirm.")
+    description: StrictStr | None = Field(
+        default=None,
+        description="Optional additional context shown with the confirmation prompt.",
+    )
 
 
 class SelectParameters(_InteractionModel):
-    title: StrictStr
-    options: tuple[UserInteractionOption, ...] = Field(min_length=1)
+    title: StrictStr = Field(description="Prompt shown to the user above the options.")
+    options: tuple[UserInteractionOption, ...] = Field(
+        min_length=1,
+        description="Nonempty list of choices with unique option IDs.",
+    )
 
     @model_validator(mode="after")
     def unique_options(self) -> SelectParameters:
@@ -33,15 +42,24 @@ class SelectParameters(_InteractionModel):
 
 
 class InputParameters(_InteractionModel):
-    title: StrictStr
-    prompt: StrictStr = ""
-    initial: StrictStr = ""
+    title: StrictStr = Field(description="Short title for the requested text input.")
+    prompt: StrictStr = Field(
+        default="",
+        description="Optional guidance or question shown to the user.",
+    )
+    initial: StrictStr = Field(
+        default="",
+        description="Optional initial text prefilled for the user.",
+    )
 
 
 class EditorParameters(_InteractionModel):
-    title: StrictStr
-    content: StrictStr
-    format: Literal["text", "markdown", "html"] = "text"
+    title: StrictStr = Field(description="Short title shown in the interactive editor.")
+    content: StrictStr = Field(description="Complete initial content for the user to review or edit.")
+    format: Literal["text", "markdown", "html"] = Field(
+        default="text",
+        description="Content format: 'text' (plain text), 'markdown', or 'html'.",
+    )
 
 
 class _RequestIdentity(_InteractionModel):

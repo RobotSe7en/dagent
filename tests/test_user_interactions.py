@@ -908,3 +908,43 @@ def test_select_tool_has_resolvable_provider_schema():
     validator = Draft202012Validator(schema)
     validator.validate({"title": "Choose", "options": [{"id": "a", "label": "A"}]})
     assert list(validator.iter_errors({"title": "Choose", "options": []}))
+
+
+def test_ui_tools_expose_user_facing_descriptions_and_documented_schemas():
+    from jsonschema import Draft202012Validator
+
+    definitions = {binding.definition.id: binding.definition for binding in dagent.ui_tools()}
+    assert set(definitions) == {"tool.ui_confirm", "tool.ui_select", "tool.ui_input", "tool.ui_editor"}
+
+    samples = {
+        "tool.ui_confirm": ({"title": "Proceed?"}, {"title": "Proceed?", "extra": True}),
+        "tool.ui_select": (
+            {"title": "Choose", "options": [{"id": "a", "label": "A"}]},
+            {"title": "Choose", "options": []},
+        ),
+        "tool.ui_input": ({"title": "Name"}, {}),
+        "tool.ui_editor": (
+            {"title": "Review", "content": "# Hello", "format": "markdown"},
+            {"title": "Review", "content": "# Hello", "format": "pdf"},
+        ),
+    }
+
+    for capability_id, (valid, invalid) in samples.items():
+        definition = definitions[capability_id]
+        assert "user" in definition.description.lower()
+        schema = definition.parameters
+        Draft202012Validator.check_schema(schema)
+        validator = Draft202012Validator(schema)
+        validator.validate(valid)
+        assert list(validator.iter_errors(invalid))
+        for prop in schema["properties"].values():
+            assert isinstance(prop.get("description"), str) and prop["description"].strip()
+
+    option_props = definitions["tool.ui_select"].parameters["$defs"]["UserInteractionOption"]["properties"]
+    for prop in option_props.values():
+        assert isinstance(prop.get("description"), str) and prop["description"].strip()
+
+    editor_desc = definitions["tool.ui_editor"].description.lower()
+    assert "host" not in editor_desc
+    assert "interactive editor" in editor_desc
+    assert "does not read or write files" in editor_desc
