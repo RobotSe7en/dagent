@@ -66,6 +66,10 @@ creating a wait.
 They use the existing catalog, tool selection, disablement, and execution rules.
 They are not added to the default toolset.
 
+Starting in 0.11.2, the model-facing tool definitions describe each parameter
+and the returned value. `tool.ui_editor` takes the complete initial content and
+returns the text the user submits in the interactive editor.
+
 | Context operation | Request parameters | Normal value |
 | --- | --- | --- |
 | `await context.ui.confirm(title, description=None)` | Title and optional description | `bool` |

@@ -917,7 +917,7 @@ def test_ui_tools_expose_user_facing_descriptions_and_documented_schemas():
     assert set(definitions) == {"tool.ui_confirm", "tool.ui_select", "tool.ui_input", "tool.ui_editor"}
 
     samples = {
-        "tool.ui_confirm": ({"title": "Proceed?"}, {"title": "Proceed?", "extra": True}),
+        "tool.ui_confirm": ({"title": "Proceed?"}, {"title": 42}),
         "tool.ui_select": (
             {"title": "Choose", "options": [{"id": "a", "label": "A"}]},
             {"title": "Choose", "options": []},
@@ -937,6 +937,7 @@ def test_ui_tools_expose_user_facing_descriptions_and_documented_schemas():
         validator = Draft202012Validator(schema)
         validator.validate(valid)
         assert list(validator.iter_errors(invalid))
+        assert validator.is_valid({**valid, "extra": True}) == (capability_id != "tool.ui_select")
         for prop in schema["properties"].values():
             assert isinstance(prop.get("description"), str) and prop["description"].strip()
 

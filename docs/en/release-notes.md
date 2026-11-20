@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.11.2 — clearer user interaction tools
+
+Install with `pip install --upgrade 'dagent-ai==0.11.2'`. Existing 0.11.1
+applications can [upgrade directly](migration.md#0112).
+
+- Describe the parameters and return values of all four `ui_tools()` bindings
+  for models, including the IDs and labels in select options.
+- Clarify that `tool.ui_editor` opens an interactive editor with the full initial
+  content and returns the user's submission. See [User Interactions](user-interactions.md).
+
+Release verification included 2,605 passing Python tests with the dev and MCP
+extras and 128 passing frontend tests. The frontend build, wheel and sdist
+metadata checks, and offline interaction example using the built wheel also passed.
+Two live MiniMax tests and one Docker integration test were skipped.
+
 ## 0.11.1 — opt-in user interactions
 
 Install with `pip install --upgrade 'dagent-ai==0.11.1'`. This release adds

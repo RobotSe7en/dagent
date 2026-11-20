@@ -56,6 +56,9 @@ result = await task
 `tool.ui_select`、`tool.ui_input`、`tool.ui_editor`。它们复用既有 catalog、
 能力选择、禁用及执行机制，不自动加入默认工具集。
 
+自 0.11.2 起，面向模型的工具定义包含各参数及返回值的说明。
+`tool.ui_editor` 接收完整初始内容，并返回用户在交互式编辑器中提交的文本。
+
 | 上下文调用 | 请求参数 | 正常返回 |
 | --- | --- | --- |
 | `await context.ui.confirm(title, description=None)` | 标题、可选说明 | `bool` |

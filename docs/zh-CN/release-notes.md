@@ -1,5 +1,16 @@
 # 版本说明
 
+## 0.11.2：完善用户交互工具说明
+
+使用 `pip install --upgrade 'dagent-ai==0.11.2'` 安装。既有 0.11.1 应用可[直接升级](migration.md#0112)。
+
+- 完善 `ui_tools()` 四个工具面向模型的参数和返回值说明，包括选择项的 ID 和标签。
+- 明确 `tool.ui_editor` 使用完整初始内容打开交互式编辑器，并返回用户提交的文本。详见[用户交互](user-interactions.md)。
+
+发布验证通过 2605 项 Python 测试（含 dev 和 MCP）和 128 项前端测试。前端构建、
+wheel 和 sdist 元数据检查，以及使用构建出的 wheel 运行的离线交互示例均通过。
+跳过两项真实 MiniMax 测试和一项 Docker 集成测试。
+
 ## 0.11.1：显式启用用户交互
 
 使用 `pip install --upgrade 'dagent-ai==0.11.1'` 安装。本版本新增显式启用的用户交互，

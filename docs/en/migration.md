@@ -5,7 +5,12 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current stable package version is `0.11.1`.
+The current stable package version is `0.11.2`.
+
+## 0.11.2
+
+Upgrade from 0.11.1 with `pip install --upgrade 'dagent-ai==0.11.2'`.
+Existing applications can upgrade without code or configuration changes.
 
 ## 0.11.1
 
