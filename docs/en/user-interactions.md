@@ -165,7 +165,10 @@ matching and single consumption do not provide persistent HTTP retry idempotency
 Each run has at most one pending interaction; a concurrent second attempt raises
 `UserInteractionBusy`. The existing sequential tool batch waits at the current
 invocation. No later tool or model runs until it finishes, and completed tools
-are not replayed. Independent runs remain isolated.
+are not replayed. Independent runs remain isolated. With opt-in
+[parallel tools](parallel-tools.md), UI calls remain exclusive barriers. Custom
+interactive tools must keep `parallel_safe=False`; a parallel-dispatched tool
+requesting UI gets `UserInteractionUnsupported` without opening a request.
 
 The monotonic deadline starts when the request is registered, immediately before
 notifications. `timeout_seconds=None` sets no SDK deadline; a host can pass its

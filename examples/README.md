@@ -10,6 +10,7 @@ credentials.
 
 | Example | Demonstrates | Related docs |
 | --- | --- | --- |
+| `parallel_tools.py` | Rolling parallel tools, progress callbacks, an exclusive barrier and model-order results without credentials. | [Parallel Tools](../docs/en/parallel-tools.md) |
 | `user_interactions.py` | Four interaction tools, custom context waits, abandonment, and result persistence ACK using an offline host queue. | [User Interactions](../docs/en/user-interactions.md) |
 | `editable_uploads.py` | Upload, edit, and read current file contents across runs using the same workspace. | [Runner and Configuration](../docs/en/runner-and-configuration.md#editing-uploaded-files) |
 | `batch_tool_review.py` | Exact replace-all editing, mixed batch review, saved-queue resume and shell execution | [Capabilities](../docs/en/capabilities.md), [Review](../docs/en/results-streaming-review.md) |

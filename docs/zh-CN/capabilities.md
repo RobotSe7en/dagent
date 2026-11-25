@@ -1,5 +1,8 @@
 # Capabilities
 
+`@tool(parallel_safe=True)`、`CapabilityDefinition.parallel_safe` 和 MCP 服务端声明见
+[工具并行](parallel-tools.md)。
+
 显式注册的 `tool.ui_confirm/select/input/editor` 以及自定义异步工具的 `context.ui`，
 见[用户交互](user-interactions.md)。
 

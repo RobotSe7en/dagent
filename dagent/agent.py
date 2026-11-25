@@ -8,6 +8,7 @@ import re
 from typing import Any, Iterable
 
 from dagent.capabilities.decorator import CapabilityBinding
+from dagent.capabilities.execution_context import validate_concurrency
 from dagent.profiles import AgentProfile
 from dagent.review import ReviewLevel
 from dagent.schemas.context import ContextPolicy
@@ -31,10 +32,13 @@ class AutoAgent:
     review: ReviewLevel = "fast"
     dynamic_adjust: bool = True
     context: ContextPolicy = field(default_factory=ContextPolicy)
+    # Scheduling is keyword-only; released positional fields keep their order.
+    max_tool_concurrency: int = field(default=1, kw_only=True)
     response_retries: int = 0
 
     def __post_init__(self) -> None:
         _validate_response_retries(self.response_retries)
+        validate_concurrency(self.max_tool_concurrency)
         object.__setattr__(self, "name", self.name or _default_profile_name(self.profile))
         if self.max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
@@ -58,10 +62,12 @@ class ToolAgent:
     review: ReviewLevel = "fast"
     description: str = ""
     context: ContextPolicy = field(default_factory=ContextPolicy)
+    max_tool_concurrency: int = field(default=1, kw_only=True)
     response_retries: int = 0
 
     def __post_init__(self) -> None:
         _validate_response_retries(self.response_retries)
+        validate_concurrency(self.max_tool_concurrency)
         object.__setattr__(self, "name", self.name or _default_profile_name(self.profile))
         if self.max_steps < 1:
             raise ValueError("max_steps must be at least 1.")

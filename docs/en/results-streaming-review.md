@@ -266,7 +266,8 @@ mutually exclusive. Existing `review.approve()` / `review.reject()` and
 `ReviewDecision(review_id=..., approved=...)` still work; for a batch they decide
 all reviewed calls. `review.capability_call` remains available for single reviews.
 
-After submission, calls run in their original order. Rejected calls produce
+After submission, calls run sequentially by default. Opt-in [parallel tools](parallel-tools.md)
+can overlap safe calls while retaining model-order results. Rejected calls produce
 `denied`; ordinary errors produce `failed`; the remaining calls continue. There
 is no review-induced `skipped` result and no extra model call to reissue siblings.
 Cancellation, steering and required-result storage failures retain their stopping

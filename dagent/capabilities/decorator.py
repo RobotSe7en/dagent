@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, get_type_hints
 
 from dagent.capabilities.catalog import CapabilityHandler
+from dagent.capabilities.execution_context import is_parallel_dispatch
 from dagent.capabilities.tools.registry import content_and_value_from_result
 from dagent.schemas import (
     CapabilityDefinition,
@@ -46,6 +48,7 @@ def tool(
     config: dict[str, Any] | None = None,
     enabled: bool = True,
     supports_context: bool = False,
+    parallel_safe: bool = False,
 ) -> CapabilityBinding | Callable[[Callable[..., Any]], CapabilityBinding]:
     """Decorate a Python function as a dagent tool capability.
 
@@ -77,6 +80,7 @@ def tool(
             ),
             config=config or {},
             enabled=enabled,
+            parallel_safe=parallel_safe,
         )
 
         async def handler(
@@ -86,13 +90,11 @@ def tool(
             callbacks: Any = None,
         ) -> CapabilityResult:
             try:
-                result = _invoke_function(
-                    func,
-                    invocation.arguments,
-                    context=context,
-                    callbacks=callbacks,
-                    supports_context=supports_context,
-                )
+                kwargs = dict(context=context, callbacks=callbacks, supports_context=supports_context)
+                if is_parallel_dispatch() and not inspect.iscoroutinefunction(func):
+                    result = await asyncio.to_thread(_invoke_function, func, invocation.arguments, **kwargs)
+                else:
+                    result = _invoke_function(func, invocation.arguments, **kwargs)
                 if inspect.isawaitable(result):
                     result = await result
                 if isinstance(result, CapabilityResult):

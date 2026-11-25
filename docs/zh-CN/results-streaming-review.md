@@ -228,7 +228,8 @@ resumed = await runner.resume(
 `ReviewDecision(review_id=..., approved=...)` 继续有效；批量场景表示决定全部待审项。
 旧 `review.capability_call` 仍供单项审核使用。
 
-提交后按原始顺序处理调用：拒绝项返回 `denied`，普通工具错误返回 `failed`，其余继续。
+提交后默认按原始顺序串行处理调用；显式启用[工具并行](parallel-tools.md)后，安全调用可以
+同时执行，结果仍按模型顺序保存。拒绝项返回 `denied`，普通工具错误返回 `failed`，其余继续。
 不会因审核将剩余调用标为 `skipped`，也无需额外调用模型重新发起这些工具。
 取消、steer 和必需结果存储失败仍按既有语义中止。执行时再次检查边界；出现新的授权
 要求时暂停剩余队列，不重复执行已完成前缀。只有已批准的边界项才能增加当前 run 的路径授权。

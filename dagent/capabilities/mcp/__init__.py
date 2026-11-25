@@ -7,12 +7,13 @@ from hashlib import sha1
 from typing import Any
 
 from dagent.capabilities.catalog import CapabilityCatalog
+from dagent.capabilities.execution_context import validate_concurrency
 from dagent.schemas import CapabilityDefinition, CapabilityPolicy, MCPServerSnapshot
 
 from .config import DEFAULT_MCP_TOOL_TIMEOUT_SECONDS
 from .handlers import make_mcp_tool_handler
 from .manager import MCPServerManager
-from .schema import normalize_mcp_input_schema, normalize_mcp_output_schema
+from .schema import mcp_tool_parallel_safe, normalize_mcp_input_schema, normalize_mcp_output_schema
 
 _CAPABILITY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _UNSAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
@@ -38,6 +39,8 @@ class MCPCapabilityProvider:
     def register_into(self, catalog: CapabilityCatalog) -> None:
         if not self.servers:
             return
+        for config in self.servers.values():
+            validate_concurrency(config.get("max_concurrency", 1), label="max_concurrency")
         manager = self.manager or MCPServerManager(self.servers)
         self.manager = manager
         if not getattr(manager, "available", True):
@@ -97,6 +100,7 @@ class MCPCapabilityProvider:
             parameters=normalize_mcp_input_schema(input_schema),
             output_schema=normalize_mcp_output_schema(output_schema),
             policy=_policy_for_server_config(server_config),
+            parallel_safe=mcp_tool_parallel_safe(tool),
             config={"server": server_name, "tool": tool_name},
         )
         handler = make_mcp_tool_handler(

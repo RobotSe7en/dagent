@@ -6,6 +6,17 @@ from copy import deepcopy
 from typing import Any
 
 
+def mcp_tool_parallel_safe(tool: Any) -> bool:
+    """Read the server-owned dagent scheduling extension from an MCP Tool."""
+    metadata = getattr(tool, "meta", None)
+    if metadata is None or "dagent/parallelSafe" not in metadata:
+        return False
+    value = metadata["dagent/parallelSafe"]
+    if type(value) is not bool:
+        raise ValueError("MCP tool _meta['dagent/parallelSafe'] must be a boolean.")
+    return value
+
+
 def normalize_mcp_input_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
     """Return an OpenAI/tool-call friendly JSON schema for an MCP input schema."""
 

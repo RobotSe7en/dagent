@@ -3,6 +3,21 @@
 dagent has released public SDK contracts. This page records user-facing changes
 that may require action when upgrading.
 
+## Unreleased — parallel tools
+
+Existing applications require no changes. Leave `max_tool_concurrency=1` to
+retain sequential execution, including the existing thread behavior of decorated
+synchronous tools. Released checkpoint formats and default fingerprints remain
+readable. To enable parallel execution, declare tool safety and set the Agent
+limit above 1. MCP services must publish `dagent/parallelSafe` in tool `_meta`;
+set the connection capacity separately. Parallel-dispatched sync tools run in
+threads and completion events may arrive out of order. Keep custom interactive
+tools exclusive. See [Parallel Tools](parallel-tools.md).
+
+Threaded parallel-tool callbacks are delivered on the execution event loop.
+Accepted steering is resolved after in-flight tools finish, including when all
+calls have started; the existing step-limit discard behavior still applies.
+
 ## Current Release Line
 
 The current stable package version is `0.11.2`.

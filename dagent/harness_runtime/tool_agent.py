@@ -4,6 +4,7 @@ from __future__ import annotations
 from dagent.harness_runtime.context import compaction_source
 
 import asyncio
+from threading import Event as ThreadEvent, get_ident
 
 from dagent.harness_runtime.conversation_changes import (
     ResponseRecorder, current_changes, publish_state, flush_resources,
@@ -19,6 +20,7 @@ from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
 from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.capabilities.providers import check_tool_boundary_for_review
 from dagent.capabilities.workspace import current_workspace_root
+from dagent.capabilities.execution_context import parallel_dispatch, validate_concurrency
 from dagent.harness_runtime.dag_builder import (
     MAX_EXECUTION_CONTEXT_CHARS,
     context_excerpt,
@@ -104,6 +106,7 @@ from dagent.schemas.conversation import (
 )
 from dagent.schemas.common import validate_runtime_directory
 from dagent.schemas.results import PendingCapabilityReviewItem, _PendingToolBatch, _PendingToolCall
+from dagent.schemas.conversation_changes import ConversationToolObservation
 from dagent.harness_runtime.user_interactions import invocation_interactions
 from dagent.user_interactions import UserInteractionFatalError
 
@@ -113,6 +116,12 @@ class _ToolLoopState:
     conversation: ConversationState
     error: RunTraceError | None = None
     checkpoint_eligible: bool = True
+
+
+@dataclass(frozen=True)
+class _CompletedToolCall:
+    message: ToolResultMessage
+    observations: tuple[ConversationToolObservation, ...]
 
 
 class ToolResultStorageFailure(RuntimeError):
@@ -212,6 +221,7 @@ class ToolAgent:
         prompt_context: str = "",
         context_observability: bool = False,
         response_retries: int = 0,
+        max_tool_concurrency: int = 1,
     ) -> None:
         self.context_observability = context_observability
         loop.context_observability = context_observability
@@ -220,6 +230,7 @@ class ToolAgent:
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_steps = max_steps
         self.response_retries = response_retries
+        self.max_tool_concurrency = validate_concurrency(max_tool_concurrency)
         self.extra_system_prompt = extra_system_prompt
         self.skill_prompt_resolver = skill_prompt_resolver
         self.context_policy = context_policy or ContextPolicy()
@@ -423,6 +434,7 @@ class ToolAgent:
                 boundary=boundary,
                 max_steps=self.max_steps,
                 response_retries=self.response_retries,
+                max_tool_concurrency=self.max_tool_concurrency,
                 system_message=system_message,
                 context_policy=self.context_policy,
                 result_storage_policy=self.result_storage_policy,
@@ -542,6 +554,7 @@ class ToolAgentLoop:
         boundary: Boundary,
         max_steps: int = 888,
         response_retries: int = 0,
+        max_tool_concurrency: int = 1,
         system_message: dict[str, Any],
         context_policy: ContextPolicy,
         result_storage_policy: ResultStoragePolicy,
@@ -558,6 +571,7 @@ class ToolAgentLoop:
     ) -> LoopOutcome:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
+        validate_concurrency(max_tool_concurrency)
 
         loop_state = _ToolLoopState(conversation)
         new_items: list[ConversationItem] = []
@@ -746,17 +760,9 @@ class ToolAgentLoop:
 
             if trace is not None:
                 trace.root.status = "running"
-            while batch.next_index < len(batch.calls):
-                item = batch.calls[batch.next_index]
-                tool_call = ToolCall(id=item.call.id, name=item.call.name, arguments=item.call.arguments)
-                pending_steers = () if steering is None else steering.drain(resolved_run_id)
-                if pending_steers:
-                    remaining = [ToolCall(id=i.call.id, name=i.call.name, arguments=i.call.arguments)
-                                 for i in batch.calls[batch.next_index:]]
-                    if await handle_pending_steers(pending_steers, step=step, skipped_calls=remaining):
-                        return None
-                    return failed_outcome()
 
+            def prepare_call(item: _PendingToolCall) -> bool:
+                nonlocal boundary
                 denied = item.approved is False
                 if not denied:
                     if item.approved is True and item.review and item.review.reason == "boundary_violation":
@@ -769,11 +775,18 @@ class ToolAgentLoop:
                         item.review = fresh.review
                         item.approved = None
                         item.invocation = fresh.invocation
-                        return await process_batch(batch, step=step)
+                        return False
                     item.invocation = fresh.invocation
                     item.error = fresh.error
                     item.error_result = fresh.error_result
 
+                return True
+
+            completed_calls: dict[str, _CompletedToolCall] = {}
+
+            async def run_call(item: _PendingToolCall, *, parallel: bool) -> _CompletedToolCall:
+                tool_call = ToolCall(id=item.call.id, name=item.call.name, arguments=item.call.arguments)
+                denied = item.approved is False
                 invocation = item.invocation
                 result_files = files_readable(batch.boundary)
                 node = None if invocation is None or trace is None else _find_capability_node(trace.root, item.call.id)
@@ -805,12 +818,39 @@ class ToolAgentLoop:
                         assistant = next(message for message in reversed(loop_state.conversation.items)
                                          if isinstance(message, AssistantMessage)
                                          and any(call.id == item.call.id for call in message.tool_calls))
-                        with invocation_interactions(resolved_run_id, invocation, assistant.id) as ui:
+                        with parallel_dispatch(parallel), invocation_interactions(resolved_run_id, invocation, assistant.id) as ui:
                             call_context = replace(call_context, ui=ui)
-                            result = await self.capability_executor.execute(invocation, context=call_context, callbacks=capability_callbacks)
+                            execution_loop = asyncio.get_running_loop()
+                            execution_thread = get_ident()
+                            active = ThreadEvent()
+                            active.set()
+
+                            def guarded(callback):
+                                def emit(value):
+                                    if not active.is_set():
+                                        return
+                                    if get_ident() == execution_thread:
+                                        callback(value)
+                                    else:
+                                        # Recheck active on delivery so cancellation
+                                        # also drops callbacks queued by workers.
+                                        execution_loop.call_soon_threadsafe(emit, value)
+                                return None if callback is None else emit
+
+                            callbacks = (CapabilityExecutionCallbacks(
+                                on_token=guarded(on_token), on_event=guarded(on_event),
+                            ) if parallel else capability_callbacks)
+                            try:
+                                result = await self.capability_executor.execute(invocation, context=call_context, callbacks=callbacks)
+                            finally:
+                                active.clear()
                     except PersistenceDeliveryError:
                         raise
                     except asyncio.CancelledError:
+                        if max_tool_concurrency > 1 and node is not None:
+                            node.status = "failed"
+                            node.ended_at = datetime.now(timezone.utc)
+                            node.error = RunTraceError(code="outcome_unknown", message="Tool execution was interrupted; its outcome is unknown.")
                         await observe_tool(item.call.id, invocation.capability_id, "outcome_unknown")
                         raise
                     except Exception as exc:
@@ -863,9 +903,6 @@ class ToolAgentLoop:
                 )
                 if separate_feedback and item.feedback and item.feedback.strip():
                     tool_item = tool_item.model_copy(update={"reviewer_feedback": item.feedback.strip()})
-                loop_state.conversation = _append_item(loop_state.conversation, tool_item)
-                if not persistent:
-                    new_items.append(tool_item)
                 if node is not None and invocation is not None:
                     node.status = "completed" if status == "completed" else "failed"
                     node.ended_at = datetime.now(timezone.utc)
@@ -882,15 +919,133 @@ class ToolAgentLoop:
                         on_event, invocation, "capability_result" if status == "completed" else "capability_error",
                         run_id=resolved_run_id, content=content,
                     )
-                batch.next_index += 1
-                boundary = batch.boundary
                 observations = (() if invocation is None or denied else tool_observations(
                     item.call.id, invocation.capability_id,
                     "completed" if result is not None and result.status == "completed" else "failed", tool_item.id,
                     error=(RunTraceError(code=result.stop_reason or "CapabilityError", message=result.error)
                            if result is not None and result.error else None),
                 ))
+                outcome = _CompletedToolCall(tool_item, observations if max_tool_concurrency == 1 else ())
+                completed_calls[item.call.id] = outcome
+                if max_tool_concurrency > 1 and invocation is not None and not denied:
+                    await observe_tool(
+                        item.call.id, invocation.capability_id,
+                        "completed" if result is not None and result.status == "completed" else "failed",
+                        error=(RunTraceError(code=result.stop_reason or "CapabilityError", message=result.error)
+                               if result is not None and result.error else None),
+                    )
+                return outcome
+
+            async def commit(outcome: _CompletedToolCall) -> None:
+                nonlocal boundary
+                tool_item, observations = outcome.message, outcome.observations
+                loop_state.conversation = _append_item(loop_state.conversation, tool_item)
+                if not persistent:
+                    new_items.append(tool_item)
+                completed_calls.pop(tool_item.call_id, None)
+                batch.next_index += 1
+                boundary = batch.boundary
                 await publish_state(loop_state.conversation, (tool_item,), observations)
+
+            def allows_parallel(item: _PendingToolCall) -> bool:
+                if max_tool_concurrency == 1 or item.invocation is None or item.error or item.approved is False:
+                    return False
+                # Path grants change the batch's boundary and are always barriers.
+                if item.review is not None and item.review.reason == "boundary_violation":
+                    return False
+                definition = self.capability_executor.catalog.get(item.invocation.capability_id)
+                return definition is not None and definition.parallel_safe
+
+            running: dict[asyncio.Task[_CompletedToolCall], int] = {}
+            settled: dict[int, _CompletedToolCall] = {}
+            completions: asyncio.Queue[asyncio.Task[_CompletedToolCall]] = asyncio.Queue()
+            dispatch_index = batch.next_index
+            stop_steers: tuple[QueuedSteer, ...] = ()
+            review_stop = False
+
+            async def commit_ready() -> None:
+                while batch.next_index in settled:
+                    await commit(settled.pop(batch.next_index))
+
+            async def cancel_running() -> None:
+                for task in running:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*running, return_exceptions=True)
+                # On a failed/cancelled run there may be holes. Retain actual
+                # completed messages; open-group repair prevents their replay.
+                for item in batch.calls:
+                    outcome = completed_calls.get(item.call.id)
+                    if outcome is None:
+                        continue
+                    tool_item = outcome.message
+                    loop_state.conversation = _append_item(loop_state.conversation, tool_item)
+                    if not persistent:
+                        new_items.append(tool_item)
+
+            try:
+                # The final commit can finish the batch while a drained steer
+                # still awaits application (or explicit step-limit discard).
+                while batch.next_index < len(batch.calls) or stop_steers:
+                    while not completions.empty():
+                        task = completions.get_nowait()
+                        index = running.pop(task)
+                        settled[index] = task.result()
+                    await commit_ready()
+                    if not stop_steers and steering is not None:
+                        stop_steers = steering.drain(resolved_run_id)
+                    while (not stop_steers and not review_stop and loop_state.error is None
+                           and dispatch_index < len(batch.calls)):
+                        item = batch.calls[dispatch_index]
+                        parallel = allows_parallel(item)
+                        immediate = item.invocation is None or item.error is not None or item.approved is False
+                        if not immediate and (len(running) >= max_tool_concurrency or (running and not parallel)):
+                            break
+                        if not prepare_call(item):
+                            review_stop = True
+                            break
+                        parallel = parallel and allows_parallel(item)
+                        if parallel:
+                            task = asyncio.create_task(run_call(item, parallel=True))
+                            running[task] = dispatch_index
+                            task.add_done_callback(completions.put_nowait)
+                        else:
+                            settled[dispatch_index] = await run_call(item, parallel=False)
+                        dispatch_index += 1
+                        if not parallel and not immediate:
+                            break
+                        # A completed fatal call must stop replenishment before
+                        # another tool gets a chance to execute.
+                        if not completions.empty():
+                            break
+                    await commit_ready()
+                    if not running:
+                        if stop_steers:
+                            remaining = [ToolCall(id=i.call.id, name=i.call.name, arguments=i.call.arguments)
+                                         for i in batch.calls[batch.next_index:]]
+                            if await handle_pending_steers(stop_steers, step=step, skipped_calls=remaining):
+                                return None
+                            return failed_outcome()
+                        if review_stop:
+                            return pending_outcome()
+                        continue
+                    task = await completions.get()
+                    index = running.pop(task)
+                    settled[index] = task.result()
+                    await commit_ready()
+            except BaseException as exc:
+                await cancel_running()
+                if (isinstance(exc, asyncio.CancelledError) and completed_calls and changes is not None
+                        and not changes.publisher.delivery.closed and changes.publisher.delivery.failure is None):
+                    # Out-of-order bodies may have completed before cancellation
+                    # while an earlier call kept their messages buffered. Save
+                    # those known results before the cancelled terminal batch.
+                    await publish_state(loop_state.conversation, tuple(
+                        completed_calls[item.call.id].message for item in batch.calls if item.call.id in completed_calls
+                    ))
+                if isinstance(exc, (ToolContextFailure, ToolResultStorageFailure)):
+                    exc.outcome = failed_outcome()
+                raise
             return None
 
         if resume_state is not None and resume_state.pending_tool_batch is not None:

@@ -1,5 +1,7 @@
 # Runner 和配置
 
+MCP 连接的可选容量 `max_concurrency` 和服务端工具安全声明见[工具并行](parallel-tools.md)。
+
 local 根 ToolLoop 可按次传入 `interactions=UserInteractionOptions(...)`，见
 [用户交互](user-interactions.md)。每次 run/resume 显式提供接收方，不设 Runner
 默认值，也不写入 checkpoint。

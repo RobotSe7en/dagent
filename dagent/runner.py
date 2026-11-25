@@ -1966,6 +1966,14 @@ class Runner:
             max_output_tokens=context_assembler.max_output_tokens,
             extra_system_prompt=runtime.tool_agent.extra_system_prompt,
             response_retries=runtime.tool_agent.response_retries,
+            max_tool_concurrency=runtime.tool_agent.max_tool_concurrency,
+            parallel_safe_capability_ids=(
+                self._parallel_safe_capability_ids(capability_ids)
+                if runtime.tool_agent.max_tool_concurrency > 1 or any(
+                    agent.max_tool_concurrency > 1 and f"agent.{name}" in capability_ids
+                    for name, agent in self._registered_agent_configs.items()
+                ) else None
+            ),
         )
         finalized = replace(
             result,
@@ -1989,6 +1997,23 @@ class Runner:
             for entry in visible_skills(self._skill_provider.store.list(), names)
         ))
 
+    def _parallel_safe_capability_ids(self, capability_ids: Iterable[str]) -> tuple[str, ...]:
+        # A parent's public scope exposes agent.<name>, not the child's tools.
+        # Freeze child scheduling declarations without exposing those tools to
+        # the parent model or changing the released capability fingerprint map.
+        scope = set(capability_ids)
+        for capability_id in tuple(scope):
+            if not capability_id.startswith("agent."):
+                continue
+            config = self._registered_agent_runtime_configs.get(capability_id.removeprefix("agent."))
+            if config is not None:
+                scope.update(config["capability_ids"])
+        return tuple(sorted(
+            capability_id for capability_id in scope
+            if (definition := self._runtime.capability_catalog.get(capability_id)) is not None
+            and definition.parallel_safe
+        ))
+
     def _capability_fingerprints(
         self,
         capability_ids: Iterable[str],
@@ -2000,7 +2025,9 @@ class Runner:
                 raise KeyError(
                     f"Capability '{capability_id}' is not registered."
                 )
-            payload = definition.model_dump(mode="json")
+            # Keep released fingerprints stable; opt-in scheduling declarations
+            # are frozen separately in ResolvedRunPlan.
+            payload = definition.model_dump(mode="json", exclude={"parallel_safe"})
             canonical = json.dumps(
                 payload,
                 ensure_ascii=False,
@@ -2572,6 +2599,9 @@ class Runner:
 
     def _validate_checkpoint_runtime(self, checkpoint: RunCheckpoint) -> None:
         catalog = self._runtime.capability_catalog
+        parallel_ids = checkpoint.plan.parallel_safe_capability_ids
+        if parallel_ids is not None and parallel_ids != self._parallel_safe_capability_ids(checkpoint.plan.capability_ids):
+            raise ValueError("Checkpoint parallel-safe capability declarations changed.")
         for capability_id in checkpoint.plan.capability_ids:
             definition = catalog.get(capability_id)
             if definition is None:
@@ -2626,6 +2656,7 @@ class Runner:
             tool_profile=plan.tool_profile,
             max_steps=plan.effective_max_steps(),
             response_retries=plan.response_retries,
+            max_tool_concurrency=plan.max_tool_concurrency,
             dag_profile=plan.planner_profile,
             validator=validator,
             enable_validation=plan.validation_enabled,
@@ -2653,6 +2684,7 @@ class Runner:
             tool_profile=agent.profile,
             max_steps=agent.max_steps,
             response_retries=agent.response_retries,
+            max_tool_concurrency=agent.max_tool_concurrency,
             dag_profile=agent.planner_profile,
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
@@ -2669,6 +2701,7 @@ class Runner:
             tool_profile=agent.profile,
             max_steps=agent.max_steps,
             response_retries=agent.response_retries,
+            max_tool_concurrency=agent.max_tool_concurrency,
             dag_profile="dag_agent",
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
@@ -2877,6 +2910,7 @@ class Runner:
             "description": agent.description,
             "max_steps": agent.max_steps,
             "response_retries": agent.response_retries,
+            "max_tool_concurrency": agent.max_tool_concurrency,
             "context_policy": agent.context,
             "result_storage_policy": self.result_storage_policy,
             "skills": _agent_skills(agent),
@@ -2969,6 +3003,7 @@ def _assemble_runtime(
     extra_system_prompt: str | None = None,
     context_observability: bool = False,
     response_retries: int = 0,
+    max_tool_concurrency: int = 1,
     skill_prompt_resolver: Callable[
         [tuple[str, ...] | None], tuple[PromptSkill, ...]
     ]
@@ -3000,6 +3035,7 @@ def _assemble_runtime(
         profile=_resolve_profile(tool_profile, profile_root=profile_root),
         max_steps=max_steps,
         response_retries=response_retries,
+        max_tool_concurrency=max_tool_concurrency,
         extra_system_prompt=extra_system_prompt,
         context_observability=context_observability,
         skill_prompt_resolver=skill_prompt_resolver,
@@ -3136,6 +3172,7 @@ def _runtime_from_existing(
     extra_system_prompt: str | None,
     context_observability: bool = False,
     response_retries: int = 0,
+    max_tool_concurrency: int = 1,
 ) -> HarnessRuntime:
     runtime = _assemble_runtime(
         provider=base.provider,
@@ -3145,6 +3182,7 @@ def _runtime_from_existing(
         tool_profile=tool_profile,
         max_steps=max_steps,
         response_retries=response_retries,
+        max_tool_concurrency=max_tool_concurrency,
         dag_profile=dag_profile,
         validator=base.validator,
         enable_validation=base.enable_validation,

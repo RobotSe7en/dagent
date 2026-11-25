@@ -5,8 +5,13 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from contextlib import AsyncExitStack
+from collections import deque
+from contextlib import AsyncExitStack, asynccontextmanager
+from collections.abc import AsyncIterator
 from typing import Any
+
+from dagent.capabilities.execution_context import validate_concurrency
+from .schema import mcp_tool_parallel_safe
 
 from .config import (
     DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS,
@@ -39,7 +44,7 @@ except Exception:  # pragma: no cover - import depends on optional extra
 
 
 class MCPServerTask:
-    """Owns one MCP server connection and serializes JSON-RPC requests."""
+    """Owns one connection, with bounded parallel calls and exclusive barriers."""
 
     def __init__(
         self,
@@ -57,7 +62,11 @@ class MCPServerTask:
         self._session: Any = None
         self._ready = asyncio.Event()
         self._stop = asyncio.Event()
-        self._rpc_lock = asyncio.Lock()
+        self.max_concurrency = validate_concurrency(config.get("max_concurrency", 1), label="max_concurrency")
+        self._rpc_condition = asyncio.Condition()
+        self._rpc_active = 0
+        self._rpc_exclusive = False
+        self._rpc_waiters: deque[object] = deque()
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -76,9 +85,11 @@ class MCPServerTask:
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
                 self._session = session
                 self.initialize_result = await session.initialize()
-                async with self._rpc_lock:
+                async with self._rpc_slot(parallel_safe=False):
                     tool_result = await session.list_tools()
                 self.tools = list(getattr(tool_result, "tools", []) or [])
+                for tool in self.tools:
+                    mcp_tool_parallel_safe(tool)
                 self._ready.set()
                 await self._stop.wait()
         except Exception as exc:
@@ -90,8 +101,34 @@ class MCPServerTask:
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         if self._session is None:
             raise RuntimeError(f"MCP server '{self.name}' is not connected.")
-        async with self._rpc_lock:
+        tool = next((tool for tool in self.tools if tool.name == tool_name), None)
+        async with self._rpc_slot(parallel_safe=mcp_tool_parallel_safe(tool)):
             return await self._session.call_tool(tool_name, arguments=arguments)
+
+    @asynccontextmanager
+    async def _rpc_slot(self, *, parallel_safe: bool) -> AsyncIterator[None]:
+        condition = self._rpc_condition
+        waiter = object()
+        async with condition:
+            self._rpc_waiters.append(waiter)
+            try:
+                await condition.wait_for(lambda: (
+                    self._rpc_waiters[0] is waiter and not self._rpc_exclusive
+                    and (self._rpc_active < self.max_concurrency if parallel_safe else self._rpc_active == 0)
+                ))
+                self._rpc_exclusive = not parallel_safe
+            finally:
+                self._rpc_waiters.remove(waiter)
+                condition.notify_all()
+            self._rpc_active += 1
+        try:
+            yield
+        finally:
+            async with condition:
+                self._rpc_active -= 1
+                if not parallel_safe:
+                    self._rpc_exclusive = False
+                condition.notify_all()
 
     async def shutdown(self) -> None:
         self._stop.set()
