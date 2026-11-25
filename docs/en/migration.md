@@ -3,7 +3,14 @@
 dagent has released public SDK contracts. This page records user-facing changes
 that may require action when upgrading.
 
-## Unreleased — parallel tools
+## Current Release Line
+
+The current stable package version is `0.11.3`.
+
+## 0.11.3
+
+Upgrade from 0.11.2 with `pip install --upgrade 'dagent-ai==0.11.3'`.
+This release has no breaking changes; parallel tools are explicitly opt-in.
 
 Existing applications require no changes. Leave `max_tool_concurrency=1` to
 retain sequential execution, including the existing thread behavior of decorated
@@ -17,10 +24,6 @@ tools exclusive. See [Parallel Tools](parallel-tools.md).
 Threaded parallel-tool callbacks are delivered on the execution event loop.
 Accepted steering is resolved after in-flight tools finish, including when all
 calls have started; the existing step-limit discard behavior still applies.
-
-## Current Release Line
-
-The current stable package version is `0.11.2`.
 
 ## 0.11.2
 

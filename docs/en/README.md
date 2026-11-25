@@ -17,7 +17,7 @@ Simplified Chinese documentation is available at
 
 ## Feature Guides
 
-- [Parallel Tools](parallel-tools.md): opt-in rolling execution, exclusive tools, MCP declarations and ordered results (unreleased).
+- [Parallel Tools](parallel-tools.md): opt-in rolling execution, exclusive tools, MCP declarations and ordered results (since 0.11.3).
 
 - [User Interactions](user-interactions.md): opt-in tool requests, asynchronous host responses, deadlines, and original-call continuation.
 - [Conversation Changes](conversation-changes.md): ToolLoop persistent stream V2,

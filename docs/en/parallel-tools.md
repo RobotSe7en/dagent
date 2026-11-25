@@ -1,6 +1,6 @@
 # Run tools in parallel
 
-**Unreleased.** ToolLoop can overlap independent tool calls from one model reply.
+**Available since 0.11.3.** ToolLoop can overlap independent tool calls from one model reply.
 Existing applications remain sequential: `max_tool_concurrency` defaults to `1`.
 The model must return multiple calls for this to help; this setting does not
 change provider request fields or force the model to call multiple tools.

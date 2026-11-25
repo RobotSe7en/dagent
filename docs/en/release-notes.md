@@ -1,6 +1,11 @@
 # Release notes
 
-## Unreleased — opt-in parallel tools
+## 0.11.3 — opt-in parallel tools
+
+Install with `pip install --upgrade 'dagent-ai==0.11.3'`. Existing 0.11.2
+applications can [upgrade directly](migration.md#0113). There are no breaking
+changes; existing applications retain sequential execution without configuration
+changes.
 
 Add `max_tool_concurrency=1` to ToolAgent and AutoAgent, explicit `parallel_safe`
 tool declarations, and MCP server `_meta["dagent/parallelSafe"]` with optional
@@ -18,8 +23,16 @@ Verification: the full Python suite with dev and MCP extras passed with 2,678
 tests and 3 skips (two opt-in live MiniMax tests and a Docker test requiring a
 running daemon). All 225 focused parallel-tool, MCP, steering, stream-delivery,
 persistence and user-interaction checks passed, including the real MCP stdio
-rendezvous test. The offline example, 314 relative documentation links and
+rendezvous test. Release verification also passed 176 SDK, parallel-tool, MCP,
+architecture, documentation and metadata checks; version/lockfile consistency;
+all 126 public 0.11.2 exports; wheel/sdist builds; and Twine metadata checks.
+An isolated wheel install passed the offline example and threaded progress
+callback checks with the bundled profile. Documentation links and
 `git diff --check` also passed.
+
+Parallel execution requires independent tools with explicit safety declarations.
+Custom interactive tools remain exclusive; Python threads and remote side effects
+cannot be forcibly rolled back. See [Parallel Tools](parallel-tools.md) for limits.
 
 ## 0.11.2 — clearer user interaction tools
 
