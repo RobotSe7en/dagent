@@ -76,8 +76,12 @@ no persistence timeout. Time spent queued before presentation is excluded.
 
 Display events and durable batches share one unbounded ordered queue. Enqueuing
 never waits for a reader; deltas are neither merged nor discarded for capacity.
-Only a durable batch publication waits for host ACK. The producer cannot dispatch
-the next operation until its preceding facts are confirmed. There is no separate
+Only a durable batch publication waits for host ACK. By default, the producer
+cannot dispatch the next operation until its preceding facts are confirmed.
+With opt-in [parallel tools](parallel-tools.md), each tool waits for its own
+starting observation ACK; sibling bodies can overlap. Completion observations
+can arrive out of order; result messages and context updates remain model-ordered.
+There is no separate
 queue-drain wait before a compaction request. Saving resource batches still waits
 for ACK, outside the compaction/model time budget.
 

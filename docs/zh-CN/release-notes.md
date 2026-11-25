@@ -1,5 +1,21 @@
 # 版本说明
 
+## 尚未发布：显式启用工具并行
+
+新增 ToolAgent、AutoAgent 的 `max_tool_concurrency=1`、工具的 `parallel_safe` 声明，
+以及 MCP 服务端 `_meta["dagent/parallelSafe"]` 和可选连接容量 `max_concurrency=1`。
+安全调用可同时执行，独占工具保持屏障；完成事件按完成顺序到达，会话结果按模型顺序保存。
+继续支持审核、ACK 门控、取消和旧 checkpoint 指纹。参见[工具并行](parallel-tools.md)及离线示例。
+
+修复最后一个并行调用完成时缓冲 steer 丢失的问题；模型步数耗尽时明确丢弃。
+线程中的工具进度回调投递到执行事件循环，普通流和持久化流在 asyncio debug 模式下
+也能及时收到进度；取消后继续丢弃迟到回调。
+
+验证：完整 Python 套件（含 dev 和 MCP）2,678 项通过、3 项跳过（两项未启用的真实
+MiniMax 测试和一项需要运行中 Docker daemon 的测试）。并行工具、MCP、steer、流式交付、
+持久化及用户交互检查全部 225 项通过，包括真实 MCP stdio 双请求并发验收。
+离线示例、314 个文档相对链接和 `git diff --check` 均通过。
+
 ## 0.11.2：完善用户交互工具说明
 
 使用 `pip install --upgrade 'dagent-ai==0.11.2'` 安装。既有 0.11.1 应用可[直接升级](migration.md#0112)。

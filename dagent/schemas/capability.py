@@ -6,7 +6,7 @@ import re
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from dagent.schemas.common import Boundary, RiskLevel
 from dagent.schemas.retention import ResultRetention
@@ -88,6 +88,14 @@ class CapabilityDefinition(BaseModel):
     policy: CapabilityPolicy = Field(default_factory=CapabilityPolicy)
     config: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
+    parallel_safe: bool = Field(default=False, strict=True)
+
+    @model_serializer(mode="wrap")
+    def serialize_execution_metadata(self, serializer):
+        payload = serializer(self)
+        if not self.parallel_safe:
+            payload.pop("parallel_safe", None)
+        return payload
 
     @model_validator(mode="after")
     def validate_identity(self) -> "CapabilityDefinition":

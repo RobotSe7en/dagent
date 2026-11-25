@@ -51,6 +51,9 @@ not enable these tools automatically.
 
 ## ToolAgent
 
+For opt-in `max_tool_concurrency`, safe tool declarations and registered Agent
+internal loops, see [Parallel Tools](parallel-tools.md). The default remains `1`.
+
 ```python
 import asyncio
 

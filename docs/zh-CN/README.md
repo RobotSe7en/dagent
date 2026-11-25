@@ -15,6 +15,8 @@
 
 ## 功能指南
 
+- [工具并行](parallel-tools.md)：显式启用滚动执行、独占工具、MCP 声明和有序结果（尚未发布）。
+
 - [用户交互](user-interactions.md)：显式启用工具请求、宿主异步应答、截止时间和原调用继续。
 - [会话变化](conversation-changes.md)：ToolLoop 持久化流 V2、显式 ACK、自主重建、无 trace 审核和文件。
 - [工具结果恢复](tool-result-recovery.md)：展示预算、原文保存、分页和存储故障。

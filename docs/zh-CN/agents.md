@@ -42,6 +42,9 @@ workspace；`capability_ids` 这类旧字段会被拒绝，不会自动转换。
 
 ## ToolAgent
 
+显式启用 `max_tool_concurrency`、声明安全工具及配置已注册 Agent 内部循环，参见
+[工具并行](parallel-tools.md)。默认值仍为 `1`。
+
 ```python
 import asyncio
 

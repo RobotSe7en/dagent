@@ -61,6 +61,7 @@ class Tool:
     description: str = ""
     parameters: dict | None = None
     risk: ToolRisk = "low"
+    parallel_safe: bool = False
 
 
 class ToolRegistry:
@@ -81,6 +82,7 @@ class ToolRegistry:
         description: str = "",
         parameters: dict | None = None,
         risk: ToolRisk = "low",
+        parallel_safe: bool = False,
     ) -> None:
         if name in self._tools:
             raise ValueError(f"Tool '{name}' is already registered.")
@@ -94,6 +96,7 @@ class ToolRegistry:
             description=description,
             parameters=parameters,
             risk=risk,
+            parallel_safe=parallel_safe,
         )
 
     def get(self, name: str) -> Tool | None:

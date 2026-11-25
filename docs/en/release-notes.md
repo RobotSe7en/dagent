@@ -1,5 +1,26 @@
 # Release notes
 
+## Unreleased — opt-in parallel tools
+
+Add `max_tool_concurrency=1` to ToolAgent and AutoAgent, explicit `parallel_safe`
+tool declarations, and MCP server `_meta["dagent/parallelSafe"]` with optional
+connection `max_concurrency=1`. Safe calls can overlap; exclusive tools remain
+barriers. Completion events follow completion order, while conversation results
+retain model order. Review, ACK gates, cancellation and old checkpoint fingerprints
+remain supported. See [Parallel Tools](parallel-tools.md) and the offline example.
+
+Resolve buffered steering after the final parallel call completes, including
+explicit discard at the model step limit. Deliver threaded tool progress callbacks
+on the execution event loop so ordinary and persistent streams remain responsive,
+including with asyncio debug enabled; cancelled calls still drop late callbacks.
+
+Verification: the full Python suite with dev and MCP extras passed with 2,678
+tests and 3 skips (two opt-in live MiniMax tests and a Docker test requiring a
+running daemon). All 225 focused parallel-tool, MCP, steering, stream-delivery,
+persistence and user-interaction checks passed, including the real MCP stdio
+rendezvous test. The offline example, 314 relative documentation links and
+`git diff --check` also passed.
+
 ## 0.11.2 — clearer user interaction tools
 
 Install with `pip install --upgrade 'dagent-ai==0.11.2'`. Existing 0.11.1

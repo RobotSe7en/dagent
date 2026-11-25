@@ -1,5 +1,8 @@
 # Runner and Configuration
 
+Opt-in MCP connection capacity (`max_concurrency`) and server-owned tool safety
+declarations are documented in [Parallel Tools](parallel-tools.md).
+
 For per-execution `interactions=UserInteractionOptions(...)` on local root
 ToolLoops, see [User Interactions](user-interactions.md). Receivers are explicit
 on each run/resume and are not Runner defaults or checkpoint contents.

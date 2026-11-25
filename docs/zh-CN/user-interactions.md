@@ -142,7 +142,9 @@ await runner.abort_interaction(
 ## 等待、超时和持久化
 
 同一 Run 最多一个 pending；并发第二次请求抛出 `UserInteractionBusy`。
-现有工具批次在当前调用处顺序等待，结束前不派发后续工具或模型，完成的工具不重放。
+默认工具批次在当前调用处顺序等待，结束前不派发后续工具或模型，完成的工具不重放。
+显式启用[工具并行](parallel-tools.md)后，UI 调用仍作为独占屏障。自定义交互工具必须保持
+`parallel_safe=False`；并行派发的工具请求 UI 时抛出 `UserInteractionUnsupported`，不建立请求。
 不同 Run 相互隔离。
 
 单调时钟截止时间从登记请求、发出通知前开始计算。`timeout_seconds=None` 不设

@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from dagent.harness_runtime.steering import current_run_steering_control
+from dagent.capabilities.execution_context import is_parallel_dispatch
 from dagent.schemas import CapabilityInvocation
 from dagent.schemas.user_interactions import (
     ConfirmParameters, ConfirmRequest, EditorParameters, EditorRequest,
@@ -224,6 +225,11 @@ class _InvocationUI(UserInteractionClient):
         return await self.control.ask(self, parameters)
 
 
+class _ParallelInvocationUI(UserInteractionClient):
+    async def _request(self, parameters: ConfirmParameters | SelectParameters | InputParameters | EditorParameters) -> bool | str:
+        raise UserInteractionUnsupported("Parallel-safe tools cannot request user interaction; declare the tool exclusive.")
+
+
 @contextmanager
 def interaction_scope(control: InteractionControl | None) -> Iterator[None]:
     token = _CURRENT.set(control)
@@ -244,6 +250,11 @@ def bind_interactions(run_id: str, kind: str) -> None:
 @contextmanager
 def invocation_interactions(run_id: str, invocation: CapabilityInvocation,
                             assistant_message_id: str) -> Iterator[UserInteractionClient]:
+    if is_parallel_dispatch():
+        # A parallel-safe tool promises not to open a run-owned interaction.
+        # Do not create a UI scope whose cleanup could close a sibling's wait.
+        yield _ParallelInvocationUI()
+        return
     control = _CURRENT.get()
     ui = (_InvocationUI(control, invocation, assistant_message_id)
           if control is not None and control.run_id == run_id

@@ -1,5 +1,8 @@
 # Capabilities
 
+For `@tool(parallel_safe=True)`, `CapabilityDefinition.parallel_safe`, and MCP
+server declarations, see [Parallel Tools](parallel-tools.md).
+
 For opt-in `tool.ui_confirm/select/input/editor` bindings and custom asynchronous
 tools using `context.ui`, see [User Interactions](user-interactions.md).
 

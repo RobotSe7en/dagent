@@ -21,6 +21,7 @@ import dagent
 
 | Task | Start with |
 | --- | --- |
+| Overlap independent tool calls | [Parallel Tools](parallel-tools.md) |
 | Configure runtime, provider, MCP, profiles, validation | [Runner and Configuration](runner-and-configuration.md) |
 | Register Python tools or MCP tools | [Capabilities](capabilities.md) |
 | Choose an agent type | [Agents](agents.md) |

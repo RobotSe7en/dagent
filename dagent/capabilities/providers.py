@@ -71,6 +71,7 @@ class ToolCapabilityProvider:
                 description=tool.description,
                 parameters=tool.parameters or {"type": "object"},
                 policy=CapabilityPolicy(risk=tool.risk),
+                parallel_safe=tool.parallel_safe,
                 config={
                     "tool_name": name,
                     "action": tool.action,
@@ -244,6 +245,7 @@ class AgentCapabilityProvider:
                         profile=profile,
                         max_steps=int(config.get("max_steps", 888)),
                         response_retries=config.get("response_retries", 0),
+                        max_tool_concurrency=config.get("max_tool_concurrency", 1),
                         context_policy=_context_policy_from_config(config),
                         result_storage_policy=_result_storage_policy_from_config(config),
                         capability_ids=capability_ids,
@@ -346,6 +348,7 @@ class AgentCapabilityProvider:
             context_observability=config.get("context_observability", False),
             max_steps=max_steps,
             response_retries=config.get("response_retries", 0),
+            max_tool_concurrency=config.get("max_tool_concurrency", 1),
             extra_system_prompt=None if context is None else context.extra_system_prompt,
             skill_prompt_resolver=self.skill_prompt_resolver,
             context_policy=context_policy,
@@ -483,6 +486,7 @@ def _agent_config_fingerprint(
     profile: AgentProfile,
     max_steps: int,
     response_retries: int = 0,
+    max_tool_concurrency: int = 1,
     context_policy: ContextPolicy,
     result_storage_policy: ResultStoragePolicy,
     capability_ids: tuple[str, ...],
@@ -500,6 +504,8 @@ def _agent_config_fingerprint(
     }
     if response_retries:
         payload["response_retries"] = response_retries
+    if max_tool_concurrency != 1:
+        payload["max_tool_concurrency"] = max_tool_concurrency
     canonical = json.dumps(
         payload,
         ensure_ascii=False,

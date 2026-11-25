@@ -539,6 +539,7 @@ def _unified_diff_excerpt(before: str, after: str, *, path: Path) -> str:
 def register_file_tools(registry: ToolRegistry) -> None:
     registry.register(
         name="read_file",
+        parallel_safe=True,
         handler=read_file,
         action="read",
         path_args=("path",),
@@ -621,6 +622,7 @@ def register_file_tools(registry: ToolRegistry) -> None:
     )
     registry.register(
         name="list_files",
+        parallel_safe=True,
         handler=list_files,
         action="read",
         path_args=("path",),
@@ -654,6 +656,7 @@ def register_file_tools(registry: ToolRegistry) -> None:
     )
     registry.register(
         name="grep",
+        parallel_safe=True,
         handler=grep,
         action="read",
         path_args=("path",),

@@ -19,6 +19,7 @@ import dagent
 
 | 任务 | 从这里开始 |
 | --- | --- |
+| 并行执行独立工具调用 | [工具并行](parallel-tools.md) |
 | 配置 runtime、provider、MCP、profiles、validation | [Runner 和配置](runner-and-configuration.md) |
 | 注册 Python tools 或 MCP tools | [Capabilities](capabilities.md) |
 | 选择 agent 类型 | [Agents](agents.md) |

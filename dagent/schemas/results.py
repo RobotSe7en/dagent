@@ -26,7 +26,7 @@ from dagent.schemas.common import (
 )
 from dagent.schemas.dag import DAG, DAGSpec
 from dagent.schemas.artifact import ArtifactFileManifest
-from dagent.schemas.capability import CapabilityInvocation, CapabilityResult
+from dagent.schemas.capability import CapabilityInvocation, CapabilityResult, validate_capability_id
 from dagent.schemas.run_trace import RunTrace, RunTraceError
 from dagent.schemas.sandbox import RunExecution
 from dagent.schemas.context import (
@@ -128,6 +128,8 @@ class ResolvedRunPlan(BaseModel):
     extra_system_prompt: str | None = None
     fingerprint: str = ""
     response_retries: int = Field(default=0, ge=0, strict=True)
+    max_tool_concurrency: int = Field(default=1, ge=1, strict=True)
+    parallel_safe_capability_ids: tuple[str, ...] | None = None
 
     @field_validator(
         "tool_profile",
@@ -164,6 +166,14 @@ class ResolvedRunPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_resolved_configuration(self) -> "ResolvedRunPlan":
+        if self.max_tool_concurrency > 1 and self.parallel_safe_capability_ids is None:
+            raise ValueError("Parallel execution plans require frozen capability declarations.")
+        if self.parallel_safe_capability_ids is not None:
+            ids = self.parallel_safe_capability_ids
+            if tuple(sorted(set(ids))) != ids:
+                raise ValueError("Parallel-safe capability ids must be sorted and unique.")
+            for capability_id in ids:
+                validate_capability_id(capability_id)
         if self.runtime_kind == "static_dag" and self.max_steps is not None:
             raise ValueError("Static DAG plans cannot contain max_steps.")
         if self.runtime_kind != "static_dag" and self.max_steps is None:
@@ -216,6 +226,10 @@ class ResolvedRunPlan(BaseModel):
         payload = serializer(self)
         if self.response_retries == 0:
             payload.pop("response_retries", None)
+        if self.max_tool_concurrency == 1:
+            payload.pop("max_tool_concurrency", None)
+        if self.parallel_safe_capability_ids is None:
+            payload.pop("parallel_safe_capability_ids", None)
         if self.runtime_kind == "static_dag" and self.max_steps is None:
             payload.pop("max_steps", None)
         return payload
