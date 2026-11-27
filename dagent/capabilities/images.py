@@ -55,6 +55,17 @@ def current_image_policy() -> ImageInputPolicy:
     return _POLICY.get() or ImageInputPolicy()
 
 
+def image_limit_reason(image_count: int, total_image_bytes: int) -> str | None:
+    """Check aggregate request limits independently of single-image validity."""
+
+    policy = current_image_policy()
+    if image_count > policy.max_images_per_request:
+        return "Request exceeds max_images_per_request."
+    if total_image_bytes > policy.max_total_image_bytes:
+        return "Request exceeds max_total_image_bytes."
+    return None
+
+
 @contextmanager
 def image_policy_context(policy: ImageInputPolicy | None) -> Iterator[None]:
     token = _POLICY.set(policy)

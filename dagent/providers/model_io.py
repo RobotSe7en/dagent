@@ -272,16 +272,31 @@ def require_image_count(request: ModelRequest, count: ModelTokenCount | None) ->
         raise ImageInputError("Strict image budgets require a counter explicitly covering image tokens.")
 
 
-def validate_request_images(request: ModelRequest) -> None:
+def request_image_limit_reason(request: ModelRequest) -> str | None:
+    """Aggregate limits for image data URLs already checked during projection."""
+    from dagent.capabilities.images import image_limit_reason
+
+    images = [image for item in request.items for image in getattr(item, "images", ())]
+    # Count data characters only; valid Base64 can also have redundant padding.
+    total = 0
+    for image in images:
+        encoded = image.data_url.split(";base64,", 1)[1]
+        total += len(encoded.rstrip("=")) * 3 // 4
+    return image_limit_reason(len(images), total) if images else None
+
+
+def validate_request_images(request: ModelRequest, *, check_request_limits: bool = True) -> None:
     import base64
-    from dagent.capabilities.images import ImageInputError, current_image_policy
+    from dagent.capabilities.images import ImageInputError, current_image_policy, image_limit_reason
 
     images = [image for item in request.items for image in getattr(item, "images", ())]
     if not images:
         return
     policy = current_image_policy()
-    if len(images) > policy.max_images_per_request:
-        raise ImageInputError("Request exceeds max_images_per_request.")
+    if check_request_limits:
+        reason = image_limit_reason(len(images), 0)
+        if reason:
+            raise ImageInputError(reason)
     total = 0
     for image in images:
         if not image.data_url.startswith("data:image/") or ";base64," not in image.data_url:
@@ -298,8 +313,10 @@ def validate_request_images(request: ModelRequest) -> None:
         if image.width <= 0 or image.height <= 0 or image.width * image.height > policy.max_image_pixels:
             raise ImageInputError("Image dimensions exceed max_image_pixels.")
         total += size
-    if total > policy.max_total_image_bytes:
-        raise ImageInputError("Request exceeds max_total_image_bytes.")
+    if check_request_limits:
+        reason = image_limit_reason(len(images), total)
+        if reason:
+            raise ImageInputError(reason)
 
 
 def model_request_to_chat(

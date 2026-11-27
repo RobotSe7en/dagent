@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from dagent.harness_runtime.images import source_images, project_images, merge_image_references
 from dagent.capabilities.images import ImageInputError
-from dagent.providers.model_io import without_image_data, require_image_count
+from dagent.providers.model_io import (
+    without_image_data, require_image_count, request_image_count,
+    request_image_limit_reason, validate_request_images,
+)
 
 from dagent.harness_runtime.conversation_changes import flush_resources, current_changes
 from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
@@ -624,6 +627,9 @@ class HistoryCompactor:
     async def _fits(self, request: ModelRequest) -> bool:
         from dagent.harness_runtime.context import estimate_model_request
         self._check_budget(check_calls=False)
+        validate_request_images(request, check_request_limits=False)
+        if request_image_limit_reason(request):
+            return False
         if self.assembler.request_preparer is not None:
             if self.prepared_request is not request:
                 previous, estimate = self.prepared_call, self._prepared_estimate
@@ -643,7 +649,8 @@ class HistoryCompactor:
             output = prepared.effective_max_output_tokens
             if output is None:
                 raise CompactionError("Prepared compaction request has no bounded output limit.")
-            if raw > HEURISTIC_OVERCOUNT_LIMIT * max(1, self.assembler.context_window_tokens - output):
+            if (not request_image_count(request)
+                    and raw > HEURISTIC_OVERCOUNT_LIMIT * max(1, self.assembler.context_window_tokens - output)):
                 return False
             locally_over = heuristic + output > self.assembler.context_window_tokens
             initial = prepared

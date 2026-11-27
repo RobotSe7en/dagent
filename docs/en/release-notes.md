@@ -16,11 +16,19 @@ conversations to v5. Reject reference fallback for unsummarized visual sources
 and retain the original items on failure. Store archived image paths in a JSONL
 index with a bounded model-visible notice, including for restored visual summaries.
 
-Verification: the full Python suite with dev, MCP and sandbox extras passed
-with 2,755 tests and two opt-in live-provider tests skipped, including real Docker
-image transport. An additional image-index persistence regression also passed.
-The visual validation example and `git diff --check` passed. Live vision-model
-inference was not exercised. See [Image Inputs](images.md).
+Preserve discovered server windows when image token coverage is unknown. Include
+visual tokens in legacy retention and summary budgets, batch visual summary
+sources, and compact eligible history before enforcing aggregate image limits.
+Use available exact image counters even when a conservative estimate exceeds
+the window. Summarized images remain references rather than being reattached
+to subsequent requests; ordinary request prefixes remain stable.
+
+Verification: `uv run --extra dev pytest -q` passed with 2,796 tests and two opt-in
+live-provider tests skipped. Coverage includes real Docker image transport,
+visual budget regressions and image request prefixes in both protocols. The
+offline upload, image reading, validation, static DAG and 20-turn history examples
+and `git diff --check` passed. Live vision-model inference was not exercised.
+See [Image Inputs](images.md).
 
 ## 0.11.3 — opt-in parallel tools
 

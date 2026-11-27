@@ -119,6 +119,19 @@ The per-image estimate is a planning value, not actual usage or a guaranteed
 upper bound. `ContextUsage.image_count` and `estimated_image_tokens` expose the
 visual budget; absent images leave released statistics unchanged.
 
+Unverified image counts do not discard a server's discovered context window.
+The SDK keeps that limit while estimating the visual input locally. Available
+image-aware exact counters are called even when the per-image estimate exceeds
+the window; the estimate alone cannot prove that an image is too large.
+
+Image count and total-byte limits apply to each model request. When older
+unsummarized images exceed either limit, preparation first summarizes eligible
+history and then checks the final request. The initiating user input and latest
+atomic tool exchange remain protected; if those inputs alone exceed a limit,
+preparation fails explicitly. Single-image byte, pixel and format checks always
+run immediately. Legacy compaction includes visual tokens in retention and
+summary budgets, batching sources between complete tool exchanges when needed.
+
 Strict budgets, including `chunked` and `cache_aware` context strategies,
 require a counter declaring both `exact=True` and `includes_image_tokens=True`.
 A plain tokenizer/render response without that assurance cannot prove a visual
@@ -132,6 +145,9 @@ never replace selected images with a metadata-only fallback, including when
 reference fallback is enabled for `chunked` or `cache_aware`. If continuation needs
 that fallback, preparation fails explicitly and retains the original items.
 Already summarized images remain recoverable when later text-only history uses fallback.
+The summary contributes text and an image-index notice to later requests;
+archived images are not automatically resubmitted as visual inputs. See the
+[image history example](../../examples/image_history.py) for a twenty-turn run.
 
 `ContextSummary.image_manifest` points to a JSONL index of archived `ImageReference`
 records. Requests contain one bounded index notice instead of every snapshot path,

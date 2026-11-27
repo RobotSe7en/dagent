@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dagent.capabilities.images import ImageInputError
 from dagent.providers.model_io import without_image_data, require_image_count
-from dagent.providers.model_io import request_image_count, text_only_request
+from dagent.providers.model_io import (
+    request_image_count, text_only_request, request_image_limit_reason, validate_request_images,
+)
 
 import asyncio
 import hashlib
@@ -56,6 +58,7 @@ class _Candidate:
     input_budget: int
     output: int
     render_rejected: bool = False
+    image_overflow: bool = False
 
 
 @dataclass
@@ -256,13 +259,14 @@ async def _prepare_context(
             reasoning_effort=reasoning_effort, purpose=purpose,
             readable_result_ids=readable, strict_context_budget=True, can_open_files=files,
         )
+        image_overflow = request_image_limit_reason(request) is not None
         prepared = None
         count = None
         rejected = False
         # The rough estimate and the call it was taken from; the final estimate
         # reuses it while the call is unchanged, since the formula is the same.
         rough_call = None
-        if assembler.request_preparer is not None:
+        if assembler.request_preparer is not None and not image_overflow:
             prepared = frozen_call or await assembler.request_preparer(request, stream=stream)
             output = prepared.effective_max_output_tokens
             if output is None:
@@ -277,7 +281,8 @@ async def _prepare_context(
             # for a planning candidate far beyond any such overcount. The
             # final candidate is still counted once below before it fails.
             if assembler.prepared_token_counter is not None and (
-                    force_count or rough <= HEURISTIC_OVERCOUNT_LIMIT * max(1, known_window - output)):
+                    force_count or request_image_count(request)
+                    or rough <= HEURISTIC_OVERCOUNT_LIMIT * max(1, known_window - output)):
                 try:
                     prepared, count = await count_prepared_call(
                         prepared, counter=assembler.prepared_token_counter,
@@ -310,7 +315,7 @@ async def _prepare_context(
             # ToolAgent boundary separately requires prepared-call support.
             output = request.max_output_tokens
             field = await assembler.request_reasoning_field(request, stream) if assembler.request_reasoning_field else "omit"
-            if assembler.request_token_counter is not None:
+            if assembler.request_token_counter is not None and not image_overflow:
                 count = await assembler.request_token_counter(request, field)
         if count is not None and count.max_model_len is not None:
             # A discovered server window only shrinks the budget, as in summary counts.
@@ -333,7 +338,8 @@ async def _prepare_context(
         assembler.context_window_tokens = window
         if purpose == "generation":
             assembler.last_valid_generation_context_window_tokens = window
-        require_image_count(request, count)
+        if not image_overflow and not rejected:
+            require_image_count(request, count)
         if count is not None:
             raw = count.count
             exact = getattr(count, "exact", None) is True
@@ -344,7 +350,8 @@ async def _prepare_context(
             else:
                 raw = estimate_model_request(assembler.token_counter, request, reasoning_field="reasoning")
             estimate = math.ceil(raw * (1 + policy.token_safety_margin))
-        return _Candidate(request, projection, estimate, count, prepared, window, window - output, output, rejected)
+        return _Candidate(request, projection, estimate, count, prepared, window, window - output, output,
+                          rejected, image_overflow)
 
     state = await project()
     call = state.call
@@ -446,8 +453,9 @@ async def _prepare_context(
 
     tightened_root = False
     for repair_round in range(2):
-        while compactor is not None and state.estimate > math.floor(state.input_budget * policy.compaction_trigger_ratio) and attempts < 8:
-            hard = state.estimate > state.input_budget
+        while (compactor is not None and attempts < 8
+               and (state.image_overflow or state.estimate > math.floor(state.input_budget * policy.compaction_trigger_ratio))):
+            hard = state.image_overflow or state.estimate > state.input_budget
             ranges = _eligible_slices(working, active_run_id, request=state.request, assembler=assembler,
                                       retain_tokens=0 if hard else math.floor(state.input_budget * policy.compaction_retain_ratio))
             if not ranges:
@@ -777,10 +785,12 @@ async def _prepare_context(
     if compaction_state != working.compaction_state:
         working = working.model_copy(update={"compaction_state": compaction_state, "revision": working.revision + 1})
     final_usage = usage()
+    validate_request_images(state.request)
     if state.estimate > state.input_budget:
         error = ContextWindowExceeded(
             f"Model input requires approximately {state.estimate} tokens; the effective input budget is {state.input_budget}. Retained source data is available in the failed run snapshot.", usage=final_usage)
         # No staged replacement is committed when the final request cannot fit.
         error._conversation = failure_snapshot()
         raise error
+    require_image_count(state.request, state.count)
     return PreparedModelContext(request=state.request, conversation=working, usage=final_usage, prepared_call=state.call)

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dagent.capabilities.workspace import workspace_context
 from dagent.harness_runtime.images import project_images, source_images, merge_image_references
-from dagent.capabilities.images import ImageInputError
-from dagent.providers.model_io import validate_request_images
+from dagent.capabilities.images import ImageInputError, current_image_policy, image_limit_reason
+from dagent.providers.model_io import validate_request_images, request_image_limit_reason
 from dagent.harness_runtime.conversation_changes import flush_resources
 from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
 
@@ -48,6 +48,7 @@ from dagent.schemas.conversation import (
     ContextSummary,
     ConversationItem,
     ConversationState,
+    ImageReference,
     InlineContent,
     ToolResultMessage,
     UserMessage,
@@ -332,6 +333,7 @@ class ContextAssembler:
             compaction_method = "none"
             compaction_reason: str | None = None
             omitted_reasoning_ids: set[str] = set()
+            image_overflow: str | None = None
             active_run_id = active_run_id or _latest_run_id(working.items)
             request_max_output_tokens = _effective_max_output_tokens(
                 configured=self.max_output_tokens,
@@ -389,6 +391,7 @@ class ContextAssembler:
                     compaction_method, compaction_reason = method, reason or "tool_result_budget"
 
             async def project() -> tuple[ModelRequest, _ProjectionUsage, int, ModelTokenCount | None]:
+                nonlocal image_overflow
                 request, projection = self._project(
                     system_message=system_message,
                     conversation=working,
@@ -403,7 +406,14 @@ class ContextAssembler:
                     readable_result_ids=readable_result_ids,
                     can_open_files=can_open_files,
                 )
-                estimate, exact_count = await self._safe_estimate(request, policy, stream=stream)
+                image_overflow = request_image_limit_reason(request)
+                if image_overflow:
+                    # An over-limit planning view must not reach provider counters.
+                    estimate = math.ceil(estimate_model_request(self.token_counter, request)
+                                         * (1 + policy.token_safety_margin))
+                    exact_count = None
+                else:
+                    estimate, exact_count = await self._safe_estimate(request, policy, stream=stream)
                 return request, projection, estimate, exact_count
 
             request, projection, estimate, exact_count = await project()
@@ -439,9 +449,9 @@ class ContextAssembler:
             compactable = _compaction_prefix(
                 summary_items(),
                 active_run_id=active_run_id,
-                retain_tokens=retain,
+                retain_tokens=0 if image_overflow else retain,
                 counter=self.token_counter,
-            ) if estimate > trigger else ()
+            ) if estimate > trigger or image_overflow else ()
             if compactable:
                 working, method, reason = await self._compact_slice(
                     working,
@@ -488,7 +498,7 @@ class ContextAssembler:
             # Retention is a soft target. If fixed input such as system instructions
             # and tool schemas still causes a hard overflow, compact the oldest
             # retained cross-run groups before touching the active run.
-            while estimate > input_budget:
+            while estimate > input_budget or image_overflow:
                 retained_items = summary_items()
                 retained_item_tokens = sum(
                     _conversation_item_tokens(item, self.token_counter)
@@ -497,7 +507,7 @@ class ContextAssembler:
                 compactable = _compaction_prefix(
                     retained_items,
                     active_run_id=active_run_id,
-                    retain_tokens=max(
+                    retain_tokens=0 if image_overflow else max(
                         0,
                         retained_item_tokens - (estimate - input_budget),
                     ),
@@ -525,7 +535,7 @@ class ContextAssembler:
                 working.items,
                 active_run_id=active_run_id,
             )
-            if estimate > trigger and active_slice is not None:
+            if (estimate > trigger or image_overflow) and active_slice is not None:
                 start, end = active_slice
                 active_count = end - start
                 working, method, reason = await self._compact_slice(
@@ -588,6 +598,7 @@ class ContextAssembler:
                 compaction_method=compaction_method,  # type: ignore[arg-type]
                 compaction_reason=compaction_reason,
             )
+            validate_request_images(request)
             if estimate > input_budget:
                 raise ContextWindowExceeded(
                     (
@@ -622,6 +633,14 @@ class ContextAssembler:
         )
         image_count = request_image_count(request)
         if image_count and exact_count is not None and exact_count.includes_image_tokens is not True:
+            # The count may cover text only; the independently discovered window
+            # is still authoritative when visual tokens use a local estimate.
+            if exact_count.max_model_len is not None:
+                self.server_max_model_len = exact_count.max_model_len
+                self.context_window_tokens = _effective_context_window(
+                    configured=self.configured_context_window_tokens,
+                    discovered=self.server_max_model_len,
+                )
             exact_count = None
         raw = (
             exact_count.count
@@ -674,11 +693,11 @@ class ContextAssembler:
         try:
             if compact is None:
                 raise RuntimeError("No model compactor is configured.")
-            summary = await compact(
-                conversation.summary,
-                summarized,
-                summary_limit,
-            )
+            summary = conversation.summary
+            for batch in _visual_compaction_batches(summarized, self, summary_limit, policy,
+                                                     previous=conversation.summary):
+                summary = await compact(summary, batch, summary_limit)
+            assert summary is not None
             method = "model"
             reason = None
         except PersistenceDeliveryError:
@@ -861,7 +880,9 @@ class ContextAssembler:
             reasoning_omission_reasons=tuple(sorted(reasoning_omission_reasons)),
             strict_context_budget=strict_context_budget,
         )
-        validate_request_images(request)
+        # Aggregate overflow is pressure on history, not an invalid single image.
+        # Preparation checks the final candidate after compaction.
+        validate_request_images(request, check_request_limits=False)
         return request, _ProjectionUsage(
             summary_tokens=summary_tokens,
             history_tokens=history_tokens,
@@ -957,9 +978,43 @@ def _conversation_item_tokens(item: ConversationItem, counter: TokenCounter) -> 
             "name": item.name,
             "content": stored_content_text(item.content),
         }
-    return counter.count_text(
+    images = source_images((item,))
+    visual_tokens = len(images) * current_image_policy().estimated_tokens_per_image if images else 0
+    return visual_tokens + counter.count_text(
         json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     )
+
+
+def _visual_compaction_batches(
+    items: tuple[ConversationItem, ...], assembler: ContextAssembler, summary_limit: int,
+    policy: ContextPolicy, *, previous: ContextSummary | None,
+) -> tuple[tuple[ConversationItem, ...], ...]:
+    """Bound visual summary sources without splitting an atomic tool exchange."""
+
+    if not source_images(items):
+        return (items,)
+    output_limit, source_limit = assembler.compaction_limits(summary_limit)
+    # Every batch carries the preceding summary. Reserve its bounded output,
+    # instructions and wrappers before allocating text and visual source tokens.
+    previous_tokens = assembler.token_counter.count_text(previous.content) if previous else 0
+    available = math.floor((assembler.context_window_tokens - output_limit) / (1 + policy.token_safety_margin))
+    source_limit = min(source_limit, max(1, available - max(previous_tokens, summary_limit) - 256))
+    batches: list[tuple[ConversationItem, ...]] = []
+    start = tokens = 0
+    images: tuple[ImageReference, ...] = ()
+    for left, right in _atomic_groups(items, start=0, end=len(items)):
+        group = items[left:right]
+        group_tokens = sum(_conversation_item_tokens(item, assembler.token_counter) for item in group)
+        group_images = source_images(group)
+        combined_images = images + group_images
+        overflow = image_limit_reason(len(combined_images), sum(image.reference.byte_length for image in combined_images))
+        if left > start and (tokens + group_tokens > source_limit or overflow):
+            batches.append(items[start:left])
+            start, tokens, images = left, 0, ()
+        tokens += group_tokens
+        images += group_images
+    batches.append(items[start:])
+    return tuple(batches)
 
 
 def _latest_run_id(items: tuple[ConversationItem, ...]) -> str | None:
