@@ -3,7 +3,14 @@
 dagent has released public SDK contracts. This page records user-facing changes
 that may require action when upgrading.
 
-## Unreleased: explicit image inputs
+## Current Release Line
+
+The current stable package version is `0.11.4`.
+
+## 0.11.4
+
+Upgrade from 0.11.3 with `pip install --upgrade 'dagent-ai==0.11.4'`.
+This release has no breaking changes; image inputs are explicitly opt-in.
 
 Existing applications need no changes. `ArtifactUpload.model_input` defaults to `None`;
 default tools and text requests remain unchanged. Pillow is now a base dependency.
@@ -15,10 +22,6 @@ indexes must be restored alongside snapshots. Older visual summaries acquire
 an index during context preparation. Omitted new fields preserve existing
 checkpoint fingerprints. Static DAGs use explicit
 `read_image`; strict image budgets require image-aware counters. See [Image Inputs](images.md).
-
-## Current Release Line
-
-The current stable package version is `0.11.3`.
 
 ## 0.11.3
 

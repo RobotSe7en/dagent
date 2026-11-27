@@ -1,6 +1,6 @@
 # Give models images
 
-This feature is available in the unreleased SDK. Install normally; Pillow is a
+**Available since 0.11.4.** Install normally; Pillow is a
 base dependency. Choose a model and endpoint that accept visual inputs.
 
 ## Upload images explicitly

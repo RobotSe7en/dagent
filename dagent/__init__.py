@@ -117,7 +117,7 @@ from dagent.schemas import (
     UserMessage,
 )
 
-__version__ = "0.11.3"
+__version__ = "0.11.4"
 
 __all__ = [
     "ImageData", "ImageInputPolicy", "ImageReference", "ImageInputError",

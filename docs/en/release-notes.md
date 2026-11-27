@@ -1,6 +1,11 @@
 # Release notes
 
-## Unreleased: image inputs
+## 0.11.4 — opt-in image inputs
+
+Install with `pip install --upgrade 'dagent-ai==0.11.4'`. Existing 0.11.3
+applications can [upgrade directly](migration.md#0114). There are no breaking
+changes; image delivery requires explicit opt-in. Hosts enabling visual
+persistence must preserve v5 conversation records and their snapshot resources.
 
 Add per-upload visual selection, explicitly registered `tool.read_image`, typed
 Python image results and per-server opt-in MCP image delivery. Support Chat
@@ -23,11 +28,15 @@ Use available exact image counters even when a conservative estimate exceeds
 the window. Summarized images remain references rather than being reattached
 to subsequent requests; ordinary request prefixes remain stable.
 
-Verification: `uv run --extra dev pytest -q` passed with 2,796 tests and two opt-in
-live-provider tests skipped. Coverage includes real Docker image transport,
-visual budget regressions and image request prefixes in both protocols. The
-offline upload, image reading, validation, static DAG and 20-turn history examples
-and `git diff --check` passed. Live vision-model inference was not exercised.
+Verification: the full Python suite with dev and MCP extras passed with 2,796
+tests and two opt-in live MiniMax tests skipped. Coverage includes real Docker
+image transport, visual budget regressions and image request prefixes in both
+protocols. All 220 focused image, SDK, architecture, documentation and metadata
+checks passed; all 126 public 0.11.3 exports remain available. The 128 frontend
+tests, frontend build, version/lockfile consistency, wheel/sdist builds and Twine
+metadata checks passed. An isolated wheel install passed all six image examples,
+including real MCP stdio image delivery and 20-turn image history. Documentation
+links and `git diff --check` passed. Live vision-model inference was not exercised.
 See [Image Inputs](images.md).
 
 ## 0.11.3 — opt-in parallel tools
