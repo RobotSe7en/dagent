@@ -34,7 +34,7 @@ from dagent.providers.cache_usage import (
 )
 from dagent.providers.model_io import (
     ModelCallMetadata,
-    ModelRequest,
+    ModelRequest, ModelToolResultInput, request_image_count, validate_request_images, require_image_count,
     ModelResponse,
     ModelStreamEvent,
     ModelTokenCount,
@@ -298,6 +298,7 @@ class OpenAICompatibleProvider:
     async def complete(self, request: ModelRequest) -> ModelResponse:
         if request.strict_context_budget:
             return await self.complete_prepared(await self.prepare_call(request))
+        validate_request_images(request)
         capabilities = await self.inspect_capabilities()
         protocol, reason = self._resolve_protocol(capabilities, request=request)
         if protocol == "responses":
@@ -309,6 +310,7 @@ class OpenAICompatibleProvider:
             async for event in self.stream_prepared(await self.prepare_call(request, stream=True)):
                 yield event
             return
+        validate_request_images(request)
         capabilities = await self.inspect_capabilities()
         protocol, reason = self._resolve_protocol(
             capabilities,
@@ -377,6 +379,35 @@ class OpenAICompatibleProvider:
             token_counting=self.config.token_counting,
         )
 
+    @staticmethod
+    def _validate_image_projection(
+        request: ModelRequest, kwargs: Mapping[str, Any],
+        protocol: Literal["chat_completions", "responses"],
+    ) -> None:
+        expected = tuple(image.data_url for item in request.items for image in getattr(item, "images", ()))
+        if not expected:
+            return
+        body = dict(kwargs)
+        body.update(kwargs.get("extra_body") or {})
+
+        def images(value):
+            if isinstance(value, Mapping):
+                if value.get("type") == "image_url":
+                    descriptor = value.get("image_url")
+                    yield descriptor.get("url") if isinstance(descriptor, Mapping) else None
+                elif value.get("type") == "input_image":
+                    yield value.get("image_url")
+                else:
+                    for item in value.values():
+                        yield from images(item)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    yield from images(item)
+
+        actual = tuple(images(body.get("messages" if protocol == "chat_completions" else "input")))
+        if actual != expected:
+            raise ProviderCapabilityError("Request overrides must preserve selected image inputs and their order.")
+
     def _validate_strict_projection(
         self,
         request: ModelRequest,
@@ -431,13 +462,25 @@ class OpenAICompatibleProvider:
         if stream is not None and call.stream != stream:
             raise ValueError("Prepared model call has a different stream mode.")
 
+    async def _validate_image_call(self, call: PreparedModelCall) -> PreparedModelCall:
+        validate_request_images(call.request)
+        self._validate_image_projection(call.request, call.payload, call.protocol)
+        if (call.request.strict_context_budget and request_image_count(call.request)
+                and call.verified_image_fingerprint != call.fingerprint):
+            count = await self.count_prepared(call)
+            require_image_count(call.request, count)
+            call = replace(call, verified_image_fingerprint=call.fingerprint)
+        return call
+
     async def complete_prepared(self, call: PreparedModelCall) -> ModelResponse:
         self._validate_prepared(call, stream=False)
+        call = await self._validate_image_call(call)
         complete = self._responses_complete if call.protocol == "responses" else self._chat_complete
         return await complete(call.request, call.capabilities, "", prepared=call)
 
     async def stream_prepared(self, call: PreparedModelCall) -> AsyncIterator[ModelStreamEvent]:
         self._validate_prepared(call, stream=True)
+        call = await self._validate_image_call(call)
         stream = self._responses_stream if call.protocol == "responses" else self._chat_stream
         async for event in stream(call.request, call.capabilities, "", prepared=call):
             yield event
@@ -554,6 +597,8 @@ class OpenAICompatibleProvider:
                 count=count,
                 max_model_len=max_model_len,
                 estimator="vllm",
+                includes_image_tokens=(result.get("includes_image_tokens") is True
+                                       if request_image_count(request) else None),
             )
         except ProviderCapabilityError:
             raise
@@ -611,7 +656,9 @@ class OpenAICompatibleProvider:
                 if not isinstance(tokens, list) or not tokens or any(type(token) is not int or token < 0 for token in tokens):
                     raise ProviderTokenCountError("vLLM render did not return nonempty nonnegative token_ids.")
                 model_len = self._prepared_model_len(result.get("max_model_len"), call)
-                return ModelTokenCount(count=len(tokens), max_model_len=model_len, exact=True, source="render")
+                return ModelTokenCount(count=len(tokens), max_model_len=model_len,
+                    exact=not request_image_count(call.request) or result.get("includes_image_tokens") is True,
+                    includes_image_tokens=result.get("includes_image_tokens") is True, source="render")
         try:
             token_count = await self._count_tokenize_prepared(call)
         except ProviderCapabilityError:
@@ -687,7 +734,9 @@ class OpenAICompatibleProvider:
         if type(count) is not int or count <= 0:
             raise ProviderTokenCountError("vLLM tokenize returned an invalid count for nonempty input.")
         model_len = self._prepared_model_len(result.get("max_model_len"), call)
-        return ModelTokenCount(count=count, max_model_len=model_len, exact=exact, source="tokenize")
+        return ModelTokenCount(count=count, max_model_len=model_len,
+            exact=exact and (not request_image_count(call.request) or result.get("includes_image_tokens") is True),
+            includes_image_tokens=result.get("includes_image_tokens") is True, source="tokenize")
 
     async def _prepared_counter_post(
         self, path: str, body: Mapping[str, Any], call: PreparedModelCall,
@@ -1276,6 +1325,7 @@ class OpenAICompatibleProvider:
                 if isinstance(kwargs.get("extra_body"), dict):
                     _remove_request_path(kwargs["extra_body"], path)
             metadata = metadata.model_copy(update={"effective_reasoning_effort": None})
+        self._validate_image_projection(request, kwargs, "chat_completions")
         return kwargs, self._mapping_metadata(kwargs, metadata, mapping)
 
     def _responses_kwargs(
@@ -1360,6 +1410,7 @@ class OpenAICompatibleProvider:
                 if isinstance(kwargs.get("extra_body"), dict):
                     _remove_request_path(kwargs["extra_body"], path)
             metadata = metadata.model_copy(update={"effective_reasoning_effort": None})
+        self._validate_image_projection(request, kwargs, "responses")
         return kwargs, self._mapping_metadata(kwargs, metadata, mapping)
 
     def _reasoning_mapping(
@@ -1575,6 +1626,10 @@ class OpenAICompatibleProvider:
         capabilities: ProviderCapabilities,
     ) -> tuple[str, ...]:
         required: list[str] = []
+        if request is not None and request_image_count(request):
+            required.append("image_input")
+            if protocol == "responses" and any(isinstance(item, ModelToolResultInput) and item.images for item in request.items):
+                required.append("image_tool_output")
         if request is not None and request.tools:
             required.append("tools")
         if stream:
@@ -1841,6 +1896,7 @@ def _missing_capabilities(
         name
         for name in required
         if getattr(capabilities, name) != "supported"
+        and not (name in {"image_input", "image_tool_output"} and getattr(capabilities, name) == "unknown")
         # Replay fields come from explicit selection/overrides or an existing
         # service adapter. Open message schemas do not forbid those fields.
         and not (name in {"replay_reasoning", "replay_reasoning_content"}

@@ -1,5 +1,27 @@
 # Release notes
 
+## Unreleased: image inputs
+
+Add per-upload visual selection, explicitly registered `tool.read_image`, typed
+Python image results and per-server opt-in MCP image delivery. Support Chat
+Completions, Responses, streaming, image snapshots, visual compaction and run
+continuation. Add `ImageInputPolicy` and Pillow as a base dependency. Existing
+uploads remain metadata-only by default; text records and default requests remain
+compatible. Visual records use conversation v5 and require hosts to preserve
+snapshot resources. No automatic resizing or API/WebUI integration; strict budgets
+require counters explicitly covering images.
+
+Fix dynamic DAG image results bypassing validation by promoting validator
+conversations to v5. Reject reference fallback for unsummarized visual sources
+and retain the original items on failure. Store archived image paths in a JSONL
+index with a bounded model-visible notice, including for restored visual summaries.
+
+Verification: the full Python suite with dev, MCP and sandbox extras passed
+with 2,755 tests and two opt-in live-provider tests skipped, including real Docker
+image transport. An additional image-index persistence regression also passed.
+The visual validation example and `git diff --check` passed. Live vision-model
+inference was not exercised. See [Image Inputs](images.md).
+
 ## 0.11.3 — opt-in parallel tools
 
 Install with `pip install --upgrade 'dagent-ai==0.11.3'`. Existing 0.11.2

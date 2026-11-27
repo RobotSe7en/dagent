@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dagent.harness_runtime.conversation_changes import flush_resources, publish_messages, current_changes
-from dagent.schemas.conversation import ResultObservation
+from dagent.schemas.conversation import ResultObservation, conversation_with_images
 from dagent.harness_runtime.result_storage import ResultStore
 
 import json
@@ -76,16 +76,16 @@ class ProfiledAgent:
         )
         if len(messages) != 2 or messages[0].get("role") != "system":
             raise ValueError("Profiled agent prompt must contain system and user messages.")
-        conversation = ConversationState(
-            items=(
+        conversation = conversation_with_images(ConversationState().model_copy(update={
+            "items": (
                 UserMessage(
                     content=str(messages[1].get("content") or ""),
                     scope="validator",
                     visibility="internal",
                     result_observations=result_observations,
                 ),
-            )
-        )
+            ),
+        }))
         await publish_messages(conversation.items)
         prepared = await self.context_assembler.prepare(
             result_store=result_store,

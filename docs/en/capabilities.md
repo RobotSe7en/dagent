@@ -1,5 +1,7 @@
 # Capabilities
 
+For explicit visual inputs, image tool results, budgets and snapshot recovery, see [Image Inputs](images.md).
+
 For `@tool(parallel_safe=True)`, `CapabilityDefinition.parallel_safe`, and MCP
 server declarations, see [Parallel Tools](parallel-tools.md).
 

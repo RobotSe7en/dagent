@@ -76,6 +76,7 @@ def result_references(item: ResultItem) -> tuple[ContentReference, ...]:
             candidates.append(item.model_display.recovery)
         if item.model_display.previous_display is not None:
             candidates.append(item.model_display.previous_display)
+    candidates.extend(image.reference for image in item.images)
     unique = {ref.path: ref for ref in candidates}
     return tuple(unique.values())
 

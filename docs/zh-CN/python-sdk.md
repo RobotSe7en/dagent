@@ -15,6 +15,8 @@ pip install dagent-ai
 import dagent
 ```
 
+图片能力：`ImageData`、`ImageReference`、`ImageInputPolicy`、`ImageInputError`、`ArtifactUpload.model_input`、`Runner.add_image_tools`，参见[图片输入](images.md)。
+
 ## 常用入口
 
 | 任务 | 从这里开始 |

@@ -17,6 +17,10 @@ from collections.abc import Callable, Iterable
 import warnings
 from uuid import uuid4
 
+from dagent.schemas.images import ImageData
+from dagent.schemas.conversation import ImageReference
+from dagent.harness_runtime.images import save_image
+
 from dagent.schemas import CapabilityResult
 from dagent.schemas.common import validate_runtime_directory
 from dagent.schemas.context import ResultStoragePolicy
@@ -54,6 +58,9 @@ class ResultStorageError(RuntimeError):
         if isinstance(result.value, (bytes, bytearray, memoryview)):
             updates["value"] = None
             unavailable = (*unavailable, "value")
+        if any(isinstance(image, ImageData) for image in result.images):
+            updates["images"] = tuple(image for image in result.images if isinstance(image, ImageReference))
+            unavailable = (*unavailable, "images")
         updates["retention"] = retention.model_copy(
             update={
                 "storage_warnings": (*retention.storage_warnings, warning),
@@ -125,6 +132,16 @@ class ResultStore:
             media_type="text/plain; charset=utf-8", preview=_head_tail_preview(text),
             paths=self.paths, sha256=digest,
         )
+
+    def index_summary_images(self, summary: ContextSummary) -> ContextSummary:
+        """Keep visual recovery paths in a JSONL index, outside model context."""
+
+        if not summary.images:
+            return summary
+        manifest = self.snapshot_text(
+            "".join(image.model_dump_json() + "\n" for image in summary.images)
+        )
+        return summary.model_copy(update={"image_manifest": manifest})
 
     def text_reference(
         self, identity: str, text: str, *, field: str = "content"
@@ -395,8 +412,22 @@ def normalize_capability_result(
         stored_content = InlineContent(text=display_content)
         normalized_content = display_content
 
+    normalized_images = []
+    image_artifacts = {}
+    for image_index, image in enumerate(result.images):
+        try:
+            snapshot = save_image(image, workspace)
+        except OSError as exc:
+            raise ResultStorageError(result, f"images[{image_index}]", exc) from exc
+        normalized_images.append(snapshot)
+        references.append(snapshot.reference)
+        if isinstance(image, ImageData):
+            image_artifacts[image.data] = snapshot.reference
     normalized_artifacts: list[dict[str, Any]] = []
     for index, artifact in enumerate(result.artifacts):
+        if artifact.get("type") == "image" and artifact.get("data") in image_artifacts:
+            normalized_artifacts.append(image_artifacts[artifact["data"]].model_dump(mode="json"))
+            continue
         try:
             normalized, reference = _normalize_artifact(
                 workspace,
@@ -495,6 +526,7 @@ def normalize_capability_result(
             # object does not change a conversation's result.
             "value": detach_containers(normalized_value) if detach_value else normalized_value,
             "artifacts": normalized_artifacts,
+            "images": tuple(normalized_images),
             **normalized_text_fields,
         }
     )

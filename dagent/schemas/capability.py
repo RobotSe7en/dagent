@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_valid
 
 from dagent.schemas.common import Boundary, RiskLevel
 from dagent.schemas.retention import ResultRetention
-from dagent.schemas.conversation import ContentReference
+from dagent.schemas.conversation import ContentReference, ImageReference
+from dagent.schemas.images import ImageData
 
 
 CapabilityKind = Literal[
@@ -185,9 +186,17 @@ class CapabilityResult(BaseModel):
     stop_reason: str = "completed"
     stdout: str = ""
     stderr: str = ""
+    images: tuple[ImageData | ImageReference, ...] = ()
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     policy_decision: dict[str, Any] = Field(default_factory=dict)
     trace: dict[str, Any] | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_images(self, serializer):
+        payload = serializer(self)
+        if not self.images:
+            payload.pop("images", None)
+        return payload
 
     @classmethod
     def completed(

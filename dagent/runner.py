@@ -14,6 +14,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from dagent.schemas.images import ImageInputPolicy
+from dagent.capabilities.images import image_policy_context, configured_image_policy
+
 from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent, validate_agent_name
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
 from dagent.capabilities.boundaries import infer_capability_boundary
@@ -183,6 +186,9 @@ class _ResolvedRuntime:
     skill_ids: tuple[str, ...]
 
 
+_INHERIT_IMAGE_POLICY = object()
+
+
 class Runner:
     """Owns runtime state, capability catalog, and execution dispatch."""
 
@@ -201,6 +207,7 @@ class Runner:
         planner_frontend: PlannerFrontend = "typed_spec",
         mcp_stdio_stderr: MCPStdioStderr = "discard",
         result_storage_policy: ResultStoragePolicy | None = None,
+        image_input_policy: ImageInputPolicy | None = None,
         extra_system_prompt: str | None = None,
         context_observability: bool = False,
         max_retained_runs: int | None = None,
@@ -217,6 +224,7 @@ class Runner:
         self.sandbox = sandbox or SandboxConfig()
         self._mcp_stdio_stderr = validate_mcp_stdio_stderr(mcp_stdio_stderr)
         self.result_storage_policy = result_storage_policy or ResultStoragePolicy()
+        self.image_input_policy = image_input_policy
         self.context_observability = context_observability
         self.extra_system_prompt = extra_system_prompt
         if planner_frontend not in {"typed_spec", "sdk_builder"}:
@@ -243,6 +251,7 @@ class Runner:
         self._mcp_server_managers: dict[str, Any] = {}
         initial_capabilities = list(capabilities)
         self._local_tool_binding_ids: set[str] = set()
+        self._image_tools_registered = False
         self._runtime = _create_runtime(
             workspace=self.workspace,
             runtime_directory=self.runtime_directory,
@@ -284,6 +293,7 @@ class Runner:
         planner_frontend: PlannerFrontend | None = None,
         mcp_stdio_stderr: MCPStdioStderr = "discard",
         result_storage_policy: ResultStoragePolicy | None = None,
+        image_input_policy: ImageInputPolicy | None = None,
         extra_system_prompt: str | None = None,
         context_observability: bool = False,
         max_retained_runs: int | None = None,
@@ -314,6 +324,7 @@ class Runner:
             planner_frontend=planner_frontend or config.planner_frontend,
             mcp_stdio_stderr=mcp_stdio_stderr,
             result_storage_policy=result_storage_policy,
+            image_input_policy=image_input_policy,
             extra_system_prompt=extra_system_prompt,
             context_observability=context_observability,
             max_retained_runs=max_retained_runs,
@@ -386,6 +397,7 @@ class Runner:
         planner_frontend: PlannerFrontend | None = None,
         mcp_stdio_stderr: MCPStdioStderr | None = None,
         result_storage_policy: ResultStoragePolicy | None = None,
+        image_input_policy: ImageInputPolicy | None = None,
         agents: Iterable[ToolAgent] = (),
         inherit_local_tools: bool = False,
         exclude_local_tool_ids: Iterable[str] = (),
@@ -445,6 +457,7 @@ class Runner:
             result_storage_policy=(
                 result_storage_policy or self.result_storage_policy
             ),
+            image_input_policy=image_input_policy or self.image_input_policy,
             extra_system_prompt=self.extra_system_prompt,
             context_observability=self.context_observability,
             max_retained_runs=(self.max_retained_runs if max_retained_runs is _INHERIT_RETAINED_RUNS
@@ -475,6 +488,26 @@ class Runner:
         self._local_tool_binding_ids.add(definition.id)
         self._refresh_registered_agent_runtime_configs()
         return definition
+
+    def add_image_tools(self) -> list[CapabilityDefinition]:
+        """Explicitly register image reading without changing default tool sets."""
+        from dagent.capabilities.tools.registry import ToolRegistry
+        from dagent.capabilities.tools.file_tools import register_image_tools
+        from dagent.capabilities.providers import ToolCapabilityProvider
+
+        self._ensure_open()
+        existing = self._runtime.capability_catalog.get("tool.read_image")
+        if existing is not None:
+            if not self._image_tools_registered:
+                raise ValueError("Capability tool.read_image is already registered.")
+            return [existing]
+        tools = ToolRegistry()
+        register_image_tools(tools)
+        ToolCapabilityProvider(tools).register_into(self._runtime.capability_catalog)
+        self._image_tools_registered = True
+        self._runtime.refresh_toolsets()
+        self._refresh_registered_agent_runtime_configs()
+        return [self._runtime.capability_catalog.get("tool.read_image")]
 
     def add_tools(self, capabilities: Iterable[CapabilityBinding]) -> list[CapabilityDefinition]:
         """Register ``@dagent.tool`` bindings as one atomic batch."""
@@ -937,10 +970,13 @@ class Runner:
         skill_names: tuple[str, ...] | None = None,
         runtime_directory: str | None = None,
         runtime_workspaces: tuple[Path, ...] = (),
+        image_input_policy: ImageInputPolicy | None | object = _INHERIT_IMAGE_POLICY,
     ) -> Iterator[None]:
         directory = self._runtime.runtime_directory if runtime_directory is None else runtime_directory
         with (
             runtime_storage_context(directory),
+            image_policy_context(self.image_input_policy if image_input_policy is _INHERIT_IMAGE_POLICY
+                                 else cast(ImageInputPolicy | None, image_input_policy)),
             self._execution_scope(
                 execution, skill_names=skill_names, runtime_directory=directory,
                 runtime_workspaces=runtime_workspaces,
@@ -1867,7 +1903,8 @@ class Runner:
             self._run_checkpoints.pop(state.run_id, None)
             failure.cause.result = RunResult(state=state, new_items=outcome.new_items, usage=usage)
             return failure.cause
-        assembler = runtime.tool_agent.context_assembler
+        assembler = (runtime.dag_agent.context_assembler if state.kind == "dynamic_dag"
+                     else runtime.tool_agent.context_assembler)
         snapshot_window = assembler.context_window_tokens
         if assembler.max_output_tokens is not None and assembler.max_output_tokens >= snapshot_window:
             snapshot_window = assembler.last_valid_generation_context_window_tokens
@@ -1961,6 +1998,7 @@ class Runner:
             planner_skill=runtime.dag_agent.loop.planner_skill,
             context_policy=runtime.tool_agent.context_policy,
             result_storage_policy=runtime.tool_agent.result_storage_policy,
+            image_input_policy=configured_image_policy(),
             runtime_directory=runtime.runtime_directory,
             context_window_tokens=context_window_snapshot or context_assembler.context_window_tokens,
             max_output_tokens=context_assembler.max_output_tokens,
@@ -2514,6 +2552,7 @@ class Runner:
                     resolved_execution,
                     skill_names=plan.skill_ids,
                     runtime_directory=plan.runtime_directory,
+                    image_input_policy=plan.image_input_policy,
                     runtime_workspaces=(Path(resume_state.workspace_path),) if resume_state.workspace_path else (),
                 ),
                 execution_usage_scope(usage_tracker),

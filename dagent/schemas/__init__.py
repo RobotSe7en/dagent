@@ -1,5 +1,7 @@
 """Public schema exports."""
 
+from dagent.schemas.images import ImageData, ImageInputPolicy
+from dagent.schemas.conversation import ImageReference
 from dagent.schemas.conversation_changes import ConversationChangeBatch
 
 from dagent.schemas.common import Boundary, RiskLevel
@@ -106,6 +108,7 @@ from dagent.schemas.sandbox import (
     SandboxConfig,
 )
 __all__ = [
+    "ImageData", "ImageInputPolicy", "ImageReference",
     "ConversationChangeBatch",
     "AssistantMessage",
     "Attachment",

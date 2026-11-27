@@ -2,6 +2,16 @@
 
 达智已经发布公开 SDK contracts。本页记录升级时可能需要用户采取行动的面向用户变化。
 
+## 尚未发布：显式图片输入
+
+既有应用无需修改。`ArtifactUpload.model_input` 默认为 `None`，默认工具和文本请求保持不变。
+Pillow 新增为基础依赖。视觉会话使用 v5，纯文本保留 v4；持久化宿主重建会话时应传入
+`batch.conversation_schema_version`，并保存/恢复图片快照资源。旧 SDK 不支持新的视觉记录。
+`ContextSummary.image_manifest` 仅用于图片恢复索引，应与快照资源一起保存和恢复；
+原有文本记录不增加该字段，此前的视觉摘要会在准备上下文时自动补充索引。
+新字段缺省不改变既有 checkpoint 指纹。静态 DAG 使用显式 `read_image`，严格图片预算
+需要覆盖图片的计数器。详见[图片输入](images.md)。
+
 ## 当前发布线
 
 当前稳定包版本为 `0.11.3`。

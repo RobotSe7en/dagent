@@ -8,6 +8,8 @@ installation, SDK usage, feature guides, and released behavior.
 Simplified Chinese documentation is available at
 [docs/zh-CN/README.md](../zh-CN/README.md).
 
+- [Image Inputs](images.md): explicit uploads, workspace reads, MCP images and visual context.
+
 ## Start Here
 
 - New to dagent: read [Quick Start](quick-start.md).

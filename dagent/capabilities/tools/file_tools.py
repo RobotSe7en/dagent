@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import codecs
 from dataclasses import dataclass
 import difflib
@@ -16,7 +17,7 @@ import threading
 from pathlib import Path
 
 from dagent.capabilities.tools.shell_tools import register_shell_tools
-from dagent.capabilities.tools.registry import ToolOutput, ToolRegistry
+from dagent.capabilities.tools.registry import ToolOutput, ToolRegistry, RawImage
 
 
 GREP_EXCLUDED_DIRS = {
@@ -50,6 +51,23 @@ class _ReadWindow:
     truncated_by_bytes: bool
     source_text: str = ""
     start_char: int = 0
+
+
+def read_image(path: str | Path, *, _dagent_max_image_bytes: int = 20 * 1024 * 1024) -> ToolOutput:
+    """Read bounded bytes; the host validates and snapshots the visual input."""
+    with Path(path).open("rb") as stream:
+        data = stream.read(_dagent_max_image_bytes + 1)
+    if len(data) > _dagent_max_image_bytes:
+        raise ValueError("Image exceeds max_image_bytes.")
+    return ToolOutput(content=f"Image read: {Path(path).name}",
+                      images=(RawImage(data=base64.b64encode(data).decode("ascii")),))
+
+
+def register_image_tools(registry: ToolRegistry) -> None:
+    registry.register(name="read_image", handler=read_image, action="read", path_args=("path",),
+                      parallel_safe=True, description="View a PNG, JPEG, WebP or non-animated GIF image.",
+                      parameters={"type": "object", "properties": {"path": {"type": "string"}},
+                                  "required": ["path"], "additionalProperties": False})
 
 
 def read_file(path: str | Path, offset: int = 1, limit: int | None = None,

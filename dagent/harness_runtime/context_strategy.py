@@ -6,6 +6,10 @@ Only a fully counted candidate is returned to the tool loop for transmission.
 
 from __future__ import annotations
 
+from dagent.capabilities.images import ImageInputError
+from dagent.providers.model_io import without_image_data, require_image_count
+from dagent.providers.model_io import request_image_count, text_only_request
+
 import asyncio
 import hashlib
 import json
@@ -14,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Sequence
 
 from dagent.harness_runtime.context import (
+    estimate_model_request,
     ContextAssembler, PreparedModelContext, _atomic_groups, _context_results,
     _latest_run_id, _should_replay_reasoning, _ProjectionUsage, _summary_context_text, user_content_for_model,
 )
@@ -36,7 +41,7 @@ from dagent.providers.openai_compatible import (
 from dagent.schemas.context import ContextPolicy, ContextUsage, ContextWindowExceeded, ReasoningEffort
 from dagent.schemas.conversation import (
     AssistantMessage, CompactionState, ConversationState, FailedCompaction, UserMessage,
-    stored_content_text,
+    stored_content_text, item_images,
 )
 
 
@@ -98,8 +103,9 @@ def _source_key(item: Any, policy_view: dict[str, Any], namespace: str = "") -> 
 def _payload_tokens(assembler: ContextAssembler, prepared: PreparedModelCall, request: ModelRequest) -> int:
     """Local estimate of one prepared call's wire payload."""
 
-    tokens = assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
-    return tokens + 4 * len(request.items) + 8 * len(request.tools)
+    tokens = assembler.token_counter.count_text(json.dumps(without_image_data(prepared.payload), ensure_ascii=False))
+    return tokens + 4 * len(request.items) + 8 * len(request.tools) + sum(
+        image.estimated_tokens for item in request.items for image in getattr(item, "images", ()))
 
 
 def _eligible_slices(
@@ -113,8 +119,8 @@ def _eligible_slices(
     for index in range(len(groups) - 1, -1, -1):
         start, end = groups[index]
         view = tuple(views[item.id] for item in conversation.items[start:end] if item.id in views)
-        tokens = assembler.token_counter.count_request(
-            model_request_to_chat(ModelRequest(instructions="", items=view), reasoning_field="reasoning"), ())
+        tokens = estimate_model_request(assembler.token_counter, ModelRequest(instructions="", items=view),
+                                        reasoning_field="reasoning")
         if index < len(groups) - 1 and retained_tokens + tokens > retain_tokens:
             break
         retained_start = index
@@ -166,7 +172,7 @@ async def prepare_context(
     except asyncio.CancelledError:
         outcome = "canceled"
         raise
-    except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError) as exc:
+    except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError, ImageInputError) as exc:
         # The original items remain authoritative until the final gate passes.
         # Keep every paid replacement and failed span even when a later render,
         # prepare, or storage operation fails. Cancellation bypasses this path.
@@ -327,6 +333,7 @@ async def _prepare_context(
         assembler.context_window_tokens = window
         if purpose == "generation":
             assembler.last_valid_generation_context_window_tokens = window
+        require_image_count(request, count)
         if count is not None:
             raw = count.count
             exact = getattr(count, "exact", None) is True
@@ -335,7 +342,7 @@ async def _prepare_context(
             if prepared is not None:
                 raw = rough if prepared is rough_call else _payload_tokens(assembler, prepared, request)
             else:
-                raw = assembler.token_counter.count_request(model_request_to_chat(request, reasoning_field="reasoning"), request.tools)
+                raw = estimate_model_request(assembler.token_counter, request, reasoning_field="reasoning")
             estimate = math.ceil(raw * (1 + policy.token_safety_margin))
         return _Candidate(request, projection, estimate, count, prepared, window, window - output, output, rejected)
 
@@ -367,6 +374,8 @@ async def _prepare_context(
             compaction_trigger_tokens=max(1, math.floor(budget * policy.compaction_trigger_ratio)),
             compaction_retain_tokens=max(1, math.floor(budget * policy.compaction_retain_ratio)),
             estimated_input_tokens=estimate,
+            image_count=request_image_count(request),
+            estimated_image_tokens=sum(image.estimated_tokens for item in request.items for image in getattr(item, "images", ())),
             system_tokens=assembler.token_counter.count_text(request.instructions),
             schema_tokens=assembler.token_counter.count_text(json.dumps(list(tools), ensure_ascii=False)),
             summary_tokens=projection.summary_tokens, history_tokens=projection.history_tokens,
@@ -426,11 +435,14 @@ async def _prepare_context(
         # estimate: no fake ContentReference is constructed or persisted.
         path = (result_store.paths.relative(result_store.snapshot_root / ("0" * 64 + ".txt"))
                 if result_store else None)
-        wrapper = ModelUserInput(source_id="context_summary", content=_summary_context_text("", record_path=path))
+        visual = ((working.summary is not None and bool(working.summary.images))
+                  or any(item_images(item) for item in working.items))
+        wrapper = ModelUserInput(source_id="context_summary", content=_summary_context_text(
+            "", record_path=path, image_manifest_path=path if visual else None))
         with_wrapper = replace(request, items=(wrapper, *request.items))
         counter = assembler.token_counter
-        return max(0, counter.count_request(model_request_to_chat(with_wrapper, reasoning_field="reasoning"), request.tools)
-                   - counter.count_request(model_request_to_chat(request, reasoning_field="reasoning"), request.tools))
+        return max(0, estimate_model_request(counter, with_wrapper, reasoning_field="reasoning")
+                   - estimate_model_request(counter, request, reasoning_field="reasoning"))
 
     tightened_root = False
     for repair_round in range(2):
@@ -506,11 +518,10 @@ async def _prepare_context(
                 # Its share of the local estimate scales the counted request size.
                 eligible_ids = {item.id for range_start, range_end in ranges for item in working.items[range_start:range_end]
                                 if source_key(item) not in failed and source_key(item) not in unavailable}
-                history_tokens = assembler.token_counter.count_request(model_request_to_chat(ModelRequest(
+                history_tokens = estimate_model_request(assembler.token_counter, ModelRequest(
                     instructions="", items=tuple(item for item in state.request.items if item.source_id in eligible_ids),
-                ), reasoning_field="reasoning"), ())
-                request_tokens = assembler.token_counter.count_request(
-                    model_request_to_chat(state.request, reasoning_field="reasoning"), state.request.tools)
+                ), reasoning_field="reasoning")
+                request_tokens = estimate_model_request(assembler.token_counter, state.request, reasoning_field="reasoning")
                 if history_tokens * state.estimate < math.ceil(state.input_budget * 0.1) * max(1, request_tokens):
                     break
             summary_goal = policy.summary_max_tokens

@@ -6,6 +6,8 @@ import asyncio
 import json
 from typing import Any
 
+from dagent.schemas.images import ImageData
+
 from dagent.schemas import CapabilityInvocation, CapabilityResult
 
 from .config import DEFAULT_MCP_TOOL_TIMEOUT_SECONDS
@@ -18,6 +20,7 @@ def make_mcp_tool_handler(
     server_name: str,
     tool_name: str,
     timeout_seconds: float = DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+    image_results_as_input: bool = False,
 ):
     async def execute(invocation: CapabilityInvocation) -> CapabilityResult:
         try:
@@ -41,13 +44,17 @@ def make_mcp_tool_handler(
             raise
         except Exception as exc:
             return _failed(invocation, sanitize_error(exc), "mcp_call_error")
+        artifacts = _mcp_artifacts(result)
+        images = tuple(ImageData(data=artifact["data"], media_type=artifact["mime_type"])
+                       for artifact in artifacts if artifact["type"] == "image") if image_results_as_input else ()
         if bool(getattr(result, "isError", False)):
             return CapabilityResult.failed(
                 invocation, _mcp_result_content(result) or "MCP tool returned an error.",
-                stop_reason="mcp_error", value=_mcp_result_value(result), artifacts=_mcp_artifacts(result),
+                stop_reason="mcp_error", value=_mcp_result_value(result), artifacts=artifacts, images=images,
                 policy_decision=invocation.boundary.policy_decision(),
             )
-        return _completed(invocation, _mcp_result_content(result), _mcp_artifacts(result), _mcp_result_value(result))
+        output = _completed(invocation, _mcp_result_content(result), artifacts, _mcp_result_value(result))
+        return output.model_copy(update={"images": images})
 
     return execute
 

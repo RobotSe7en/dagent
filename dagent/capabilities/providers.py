@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import inspect
 import json
@@ -20,6 +20,10 @@ from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolse
 from dagent.capabilities.workspace import current_workspace_root
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
+from dagent.schemas.images import ImageData
+from dagent.capabilities.images import current_image_policy
+from dagent.capabilities.tools.file_tools import read_image as builtin_read_image
+
 from dagent.schemas import (
     CapabilityDefinition,
     CapabilityInvocation,
@@ -99,6 +103,7 @@ class ToolCapabilityProvider:
                     return CapabilityResult.completed(
                         invocation, output.content, value=output.value,
                         retention=output.retention, content_reference=output.content_reference,
+                        images=tuple(ImageData.model_validate(asdict(image)) for image in output.images),
                         policy_decision=invocation.boundary.policy_decision(),
                     )
                 except ShellExecutionError as exc:
@@ -739,11 +744,13 @@ def _execute_tool(
                 checked_args["cwd"],
             )
     mapped_read = (
-        tool.handler in (builtin_read_file, builtin_grep, builtin_list_files)
+        tool.handler in (builtin_read_file, builtin_grep, builtin_list_files, builtin_read_image)
         and paths.is_runtime_path(checked_args["path"])
     )
     if mapped_read:
         checked_args["path"] = paths.resolve(checked_args["path"])
+    if tool.handler is builtin_read_image:
+        checked_args["_dagent_max_image_bytes"] = current_image_policy().max_image_bytes
     if tool.handler is builtin_shell:
         checked_args["_dagent_result_context"] = {
             "workspace": str(workspace_root),

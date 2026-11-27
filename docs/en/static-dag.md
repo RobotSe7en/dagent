@@ -1,5 +1,7 @@
 # Static DAGs
 
+For explicit visual inputs, image tool results, budgets and snapshot recovery, see [Image Inputs](images.md).
+
 Use `Dag` when the graph shape is known in code. Static DAGs are serializable,
 reviewable, and typed. They use explicit edges, structured value references,
 artifact declarations, and bounded control flow.

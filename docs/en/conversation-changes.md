@@ -1,5 +1,7 @@
 # Persist ToolLoop conversations from the stream
 
+For explicit visual inputs, image tool results, budgets and snapshot recovery, see [Image Inputs](images.md).
+
 Opt-in [user interactions](user-interactions.md) produce ordinary results for the
 original invocation. Accepting a response only ends the wait; the result batch
 still requires host persistence and ACK before subsequent dispatch.

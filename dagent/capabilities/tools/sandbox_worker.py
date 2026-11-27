@@ -12,6 +12,7 @@ Imports only stdlib + the stdlib-only tool modules. Must NOT import
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import base64
 import contextlib
 import io
@@ -19,7 +20,7 @@ import json
 import sys
 from typing import Any
 
-from dagent.capabilities.tools.file_tools import create_file_tool_registry
+from dagent.capabilities.tools.file_tools import create_file_tool_registry, register_image_tools
 from dagent.capabilities.tools.registry import content_and_value_from_result, ToolOutput
 
 
@@ -27,6 +28,7 @@ def run_request(request: dict[str, Any]) -> dict[str, Any]:
     tool_name = request["tool"]
     args = request.get("args") or {}
     registry = create_file_tool_registry()
+    register_image_tools(registry)
     tool = registry.get(tool_name)
     if tool is None:
         return {"ok": False, "error": f"Tool '{tool_name}' is not registered.", "error_type": "RuntimeError"}
@@ -38,7 +40,8 @@ def run_request(request: dict[str, Any]) -> dict[str, Any]:
                 "retention": output.retention if output else None,
                 "content_reference": output.content_reference if output else None}
     content, value = content_and_value_from_result(result)
-    return {"ok": True, "content": content, "value": value,
+    images = {"images": [asdict(image) for image in result.images]} if isinstance(result, ToolOutput) and result.images else {}
+    return {"ok": True, "content": content, "value": value, **images,
             "retention": result.retention if isinstance(result, ToolOutput) else None,
             "content_reference": result.content_reference if isinstance(result, ToolOutput) else None}
 

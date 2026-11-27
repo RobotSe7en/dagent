@@ -1,5 +1,7 @@
 # Runner 和配置
 
+显式图片输入、工具返回、预算与快照恢复参见[图片输入](images.md)。
+
 MCP 连接的可选容量 `max_concurrency` 和服务端工具安全声明见[工具并行](parallel-tools.md)。
 
 local 根 ToolLoop 可按次传入 `interactions=UserInteractionOptions(...)`，见

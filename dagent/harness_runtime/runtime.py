@@ -23,7 +23,11 @@ from uuid import uuid4
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.sandbox import SandboxExecutionError
 from dagent.capabilities.sandbox_context import current_run_execution
-from dagent.capabilities.workspace import current_workspace_root
+from dagent.capabilities.workspace import current_workspace_root, workspace_context
+from dagent.harness_runtime.images import save_image
+from dagent.capabilities.images import ImageInputError, current_image_policy
+from dagent.schemas.images import ImageData
+from dagent.schemas.conversation import conversation_with_images, ImageReference
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
     ToolResultStorageFailure,
@@ -463,11 +467,44 @@ class HarnessRuntime:
         resolved_mode = mode
         route_item: AssistantMessage | None = None
         route_usage: ContextUsage | None = None
+        visual_images = ()
+        early_input = None
+        early_run_id = None
+        input_published = False
+        if any(upload.model_input == "image" for upload in input_uploads or []):
+            policy = current_image_policy()
+            selected = [upload for upload in input_uploads or [] if upload.model_input == "image"]
+            if len(selected) > policy.max_images_per_request:
+                raise ImageInputError("Request exceeds max_images_per_request.")
+            if sum(len(upload.content) for upload in selected) > policy.max_total_image_bytes:
+                raise ImageInputError("Request exceeds max_total_image_bytes.")
+            conversation = conversation or ConversationState()
+            visual_workspace = self._workspace_path_for_run(workspace_root, conversation.id, workspace_path=workspace_path)
+            visual_images = tuple(save_image(ImageData.from_bytes(upload.content, media_type=upload.media_type),
+                                             visual_workspace)
+                                  for upload in input_uploads or [] if upload.model_input == "image")
+            early_run_id = run_id or (_new_run_id_for_mode("tool") if persistent else None)
+            early_input = _uploaded_input_message(input_uploads or [], visual_workspace,
+                                                   user_request, early_run_id, visual_images)
+            if persistent and mode == "auto":
+                changes = current_changes()
+                if changes is not None:
+                    changes.publisher.bind(early_run_id, "tool", visual_workspace, self.runtime_directory, conversation)
+                early_conversation = conversation_with_images(_append_conversation_item(conversation, early_input))
+                _emit_run_started(on_event, run_id=early_run_id, kind="tool")
+                for attachment in early_input.attachments:
+                    note_resource(attachment, visual_workspace, self.runtime_directory)
+                await publish_state(early_conversation, (early_input,))
+                input_published = True
         if mode == "auto":
-            resolved_mode, route_item, route_usage = await self._route(user_request)
+            if visual_images:
+                with workspace_context(visual_workspace):
+                    resolved_mode, route_item, route_usage = await self._route(user_request, images=visual_images)
+            else:
+                resolved_mode, route_item, route_usage = await self._route(user_request)
         if persistent and resolved_mode != "tool":
             raise ValueError("Persistent delivery supports ToolLoop only.")
-        resolved_run_id = run_id or _new_run_id_for_mode(resolved_mode)
+        resolved_run_id = early_run_id or run_id or _new_run_id_for_mode(resolved_mode)
         if route_item is not None:
             route_item = route_item.model_copy(update={"run_id": resolved_run_id})
         initial_conversation = conversation or ConversationState()
@@ -480,24 +517,16 @@ class HarnessRuntime:
         if changes is not None:
             changes.publisher.bind(resolved_run_id, _state_kind_for_mode(resolved_mode),
                                    resolved_workspace_path, self.runtime_directory, initial_conversation)
-        materialized_uploads = materialize_workbench_uploads(
-            input_uploads or [],
-            workspace_path=resolved_workspace_path,
-        )
-        input_item = UserMessage(
-            run_id=resolved_run_id,
-            content=user_request,
-            attachments=_workbench_attachments(
-                input_uploads or [],
-                materialized_uploads,
-            ),
-        )
+        input_item = (early_input.model_copy(update={"run_id": resolved_run_id}) if early_input is not None
+                      else _uploaded_input_message(input_uploads or [], resolved_workspace_path,
+                                                   user_request, resolved_run_id, ()))
         if persistent:
             from dagent.harness_runtime.conversation_changes import repair_open_tool_group
             initial_conversation = repair_open_tool_group(initial_conversation)
-        run_conversation = (initial_conversation if continuing else
+        run_conversation = conversation_with_images(initial_conversation if continuing else
                             _append_conversation_item(initial_conversation, input_item))
-        _emit_run_started(on_event, run_id=resolved_run_id, kind=_state_kind_for_mode(resolved_mode))
+        if not input_published:
+            _emit_run_started(on_event, run_id=resolved_run_id, kind=_state_kind_for_mode(resolved_mode))
         for attachment in input_item.attachments:
             note_resource(attachment, resolved_workspace_path, self.runtime_directory)
         await publish_state(run_conversation, () if continuing else (input_item,))
@@ -784,14 +813,17 @@ class HarnessRuntime:
     async def _route(
         self,
         message: str,
+        *, images: tuple[ImageReference, ...] = (),
     ) -> tuple[Literal["dag", "tool"], AssistantMessage | None, ContextUsage]:
         """Lightweight LLM classifier."""
         prepared = await self.tool_agent.context_assembler.prepare(
             system_message={"role": "system", "content": _ROUTE_SYSTEM_PROMPT},
             conversation=ConversationState(
+                schema_version=5 if images else 4,
                 items=(
                     UserMessage(
                         content=message,
+                        images=images,
                         scope="router",
                         visibility="internal",
                     ),
@@ -801,6 +833,9 @@ class HarnessRuntime:
         )
 
         async def chat_attempt() -> ChatResponse:
+            if images:
+                from dagent.harness_runtime.conversation_changes import flush_resources
+                await flush_resources()
             record_model_turn()
             return chat_response_from_model(await complete_model(self.provider, prepared.request))
 
@@ -1149,6 +1184,15 @@ def _append_conversation_item(
             "items": (*conversation.items, item),
         }
     )
+
+
+def _uploaded_input_message(
+    uploads: list[ArtifactUpload], workspace: str | Path, content: str, run_id: str | None,
+    images: tuple[ImageReference, ...],
+) -> UserMessage:
+    paths = materialize_workbench_uploads(uploads, workspace_path=workspace)
+    return UserMessage(run_id=run_id, content=content, images=images,
+                       attachments=_workbench_attachments(uploads, paths))
 
 
 def _workbench_attachments(

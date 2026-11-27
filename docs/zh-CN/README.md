@@ -6,6 +6,8 @@
 
 英文文档入口见 [docs/en/README.md](../en/README.md)。
 
+- [图片输入](images.md)：显式上传、工作区读取、MCP 图片回传和视觉上下文。
+
 ## 从这里开始
 
 - 第一次使用达智：阅读[快速开始](quick-start.md)。

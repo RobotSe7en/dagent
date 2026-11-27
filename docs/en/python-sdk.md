@@ -17,6 +17,8 @@ pip install dagent-ai
 import dagent
 ```
 
+Image APIs: `ImageData`, `ImageReference`, `ImageInputPolicy`, `ImageInputError`, `ArtifactUpload.model_input`, and `Runner.add_image_tools`; see [Image Inputs](images.md).
+
 ## Common Starting Points
 
 | Task | Start with |

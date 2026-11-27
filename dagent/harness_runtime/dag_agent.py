@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dagent.harness_runtime.images import source_images, merge_image_references
+from dagent.capabilities.images import ImageInputError
+
 
 from dagent.review import CapabilityReviewDecision
 from dagent.harness_runtime.context import compaction_source
@@ -17,6 +20,7 @@ from uuid import uuid4
 from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
 from dagent.harness_runtime.builder_translator import translate_builder_source
+from dagent.schemas.conversation import item_images, conversation_with_images
 from dagent.harness_runtime.artifacts import (
     ArtifactUpload,
     create_run_workspace,
@@ -295,21 +299,39 @@ class DAGAgent:
             capability_scope,
             workspace_path=workspace_path,
         )
-        outcome = await self.loop.run_dynamic(
-            request,
-            task_id=resolved_task_id,
-            review_level=review_level,
-            capability_scope=capability_scope,
-            messages=provider_messages,
-            build_user_message=self.build_request_user_message,
-            runtime_mode=runtime_mode,
-            dynamic_adjust=dynamic_adjust,
-            workspace_path=workspace_path,
-            dag_executor=dag_executor,
-            on_token=on_token,
-            on_event=on_event,
-            on_dag=on_dag,
-        )
+        request_builder = self.build_request_user_message
+        request_images = public_items[-1].images if public_items and isinstance(public_items[-1], UserMessage) else ()
+        if request_images:
+            def request_builder(**arguments):
+                nonlocal request_images
+                message = self.build_request_user_message(**arguments)
+                if not request_images:
+                    return message
+                item = UserMessage(content=message["content"], images=request_images,
+                                   scope="planner", visibility="internal")
+                request_images = ()
+                return item
+        from dagent.harness_runtime.tool_agent import ToolContextFailure
+        failure = None
+        try:
+            outcome = await self.loop.run_dynamic(
+                request,
+                task_id=resolved_task_id,
+                review_level=review_level,
+                capability_scope=capability_scope,
+                messages=provider_messages,
+                build_user_message=request_builder,
+                runtime_mode=runtime_mode,
+                dynamic_adjust=dynamic_adjust,
+                workspace_path=workspace_path,
+                dag_executor=dag_executor,
+                on_token=on_token,
+                on_event=on_event,
+                on_dag=on_dag,
+            )
+        except ToolContextFailure as exc:
+            failure = exc
+            outcome = exc.outcome
         self.thread = _thread_from_items(
             _strip_system_message(provider_messages),
             conversation_id=self.thread.id,
@@ -327,7 +349,7 @@ class DAGAgent:
                 "model_thread": self.thread,
             }
         )
-        return outcome.model_copy(
+        outcome = outcome.model_copy(
             update={
                 "state": state,
                 "new_items": (
@@ -336,6 +358,10 @@ class DAGAgent:
                 ),
             }
         )
+        if failure is not None:
+            failure.outcome = outcome
+            raise failure
+        return outcome
 
     async def resume_review(
         self,
@@ -516,7 +542,7 @@ class DAGAgentLoop:
         *,
         task_id: str | None,
         messages: list[dict[str, Any]],
-        user_message: dict[str, str],
+        user_message: dict[str, str] | UserMessage,
         allow_no_change: bool = True,
         model_step: int | None = None,
         on_token: Callable[[str], None] | None = None,
@@ -527,15 +553,17 @@ class DAGAgentLoop:
         workspace_path: str | Path | None = None,
     ) -> _PlannerProposal | str | None:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
+        content = user_message.content if isinstance(user_message, UserMessage) else str(user_message.get("content") or "")
+        images = user_message.images if isinstance(user_message, UserMessage) else ()
         user_item = UserMessage(run_id=resolved_task_id,
-                               content=str(user_message.get("content") or ""),
+                               content=content, images=images,
                                result_observations=result_observations,
                                scope="planner", visibility="internal")
         messages.append(user_item)
         self.audit_items.append(
             UserMessage(
                 run_id=resolved_task_id,
-                content=str(user_message.get("content") or ""),
+                content=content, images=images,
                 scope="planner",
                 visibility="internal",
             )
@@ -706,9 +734,11 @@ class DAGAgentLoop:
         prepared = await self.context_assembler.prepare(
             system_message=system_message,
             conversation=ConversationState(
+                schema_version=5 if source_images(items) else 4,
                 items=(
                     UserMessage(
                         content=source,
+                        images=source_images(items),
                         scope="compactor",
                         visibility="internal",
                     ),
@@ -734,6 +764,7 @@ class DAGAgentLoop:
         )
         summary = ContextSummary(
             content=content,
+            images=merge_image_references(previous.images if previous else (), source_images(items)),
             source_item_count=(previous.source_item_count if previous else 0) + len(items),
             method="model",
             source_truncated=source_truncated,
@@ -756,7 +787,7 @@ class DAGAgentLoop:
         task_id: str | None = None,
         review_level: ReviewLevel = "fast",
         messages: list[dict[str, Any]],
-        build_user_message: Callable[..., dict[str, str]],
+        build_user_message: Callable[..., dict[str, str] | UserMessage],
         runtime_mode: str = "auto",
         dynamic_adjust: bool = True,
         workspace_path: str | Path | None = None,
@@ -1049,7 +1080,7 @@ class DAGAgentLoop:
         review_level: ReviewLevel | None = None,
         feedback: str | None = None,
         messages: list[dict[str, Any]],
-        build_user_message: Callable[..., dict[str, str]],
+        build_user_message: Callable[..., dict[str, str] | UserMessage],
         dag_executor: DAGExecutor | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -1172,7 +1203,7 @@ class DAGAgentLoop:
         record: RunState,
         *,
         messages: list[dict[str, Any]] | None = None,
-        build_user_message: Callable[..., dict[str, str]] | None = None,
+        build_user_message: Callable[..., dict[str, str] | UserMessage] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -1336,6 +1367,15 @@ class DAGAgentLoop:
                     result_observations=_result_observations(record.trace),
                     workspace_path=record.workspace_path,
                 )
+            except ImageInputError as exc:
+                from dagent.harness_runtime.tool_agent import ToolContextFailure
+                trace = record.trace or RunTrace(run_id=record.run_id, root=RunTraceNode.run(run_id=record.run_id))
+                trace.root.status = "failed"
+                trace.root.error = RunTraceError(code="ImageInputError", message=str(exc))
+                record.context_usage = list(self.context_usages)
+                failed = _dag_loop_outcome(record=record, status="failed", final_response=str(exc),
+                                           dag=record.dag, trace=trace)
+                raise ToolContextFailure(exc, failed) from exc
             except ContextWindowExceeded:
                 raise
             except Exception as exc:
@@ -1402,7 +1442,7 @@ class DAGAgentLoop:
         observation: str,
         *,
         messages: list[dict[str, Any]],
-        build_user_message: Callable[..., dict[str, str]],
+        build_user_message: Callable[..., dict[str, str] | UserMessage],
         dag_executor: DAGExecutor | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -1757,6 +1797,9 @@ def _result_observations(trace: RunTrace | None) -> tuple[ResultObservation, ...
             content=node.output_reference or inline_content(str(node.output or (node.error.message if node.error else ""))),
             references=node.references, retention=retention,
             capability_id=capability_id, arguments=arguments,
+            images=tuple(image for child in node.children if child.capability_execution
+                         and child.capability_execution.result
+                         for image in child.capability_execution.result.images),
         ))
     if trace and trace.root.value is not None and trace.root.status in {"completed", "failed"}:
         value = trace.root.value
@@ -2012,6 +2055,7 @@ def _planner_thread_from_conversation(
                 )
             )
     return ConversationState(
+        schema_version=conversation.schema_version,
         id=conversation.id,
         revision=conversation.revision,
         summary=conversation.summary,
@@ -2027,7 +2071,8 @@ def _thread_from_items(
     messages: list[ConversationItem], *, conversation_id: str, revision: int = 0,
     summary: ContextSummary | None = None,
 ) -> ConversationState:
-    return ConversationState(id=conversation_id, revision=revision, summary=summary, items=tuple(messages))
+    return ConversationState(schema_version=5 if any(item_images(item) for item in messages) or (summary and summary.images) else 4,
+                             id=conversation_id, revision=revision, summary=summary, items=tuple(messages))
 
 
 def _bounded_public_conversation(
@@ -2046,13 +2091,13 @@ def _bounded_public_conversation(
         ),
         0,
     )
-    return conversation.model_copy(
+    return conversation_with_images(conversation.model_copy(
         update={
             "revision": conversation.revision + 1,
             "summary": summary,
             "items": conversation.items[cutoff:],
         }
-    )
+    ))
 
 
 def _emit_dag(on_dag: Callable[[DAG], None] | None, dag: DAG) -> None:

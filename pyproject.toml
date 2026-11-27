@@ -12,6 +12,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
     "openai>=2.33,<3",
+    "Pillow>=12.1.1,<14",
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "jsonschema>=4.18",

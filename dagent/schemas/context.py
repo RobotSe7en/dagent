@@ -88,6 +88,8 @@ class ContextUsage(BaseModel):
     compaction_trigger_tokens: int = Field(ge=1)
     compaction_retain_tokens: int = Field(ge=1)
     estimated_input_tokens: int = Field(ge=0)
+    image_count: int = Field(default=0, ge=0)
+    estimated_image_tokens: int = Field(default=0, ge=0)
     system_tokens: int = Field(default=0, ge=0)
     schema_tokens: int = Field(default=0, ge=0)
     summary_tokens: int = Field(default=0, ge=0)
@@ -121,6 +123,9 @@ class ContextUsage(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_budget_details(self, serializer):
         payload = serializer(self)
+        if not self.image_count:
+            payload.pop("image_count", None)
+            payload.pop("estimated_image_tokens", None)
         for name in ("count_precision", "request_fingerprint", "prefix_break_reason"):
             if getattr(self, name) is None:
                 payload.pop(name, None)
