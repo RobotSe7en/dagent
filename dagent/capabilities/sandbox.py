@@ -23,7 +23,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from dagent.capabilities.tools.registry import ToolOutput
+from dagent.capabilities.tools.registry import ToolOutput, RawImage
 from dagent.capabilities.tools.runtime_paths import RuntimePaths
 from dagent.schemas import DockerSandboxConfig, SandboxConfig
 
@@ -280,6 +280,7 @@ class SandboxSession:
                                   content_reference=result.get("content_reference")),
             )
         return ToolOutput(content=str(result.get("content") or ""), value=result.get("value"),
+                          images=tuple(RawImage(**image) for image in result.get("images", ())),
                           retention=result.get("retention"), content_reference=result.get("content_reference"))
 
 

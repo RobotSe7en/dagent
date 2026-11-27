@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any, get_type_hints
 
 from dagent.capabilities.catalog import CapabilityHandler
+from dagent.schemas.images import ImageData
+from dagent.schemas.conversation import ImageReference
 from dagent.capabilities.execution_context import is_parallel_dispatch
 from dagent.capabilities.tools.registry import content_and_value_from_result
 from dagent.schemas import (
@@ -99,6 +101,8 @@ def tool(
                     result = await result
                 if isinstance(result, CapabilityResult):
                     return result
+                if isinstance(result, (ImageData, ImageReference)):
+                    return CapabilityResult.completed(invocation, images=(result,))
                 content, value = content_and_value_from_result(result)
                 return CapabilityResult(
                     invocation_id=invocation.invocation_id,

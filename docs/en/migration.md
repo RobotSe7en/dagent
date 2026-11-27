@@ -3,6 +3,19 @@
 dagent has released public SDK contracts. This page records user-facing changes
 that may require action when upgrading.
 
+## Unreleased: explicit image inputs
+
+Existing applications need no changes. `ArtifactUpload.model_input` defaults to `None`;
+default tools and text requests remain unchanged. Pillow is now a base dependency.
+Visual conversations use v5; text conversations retain v4. Persistence hosts must
+use `batch.conversation_schema_version` when rebuilding state and preserve image
+snapshot resources. Older SDKs cannot read the new visual records.
+`ContextSummary.image_manifest` is absent from text records; visual recovery
+indexes must be restored alongside snapshots. Older visual summaries acquire
+an index during context preparation. Omitted new fields preserve existing
+checkpoint fingerprints. Static DAGs use explicit
+`read_image`; strict image budgets require image-aware counters. See [Image Inputs](images.md).
+
 ## Current Release Line
 
 The current stable package version is `0.11.3`.

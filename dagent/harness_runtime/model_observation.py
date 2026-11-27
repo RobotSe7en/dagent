@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from collections.abc import AsyncIterator, Awaitable, Callable
 from time import monotonic
 from typing import Any
@@ -10,7 +11,7 @@ from uuid import uuid4
 from dagent.harness_runtime.execution_usage import record_model_turn
 from dagent.providers.model_io import (
     ModelRequest, ModelStreamEvent, ModelTokenCount, PreparedModelCall,
-    complete_model, stream_model,
+    complete_model, stream_model, request_image_count,
 )
 from dagent.providers.openai_compatible import ProviderReprepareRequired, ProviderResponseError
 
@@ -44,7 +45,11 @@ async def count_prepared_call(
     guard = None
     while True:
         try:
-            return prepared, await counter(prepared)
+            count = await counter(prepared)
+            if (request_image_count(prepared.request) and count is not None
+                    and count.exact is True and count.includes_image_tokens is True):
+                prepared = replace(prepared, verified_image_fingerprint=prepared.fingerprint)
+            return prepared, count
         except ProviderReprepareRequired as exc:
             if guard is None:
                 guard = _ReprepareGuard(prepared)

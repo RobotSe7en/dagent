@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 
 CapabilitySupport = Literal["supported", "unsupported", "unknown"]
@@ -27,6 +27,16 @@ class ProtocolCapabilities(BaseModel):
     tools: CapabilitySupport = "unknown"
     streaming: CapabilitySupport = "unknown"
     structured_output: CapabilitySupport = "unknown"
+    image_input: CapabilitySupport = "unknown"
+    image_tool_output: CapabilitySupport = "unknown"
+
+    @model_serializer(mode="wrap")
+    def serialize_images(self, serializer):
+        payload = serializer(self)
+        for name in ("image_input", "image_tool_output"):
+            if getattr(self, name) == "unknown":
+                payload.pop(name, None)
+        return payload
 
 
 class ProviderCapabilities(BaseModel):

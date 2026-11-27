@@ -60,6 +60,36 @@ StoredContent: TypeAlias = Annotated[
 ]
 
 
+class ImageReference(BaseModel):
+    """A checked snapshot of the exact bytes submitted as visual input."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["image"] = "image"
+    reference: ContentReference
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_image(self) -> ImageReference:
+        if self.reference.sha256 is None:
+            raise ValueError("Image snapshots require a SHA-256 digest.")
+        if self.reference.media_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+            raise ValueError("Unsupported image snapshot media type.")
+        return self
+
+
+class _ImageFields(BaseModel):
+    images: tuple[ImageReference, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def serialize_images(self, serializer):
+        payload = serializer(self)
+        if not self.images:
+            payload.pop("images", None)
+        return payload
+
+
 class ToolCallItem(BaseModel):
     """Provider-neutral structured tool call emitted by an assistant."""
 
@@ -71,7 +101,7 @@ class ToolCallItem(BaseModel):
     capability_id: str | None = None
 
 
-class FrozenResultDisplay(BaseModel):
+class FrozenResultDisplay(_ImageFields):
     """Exact model-visible result text and the file holding undisplayed text.
 
     ``recovery`` is ``None`` when no file holds the undisplayed text: the
@@ -98,10 +128,12 @@ class FrozenResultDisplay(BaseModel):
         return self
 
 
-class _OptionalDisplay(BaseModel):
+class _OptionalDisplay(_ImageFields):
     @model_serializer(mode="wrap")
     def serialize_display(self, serializer):
         payload = serializer(self)
+        if not self.images:
+            payload.pop("images", None)
         if self.model_display is None:
             payload.pop("model_display", None)
         if getattr(self, "reviewer_feedback", None) is None:
@@ -151,7 +183,7 @@ class Attachment(BaseModel):
         return self
 
 
-class UserMessage(BaseModel):
+class UserMessage(_ImageFields):
     """One user or runtime-authored input message."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -169,6 +201,8 @@ class UserMessage(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_purpose(self, serializer):
         payload = serializer(self)
+        if not self.images:
+            payload.pop("images", None)
         if self.purpose is None:
             payload.pop("purpose", None)
         return payload
@@ -228,12 +262,13 @@ ConversationItem: TypeAlias = Annotated[
 ]
 
 
-class ContextSummary(BaseModel):
+class ContextSummary(_ImageFields):
     """Incremental semantic summary replacing compacted conversation turns."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     content: str
+    image_manifest: ContentReference | None = None
     result_manifest: ContentReference | None = None
     result_archive_incomplete: bool = False
     source_item_count: int = Field(ge=1)
@@ -250,6 +285,10 @@ class ContextSummary(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_record(self, serializer):
         payload = serializer(self)
+        if not self.images:
+            payload.pop("images", None)
+        if self.image_manifest is None:
+            payload.pop("image_manifest", None)
         if self.compaction_record is None:
             payload.pop("compaction_record", None)
         return payload
@@ -276,7 +315,7 @@ class ConversationState(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[4] = 4
+    schema_version: Literal[4, 5] = 4
     id: str = Field(default_factory=lambda: f"conversation_{uuid4().hex}")
     revision: int = Field(default=0, ge=0)
     summary: ContextSummary | None = None
@@ -292,10 +331,32 @@ class ConversationState(BaseModel):
 
     @model_validator(mode="after")
     def validate_item_ids(self) -> "ConversationState":
+        if self.schema_version == 4 and (
+            (self.summary and self.summary.images)
+            or any(item_images(item) for item in self.items)
+        ):
+            raise ValueError("Image conversations require schema_version=5.")
         item_ids = [item.id for item in self.items]
         if len(item_ids) != len(set(item_ids)):
             raise ValueError("Conversation item ids must be unique.")
         return self
+
+
+def item_images(item: ConversationItem) -> tuple[ImageReference, ...]:
+    images = tuple(getattr(item, "images", ()))
+    if isinstance(item, UserMessage):
+        images += tuple(image for result in item.result_observations for image in result.images)
+    return images
+
+
+def conversation_with_images(conversation: ConversationState) -> ConversationState:
+    """Explicit runtime promotion; ordinary text records keep their version."""
+    if conversation.schema_version == 4 and (
+        (conversation.summary and conversation.summary.images)
+        or any(item_images(item) for item in conversation.items)
+    ):
+        return conversation.model_copy(update={"schema_version": 5})
+    return conversation
 
 
 def inline_content(value: str) -> InlineContent:
@@ -322,6 +383,7 @@ def _validate_relative_path(value: str, *, label: str) -> None:
 
 
 __all__ = [
+    "ImageReference",
     "AssistantMessage",
     "Attachment",
     "ContentReference",

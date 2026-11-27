@@ -1,5 +1,7 @@
 # 静态 DAGs
 
+显式图片输入、工具返回、预算与快照恢复参见[图片输入](images.md)。
+
 当图结构在代码中已知时，使用 `Dag`。静态 DAG 是可序列化、可 review、类型化的。它们
 使用显式边、结构化 value references、artifact 声明和有边界的控制流。
 

@@ -155,7 +155,7 @@ def freeze_result_displays(
         if complete_tokens is not None and complete_tokens <= allocation:
             # The whole text fits, so no file is needed or mentioned.
             projection = project_result(item, 2**60, counter, read_available=False)
-            display = FrozenResultDisplay(text=projection.text, displayed_spans=projection.displayed_spans)
+            display = FrozenResultDisplay(text=projection.text, images=item.images, displayed_spans=projection.displayed_spans)
             updates[identity] = item.model_copy(update={"model_display": display})
             continue
         projection = project_result(
@@ -165,7 +165,7 @@ def freeze_result_displays(
         if isinstance(item.content, ContentReference):
             # The preview is an excerpt with its own coordinates, so no
             # displayed source range can be stated for the saved file.
-            display = FrozenResultDisplay(text=projection.text, recovery=item.content)
+            display = FrozenResultDisplay(text=projection.text, images=item.images, recovery=item.content)
             updates[identity] = item.model_copy(update={"model_display": display})
             continue
         if planned is not None:
@@ -174,16 +174,16 @@ def freeze_result_displays(
             except OSError as exc:
                 failed = _with_storage_warning(item, result_store, identity, exc)
                 projection = project_result(failed, allocation, counter, read_available=True)
-                display = FrozenResultDisplay(text=projection.text, displayed_spans=projection.displayed_spans)
+                display = FrozenResultDisplay(text=projection.text, images=item.images, displayed_spans=projection.displayed_spans)
                 updates[identity] = failed.model_copy(update={"model_display": display})
                 continue
             display = FrozenResultDisplay(
-                text=projection.text, recovery=saved, displayed_spans=projection.displayed_spans,
+                text=projection.text, images=item.images, recovery=saved, displayed_spans=projection.displayed_spans,
             )
             updates[identity] = item.model_copy(update={"content": saved, "model_display": display})
             continue
         # No file: shortened and marked as having no saved original.
-        display = FrozenResultDisplay(text=projection.text, displayed_spans=projection.displayed_spans)
+        display = FrozenResultDisplay(text=projection.text, images=item.images, displayed_spans=projection.displayed_spans)
         updates[identity] = item.model_copy(update={"model_display": display})
     return _replace_results(conversation, updates)
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dagent.schemas.images import ImageInputPolicy
+
 import hashlib
 import json
 from pathlib import PurePosixPath
@@ -122,6 +124,7 @@ class ResolvedRunPlan(BaseModel):
     planner_skill: PlannerSkillSnapshot | None = None
     context_policy: ContextPolicy = Field(default_factory=ContextPolicy)
     result_storage_policy: ResultStoragePolicy = Field(default_factory=ResultStoragePolicy)
+    image_input_policy: ImageInputPolicy | None = None
     runtime_directory: str
     context_window_tokens: int = Field(default=DEFAULT_CONTEXT_WINDOW_TOKENS, ge=1024)
     max_output_tokens: int | None = Field(default=None, ge=1)
@@ -224,6 +227,8 @@ class ResolvedRunPlan(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_current_execution_fields(self, serializer):
         payload = serializer(self)
+        if self.image_input_policy is None:
+            payload.pop("image_input_policy", None)
         if self.response_retries == 0:
             payload.pop("response_retries", None)
         if self.max_tool_concurrency == 1:

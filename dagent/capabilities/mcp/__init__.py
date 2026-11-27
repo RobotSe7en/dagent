@@ -41,6 +41,8 @@ class MCPCapabilityProvider:
             return
         for config in self.servers.values():
             validate_concurrency(config.get("max_concurrency", 1), label="max_concurrency")
+            if type(config.get("image_results_as_input", False)) is not bool:
+                raise ValueError("image_results_as_input must be a boolean.")
         manager = self.manager or MCPServerManager(self.servers)
         self.manager = manager
         if not getattr(manager, "available", True):
@@ -101,12 +103,14 @@ class MCPCapabilityProvider:
             output_schema=normalize_mcp_output_schema(output_schema),
             policy=_policy_for_server_config(server_config),
             parallel_safe=mcp_tool_parallel_safe(tool),
-            config={"server": server_name, "tool": tool_name},
+            config={"server": server_name, "tool": tool_name,
+                    **({"image_results_as_input": True} if server_config.get("image_results_as_input") else {})},
         )
         handler = make_mcp_tool_handler(
             self.manager,
             server_name=server_name,
             tool_name=tool_name,
+            image_results_as_input=server_config.get("image_results_as_input", False),
             timeout_seconds=float(
                 server_config.get("tool_timeout", DEFAULT_MCP_TOOL_TIMEOUT_SECONDS)
             ),
@@ -131,9 +135,11 @@ class MCPCapabilityProvider:
                 update={
                     "policy": _policy_for_server_config(server_config),
                     "config": {
-                        **tool.definition.config,
+                        **{key: value for key, value in tool.definition.config.items()
+                           if key != "image_results_as_input"},
                         "server": server_name,
                         "tool": tool.tool,
+                        **({"image_results_as_input": True} if server_config.get("image_results_as_input") else {}),
                     }
                 },
                 deep=True,
@@ -142,6 +148,7 @@ class MCPCapabilityProvider:
                 self.manager,
                 server_name=server_name,
                 tool_name=tool.tool,
+                image_results_as_input=server_config.get("image_results_as_input", False),
                 timeout_seconds=float(
                     server_config.get(
                         "tool_timeout",

@@ -1,5 +1,7 @@
 # 模型上下文与推理
 
+显式图片输入、工具返回、预算与快照恢复参见[图片输入](images.md)。
+
 结果展示预算、类型化保留元信息及文件/搜索分页，见[工具结果恢复](tool-result-recovery.md)。
 
 dagent 对私有 vLLM 模型使用统一的 provider-neutral conversation model，并在每次请求时

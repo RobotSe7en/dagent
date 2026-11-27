@@ -1,6 +1,9 @@
 """Bounded tool-using agent loop."""
 
 from __future__ import annotations
+
+from dagent.harness_runtime.images import source_images, merge_image_references
+from dagent.capabilities.images import ImageInputError
 from dagent.harness_runtime.context import compaction_source
 
 import asyncio
@@ -19,6 +22,7 @@ from uuid import uuid4
 from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
 from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.capabilities.providers import check_tool_boundary_for_review
+from dagent.schemas.conversation import conversation_with_images
 from dagent.capabilities.workspace import current_workspace_root
 from dagent.capabilities.execution_context import parallel_dispatch, validate_concurrency
 from dagent.harness_runtime.dag_builder import (
@@ -873,6 +877,17 @@ class ToolAgentLoop:
                             result, workspace_path=workspace, runtime_directory=self.runtime_directory,
                             policy=result_storage_policy, on_event=on_event, result_files=result_files,
                         )
+                    except ImageInputError as exc:
+                        # MCP images also appear in artifacts; discard their rejected payloads.
+                        result = result.model_copy(update={
+                            "images": (),
+                            "artifacts": [artifact for artifact in result.artifacts if artifact.get("type") != "image"],
+                            "status": "failed", "error": str(exc), "stop_reason": "ImageInputError",
+                        })
+                        normalized = normalize_capability_result(
+                            result, workspace_path=workspace, runtime_directory=self.runtime_directory,
+                            policy=result_storage_policy, on_event=on_event, result_files=result_files,
+                        )
                     except ResultStorageError as exc:
                         assert invocation is not None
                         loop_state.error = RunTraceError(code="ResultStorageError", message=str(exc))
@@ -900,6 +915,7 @@ class ToolAgentLoop:
                     value=None if result is None else result.value,
                     value_reference=None if normalized is None else normalized.value_reference,
                     artifacts=() if normalized is None else normalized.references,
+                    images=() if result is None else result.images,
                 )
                 if separate_feedback and item.feedback and item.feedback.strip():
                     tool_item = tool_item.model_copy(update={"reviewer_feedback": item.feedback.strip()})
@@ -1135,8 +1151,8 @@ class ToolAgentLoop:
                         history_compactor=compactor,
                         enable_new_strategy=True,
                     )
-                except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError) as exc:
-                    if context_policy.compaction_strategy == "legacy":
+                except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError, ImageInputError) as exc:
+                    if context_policy.compaction_strategy == "legacy" and not isinstance(exc, ImageInputError):
                         raise
                     loop_state.conversation = getattr(exc, "_conversation", loop_state.conversation)
                     await publish_state(loop_state.conversation, tuple(new_items))
@@ -1173,7 +1189,7 @@ class ToolAgentLoop:
                         history_compactor=compactor,
                         enable_new_strategy=True,
                     )
-                except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError) as exc:
+                except (ContextWindowExceeded, ProviderCapabilityError, ProviderReprepareRequired, ResultBudgetExceeded, OSError, ImageInputError) as exc:
                     loop_state.conversation = getattr(exc, "_conversation", loop_state.conversation)
                     if isinstance(exc, ContextWindowExceeded):
                         context_usages.append(exc.usage)
@@ -1424,9 +1440,11 @@ class ToolAgentLoop:
             prepared = await context_assembler.prepare(
                 system_message=system_message,
                 conversation=ConversationState(
+                    schema_version=5 if source_images(items) else 4,
                     items=(
                         UserMessage(
                             content=source,
+                            images=source_images(items),
                             scope="compactor",
                             visibility="internal",
                         ),
@@ -1450,6 +1468,7 @@ class ToolAgentLoop:
             )
             summary = ContextSummary(
                 content=content,
+                images=merge_image_references(previous.images if previous else (), source_images(items)),
                 source_item_count=(previous.source_item_count if previous else 0) + len(items),
                 method="model",
                 source_truncated=source_truncated,
@@ -1658,12 +1677,12 @@ def _append_item(
     conversation: ConversationState,
     item: ConversationItem,
 ) -> ConversationState:
-    return conversation.model_copy(
+    return conversation_with_images(conversation.model_copy(
         update={
             "revision": conversation.revision + 1,
             "items": (*conversation.items, item),
         }
-    )
+    ))
 
 
 def _tool_result_item(
@@ -1677,6 +1696,7 @@ def _tool_result_item(
     value: Any = None,
     value_reference: ContentReference | None = None,
     artifacts: tuple[Any, ...] = (),
+    images: tuple[Any, ...] = (),
     retention: ResultRetention | None = None,
 ) -> ToolResultMessage:
     return ToolResultMessage(
@@ -1689,6 +1709,7 @@ def _tool_result_item(
         value=value,
         value_reference=value_reference,
         artifacts=artifacts,
+        images=images,
         retention=retention,
     )
 

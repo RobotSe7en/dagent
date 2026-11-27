@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from posixpath import normpath
 from uuid import uuid4
+from typing import Literal
 
 from dagent.schemas import Artifact, ArtifactFileManifest, ArtifactFileRef, ArtifactState, DAGNode
 from dagent.schemas.run_id import validate_run_id
@@ -25,6 +26,11 @@ class ArtifactUpload:
     filename: str
     content: bytes
     media_type: str | None = None
+    model_input: Literal["image"] | None = field(default=None, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if self.model_input not in (None, "image"):
+            raise ValueError("model_input must be image or None.")
 
 
 WORKBENCH_UPLOAD_ROOT = "uploads"
@@ -140,6 +146,8 @@ def materialize_artifact_uploads(
 
     for artifact_id in sorted(uploads):
         artifact_uploads = uploads[artifact_id]
+        if any(upload.model_input is not None for upload in artifact_uploads):
+            raise ValueError("model_input is only supported by input_uploads; DAG nodes must read_image explicitly.")
         if not artifact_uploads:
             continue
         artifact = artifacts.get(artifact_id)

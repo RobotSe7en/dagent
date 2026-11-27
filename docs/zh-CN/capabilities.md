@@ -1,5 +1,7 @@
 # Capabilities
 
+显式图片输入、工具返回、预算与快照恢复参见[图片输入](images.md)。
+
 `@tool(parallel_safe=True)`、`CapabilityDefinition.parallel_safe` 和 MCP 服务端声明见
 [工具并行](parallel-tools.md)。
 

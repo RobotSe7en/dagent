@@ -1,5 +1,7 @@
 # Runner and Configuration
 
+For explicit visual inputs, image tool results, budgets and snapshot recovery, see [Image Inputs](images.md).
+
 Opt-in MCP connection capacity (`max_concurrency`) and server-owned tool safety
 declarations are documented in [Parallel Tools](parallel-tools.md).
 

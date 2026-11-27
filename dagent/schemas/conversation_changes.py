@@ -111,7 +111,7 @@ class ConversationChangeBatch(_ChangeModel):
     """
 
     schema_version: Literal[1, 2] = 1
-    conversation_schema_version: Literal[4] | None
+    conversation_schema_version: Literal[4, 5] | None
     batch_id: str
     delivery_id: str
     sequence: int = Field(ge=1)

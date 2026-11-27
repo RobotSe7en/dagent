@@ -7,6 +7,13 @@ Unicode ranges, or remains explicitly referenced when fallback is authorized.
 
 from __future__ import annotations
 
+from dagent.harness_runtime.images import source_images, project_images, merge_image_references
+from dagent.capabilities.images import ImageInputError
+from dagent.providers.model_io import (
+    without_image_data, require_image_count, request_image_count,
+    request_image_limit_reason, validate_request_images,
+)
+
 from dagent.harness_runtime.conversation_changes import flush_resources, current_changes
 from dagent.harness_runtime.stream_delivery import PersistenceDeliveryError
 
@@ -27,6 +34,7 @@ from dagent.harness_runtime.model_observation import count_prepared_call
 from dagent.harness_runtime.result_storage import ResultStore
 from dagent.providers.base import ChatResponse
 from dagent.providers.model_io import (
+    image_content,
     ModelRequest, ModelResponse, ModelUserInput, model_request_to_chat,
     model_response_from_chat, normalize_model_response,
 )
@@ -299,6 +307,7 @@ class HistoryCompactor:
         # needs read_file and a read boundary that admits the runtime files.
         self.read_available = read_available and (result_store is None or result_store.files_readable())
         self._archived_operations: dict[str, tuple[str, ...]] = {}
+        self._image_sources = {}
         # Earlier records by path (they are content-addressed), and the paths
         # that could not be read: history behind them counts as unresolved and
         # a failed source they recorded may be summarized again.
@@ -336,6 +345,7 @@ class HistoryCompactor:
         self._call_offset = len(self.calls)
         if self.observer is not None:
             self.observer.start(len(items))
+        self._image_sources = {item.id: source_images((item,)) for item in items}
         sources = _source_texts(previous, items)
         previous_id = _previous_source_id(items) if previous else None
         aliases = _SourceAliases(sources, previous_id)
@@ -467,13 +477,15 @@ class HistoryCompactor:
         if self.observer is not None:
             self.observer.start(len(items))
         last_call = record.calls[-1] if record.calls else None
-        return ContextSummary(
+        assert self.result_store is not None
+        return self.result_store.index_summary_images(ContextSummary(
             content=content,
+            images=merge_image_references(previous.images if previous else (), source_images(items)),
             source_item_count=(previous.source_item_count if previous else 0) + len(items),
             compaction_record=record_reference,
             usage=last_call.usage if last_call else None,
             model_call=last_call.model_call if last_call else None,
-        )
+        ))
 
     async def tighten(self, summary: ContextSummary, max_tokens: int, *,
                       allow_fallback: bool = False) -> ContextSummary:
@@ -613,7 +625,11 @@ class HistoryCompactor:
         raise CompactionBudgetExceeded("Summary budget preparation did not stabilize.")
 
     async def _fits(self, request: ModelRequest) -> bool:
+        from dagent.harness_runtime.context import estimate_model_request
         self._check_budget(check_calls=False)
+        validate_request_images(request, check_request_limits=False)
+        if request_image_limit_reason(request):
+            return False
         if self.assembler.request_preparer is not None:
             if self.prepared_request is not request:
                 previous, estimate = self.prepared_call, self._prepared_estimate
@@ -627,12 +643,14 @@ class HistoryCompactor:
             if self._prepared_estimate is not None:
                 return (self._prepared_estimate + prepared.effective_max_output_tokens
                         <= self.assembler.context_window_tokens)
-            raw = self.assembler.token_counter.count_text(json.dumps(prepared.payload, ensure_ascii=False))
+            raw = self.assembler.token_counter.count_text(json.dumps(without_image_data(prepared.payload), ensure_ascii=False))
+            raw += sum(image.estimated_tokens for item in request.items for image in getattr(item, "images", ()))
             heuristic = math.ceil(raw * (1 + self.policy.token_safety_margin))
             output = prepared.effective_max_output_tokens
             if output is None:
                 raise CompactionError("Prepared compaction request has no bounded output limit.")
-            if raw > HEURISTIC_OVERCOUNT_LIMIT * max(1, self.assembler.context_window_tokens - output):
+            if (not request_image_count(request)
+                    and raw > HEURISTIC_OVERCOUNT_LIMIT * max(1, self.assembler.context_window_tokens - output)):
                 return False
             locally_over = heuristic + output > self.assembler.context_window_tokens
             initial = prepared
@@ -655,6 +673,7 @@ class HistoryCompactor:
                 output = prepared.effective_max_output_tokens
                 if output is None:
                     raise CompactionError("Prepared compaction request has no bounded output limit.")
+            require_image_count(request, count)
             if count is not None:
                 estimate = count.count
                 if getattr(count, "exact", None) is not True:
@@ -664,7 +683,7 @@ class HistoryCompactor:
                 return False
             else:
                 estimate = heuristic if prepared is initial else math.ceil(self.assembler.token_counter.count_text(
-                    json.dumps(prepared.payload, ensure_ascii=False))
+                    json.dumps(without_image_data(prepared.payload), ensure_ascii=False))
                     * (1 + self.policy.token_safety_margin))
             self._prepared_estimate = estimate
             return estimate + output <= self.assembler.context_window_tokens
@@ -673,14 +692,14 @@ class HistoryCompactor:
         self.prepared_request = request
         self.prepared_call = None
         self._prepared_estimate = None
-        heuristic = math.ceil(self.assembler.token_counter.count_request(
-            model_request_to_chat(request, reasoning_field="omit"), request.tools)
-            * (1 + self.policy.token_safety_margin))
+        heuristic = math.ceil(estimate_model_request(self.assembler.token_counter, request)
+                              * (1 + self.policy.token_safety_margin))
         if (self.assembler.request_token_counter is None
                 and heuristic + (request.max_output_tokens or 0) > self.assembler.context_window_tokens):
             self._prepared_estimate = heuristic
             return False
         estimate, count = await self._bounded(self.assembler._safe_estimate(request, self.policy, stream=False))
+        require_image_count(request, count)
         if count is not None:
             self._learn_window(count.max_model_len)
             if count.exact is not True:
@@ -765,7 +784,10 @@ class HistoryCompactor:
             blocks.append(block)
         text = "\n\n".join(blocks)
         return ModelRequest(instructions=_summary_rules(max_tokens, aliases.previous_alias),
-                            items=(ModelUserInput(source_id="compaction_sources", content=text),),
+                            items=(ModelUserInput(source_id="compaction_sources", content=image_content(text,
+                                project_images(tuple(image for source_id in dict.fromkeys(span.source_id for span in ranges)
+                                    for image in self._image_sources.get(source_id, ())),
+                                    self.result_store.workspace if self.result_store else None))),),
                             **self._request_options(max_tokens))
 
     async def _request(
@@ -941,7 +963,8 @@ class HistoryCompactor:
                           if isinstance(item, AssistantMessage) else item for item in items)
         # Archived items keep their own tool-output paths; those files are
         # neither collected nor opened. Only earlier archives are linked.
-        refs = [ref for ref in (previous.compaction_record, previous.result_manifest) if ref] if previous else []
+        refs = [ref for ref in (previous.compaction_record, previous.result_manifest,
+                               previous.image_manifest) if ref] if previous else []
         archive = CompactionSourceV1(previous_summary=previous.content if previous else None,
                                     previous_result_manifest=previous.result_manifest if previous else None,
                                     views=tuple(SourceView(source_id=key, text=text)
@@ -963,9 +986,15 @@ class HistoryCompactor:
     ) -> ContextSummary:
         content = self._summary_content(previous, summary, max_tokens)
         record = self._save_record(previous, source, sources, chunks, status="complete", task_summary=summary)
-        return ContextSummary(content=content, source_item_count=(previous.source_item_count if previous else 0) + len(items),
-                              compaction_record=record, usage=response.usage if response else None,
-                              model_call=response.metadata if response else None)
+        assert self.result_store is not None
+        return self.result_store.index_summary_images(ContextSummary(
+            content=content,
+            images=merge_image_references(previous.images if previous else (), source_images(items)),
+            source_item_count=(previous.source_item_count if previous else 0) + len(items),
+            compaction_record=record,
+            usage=response.usage if response else None,
+            model_call=response.metadata if response else None,
+        ))
 
     def _summary_content(self, previous: ContextSummary | None,
                          summary: TaskSummary, max_tokens: int) -> str:
@@ -983,6 +1012,9 @@ class HistoryCompactor:
         source: ContentReference, sources: dict[str, str], chunks: list[CompactionChunk],
         max_tokens: int, *, reason: str, reused_from: ContentReference | None = None,
     ) -> ContextSummary:
+        if source_images(items):
+            raise ImageInputError(
+                f"Visual context compaction failed: reference fallback cannot replace unsummarized images: {reason}")
         if not self.read_available:
             raise CompactionArchiveError(
                 "Reference fallback requires the read_file tool and a read boundary that admits runtime files.")
@@ -1025,10 +1057,12 @@ class HistoryCompactor:
         record = self._save_record(previous, source, sources, chunks,
                                    status="partial" if candidates else "reference_only", reason=reason,
                                    reused_from=reused_from)
-        return ContextSummary(content="\n".join(parts),
+        assert self.result_store is not None
+        return self.result_store.index_summary_images(ContextSummary(content="\n".join(parts),
+                              images=merge_image_references(previous.images if previous else (), source_images(items)),
                               source_item_count=(previous.source_item_count if previous else 0) + len(items),
                               method="reference_fallback", fallback_reason=reason[:1000],
-                              compaction_record=record)
+                              compaction_record=record))
 
     def _save_record(
         self, previous: ContextSummary | None, source: ContentReference,

@@ -6,6 +6,19 @@ root with `uv run python -m examples.<module>`.
 Most examples use `MockProvider`, so they do not require network access or model
 credentials.
 
+Image input examples ([English](../docs/en/images.md), [简体中文](../docs/zh-CN/images.md)):
+
+- `image_uploads.py`: explicitly mark uploaded images as visual inputs.
+- `image_history.py`: continue twenty image turns, summarize older visual history and retain snapshot references.
+- `image_reading.py`: register `tool.read_image` and inspect an existing workspace file.
+- `image_validation.py`: validate dynamic DAG image results and request a corrected answer.
+- `image_mcp.py`: receive an image from a real local stdio MCP server (`--extra mcp`).
+- `static_dag_images.py`: let an Agent node explicitly read its declared artifact.
+
+Run with `uv run python -m examples.image_uploads` (replace the module name for
+other examples); MCP uses `uv run --extra mcp python -m examples.image_mcp`.
+These examples use deterministic model replies to demonstrate SDK wiring.
+
 ## Example Map
 
 | Example | Demonstrates | Related docs |

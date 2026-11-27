@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 
+from dagent.capabilities.images import ImageInputError
 from dagent.harness_runtime.profiled_agent import ProfiledAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
@@ -79,6 +80,8 @@ class ValidatorAgent:
                 result_observations=result_observations,
                 result_store=result_store,
             )
+        except ImageInputError:
+            raise
         except ValueError as exc:
             logger.warning("Validator agent returned invalid JSON; skipping validation: %s", exc)
             return (

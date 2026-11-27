@@ -1,5 +1,7 @@
 # Model Context and Reasoning
 
+For explicit visual inputs, image tool results, budgets and snapshot recovery, see [Image Inputs](images.md).
+
 For result display budgets, typed retention metadata and file/search pagination, see
 [Tool Result Recovery](tool-result-recovery.md).
 

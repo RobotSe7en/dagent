@@ -1,6 +1,9 @@
 """Reviewable DAG agent runtime SDK."""
 
+from dagent.schemas.images import ImageData, ImageInputPolicy
+from dagent.schemas.conversation import ImageReference
 from dagent.agent import AutoAgent, DagAgent, ToolAgent
+from dagent.capabilities.images import ImageInputError
 from dagent.capabilities import (
     SkillAmbiguousError,
     SkillEntry,
@@ -117,6 +120,7 @@ from dagent.schemas import (
 __version__ = "0.11.3"
 
 __all__ = [
+    "ImageData", "ImageInputPolicy", "ImageReference", "ImageInputError",
     "ToolContext", "UserInteractionClient", "UserInteractionOptions",
     "UserInteractionError", "UserInteractionCancelled", "UserInteractionUnsupported",
     "UserInteractionBusy", "UserInteractionResponseRejected", "UserInteractionFatalError",

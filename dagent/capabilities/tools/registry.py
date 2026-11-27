@@ -9,11 +9,20 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class RawImage:
+    """Stdlib-only image transport used by the sandbox worker."""
+
+    data: str
+    media_type: str | None = None
+
+
+@dataclass(frozen=True)
 class ToolOutput:
     content: str
     value: Any = None
     retention: dict[str, Any] | None = None
     content_reference: dict[str, Any] | None = None
+    images: tuple[RawImage, ...] = ()
 
 
 def content_and_value_from_result(result: Any) -> tuple[str, Any]:
